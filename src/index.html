@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aegos</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="shell">
+    <aside class="sidebar">
+      <section class="brand">
+        <div class="brand-mark">A</div>
+        <strong>Aegos</strong>
+      </section>
+
+      <section class="profile">
+        <div class="profile-mark">A</div>
+        <div>
+          <strong>Aegos</strong>
+          <span>v0.1.0</span>
+        </div>
+      </section>
+
+      <nav class="nav">
+        <button class="active"><span>⌂</span>首页</button>
+        <button><span>◇</span>节点</button>
+        <button><span>≈</span>连接</button>
+        <button><span>◷</span>订阅</button>
+        <button><span>◎</span>诊断</button>
+        <button><span>▣</span>日志</button>
+        <button><span>⚙</span>设置</button>
+      </nav>
+
+      <section class="side-card status-card">
+        <h3>网络状态</h3>
+        <dl>
+          <div><dt>保护模式</dt><dd id="protectMode">未开启</dd></div>
+          <div><dt>DNS 防泄漏</dt><dd class="ok">已开启</dd></div>
+          <div><dt>TUN 模式</dt><dd class="ok">已开启</dd></div>
+          <div><dt>Kill Switch</dt><dd>未开启</dd></div>
+          <div><dt>系统代理</dt><dd class="ok">已开启</dd></div>
+          <div><dt>内网 IP</dt><dd class="ok">192.168.0.102</dd></div>
+          <div><dt>当前协议</dt><dd class="ok">mihomo</dd></div>
+          <div><dt>代理端口</dt><dd>-</dd></div>
+          <div><dt>落地 IP</dt><dd>-</dd></div>
+        </dl>
+      </section>
+
+      <section class="side-card traffic-card">
+        <h3>实时流量</h3>
+        <p class="rate up">↑ 0 B/s</p>
+        <p class="rate down">↓ 0 B/s</p>
+        <div class="mini-chart" aria-hidden="true"><span></span></div>
+      </section>
+      <button class="back-button" aria-label="返回">‹</button>
+    </aside>
+
+    <section class="workspace">
+      <header class="titlebar" data-tauri-drag-region>
+        <div></div>
+        <div class="window-actions">
+          <button id="menuBtn" aria-label="菜单">☰</button>
+          <button id="minBtn" aria-label="最小化">−</button>
+          <button id="maxBtn" aria-label="最大化">□</button>
+          <button id="closeBtn" aria-label="关闭">×</button>
+        </div>
+      </header>
+
+      <section class="hero panel">
+        <div class="connect-column">
+          <div class="ring">
+            <span class="check">✓</span>
+            <strong>已连接</strong>
+            <small id="sessionClock">00:00:00</small>
+          </div>
+          <button class="primary">断开连接</button>
+          <button class="ghost">切换节点</button>
+        </div>
+
+        <div class="node-column">
+          <div class="hero-head">
+            <div>
+              <small>当前节点</small>
+              <div class="node-title">
+                <span class="flag">HK</span>
+                <h1 id="nodeName">香港实验性 IEPL 专线 1</h1>
+                <b>可用</b>
+              </div>
+              <p><span id="nodeHost">iepl-1.aegos.local</span><button class="copy" aria-label="复制">⧉</button></p>
+            </div>
+            <button class="mode-pill">当前模式 <strong>智能分流</strong><span>⌄</span></button>
+          </div>
+
+          <div class="notice">⚡ 未接管：内核未运行，当前没有流量接管。</div>
+
+          <div class="metric-grid top">
+            <article><span class="metric-icon purple">◴</span><small>延迟</small><strong>-</strong></article>
+            <article><span class="metric-icon blue">≋</span><small>丢包率</small><strong>0.0%</strong></article>
+            <article><span class="metric-icon amber">◠</span><small>负载</small><strong>38%</strong></article>
+            <article><span class="metric-icon cyan">◇</span><small>协议</small><strong>mihomo</strong></article>
+            <article><span class="metric-icon green">DNS</span><small>DNS</small><strong>自动</strong></article>
+          </div>
+
+          <div class="metric-grid bottom">
+            <article><span class="metric-icon purple">▣</span><small>代理端口</small><strong>-</strong></article>
+            <article><span class="metric-icon violet">⌖</span><small>落地 IP</small><strong>-</strong></article>
+            <article><span class="metric-icon teal">◷</span><small>连接时长</small><strong id="metricClock">00:00:00</strong></article>
+            <article><span class="metric-icon up">↑</span><small>上传</small><strong>0 B/s</strong></article>
+            <article><span class="metric-icon down">↓</span><small>下载</small><strong>0 B/s</strong></article>
+            <article class="spark"><span></span></article>
+          </div>
+        </div>
+      </section>
+
+      <section class="quick panel">
+        <div class="best-node">
+          <span class="flag">HK</span>
+          <div>
+            <h2>香港</h2>
+            <p>延迟最低 · 稳定性高</p>
+          </div>
+          <div class="quick-actions">
+            <button class="icon-button" aria-label="刷新">⟳</button>
+            <button class="soft-blue">设为最优</button>
+          </div>
+        </div>
+        <div class="quick-row">
+          <strong>常用地区</strong>
+          <button><b>HK</b>香港</button>
+          <button><b>JP</b>日本</button>
+          <button><b>SG</b>新加坡</button>
+          <button><b>TW</b>台湾</button>
+          <button><b>US</b>美国</button>
+          <button><b>GB</b>英国</button>
+        </div>
+        <div class="quick-row">
+          <strong>快捷操作</strong>
+          <button><span>✈</span>一键测速</button>
+          <button><span>⌖</span>节点选择</button>
+          <button><span>⌁</span>网络诊断</button>
+          <button><span>IP</span>刷新落地 IP</button>
+          <button><span>⇄</span>切换模式</button>
+          <button><span>⚙</span>高级设置</button>
+        </div>
+      </section>
+
+      <section class="nodes panel">
+        <header class="table-head">
+          <h2>常用节点</h2>
+          <div class="tabs">
+            <button class="active">全部</button>
+            <button>收藏</button>
+            <button>最近使用</button>
+            <button>低延迟</button>
+            <button>亚洲</button>
+            <button>欧洲</button>
+            <button>北美</button>
+          </div>
+          <div class="table-actions">
+            <button>批量测速</button>
+            <label><span>⌕</span><input placeholder="搜索节点"></label>
+          </div>
+        </header>
+        <div class="node-table">
+          <div class="row head"><span></span><span></span><span>节点名称</span><span>地址</span><span>延迟</span><span>丢包率</span><span>负载</span><span>流量</span><span>状态</span><span>操作</span></div>
+          <div id="nodeRows"></div>
+        </div>
+      </section>
+    </section>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>
