@@ -18,17 +18,17 @@
         <div class="profile-mark">A</div>
         <div>
           <strong>Aegos</strong>
-          <span>v0.2.0</span>
+          <span>v0.3.0</span>
         </div>
       </section>
 
       <nav class="nav">
         <button class="active"><span>⌂</span>首页</button>
-        <button><span>◇</span>节点</button>
-        <button><span>≈</span>连接</button>
-        <button><span>◷</span>订阅</button>
-        <button><span>◎</span>诊断</button>
-        <button><span>▣</span>日志</button>
+        <button><span>◎</span>节点</button>
+        <button><span>≋</span>连接</button>
+        <button><span>▤</span>订阅</button>
+        <button><span>◇</span>诊断</button>
+        <button><span>□</span>日志</button>
         <button><span>⚙</span>设置</button>
       </nav>
 
@@ -37,9 +37,9 @@
         <dl>
           <div><dt>保护模式</dt><dd id="protectMode">未开启</dd></div>
           <div><dt>DNS 防泄漏</dt><dd id="dnsState" class="ok">已开启</dd></div>
-          <div><dt>TUN 模式</dt><dd id="tunState" class="ok">未开启</dd></div>
+          <div><dt>TUN 模式</dt><dd id="tunState">未开启</dd></div>
           <div><dt>Kill Switch</dt><dd id="killState">未开启</dd></div>
-          <div><dt>系统代理</dt><dd id="proxyState" class="ok">未开启</dd></div>
+          <div><dt>系统代理</dt><dd id="proxyState">未开启</dd></div>
           <div><dt>内网 IP</dt><dd id="lanIpState" class="ok">-</dd></div>
           <div><dt>当前协议</dt><dd class="ok">mihomo</dd></div>
           <div><dt>代理端口</dt><dd id="proxyPortState">-</dd></div>
@@ -71,7 +71,7 @@
         <div class="connect-column">
           <div class="ring">
             <span class="check">✓</span>
-            <strong>已连接</strong>
+            <strong>未连接</strong>
             <small id="sessionClock">00:00:00</small>
           </div>
           <button id="connectBtn" class="primary">连接</button>
@@ -84,28 +84,28 @@
               <small>当前节点</small>
               <div class="node-title">
                 <span class="flag">HK</span>
-                <h1 id="nodeName">香港实验性 IEPL 专线 1</h1>
-                <b id="nodeState">可用</b>
+                <h1 id="nodeName">等待节点数据</h1>
+                <b id="nodeState">待连接</b>
               </div>
-              <p><span id="nodeHost">iepl-1.aegos.local</span><button class="copy" aria-label="复制">⧉</button></p>
+              <p><span id="nodeHost">127.0.0.1:7890</span><button class="copy" aria-label="复制">⧉</button></p>
             </div>
-            <button id="modeBtn" class="mode-pill">当前模式 <strong id="modeLabel">智能分流</strong><span>⌄</span></button>
+            <button id="modeBtn" class="mode-pill">当前模式 <strong id="modeLabel">智能分流</strong><span>›</span></button>
           </div>
 
-          <div id="protectionNotice" class="notice">⚡ 未接管：内核未运行，当前没有流量接管。</div>
+          <div id="protectionNotice" class="notice">未接管：内核未运行，当前没有流量接管。</div>
 
           <div class="metric-grid top">
-            <article><span class="metric-icon purple">◴</span><small>延迟</small><strong>-</strong></article>
-            <article><span class="metric-icon blue">≋</span><small>丢包率</small><strong>0.0%</strong></article>
-            <article><span class="metric-icon amber">◠</span><small>负载</small><strong>38%</strong></article>
-            <article><span class="metric-icon cyan">◇</span><small>协议</small><strong>mihomo</strong></article>
-            <article><span class="metric-icon green">DNS</span><small>DNS</small><strong>自动</strong></article>
+            <article><span class="metric-icon purple">ms</span><small>延迟</small><strong>-</strong></article>
+            <article><span class="metric-icon blue">%</span><small>丢包率</small><strong>0.0%</strong></article>
+            <article><span class="metric-icon amber">L</span><small>负载</small><strong>38%</strong></article>
+            <article><span class="metric-icon cyan">M</span><small>协议</small><strong>mihomo</strong></article>
+            <article><span class="metric-icon green">D</span><small>DNS</small><strong>自动</strong></article>
           </div>
 
           <div class="metric-grid bottom">
-            <article><span class="metric-icon purple">▣</span><small>代理端口</small><strong id="proxyMetric">-</strong></article>
-            <article><span class="metric-icon violet">⌖</span><small>落地 IP</small><strong id="outboundMetric">-</strong></article>
-            <article><span class="metric-icon teal">◷</span><small>连接时长</small><strong id="metricClock">00:00:00</strong></article>
+            <article><span class="metric-icon purple">P</span><small>代理端口</small><strong id="proxyMetric">-</strong></article>
+            <article><span class="metric-icon violet">IP</span><small>落地 IP</small><strong id="outboundMetric">-</strong></article>
+            <article><span class="metric-icon teal">T</span><small>连接时长</small><strong id="metricClock">00:00:00</strong></article>
             <article><span class="metric-icon up">↑</span><small>上传</small><strong id="upRate">0 B/s</strong></article>
             <article><span class="metric-icon down">↓</span><small>下载</small><strong id="downRate">0 B/s</strong></article>
             <article class="spark"><span></span></article>
@@ -121,24 +121,24 @@
             <p>延迟最低 · 稳定性高</p>
           </div>
           <div class="quick-actions">
-            <button id="refreshNodesBtn" class="icon-button" aria-label="刷新">⟳</button>
+            <button id="refreshNodesBtn" class="icon-button" aria-label="刷新节点">↻</button>
             <button id="setBestBtn" class="soft-blue">设为最优</button>
           </div>
         </div>
         <div class="quick-row">
           <strong>常用地区</strong>
-          <button><b>HK</b>香港</button>
-          <button><b>JP</b>日本</button>
-          <button><b>SG</b>新加坡</button>
-          <button><b>TW</b>台湾</button>
-          <button><b>US</b>美国</button>
-          <button><b>GB</b>英国</button>
+          <button data-region="HK"><b>HK</b>香港</button>
+          <button data-region="JP"><b>JP</b>日本</button>
+          <button data-region="SG"><b>SG</b>新加坡</button>
+          <button data-region="TW"><b>TW</b>台湾</button>
+          <button data-region="US"><b>US</b>美国</button>
+          <button data-region="GB"><b>GB</b>英国</button>
         </div>
         <div class="quick-row">
           <strong>快捷操作</strong>
-          <button id="quickTestBtn"><span>✈</span>一键测速</button>
-          <button id="quickNodeBtn"><span>⌖</span>节点选择</button>
-          <button id="quickDiagBtn"><span>⌁</span>网络诊断</button>
+          <button id="quickTestBtn"><span>✓</span>一键测速</button>
+          <button id="quickNodeBtn"><span>◎</span>节点选择</button>
+          <button id="quickDiagBtn"><span>◇</span>网络诊断</button>
           <button id="quickIpBtn"><span>IP</span>刷新落地 IP</button>
           <button id="quickModeBtn"><span>⇄</span>切换模式</button>
           <button id="quickSettingsBtn"><span>⚙</span>高级设置</button>
@@ -158,8 +158,8 @@
             <button>北美</button>
           </div>
           <div class="table-actions">
-            <button>批量测速</button>
-            <label><span>⌕</span><input placeholder="搜索节点"></label>
+            <button id="batchTestBtn">批量测速</button>
+            <label><span>⌕</span><input id="nodeSearch" placeholder="搜索节点"></label>
           </div>
         </header>
         <div class="node-table">

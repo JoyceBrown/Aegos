@@ -23,6 +23,10 @@ function sha256(rel) {
   return crypto.createHash('sha256').update(fs.readFileSync(path.join(root, rel))).digest('hex');
 }
 
+function readText(rel) {
+  return fs.readFileSync(path.join(root, rel), 'utf8');
+}
+
 const pkg = readJson('package.json');
 const tauri = readJson('src-tauri/tauri.conf.json');
 const installer = `src-tauri/target/release/bundle/nsis/Aegos_${pkg.version}_x64-setup.exe`;
@@ -34,6 +38,14 @@ check('Tauri shell configured', Boolean(pkg.devDependencies?.['@tauri-apps/cli']
 check('mihomo bundled as only core resource', exists('resources/core/mihomo.exe') && !exists('resources/core/sing-box.exe'), 'resources/core');
 check('Aegos installer exists', exists(installer), installer);
 check('Aegis installer name is not reused', !exists(`src-tauri/target/release/bundle/nsis/Aegis-Setup-${pkg.version}.exe`), 'no Aegis installer artifact');
+check('UI smoke script exists', exists('tools/ui-smoke.js'), 'tools/ui-smoke.js');
+
+const mainRs = readText('src-tauri/src/main.rs');
+const powershellCalls = (mainRs.match(/Command::new\("powershell\.exe"\)/g) || []).length;
+check('PowerShell commands are hidden on Windows', powershellCalls === 1 && /fn run_powershell[\s\S]*creation_flags\(CREATE_NO_WINDOW\)/.test(mainRs), `${powershellCalls} powershell launcher(s)`);
+
+const uiText = `${readText('src/index.html')}\n${readText('src/app.js')}`;
+check('UI text has no mojibake fragments', !/[锛鈱鈼鈻鉁鈬脳]/.test(uiText), 'index/app text encoding');
 
 const result = {
   ok: fail.length === 0,

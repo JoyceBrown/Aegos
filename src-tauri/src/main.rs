@@ -73,6 +73,8 @@ struct CoreManager {
     process: Option<Child>,
     logs: Arc<Mutex<Vec<LogEntry>>>,
     last_traffic: JsonValue,
+    lan_ip_cache: String,
+    lan_ip_checked_at: u64,
 }
 
 struct AppState {
@@ -80,11 +82,15 @@ struct AppState {
 }
 
 fn now_iso() -> String {
+    format!("{}", now_secs())
+}
+
+fn now_secs() -> u64 {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    format!("{secs}")
+    secs
 }
 
 fn hex_random(bytes: usize) -> String {
@@ -172,16 +178,17 @@ fn ps_escape(value: impl AsRef<str>) -> String {
 }
 
 fn run_powershell(script: &str) -> Result<String, String> {
-    let output = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ])
-        .output()
-        .map_err(|err| err.to_string())?;
+    let mut command = Command::new("powershell.exe");
+    command.args([
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        script,
+    ]);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command.output().map_err(|err| err.to_string())?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
@@ -327,6 +334,8 @@ impl CoreManager {
             process: None,
             logs: Arc::new(Mutex::new(Vec::new())),
             last_traffic: json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 }),
+            lan_ip_cache: "-".to_string(),
+            lan_ip_checked_at: 0,
         };
         manager.ensure_direct_profile()?;
         manager.save_settings()?;
@@ -655,6 +664,7 @@ impl CoreManager {
             json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 })
         };
         self.last_traffic = traffic.clone();
+        let lan_ip = self.cached_lan_ip();
         json!({
             "product": "Aegos",
             "appVersion": env!("CARGO_PKG_VERSION"),
@@ -668,7 +678,7 @@ impl CoreManager {
             "systemProxy": self.settings.system_proxy,
             "activeProfile": self.active_profile(),
             "network": {
-                "lanIp": primary_lan_ip(),
+                "lanIp": lan_ip,
                 "proxyEndpoint": format!("127.0.0.1:{}", self.settings.mixed_port),
                 "outboundIp": "-"
             },
@@ -676,6 +686,16 @@ impl CoreManager {
             "protection": self.protection_status(),
             "logs": self.logs.lock().unwrap().clone()
         })
+    }
+
+    fn cached_lan_ip(&mut self) -> String {
+        let now = now_secs();
+        if now.saturating_sub(self.lan_ip_checked_at) < 45 && self.lan_ip_cache != "-" {
+            return self.lan_ip_cache.clone();
+        }
+        self.lan_ip_cache = primary_lan_ip();
+        self.lan_ip_checked_at = now;
+        self.lan_ip_cache.clone()
     }
 
     fn public_settings(&self) -> JsonValue {
