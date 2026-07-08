@@ -25,7 +25,7 @@ function sha256(rel) {
 
 const pkg = readJson('package.json');
 const tauri = readJson('src-tauri/tauri.conf.json');
-const installer = 'src-tauri/target/release/bundle/nsis/Aegos_0.1.0_x64-setup.exe';
+const installer = `src-tauri/target/release/bundle/nsis/Aegos_${pkg.version}_x64-setup.exe`;
 
 check('package name is aegos', pkg.name === 'aegos', pkg.name);
 check('product name is Aegos', tauri.productName === 'Aegos', tauri.productName);
@@ -33,7 +33,7 @@ check('identifier does not collide with Aegis', tauri.identifier === 'com.codex.
 check('Tauri shell configured', Boolean(pkg.devDependencies?.['@tauri-apps/cli']), '@tauri-apps/cli');
 check('mihomo bundled as only core resource', exists('resources/core/mihomo.exe') && !exists('resources/core/sing-box.exe'), 'resources/core');
 check('Aegos installer exists', exists(installer), installer);
-check('Aegis installer name is not reused', !exists('src-tauri/target/release/bundle/nsis/Aegis-Setup-0.1.0.exe'), 'no Aegis installer artifact');
+check('Aegis installer name is not reused', !exists(`src-tauri/target/release/bundle/nsis/Aegis-Setup-${pkg.version}.exe`), 'no Aegis installer artifact');
 
 const result = {
   ok: fail.length === 0,

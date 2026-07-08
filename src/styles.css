@@ -242,9 +242,9 @@ dd {
 .workspace {
   min-width: 0;
   display: grid;
-  grid-template-rows: 40px auto auto minmax(0, 1fr);
-  gap: 18px;
-  padding: 12px 28px 28px 18px;
+  grid-template-rows: 32px auto auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 6px 22px 16px 14px;
   overflow: hidden;
 }
 
@@ -275,21 +275,21 @@ dd {
 
 .hero {
   display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
-  gap: 28px;
-  min-height: 398px;
-  padding: 34px 26px 24px;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 18px;
+  min-height: 238px;
+  padding: 14px 20px;
 }
 
 .connect-column {
   display: grid;
   align-content: start;
   justify-items: center;
-  gap: 18px;
+  gap: 9px;
 }
 
 .ring {
-  width: 140px;
+  width: 96px;
   aspect-ratio: 1;
   display: grid;
   place-items: center;
@@ -303,8 +303,8 @@ dd {
 }
 
 .check {
-  width: 30px;
-  height: 30px;
+  width: 22px;
+  height: 22px;
   display: grid;
   place-items: center;
   color: #fff;
@@ -315,7 +315,7 @@ dd {
 
 .ring strong {
   color: var(--green);
-  font-size: 20px;
+  font-size: 16px;
 }
 
 .ring small {
@@ -324,9 +324,9 @@ dd {
 }
 
 .primary, .ghost, .soft-blue {
-  min-width: 140px;
-  min-height: 38px;
-  padding: 0 22px;
+  min-width: 116px;
+  min-height: 30px;
+  padding: 0 15px;
   border-radius: 999px;
   font-weight: 850;
 }
@@ -352,7 +352,7 @@ dd {
   min-width: 0;
   display: grid;
   align-content: start;
-  gap: 20px;
+  gap: 8px;
 }
 
 .hero-head {
@@ -372,7 +372,7 @@ dd {
   align-items: center;
   gap: 16px;
   min-width: 0;
-  margin-top: 12px;
+  margin-top: 5px;
 }
 
 h1, h2, h3, p {
@@ -384,7 +384,7 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 22px;
+  font-size: 19px;
   font-weight: 900;
 }
 
@@ -400,7 +400,7 @@ h1 {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 5px;
   color: #66758f;
   font-weight: 700;
 }
@@ -417,8 +417,8 @@ h1 {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 44px;
-  padding: 0 18px;
+  min-height: 36px;
+  padding: 0 14px;
   color: #65738d;
   border-radius: 999px;
   background: rgba(255, 255, 255, .82);
@@ -434,7 +434,7 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 12px 18px;
+  padding: 7px 14px;
   color: #26b468;
   border-radius: 12px;
   background: linear-gradient(90deg, rgba(42, 197, 116, .12), rgba(42, 197, 116, .04));
@@ -466,8 +466,8 @@ h1 {
   grid-template-rows: auto auto;
   gap: 2px 10px;
   align-items: center;
-  min-height: 72px;
-  padding: 12px;
+  min-height: 46px;
+  padding: 6px 9px;
   border-right: 1px solid rgba(130, 154, 187, .11);
 }
 
@@ -480,18 +480,18 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .metric-icon {
   grid-row: 1 / span 2;
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
   display: grid;
   place-items: center;
   border-radius: 50%;
   font-weight: 900;
-  font-size: 13px;
+  font-size: 11px;
 }
 
 .purple { color: #906fff; background: #f0ecff; }
@@ -505,18 +505,20 @@ h1 {
 .down { color: #3e8dff; background: #edf5ff; }
 
 .spark {
-  min-height: 72px;
+  min-height: 46px;
   border-radius: 0;
   border-right: 0;
 }
 
 .quick {
   display: grid;
-  gap: 16px;
-  padding: 24px 26px;
+  grid-template-columns: minmax(190px, .7fr) minmax(0, 1fr);
+  gap: 10px 12px;
+  padding: 14px 22px;
 }
 
 .best-node {
+  grid-row: 1 / span 2;
   display: grid;
   grid-template-columns: 48px minmax(0, 1fr) auto;
   align-items: center;
@@ -548,15 +550,15 @@ h1 {
 
 .quick-row {
   display: grid;
-  grid-template-columns: 88px repeat(6, minmax(112px, 1fr));
-  gap: 12px;
+  grid-template-columns: 76px repeat(6, minmax(72px, 1fr));
+  gap: 8px;
   align-items: center;
   min-width: 0;
 }
 
 .quick-row button {
   min-width: 0;
-  min-height: 42px;
+  min-height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -566,12 +568,13 @@ h1 {
   background: rgba(255, 255, 255, .76);
   box-shadow: inset 0 0 0 1px rgba(130, 154, 187, .10), 0 10px 24px rgba(65, 91, 125, .06);
   font-weight: 750;
+  font-size: 12px;
 }
 
 .quick-row b, .quick-row span {
   flex: 0 0 auto;
-  min-width: 24px;
-  height: 24px;
+  min-width: 22px;
+  height: 22px;
   display: grid;
   place-items: center;
   color: #fff;
@@ -585,7 +588,7 @@ h1 {
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  padding: 22px 26px 18px;
+  padding: 14px 24px 12px;
   overflow: hidden;
 }
 
@@ -595,7 +598,7 @@ h1 {
   align-items: center;
   gap: 18px;
   min-width: 0;
-  margin-bottom: 18px;
+  margin-bottom: 8px;
 }
 
 .tabs {
@@ -661,7 +664,7 @@ h1 {
   gap: 12px;
   align-items: center;
   min-width: 960px;
-  min-height: 54px;
+  min-height: 42px;
   padding: 0 2px;
 }
 
@@ -747,9 +750,9 @@ h1 {
 
 @media (max-height: 760px) {
   .workspace { gap: 12px; padding-bottom: 18px; }
-  .hero { min-height: 344px; padding-top: 24px; }
-  .ring { width: 126px; }
-  .metric-grid article { min-height: 62px; }
+  .hero { min-height: 272px; padding-top: 18px; padding-bottom: 16px; }
+  .ring { width: 104px; }
+  .metric-grid article { min-height: 52px; }
   .quick { padding-top: 18px; padding-bottom: 18px; }
   .side-card { padding: 14px; }
   dl { gap: 5px; }

@@ -18,7 +18,7 @@
         <div class="profile-mark">A</div>
         <div>
           <strong>Aegos</strong>
-          <span>v0.1.0</span>
+          <span>v0.2.0</span>
         </div>
       </section>
 
@@ -36,21 +36,21 @@
         <h3>网络状态</h3>
         <dl>
           <div><dt>保护模式</dt><dd id="protectMode">未开启</dd></div>
-          <div><dt>DNS 防泄漏</dt><dd class="ok">已开启</dd></div>
-          <div><dt>TUN 模式</dt><dd class="ok">已开启</dd></div>
-          <div><dt>Kill Switch</dt><dd>未开启</dd></div>
-          <div><dt>系统代理</dt><dd class="ok">已开启</dd></div>
-          <div><dt>内网 IP</dt><dd class="ok">192.168.0.102</dd></div>
+          <div><dt>DNS 防泄漏</dt><dd id="dnsState" class="ok">已开启</dd></div>
+          <div><dt>TUN 模式</dt><dd id="tunState" class="ok">未开启</dd></div>
+          <div><dt>Kill Switch</dt><dd id="killState">未开启</dd></div>
+          <div><dt>系统代理</dt><dd id="proxyState" class="ok">未开启</dd></div>
+          <div><dt>内网 IP</dt><dd id="lanIpState" class="ok">-</dd></div>
           <div><dt>当前协议</dt><dd class="ok">mihomo</dd></div>
-          <div><dt>代理端口</dt><dd>-</dd></div>
-          <div><dt>落地 IP</dt><dd>-</dd></div>
+          <div><dt>代理端口</dt><dd id="proxyPortState">-</dd></div>
+          <div><dt>落地 IP</dt><dd id="outboundIpState">-</dd></div>
         </dl>
       </section>
 
       <section class="side-card traffic-card">
         <h3>实时流量</h3>
-        <p class="rate up">↑ 0 B/s</p>
-        <p class="rate down">↓ 0 B/s</p>
+        <p id="sideUpRate" class="rate up">↑ 0 B/s</p>
+        <p id="sideDownRate" class="rate down">↓ 0 B/s</p>
         <div class="mini-chart" aria-hidden="true"><span></span></div>
       </section>
       <button class="back-button" aria-label="返回">‹</button>
@@ -74,8 +74,8 @@
             <strong>已连接</strong>
             <small id="sessionClock">00:00:00</small>
           </div>
-          <button class="primary">断开连接</button>
-          <button class="ghost">切换节点</button>
+          <button id="connectBtn" class="primary">连接</button>
+          <button id="refreshStatusBtn" class="ghost">刷新状态</button>
         </div>
 
         <div class="node-column">
@@ -85,14 +85,14 @@
               <div class="node-title">
                 <span class="flag">HK</span>
                 <h1 id="nodeName">香港实验性 IEPL 专线 1</h1>
-                <b>可用</b>
+                <b id="nodeState">可用</b>
               </div>
               <p><span id="nodeHost">iepl-1.aegos.local</span><button class="copy" aria-label="复制">⧉</button></p>
             </div>
-            <button class="mode-pill">当前模式 <strong>智能分流</strong><span>⌄</span></button>
+            <button id="modeBtn" class="mode-pill">当前模式 <strong id="modeLabel">智能分流</strong><span>⌄</span></button>
           </div>
 
-          <div class="notice">⚡ 未接管：内核未运行，当前没有流量接管。</div>
+          <div id="protectionNotice" class="notice">⚡ 未接管：内核未运行，当前没有流量接管。</div>
 
           <div class="metric-grid top">
             <article><span class="metric-icon purple">◴</span><small>延迟</small><strong>-</strong></article>
@@ -103,11 +103,11 @@
           </div>
 
           <div class="metric-grid bottom">
-            <article><span class="metric-icon purple">▣</span><small>代理端口</small><strong>-</strong></article>
-            <article><span class="metric-icon violet">⌖</span><small>落地 IP</small><strong>-</strong></article>
+            <article><span class="metric-icon purple">▣</span><small>代理端口</small><strong id="proxyMetric">-</strong></article>
+            <article><span class="metric-icon violet">⌖</span><small>落地 IP</small><strong id="outboundMetric">-</strong></article>
             <article><span class="metric-icon teal">◷</span><small>连接时长</small><strong id="metricClock">00:00:00</strong></article>
-            <article><span class="metric-icon up">↑</span><small>上传</small><strong>0 B/s</strong></article>
-            <article><span class="metric-icon down">↓</span><small>下载</small><strong>0 B/s</strong></article>
+            <article><span class="metric-icon up">↑</span><small>上传</small><strong id="upRate">0 B/s</strong></article>
+            <article><span class="metric-icon down">↓</span><small>下载</small><strong id="downRate">0 B/s</strong></article>
             <article class="spark"><span></span></article>
           </div>
         </div>
@@ -121,8 +121,8 @@
             <p>延迟最低 · 稳定性高</p>
           </div>
           <div class="quick-actions">
-            <button class="icon-button" aria-label="刷新">⟳</button>
-            <button class="soft-blue">设为最优</button>
+            <button id="refreshNodesBtn" class="icon-button" aria-label="刷新">⟳</button>
+            <button id="setBestBtn" class="soft-blue">设为最优</button>
           </div>
         </div>
         <div class="quick-row">
@@ -136,12 +136,12 @@
         </div>
         <div class="quick-row">
           <strong>快捷操作</strong>
-          <button><span>✈</span>一键测速</button>
-          <button><span>⌖</span>节点选择</button>
-          <button><span>⌁</span>网络诊断</button>
-          <button><span>IP</span>刷新落地 IP</button>
-          <button><span>⇄</span>切换模式</button>
-          <button><span>⚙</span>高级设置</button>
+          <button id="quickTestBtn"><span>✈</span>一键测速</button>
+          <button id="quickNodeBtn"><span>⌖</span>节点选择</button>
+          <button id="quickDiagBtn"><span>⌁</span>网络诊断</button>
+          <button id="quickIpBtn"><span>IP</span>刷新落地 IP</button>
+          <button id="quickModeBtn"><span>⇄</span>切换模式</button>
+          <button id="quickSettingsBtn"><span>⚙</span>高级设置</button>
         </div>
       </section>
 
