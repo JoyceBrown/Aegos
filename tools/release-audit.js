@@ -57,9 +57,11 @@ check('sidebar duplicate profile card is removed', !/<section class="profile">/.
 check('home nodes use table rows', appJs.includes('class="row home-row') && !appJs.includes('class="home-node'), 'home-row renderer');
 check('home endpoint line is removed', !indexHtml.includes('id="nodeHost"'), 'no nodeHost line');
 check('home drag regions are declared', (indexHtml.match(/data-tauri-drag-region/g) || []).length >= 2, 'titlebar and brand drag regions');
-check('quick actions have eight buttons', (indexHtml.match(/id="quick[A-Za-z]+Btn"/g) || []).length >= 8 && indexHtml.includes('id="quickConnectionsBtn"') && indexHtml.includes('id="quickProfilesBtn"'), '8 quick actions');
+check('quick actions have eight direct-operation buttons', (indexHtml.match(/id="quick[A-Za-z]+Btn"/g) || []).length >= 8 && indexHtml.includes('id="quickUpdateSubBtn"') && indexHtml.includes('id="quickProxyBtn"') && indexHtml.includes('id="quickTunBtn"'), '8 quick actions');
 check('region filters live with home node table', indexHtml.includes('class="region-row"') && indexHtml.indexOf('class="region-row"') > indexHtml.indexOf('class="home-nodes'), 'region-row in home nodes');
-check('custom window drag is wired', appJs.includes('startDragging'), 'startDragging');
+check('protocol UI does not display core name', indexHtml.includes('id="protocolState"') && indexHtml.includes('id="protocolMetric"') && !indexHtml.includes('>mihomo<'), 'protocolState/protocolMetric');
+check('Rust window controls are wired', ['window_minimize', 'window_toggle_maximize', 'window_close', 'window_start_dragging'].every((name) => mainRs.includes(name) && appJs.includes(name)), 'window commands');
+check('subscription URI parser is available', mainRs.includes('parse_uri_subscription') && mainRs.includes('base64'), 'URI/base64 subscriptions');
 
 const result = {
   ok: fail.length === 0,

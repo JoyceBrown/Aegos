@@ -13,7 +13,7 @@
         <div class="brand-mark">A</div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v0.5.1</span>
+          <span id="appVersionLabel" class="brand-version">v0.5.2</span>
         </div>
       </section>
 
@@ -34,9 +34,9 @@
           <div><dt>DNS 防泄漏</dt><dd id="dnsState" class="ok">已开启</dd></div>
           <div><dt>TUN 模式</dt><dd id="tunState">未开启</dd></div>
           <div><dt>Kill Switch</dt><dd id="killState">未开启</dd></div>
-          <div><dt>系统代理</dt><dd id="proxyState">未开启</dd></div>
+          <div id="proxyStateRow"><dt>&#31995;&#32479;&#20195;&#29702;</dt><dd id="proxyState">&#26410;&#24320;&#21551;</dd></div>
           <div><dt>内网 IP</dt><dd id="lanIpState" class="ok">-</dd></div>
-          <div><dt>当前协议</dt><dd class="ok">mihomo</dd></div>
+          <div><dt>&#24403;&#21069;&#21327;&#35758;</dt><dd id="protocolState" class="ok">DIRECT</dd></div>
           <div><dt>代理端口</dt><dd id="proxyPortState">-</dd></div>
           <div><dt>落地 IP</dt><dd id="outboundIpState">-</dd></div>
         </dl>
@@ -98,7 +98,7 @@
               <article><span class="metric-icon purple">ms</span><small>延迟</small><strong>-</strong></article>
               <article><span class="metric-icon blue">%</span><small>丢包率</small><strong>0.0%</strong></article>
               <article><span class="metric-icon amber">L</span><small>负载</small><strong>38%</strong></article>
-              <article><span class="metric-icon cyan">M</span><small>协议</small><strong>mihomo</strong></article>
+              <article><span class="metric-icon cyan">M</span><small>&#21327;&#35758;</small><strong id="protocolMetric">DIRECT</strong></article>
               <article><span class="metric-icon green">D</span><small>DNS</small><strong>自动</strong></article>
             </div>
 
@@ -128,14 +128,9 @@
 
           <div class="quick-row action-row">
             <strong>快捷操作</strong>
-            <button id="quickTestBtn"><span>✓</span>一键测速</button>
-            <button id="quickNodeBtn"><span>◎</span>节点选择</button>
-            <button id="quickDiagBtn"><span>◇</span>网络诊断</button>
+            <button id="quickTestBtn"><span>✓</span>一键测速</button>            <button id="quickUpdateSubBtn"><span>&#8635;</span>&#26356;&#26032;&#35746;&#38405;</button>            <button id="quickProxyBtn"><span>PX</span>&#31995;&#32479;&#20195;&#29702;</button>
             <button id="quickIpBtn"><span>IP</span>刷新落地 IP</button>
-            <button id="quickModeBtn"><span>⇄</span>切换模式</button>
-            <button id="quickSettingsBtn"><span>⚙</span>高级设置</button>
-            <button id="quickConnectionsBtn"><span>&#8801;</span>&#36830;&#25509;&#31649;&#29702;</button>
-            <button id="quickProfilesBtn"><span>&#9636;</span>&#35746;&#38405;&#31649;&#29702;</button>
+            <button id="quickModeBtn"><span>⇄</span>切换模式</button>            <button id="quickTunBtn"><span>T</span>TUN &#27169;&#24335;</button>            <button id="quickCopyProxyBtn"><span>CP</span>&#22797;&#21046;&#20195;&#29702;</button>            <button id="quickRestartBtn"><span>R</span>&#37325;&#21551;&#20869;&#26680;</button>
           </div>
         </section>
 

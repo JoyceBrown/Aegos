@@ -1,6 +1,6 @@
 [package]
 name = "aegos"
-version = "0.5.1"
+version = "0.5.2"
 description = "Aegos lightweight desktop shell"
 authors = ["Codex"]
 edition = "2021"
@@ -17,3 +17,4 @@ serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
 tauri = { version = "2", features = [] }
+base64 = "0.22"

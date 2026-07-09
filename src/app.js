@@ -20,6 +20,7 @@ const pageNames = {
 let latestStatus = null;
 let latestGroup = null;
 let selectedNode = '';
+let currentProtocol = 'DIRECT';
 let startedAt = Date.now();
 let statusBusy = false;
 let nodeBusy = false;
@@ -34,6 +35,20 @@ const regionNames = {
   GB: '\u82f1\u56fd',
   GL: '\u5168\u7403'
 };
+
+function protocolLabel(value = '') {
+  const text = String(value || '').toLowerCase();
+  if (text.includes('shadowsocks') || text === 'ss') return 'SS';
+  if (text.includes('trojan')) return 'Trojan';
+  if (text.includes('ssr')) return 'SSR';
+  if (text.includes('vmess')) return 'VMess';
+  if (text.includes('vless')) return 'VLESS';
+  if (text.includes('hysteria')) return 'Hysteria';
+  if (text.includes('tuic')) return 'TUIC';
+  if (text.includes('wireguard')) return 'WireGuard';
+  if (text.includes('direct')) return 'DIRECT';
+  return value ? String(value) : 'DIRECT';
+}
 
 function $(selector) {
   return document.querySelector(selector);
@@ -111,9 +126,10 @@ function renderRows(items = []) {
         item.server || item.name,
         item.delay ?? -1,
         item.alive !== false,
-        item.name === selectedNode || item.name === latestGroup?.now
+        item.name === selectedNode || item.name === latestGroup?.now,
+        item.type || item.protocol || 'unknown'
       ])
-    : fallbackNodes.map((row, index) => [...row, -1, true, index === 0]);
+    : fallbackNodes.map((row, index) => [...row, -1, true, index === 0, 'direct']);
 
   const recommended = rows
     .filter(([, , , delay, alive]) => alive && Number(delay) >= 0)
@@ -121,8 +137,12 @@ function renderRows(items = []) {
   if (recommended) {
     $('#bestNodeRegion').textContent = regionNames[recommended[0]] || recommended[0];
   }
+  const activeRow = rows.find((row) => row[5]) || recommended;
+  currentProtocol = protocolLabel(activeRow?.[6] || 'direct');
+  $('#protocolState').textContent = currentProtocol;
+  $('#protocolMetric').textContent = currentProtocol;
 
-  $('#nodeRows').innerHTML = rows.map(([region, name, host, delay, alive, active]) => `
+  $('#nodeRows').innerHTML = rows.map(([region, name, host, delay, alive, active, protocol]) => `
     <div class="row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="选择 ${escapeHtml(name)}">
       <span class="radio"></span>
       <span class="star">☆</span>
@@ -140,7 +160,7 @@ function renderRows(items = []) {
       </span>
     </div>
   `).join('');
-  $('#homeNodeRows').innerHTML = rows.slice(0, 6).map(([region, name, host, delay, alive, active]) => `
+  $('#homeNodeRows').innerHTML = rows.slice(0, 6).map(([region, name, host, delay, alive, active, protocol]) => `
     <div class="row home-row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button">
       <span class="radio"></span>
       <span class="star">\u2606</span>
@@ -205,7 +225,7 @@ function renderStatus(status) {
   const running = Boolean(status.running && status.controller !== false);
   const modeText = status.mode === 'global' ? '全局代理' : status.mode === 'direct' ? '直连' : '智能分流';
 
-  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.1'}`;
+  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.2'}`;
   $('.ring strong').textContent = running ? '已连接' : '未连接';
   $('.ring').classList.toggle('offline', !running);
   $('#nodeName').textContent = activeProfile.name || selectedNode || '等待节点数据';
@@ -221,6 +241,9 @@ function renderStatus(status) {
   $('#tunState').textContent = settings.tunEnabled ? '已开启' : '未开启';
   $('#killState').textContent = settings.killSwitchEnabled ? '已开启' : '未开启';
   $('#proxyState').textContent = settings.systemProxy ? '已开启' : '未开启';
+  $('#proxyStateRow').classList.toggle('hidden', !settings.systemProxy);
+  $('#protocolState').textContent = currentProtocol;
+  $('#protocolMetric').textContent = currentProtocol;
   $('#tunHomeToggle').checked = Boolean(settings.tunEnabled);
   $('#tunHomeState').textContent = settings.tunEnabled ? '已开启' : '未开启';
   $('#lanIpState').textContent = status.network?.lanIp || '-';
@@ -251,7 +274,7 @@ async function refreshStatus(force = false) {
   } catch {
     renderStatus({
       running: false,
-      appVersion: '0.5.1',
+      appVersion: '0.5.2',
       mode: 'rule',
       traffic: { up: 0, down: 0 },
       logs: [],
@@ -292,6 +315,38 @@ async function refreshNodes() {
     renderRows();
   } finally {
     nodeBusy = false;
+  }
+}
+
+async function testNodes() {
+  if (nodeBusy) return;
+  nodeBusy = true;
+  try {
+    const groups = await invoke('test_proxy_delays');
+    latestGroup = Array.isArray(groups) ? (groups.find((group) => group.name === 'GLOBAL') || groups[0]) : null;
+    selectedNode = latestGroup?.now || selectedNode;
+    renderRows(latestGroup?.items || []);
+    setNotice('节点测速已完成。');
+  } catch (err) {
+    setNotice(`节点测速失败：${err.message || err}`);
+  } finally {
+    nodeBusy = false;
+  }
+}
+
+async function updateActiveProfile() {
+  const id = latestStatus?.settings?.activeProfileId;
+  if (!id || id === 'direct') {
+    setNotice('当前没有可更新的远程订阅。');
+    return;
+  }
+  try {
+    await invoke('update_profile', { id });
+    await refreshStatus(true);
+    await refreshNodes();
+    setNotice('订阅已更新。');
+  } catch (err) {
+    setNotice(`订阅更新失败：${err.message || err}`);
   }
 }
 
@@ -342,6 +397,7 @@ async function updateSetting(key, value) {
     if (key === 'systemProxy') await invoke('set_system_proxy', { enable: Boolean(value) });
     else await invoke('update_setting', { key, value });
     await refreshStatus(true);
+    await refreshNodes();
     setNotice('设置已更新。');
   } catch (err) {
     await refreshStatus(true);
@@ -378,16 +434,14 @@ async function runDiagnostics(showNotice = true) {
 }
 
 async function wireWindowControls() {
-  const appWindow = window.__TAURI__?.window?.getCurrentWindow?.() || window.__TAURI__?.window?.appWindow;
-  if (!appWindow) return;
-  $('#minBtn').onclick = () => appWindow.minimize();
-  $('#maxBtn').onclick = () => appWindow.toggleMaximize();
-  $('#closeBtn').onclick = () => appWindow.close();
+  $('#minBtn').onclick = () => invoke('window_minimize').catch(() => {});
+  $('#maxBtn').onclick = () => invoke('window_toggle_maximize').catch(() => {});
+  $('#closeBtn').onclick = () => invoke('window_close').catch(() => {});
   $all('.drag-zone').forEach((zone) => {
     zone.addEventListener('pointerdown', async (event) => {
       if (event.button !== 0 || event.target.closest('button, input, select, textarea')) return;
       try {
-        await appWindow.startDragging?.();
+        await invoke('window_start_dragging');
       } catch {}
     });
   });
@@ -408,13 +462,13 @@ $('#refreshStatusBtn').onclick = () => { refreshStatus(true); refreshNodes(); };
 $('#refreshNodesBtn').onclick = refreshNodes;
 $('#modeBtn').onclick = switchMode;
 $('#quickModeBtn').onclick = switchMode;
-$('#quickDiagBtn').onclick = () => { setPage('diagnostics'); runDiagnostics(); };
 $('#quickIpBtn').onclick = () => refreshStatus(true);
-$('#quickTestBtn').onclick = () => { setPage('diagnostics'); runDiagnostics(); };
-$('#quickNodeBtn').onclick = () => setPage('nodes');
-$('#quickSettingsBtn').onclick = () => setPage('settings');
-$('#quickConnectionsBtn').onclick = () => setPage('connections');
-$('#quickProfilesBtn').onclick = () => setPage('profiles');
+$('#quickTestBtn').onclick = testNodes;
+$('#quickUpdateSubBtn').onclick = updateActiveProfile;
+$('#quickProxyBtn').onclick = () => updateSetting('systemProxy', !latestStatus?.settings?.systemProxy);
+$('#quickTunBtn').onclick = () => updateSetting('tunEnabled', !latestStatus?.settings?.tunEnabled);
+$('#quickCopyProxyBtn').onclick = () => navigator.clipboard?.writeText(latestStatus?.network?.proxyEndpoint || '127.0.0.1:7890');
+$('#quickRestartBtn').onclick = async () => { await invoke('restart_core'); await refreshStatus(true); await refreshNodes(); };
 $('#setBestBtn').onclick = () => setNotice(selectedNode ? `已设为常用优先：${selectedNode}` : '请先选择一个节点');
 $('#refreshConnectionsBtn').onclick = refreshConnections;
 $('#closeAllConnectionsBtn').onclick = async () => { await invoke('close_connections'); refreshConnections(); };
@@ -434,6 +488,7 @@ $('#addProfileBtn').onclick = async () => {
     await invoke('add_profile_url', { url });
     $('#profileUrlInput').value = '';
     await refreshStatus(true);
+    await refreshNodes();
     setNotice('订阅已导入。');
   } catch (err) {
     setNotice(`订阅导入失败：${err.message || err}`);
