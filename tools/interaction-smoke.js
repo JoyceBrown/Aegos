@@ -123,7 +123,7 @@ try {
         }];
         const status = () => ({
           product: 'Aegos',
-          appVersion: '0.5.5',
+          appVersion: '0.5.6',
           running: state.running,
           controller: state.running,
           mode: state.mode,

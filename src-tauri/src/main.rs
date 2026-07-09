@@ -416,6 +416,32 @@ fn find_free_port(current: u16, fallback: u16) -> Result<u16, String> {
     Err(format!("未找到可用端口: {fallback}-{}", fallback + 79))
 }
 
+fn proxy_delay(proxy: &JsonValue) -> i64 {
+    proxy
+        .get("delay")
+        .and_then(|value| value.as_i64())
+        .or_else(|| {
+            proxy
+                .get("history")
+                .and_then(|value| value.as_array())
+                .and_then(|items| items.last())
+                .and_then(|item| item.get("delay"))
+                .and_then(|value| value.as_i64())
+        })
+        .unwrap_or(-1)
+}
+
+fn normalize_proxy_item(mut proxy: JsonValue) -> JsonValue {
+    let delay = proxy_delay(&proxy);
+    if let Some(map) = proxy.as_object_mut() {
+        map.insert("delay".to_string(), json!(delay));
+        if !map.contains_key("alive") {
+            map.insert("alive".to_string(), json!(delay >= 0));
+        }
+    }
+    proxy
+}
+
 fn ps_escape(value: impl AsRef<str>) -> String {
     value.as_ref().replace('\'', "''")
 }
@@ -960,7 +986,7 @@ impl CoreManager {
         }
         let running = self.process.is_some();
         let version = if running {
-            self.controller("GET", "/version", None, 300).ok()
+            self.controller("GET", "/version", None, 900).ok()
         } else {
             None
         };
@@ -978,7 +1004,7 @@ impl CoreManager {
             "runtime": "mihomo",
             "shell": "tauri",
             "running": running,
-            "controller": version.is_some(),
+            "controller": running,
             "version": version,
             "traffic": traffic,
             "mode": self.settings.mode,
@@ -1143,7 +1169,7 @@ impl CoreManager {
                             let items = group.get("all").and_then(|v| v.as_array()).cloned().unwrap_or_default()
                                 .into_iter()
                                 .filter_map(|name| name.as_str().map(|name| {
-                                    proxies.get(name).cloned().unwrap_or_else(|| json!({ "name": name, "type": "Unknown", "alive": true, "delay": -1 }))
+                                    normalize_proxy_item(proxies.get(name).cloned().unwrap_or_else(|| json!({ "name": name, "type": "Unknown", "alive": true, "delay": -1 })))
                                 }))
                                 .collect::<Vec<_>>();
                             json!({
@@ -1208,7 +1234,7 @@ impl CoreManager {
                                 "/proxies/{}/delay?timeout=3000&url=http://www.gstatic.com/generate_204",
                                 url_path_encode(name)
                             );
-                            let _ = self.controller("GET", &endpoint, None, 1400);
+                            let _ = self.controller("GET", &endpoint, None, 4200);
                         }
                     }
                 }

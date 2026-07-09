@@ -1358,23 +1358,40 @@ dd {
   padding: 10px;
 }
 
+.home-row-head,
 .home-node-list {
   min-height: 0;
+}
+
+.home-row-head {
+  display: grid;
+  grid-template-columns: 24px 26px minmax(180px, 1.25fr) minmax(180px, 1fr) 68px 62px 62px;
+  gap: 8px;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 2px;
+  color: #7d8aa0;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.home-row-head > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-node-list {
   overflow: auto;
-  display: block;
+  display: grid;
+  align-content: start;
+  gap: 4px;
 }
 
 .home-node-list .row {
-  grid-template-columns: 24px 26px minmax(138px, 1.12fr) minmax(106px, .78fr) 62px 58px 92px 74px 62px 74px;
+  grid-template-columns: 24px 26px minmax(180px, 1.25fr) minmax(180px, 1fr) 68px 62px 62px;
   min-height: 38px;
-}
-
-.home-node-list .row-actions {
-  justify-content: flex-start;
-}
-
-.home-node-list .row-actions button {
-  width: 26px;
 }
 
 @media (max-width: 1380px) {
@@ -1465,7 +1482,7 @@ dd {
 }
 
 .metric-grid.bottom {
-  grid-template-columns: minmax(138px, 1fr) minmax(116px, .86fr) minmax(116px, .86fr) 96px 96px 78px;
+  grid-template-columns: minmax(126px, 1fr) minmax(104px, .82fr) minmax(104px, .82fr) 96px 96px 58px;
 }
 
 .quick {
@@ -1545,7 +1562,7 @@ dd {
   }
 
   .metric-grid.bottom {
-    grid-template-columns: minmax(132px, 1fr) minmax(104px, .78fr) minmax(108px, .8fr) 88px 88px 66px;
+    grid-template-columns: minmax(118px, 1fr) minmax(90px, .76fr) minmax(94px, .76fr) 92px 92px 50px;
   }
 }
 
@@ -1621,7 +1638,7 @@ dd {
 }
 
 .metric-grid.bottom {
-  grid-template-columns: repeat(5, minmax(0, 1fr)) 78px;
+  grid-template-columns: minmax(126px, 1fr) minmax(104px, .82fr) minmax(104px, .82fr) 96px 96px 58px;
 }
 
 .quick {
@@ -1704,7 +1721,7 @@ dd {
 
 @media (max-width: 1380px) {
   .metric-grid.bottom {
-    grid-template-columns: repeat(5, minmax(0, 1fr)) 66px;
+    grid-template-columns: minmax(118px, 1fr) minmax(90px, .76fr) minmax(94px, .76fr) 92px 92px 50px;
   }
 
   .best-node-list {

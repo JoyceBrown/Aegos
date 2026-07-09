@@ -159,6 +159,20 @@ function renderNodeRow([region, name, host, delay, alive, active]) {
   `;
 }
 
+function renderHomeNodeRow([region, name, host, delay, alive, active]) {
+  return `
+    <div class="row home-row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="选择 ${escapeHtml(name)}">
+      <span class="radio"></span>
+      <span class="star">☆</span>
+      <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
+      <span>${escapeHtml(host)}</span>
+      <span>${Number(delay) >= 0 ? `${Math.round(delay)} ms` : '-'}</span>
+      <span>0.0%</span>
+      <span class="available">${alive ? '可用' : '不可用'}</span>
+    </div>
+  `;
+}
+
 function setNotice(message) {
   $('#protectionNotice').textContent = message;
 }
@@ -222,13 +236,14 @@ function renderRows(items = []) {
   currentProtocol = protocolLabel(activeRow?.[6] || 'direct');
   $('#protocolState').textContent = currentProtocol;
   $('#protocolMetric').textContent = currentProtocol;
+  if (activeRow?.[1]) $('#nodeName').textContent = activeRow[1];
 
   const nodeRows = filterRows(rows, nodePageFilter);
   $('#nodeRows').innerHTML = (nodeRows.length ? nodeRows : rows).map(renderNodeRow).join('');
 
   const homeRows = homeRegionFilter ? rows.filter(([region]) => region === homeRegionFilter) : rows.slice(0, 6);
   $('#homeNodeRows').innerHTML = (homeRows.length ? homeRows : rows.slice(0, 6))
-    .map((row) => renderNodeRow(row).replace('class="row ', 'class="row home-row '))
+    .map(renderHomeNodeRow)
     .join('');
 }
 
@@ -278,13 +293,13 @@ function renderStatus(status) {
   const protection = status.protection || {};
   const activeProfile = status.activeProfile || {};
   const traffic = status.traffic || {};
-  const running = Boolean(status.running && status.controller !== false);
+  const running = Boolean(status.running);
   const modeText = status.mode === 'global' ? '全局代理' : status.mode === 'direct' ? '直连' : '智能分流';
 
-  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.5'}`;
+  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.6'}`;
   $('.ring strong').textContent = running ? '已连接' : '未连接';
   $('.ring').classList.toggle('offline', !running);
-  $('#nodeName').textContent = activeProfile.name || selectedNode || '等待节点数据';
+  $('#nodeName').textContent = selectedNode || latestGroup?.now || activeProfile.name || '等待节点数据';
   const nodeHost = $('#nodeHost');
   if (nodeHost) nodeHost.textContent = status.network?.proxyEndpoint || '-';
   $('#nodeState').textContent = running ? '可用' : '待连接';
@@ -330,7 +345,7 @@ async function refreshStatus(force = false) {
   } catch {
     renderStatus({
       running: false,
-      appVersion: '0.5.5',
+      appVersion: '0.5.6',
       mode: 'rule',
       traffic: { up: 0, down: 0 },
       logs: [],
