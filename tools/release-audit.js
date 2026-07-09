@@ -36,6 +36,7 @@ check('product name is Aegos', tauri.productName === 'Aegos', tauri.productName)
 check('identifier does not collide with Aegis', tauri.identifier === 'com.codex.aegos', tauri.identifier);
 check('Tauri shell configured', Boolean(pkg.devDependencies?.['@tauri-apps/cli']), '@tauri-apps/cli');
 check('transparent window disabled for performance', tauri.app?.windows?.[0]?.transparent === false, `transparent=${tauri.app?.windows?.[0]?.transparent}`);
+check('WebView2 online bootstrapper is skipped', tauri.bundle?.windows?.webviewInstallMode?.type === 'skip', JSON.stringify(tauri.bundle?.windows?.webviewInstallMode));
 check('mihomo bundled as only core resource', exists('resources/core/mihomo.exe') && !exists('resources/core/sing-box.exe'), 'resources/core');
 check('Aegos installer exists', exists(installer), installer);
 check('Aegis installer name is not reused', !exists(`src-tauri/target/release/bundle/nsis/Aegis-Setup-${pkg.version}.exe`), 'no Aegis installer artifact');
@@ -51,6 +52,9 @@ const uiText = `${indexHtml}\n${appJs}`;
 check('UI text has no mojibake fragments', !/(�|鈫|鈱|鈼|鈻|鉁|鈬|脳|鏈|鍗|棣欐腐|绛夊緟)/.test(uiText), 'index/app text encoding');
 check('navigation pages are present', ['home', 'nodes', 'connections', 'profiles', 'diagnostics', 'logs', 'settings'].every((page) => indexHtml.includes(`data-page="${page}"`) && indexHtml.includes(`data-page-panel="${page}"`)), 'all primary pages');
 check('TUN switch exists in settings UI', indexHtml.includes('id="tunToggle"') && appJs.includes("['tunToggle', 'tunEnabled']"), 'tunToggle');
+check('TUN switch exists on home UI', indexHtml.includes('id="tunHomeToggle"') && appJs.includes("['tunHomeToggle', 'tunEnabled']"), 'tunHomeToggle');
+check('sidebar duplicate profile card is removed', !/<section class="profile">/.test(indexHtml), 'no sidebar profile block');
+check('home nodes use table rows', appJs.includes('class="row home-row') && !appJs.includes('class="home-node'), 'home-row renderer');
 check('custom window drag is wired', appJs.includes('startDragging'), 'startDragging');
 
 const result = {

@@ -145,7 +145,15 @@ async function auditViewport(page, width, height) {
       const parent = el.closest('.quick').getBoundingClientRect();
       return visible(el) && (r.left < parent.left - 1 || r.right > parent.right + 1 || r.height > 36);
     }).map((el) => el.textContent.trim());
+    const sidebarWrappedRows = all('.status-card dl div').filter((el) => {
+      const dd = el.querySelector('dd');
+      const dt = el.querySelector('dt');
+      return visible(el) && ((dd && dd.scrollHeight > dd.clientHeight + 1) || (dt && dt.scrollHeight > dt.clientHeight + 1) || el.getBoundingClientRect().height > 27);
+    }).map((el) => el.textContent.trim());
     const metricIcons = all('.metric-icon').map((el) => el.getBoundingClientRect().width);
+    const homeRows = all('#homeNodeRows .row').filter(visible).length;
+    const tunHome = document.querySelector('#tunHomeToggle');
+    const tunHomeVisible = Boolean(tunHome && visible(tunHome));
     const navBox = box('.nav');
     const statusBox = box('.status-card');
     const sidebarOverlap = navBox && statusBox ? navBox.bottom > statusBox.top + 1 : false;
@@ -174,6 +182,12 @@ async function auditViewport(page, width, height) {
       visibleRows,
       tableOverflowX: tableEl ? tableEl.scrollWidth - tableEl.clientWidth : 0,
       maxMetricIcon: Math.max(...metricIcons),
+      brandFontSize: parseFloat(getComputedStyle(document.querySelector('.brand-name')).fontSize),
+      navButtonHeight: box('.nav button')?.height || 0,
+      ringWidth: box('.ring')?.width || 0,
+      tunHomeVisible,
+      homeRows,
+      sidebarWrappedRows,
       sidebarOverlap,
       hero: box('.hero'),
       quick: box('.quick'),
@@ -211,7 +225,8 @@ try {
   await page.send('Runtime.enable');
   const reports = [
     await auditViewport(page, 1280, 820),
-    await auditViewport(page, 1180, 700)
+    await auditViewport(page, 1180, 700),
+    await auditViewport(page, 1700, 900)
   ];
   const failures = [];
   for (const report of reports) {
@@ -220,12 +235,22 @@ try {
     if (report.visibleRows < 5) failures.push(`${report.width}x${report.height}: only ${report.visibleRows} node rows visible`);
     if (!report.settingsActive) failures.push(`${report.width}x${report.height}: settings page did not activate`);
     if (!report.tunToggleVisible) failures.push(`${report.width}x${report.height}: TUN toggle is not visible`);
+    if (!report.tunHomeVisible) failures.push(`${report.width}x${report.height}: home TUN toggle is not visible`);
+    if (report.homeRows < 5) failures.push(`${report.width}x${report.height}: only ${report.homeRows} home node rows visible`);
     if (report.maxMetricIcon > 24) failures.push(`${report.width}x${report.height}: metric icon width ${report.maxMetricIcon}px`);
     if (report.sidebarOverlap) failures.push(`${report.width}x${report.height}: sidebar navigation overlaps status card`);
+    if (report.sidebarWrappedRows.length) failures.push(`${report.width}x${report.height}: sidebar status rows wrap: ${report.sidebarWrappedRows.join(', ')}`);
     if (report.quickEscapes.length) failures.push(`${report.width}x${report.height}: quick buttons escape container: ${report.quickEscapes.join(', ')}`);
     if (report.badPanels.length) failures.push(`${report.width}x${report.height}: panels outside viewport: ${report.badPanels.join(', ')}`);
     const seriousTextOverflow = report.textOverflow.filter((text) => text && !text.includes('127.0.0.1'));
     if (seriousTextOverflow.length) failures.push(`${report.width}x${report.height}: text overflow: ${seriousTextOverflow.join(', ')}`);
+  }
+  const base = reports[0];
+  for (const report of reports.slice(1)) {
+    if (Math.abs(report.brandFontSize - base.brandFontSize) > 0.1) failures.push(`${report.width}x${report.height}: brand font scaled from ${base.brandFontSize}px to ${report.brandFontSize}px`);
+    if (Math.abs(report.maxMetricIcon - base.maxMetricIcon) > 0.1) failures.push(`${report.width}x${report.height}: metric icons scaled from ${base.maxMetricIcon}px to ${report.maxMetricIcon}px`);
+    if (Math.abs(report.navButtonHeight - base.navButtonHeight) > 4) failures.push(`${report.width}x${report.height}: nav height changed from ${base.navButtonHeight}px to ${report.navButtonHeight}px`);
+    if (report.width > 1380 && Math.abs(report.ringWidth - base.ringWidth) > 0.1) failures.push(`${report.width}x${report.height}: ring scaled from ${base.ringWidth}px to ${report.ringWidth}px`);
   }
   console.log(JSON.stringify({ ok: failures.length === 0, failures, reports }, null, 2));
   if (failures.length) process.exitCode = 2;

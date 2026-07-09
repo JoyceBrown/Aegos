@@ -119,13 +119,18 @@ function renderRows(items = []) {
     </div>
   `).join('');
   $('#homeNodeRows').innerHTML = rows.slice(0, 6).map(([region, name, host, delay, alive, active]) => `
-    <button class="home-node ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}">
-      <span class="node-badge">${escapeHtml(region)}</span>
-      <strong>${escapeHtml(name)}</strong>
-      <small>${escapeHtml(host)}</small>
-      <b>${Number(delay) >= 0 ? `${Math.round(delay)} ms` : '-'}</b>
-      <em>${alive ? '可用' : '不可用'}</em>
-    </button>
+    <div class="row home-row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button">
+      <span class="radio"></span>
+      <span class="star">\u2606</span>
+      <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
+      <span>${escapeHtml(host)}</span>
+      <span>${Number(delay) >= 0 ? `${Math.round(delay)} ms` : '-'}</span>
+      <span>0.0%</span>
+      <span class="load"><span class="bar"></span>38%</span>
+      <span>-</span>
+      <span class="available">${alive ? '\u53ef\u7528' : '\u4e0d\u53ef\u7528'}</span>
+      <span class="row-actions"><button data-node="${escapeHtml(name)}" aria-label="\u8fde\u63a5">\u25b6</button></span>
+    </div>
   `).join('');
 }
 
@@ -178,7 +183,7 @@ function renderStatus(status) {
   const running = Boolean(status.running && status.controller !== false);
   const modeText = status.mode === 'global' ? '全局代理' : status.mode === 'direct' ? '直连' : '智能分流';
 
-  $('.profile span').textContent = `v${status.appVersion || '0.4.0'}`;
+  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.0'}`;
   $('.ring strong').textContent = running ? '已连接' : '未连接';
   $('.ring').classList.toggle('offline', !running);
   $('#nodeName').textContent = activeProfile.name || selectedNode || '等待节点数据';
@@ -193,6 +198,8 @@ function renderStatus(status) {
   $('#tunState').textContent = settings.tunEnabled ? '已开启' : '未开启';
   $('#killState').textContent = settings.killSwitchEnabled ? '已开启' : '未开启';
   $('#proxyState').textContent = settings.systemProxy ? '已开启' : '未开启';
+  $('#tunHomeToggle').checked = Boolean(settings.tunEnabled);
+  $('#tunHomeState').textContent = settings.tunEnabled ? '已开启' : '未开启';
   $('#lanIpState').textContent = status.network?.lanIp || '-';
   $('#proxyPortState').textContent = status.network?.proxyEndpoint || '-';
   $('#outboundIpState').textContent = status.network?.outboundIp || '-';
@@ -218,7 +225,7 @@ async function refreshStatus() {
   } catch {
     renderStatus({
       running: false,
-      appVersion: '0.4.0',
+      appVersion: '0.5.0',
       mode: 'rule',
       traffic: { up: 0, down: 0 },
       logs: [],
@@ -407,6 +414,7 @@ $('#copyEndpointBtn').onclick = () => navigator.clipboard?.writeText($('#nodeHos
 [
   ['systemProxyToggle', 'systemProxy'],
   ['startProxyToggle', 'startWithSystemProxy'],
+  ['tunHomeToggle', 'tunEnabled'],
   ['tunToggle', 'tunEnabled'],
   ['dnsToggle', 'dnsHijackEnabled'],
   ['killToggle', 'killSwitchEnabled'],

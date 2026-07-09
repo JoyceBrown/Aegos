@@ -11,14 +11,9 @@
     <aside class="sidebar">
       <section class="brand drag-zone">
         <div class="brand-mark">A</div>
-        <strong>Aegos</strong>
-      </section>
-
-      <section class="profile">
-        <div class="profile-mark">A</div>
         <div>
-          <strong>Aegos</strong>
-          <span>v0.4.0</span>
+          <strong class="brand-name">Aegos</strong>
+          <span id="appVersionLabel" class="brand-version">v0.5.0</span>
         </div>
       </section>
 
@@ -75,6 +70,13 @@
             </div>
             <button id="connectBtn" class="primary">连接</button>
             <button id="refreshStatusBtn" class="ghost">刷新状态</button>
+            <label class="tun-home-toggle">
+              <span>
+                <strong>TUN &#27169;&#24335;</strong>
+                <small id="tunHomeState">&#26410;&#24320;&#21551;</small>
+              </span>
+              <input id="tunHomeToggle" type="checkbox" role="switch">
+            </label>
           </div>
 
           <div class="node-column">
