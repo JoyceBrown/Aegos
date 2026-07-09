@@ -126,37 +126,62 @@ async function auditViewport(page, width, height) {
       return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
     };
     const all = (selector) => [...document.querySelectorAll(selector)];
-    const overflowX = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth;
-    const textOverflow = all('button, .notice, h1, .metric-grid strong').filter((el) => el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent.trim());
+    const visible = (el) => {
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    };
+    const collectBase = () => {
+      const overflowX = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth;
+      const textOverflow = all('button, .notice, h1, .metric-grid strong, .switch-row b').filter((el) => visible(el) && el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent.trim());
+      const badPanels = all('.panel').filter((el) => visible(el) && (() => {
+        const r = el.getBoundingClientRect();
+        return r.right > window.innerWidth + 1 || r.bottom > window.innerHeight + 1;
+      })()).map((el) => el.className);
+      return { overflowX, textOverflow, badPanels };
+    };
+    const homeBase = collectBase();
     const quickEscapes = all('.quick-row button').filter((el) => {
       const r = el.getBoundingClientRect();
       const parent = el.closest('.quick').getBoundingClientRect();
-      return r.left < parent.left - 1 || r.right > parent.right + 1 || r.height > 36;
+      return visible(el) && (r.left < parent.left - 1 || r.right > parent.right + 1 || r.height > 36);
     }).map((el) => el.textContent.trim());
     const metricIcons = all('.metric-icon').map((el) => el.getBoundingClientRect().width);
+    const navBox = box('.nav');
+    const statusBox = box('.status-card');
+    const sidebarOverlap = navBox && statusBox ? navBox.bottom > statusBox.top + 1 : false;
+    document.querySelector('[data-page="nodes"]').click();
+    const nodeBase = collectBase();
     const table = document.querySelector('.node-table')?.getBoundingClientRect();
     const tableEl = document.querySelector('.node-table');
     const visibleRows = table ? all('#nodeRows .row').filter((row) => {
       const r = row.getBoundingClientRect();
       return r.bottom > table.top && r.top < table.bottom;
     }).length : 0;
-    const badPanels = all('.panel').filter((el) => {
-      const r = el.getBoundingClientRect();
-      return r.right > window.innerWidth + 1 || r.bottom > window.innerHeight + 1;
-    }).map((el) => el.className);
+    document.querySelector('[data-page="settings"]').click();
+    const settingsBase = collectBase();
+    const settingsPanel = document.querySelector('[data-page-panel="settings"]');
+    const tunToggle = document.querySelector('#tunToggle');
+    const settingsActive = settingsPanel?.classList.contains('active') || false;
+    const tunToggleVisible = Boolean(tunToggle && visible(tunToggle));
+    const settingsBox = box('[data-page-panel="settings"] .page-card');
+    document.querySelector('[data-page="home"]').click();
     return {
       width: window.innerWidth,
       height: window.innerHeight,
-      overflowX,
-      textOverflow,
+      overflowX: Math.max(homeBase.overflowX, nodeBase.overflowX, settingsBase.overflowX),
+      textOverflow: [...homeBase.textOverflow, ...nodeBase.textOverflow, ...settingsBase.textOverflow],
       quickEscapes,
       visibleRows,
       tableOverflowX: tableEl ? tableEl.scrollWidth - tableEl.clientWidth : 0,
       maxMetricIcon: Math.max(...metricIcons),
+      sidebarOverlap,
       hero: box('.hero'),
       quick: box('.quick'),
       nodes: box('.nodes'),
-      badPanels
+      settings: settingsBox,
+      settingsActive,
+      tunToggleVisible,
+      badPanels: [...homeBase.badPanels, ...nodeBase.badPanels, ...settingsBase.badPanels]
     };
   })()`);
 
@@ -193,7 +218,10 @@ try {
     if (report.overflowX > 1) failures.push(`${report.width}x${report.height}: horizontal overflow ${report.overflowX}px`);
     if (report.tableOverflowX > 1) failures.push(`${report.width}x${report.height}: node table horizontal overflow ${report.tableOverflowX}px`);
     if (report.visibleRows < 5) failures.push(`${report.width}x${report.height}: only ${report.visibleRows} node rows visible`);
+    if (!report.settingsActive) failures.push(`${report.width}x${report.height}: settings page did not activate`);
+    if (!report.tunToggleVisible) failures.push(`${report.width}x${report.height}: TUN toggle is not visible`);
     if (report.maxMetricIcon > 24) failures.push(`${report.width}x${report.height}: metric icon width ${report.maxMetricIcon}px`);
+    if (report.sidebarOverlap) failures.push(`${report.width}x${report.height}: sidebar navigation overlaps status card`);
     if (report.quickEscapes.length) failures.push(`${report.width}x${report.height}: quick buttons escape container: ${report.quickEscapes.join(', ')}`);
     if (report.badPanels.length) failures.push(`${report.width}x${report.height}: panels outside viewport: ${report.badPanels.join(', ')}`);
     const seriousTextOverflow = report.textOverflow.filter((text) => text && !text.includes('127.0.0.1'));
