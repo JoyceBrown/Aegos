@@ -653,12 +653,12 @@ impl CoreManager {
         }
         let running = self.process.is_some();
         let version = if running {
-            self.controller("GET", "/version", None, 1200).ok()
+            self.controller("GET", "/version", None, 450).ok()
         } else {
             None
         };
         let traffic = if running {
-            self.controller("GET", "/traffic", None, 900)
+            self.controller("GET", "/traffic", None, 450)
                 .unwrap_or_else(|_| self.last_traffic.clone())
         } else {
             json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 })
@@ -826,7 +826,7 @@ impl CoreManager {
 
     fn proxy_groups(&self) -> JsonValue {
         if self.process.is_some() {
-            if let Ok(data) = self.controller("GET", "/proxies", None, 4000) {
+            if let Ok(data) = self.controller("GET", "/proxies", None, 1200) {
                 if let Some(proxies) = data.get("proxies").and_then(|v| v.as_object()) {
                     let groups: Vec<JsonValue> = proxies
                         .values()
@@ -868,7 +868,7 @@ impl CoreManager {
     }
 
     fn connections(&self) -> JsonValue {
-        self.controller("GET", "/connections", None, 3000)
+        self.controller("GET", "/connections", None, 1500)
             .ok()
             .and_then(|data| data.get("connections").cloned())
             .unwrap_or_else(|| json!([]))

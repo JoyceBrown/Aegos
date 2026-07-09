@@ -23,6 +23,17 @@ let selectedNode = '';
 let startedAt = Date.now();
 let statusBusy = false;
 let nodeBusy = false;
+let lastStatusAt = 0;
+
+const regionNames = {
+  HK: '\u9999\u6e2f',
+  JP: '\u65e5\u672c',
+  SG: '\u65b0\u52a0\u5761',
+  TW: '\u53f0\u6e7e',
+  US: '\u7f8e\u56fd',
+  GB: '\u82f1\u56fd',
+  GL: '\u5168\u7403'
+};
 
 function $(selector) {
   return document.querySelector(selector);
@@ -77,6 +88,10 @@ function setNotice(message) {
   $('#protectionNotice').textContent = message;
 }
 
+function isPageActive(page) {
+  return document.querySelector(`[data-page-panel="${page}"]`)?.classList.contains('active');
+}
+
 function setPage(page) {
   const next = pageNames[page] ? page : 'home';
   $all('.nav button').forEach((button) => button.classList.toggle('active', button.dataset.page === next));
@@ -99,6 +114,13 @@ function renderRows(items = []) {
         item.name === selectedNode || item.name === latestGroup?.now
       ])
     : fallbackNodes.map((row, index) => [...row, -1, true, index === 0]);
+
+  const recommended = rows
+    .filter(([, , , delay, alive]) => alive && Number(delay) >= 0)
+    .sort((a, b) => Number(a[3]) - Number(b[3]))[0] || rows[0];
+  if (recommended) {
+    $('#bestNodeRegion').textContent = regionNames[recommended[0]] || recommended[0];
+  }
 
   $('#nodeRows').innerHTML = rows.map(([region, name, host, delay, alive, active]) => `
     <div class="row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="选择 ${escapeHtml(name)}">
@@ -183,11 +205,12 @@ function renderStatus(status) {
   const running = Boolean(status.running && status.controller !== false);
   const modeText = status.mode === 'global' ? '全局代理' : status.mode === 'direct' ? '直连' : '智能分流';
 
-  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.0'}`;
+  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.1'}`;
   $('.ring strong').textContent = running ? '已连接' : '未连接';
   $('.ring').classList.toggle('offline', !running);
   $('#nodeName').textContent = activeProfile.name || selectedNode || '等待节点数据';
-  $('#nodeHost').textContent = status.network?.proxyEndpoint || '-';
+  const nodeHost = $('#nodeHost');
+  if (nodeHost) nodeHost.textContent = status.network?.proxyEndpoint || '-';
   $('#nodeState').textContent = running ? '可用' : '待连接';
   $('#connectBtn').textContent = running ? '断开连接' : '连接';
   $('#modeLabel').textContent = modeText;
@@ -213,19 +236,22 @@ function renderStatus(status) {
   $('#sideUpRate').textContent = `↑ ${up}`;
   $('#sideDownRate').textContent = `↓ ${down}`;
   renderSettings(status);
-  renderProfiles();
-  renderLogs();
+  if (isPageActive('profiles')) renderProfiles();
+  if (isPageActive('logs')) renderLogs();
 }
 
-async function refreshStatus() {
+async function refreshStatus(force = false) {
   if (statusBusy) return;
+  const now = Date.now();
+  if (!force && now - lastStatusAt < 1800) return;
+  lastStatusAt = now;
   statusBusy = true;
   try {
     renderStatus(await invoke('app_status'));
   } catch {
     renderStatus({
       running: false,
-      appVersion: '0.5.0',
+      appVersion: '0.5.1',
       mode: 'rule',
       traffic: { up: 0, down: 0 },
       logs: [],
@@ -274,7 +300,7 @@ async function toggleCore() {
   try {
     if (latestStatus?.running) await invoke('stop_core');
     else await invoke('start_core');
-    await refreshStatus();
+    await refreshStatus(true);
     await refreshNodes();
   } catch (err) {
     setNotice(`操作失败：${err.message || err}`);
@@ -288,7 +314,7 @@ async function switchMode() {
   const next = current === 'rule' ? 'global' : current === 'global' ? 'direct' : 'rule';
   try {
     await invoke('set_mode', { mode: next });
-    await refreshStatus();
+    await refreshStatus(true);
   } catch (err) {
     setNotice(`切换模式失败：${err.message || err}`);
   }
@@ -315,10 +341,10 @@ async function updateSetting(key, value) {
   try {
     if (key === 'systemProxy') await invoke('set_system_proxy', { enable: Boolean(value) });
     else await invoke('update_setting', { key, value });
-    await refreshStatus();
+    await refreshStatus(true);
     setNotice('设置已更新。');
   } catch (err) {
-    await refreshStatus();
+    await refreshStatus(true);
     setNotice(`设置失败：${err.message || err}`);
   }
 }
@@ -352,15 +378,17 @@ async function runDiagnostics(showNotice = true) {
 }
 
 async function wireWindowControls() {
-  const appWindow = window.__TAURI__?.window?.getCurrentWindow?.();
+  const appWindow = window.__TAURI__?.window?.getCurrentWindow?.() || window.__TAURI__?.window?.appWindow;
   if (!appWindow) return;
   $('#minBtn').onclick = () => appWindow.minimize();
   $('#maxBtn').onclick = () => appWindow.toggleMaximize();
   $('#closeBtn').onclick = () => appWindow.close();
   $all('.drag-zone').forEach((zone) => {
-    zone.addEventListener('mousedown', (event) => {
+    zone.addEventListener('pointerdown', async (event) => {
       if (event.button !== 0 || event.target.closest('button, input, select, textarea')) return;
-      appWindow.startDragging?.();
+      try {
+        await appWindow.startDragging?.();
+      } catch {}
     });
   });
 }
@@ -376,21 +404,23 @@ $all('.nav button').forEach((button) => {
 });
 
 $('#connectBtn').onclick = toggleCore;
-$('#refreshStatusBtn').onclick = () => { refreshStatus(); refreshNodes(); };
+$('#refreshStatusBtn').onclick = () => { refreshStatus(true); refreshNodes(); };
 $('#refreshNodesBtn').onclick = refreshNodes;
 $('#modeBtn').onclick = switchMode;
 $('#quickModeBtn').onclick = switchMode;
 $('#quickDiagBtn').onclick = () => { setPage('diagnostics'); runDiagnostics(); };
-$('#quickIpBtn').onclick = () => refreshStatus();
+$('#quickIpBtn').onclick = () => refreshStatus(true);
 $('#quickTestBtn').onclick = () => { setPage('diagnostics'); runDiagnostics(); };
 $('#quickNodeBtn').onclick = () => setPage('nodes');
 $('#quickSettingsBtn').onclick = () => setPage('settings');
+$('#quickConnectionsBtn').onclick = () => setPage('connections');
+$('#quickProfilesBtn').onclick = () => setPage('profiles');
 $('#setBestBtn').onclick = () => setNotice(selectedNode ? `已设为常用优先：${selectedNode}` : '请先选择一个节点');
 $('#refreshConnectionsBtn').onclick = refreshConnections;
 $('#closeAllConnectionsBtn').onclick = async () => { await invoke('close_connections'); refreshConnections(); };
 $('#runDiagBtn').onclick = () => runDiagnostics();
-$('#clearLogsBtn').onclick = async () => { await invoke('clear_logs'); await refreshStatus(); };
-$('#restartCoreBtn').onclick = async () => { await invoke('restart_core'); await refreshStatus(); await refreshNodes(); };
+$('#clearLogsBtn').onclick = async () => { await invoke('clear_logs'); await refreshStatus(true); };
+$('#restartCoreBtn').onclick = async () => { await invoke('restart_core'); await refreshStatus(true); await refreshNodes(); };
 $('#savePortBtn').onclick = async () => {
   await updateSetting('mixedPort', Number($('#mixedPortInput').value || 7890));
   await updateSetting('controllerPort', Number($('#controllerPortInput').value || 19090));
@@ -403,13 +433,14 @@ $('#addProfileBtn').onclick = async () => {
   try {
     await invoke('add_profile_url', { url });
     $('#profileUrlInput').value = '';
-    await refreshStatus();
+    await refreshStatus(true);
     setNotice('订阅已导入。');
   } catch (err) {
     setNotice(`订阅导入失败：${err.message || err}`);
   }
 };
-$('#copyEndpointBtn').onclick = () => navigator.clipboard?.writeText($('#nodeHost').textContent || '');
+const copyEndpointBtn = $('#copyEndpointBtn');
+if (copyEndpointBtn) copyEndpointBtn.onclick = () => navigator.clipboard?.writeText($('#nodeHost')?.textContent || '');
 
 [
   ['systemProxyToggle', 'systemProxy'],
@@ -466,26 +497,26 @@ document.body.addEventListener('click', async (event) => {
   const profileSwitch = event.target.closest('[data-profile-switch]')?.dataset.profileSwitch;
   if (profileSwitch) {
     await invoke('set_active_profile', { id: profileSwitch });
-    await refreshStatus();
+    await refreshStatus(true);
     return;
   }
   const profileUpdate = event.target.closest('[data-profile-update]')?.dataset.profileUpdate;
   if (profileUpdate) {
     await invoke('update_profile', { id: profileUpdate });
-    await refreshStatus();
+    await refreshStatus(true);
     return;
   }
   const profileRemove = event.target.closest('[data-profile-remove]')?.dataset.profileRemove;
   if (profileRemove) {
     await invoke('remove_profile', { id: profileRemove });
-    await refreshStatus();
+    await refreshStatus(true);
   }
 });
 
 renderRows();
 wireWindowControls();
-refreshStatus();
+refreshStatus(true);
 refreshNodes();
 tick();
 setInterval(tick, 1000);
-setInterval(refreshStatus, 5000);
+setInterval(refreshStatus, 8000);

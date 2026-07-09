@@ -55,6 +55,10 @@ check('TUN switch exists in settings UI', indexHtml.includes('id="tunToggle"') &
 check('TUN switch exists on home UI', indexHtml.includes('id="tunHomeToggle"') && appJs.includes("['tunHomeToggle', 'tunEnabled']"), 'tunHomeToggle');
 check('sidebar duplicate profile card is removed', !/<section class="profile">/.test(indexHtml), 'no sidebar profile block');
 check('home nodes use table rows', appJs.includes('class="row home-row') && !appJs.includes('class="home-node'), 'home-row renderer');
+check('home endpoint line is removed', !indexHtml.includes('id="nodeHost"'), 'no nodeHost line');
+check('home drag regions are declared', (indexHtml.match(/data-tauri-drag-region/g) || []).length >= 2, 'titlebar and brand drag regions');
+check('quick actions have eight buttons', (indexHtml.match(/id="quick[A-Za-z]+Btn"/g) || []).length >= 8 && indexHtml.includes('id="quickConnectionsBtn"') && indexHtml.includes('id="quickProfilesBtn"'), '8 quick actions');
+check('region filters live with home node table', indexHtml.includes('class="region-row"') && indexHtml.indexOf('class="region-row"') > indexHtml.indexOf('class="home-nodes'), 'region-row in home nodes');
 check('custom window drag is wired', appJs.includes('startDragging'), 'startDragging');
 
 const result = {

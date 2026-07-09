@@ -9,11 +9,11 @@
 <body>
   <main class="shell">
     <aside class="sidebar">
-      <section class="brand drag-zone">
+      <section class="brand drag-zone" data-tauri-drag-region>
         <div class="brand-mark">A</div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v0.5.0</span>
+          <span id="appVersionLabel" class="brand-version">v0.5.1</span>
         </div>
       </section>
 
@@ -51,7 +51,7 @@
     </aside>
 
     <section class="workspace">
-      <header class="titlebar drag-zone">
+      <header class="titlebar drag-zone" data-tauri-drag-region>
         <div class="titlebar-title" id="pageTitle">首页</div>
         <div class="window-actions">
           <button id="minBtn" aria-label="最小化">−</button>
@@ -88,7 +88,6 @@
                   <h1 id="nodeName">等待节点数据</h1>
                   <b id="nodeState">待连接</b>
                 </div>
-                <p><span id="nodeHost">127.0.0.1:7890</span><button class="copy" id="copyEndpointBtn" aria-label="复制">⧉</button></p>
               </div>
               <button id="modeBtn" class="mode-pill">当前模式 <strong id="modeLabel">智能分流</strong><span>›</span></button>
             </div>
@@ -118,7 +117,7 @@
           <div class="best-node">
             <span class="flag">HK</span>
             <div>
-              <h2>香港</h2>
+              <h2>&#25512;&#33616;&#33410;&#28857; <span id="bestNodeRegion">&#39321;&#28207;</span></h2>
               <p>延迟最低 · 稳定性高</p>
             </div>
             <div class="quick-actions">
@@ -126,16 +125,8 @@
               <button id="setBestBtn" class="soft-blue">设为最优</button>
             </div>
           </div>
-          <div class="quick-row">
-            <strong>常用地区</strong>
-            <button data-region="HK"><b>HK</b>香港</button>
-            <button data-region="JP"><b>JP</b>日本</button>
-            <button data-region="SG"><b>SG</b>新加坡</button>
-            <button data-region="TW"><b>TW</b>台湾</button>
-            <button data-region="US"><b>US</b>美国</button>
-            <button data-region="GB"><b>GB</b>英国</button>
-          </div>
-          <div class="quick-row">
+
+          <div class="quick-row action-row">
             <strong>快捷操作</strong>
             <button id="quickTestBtn"><span>✓</span>一键测速</button>
             <button id="quickNodeBtn"><span>◎</span>节点选择</button>
@@ -143,6 +134,8 @@
             <button id="quickIpBtn"><span>IP</span>刷新落地 IP</button>
             <button id="quickModeBtn"><span>⇄</span>切换模式</button>
             <button id="quickSettingsBtn"><span>⚙</span>高级设置</button>
+            <button id="quickConnectionsBtn"><span>&#8801;</span>&#36830;&#25509;&#31649;&#29702;</button>
+            <button id="quickProfilesBtn"><span>&#9636;</span>&#35746;&#38405;&#31649;&#29702;</button>
           </div>
         </section>
 
@@ -151,6 +144,15 @@
             <h2>常用节点</h2>
             <button data-page-jump="nodes">全部节点</button>
           </header>
+          <div class="region-row">
+            <strong>&#24120;&#29992;&#22320;&#21306;</strong>
+            <button data-region="HK"><b>HK</b>&#39321;&#28207;</button>
+            <button data-region="JP"><b>JP</b>&#26085;&#26412;</button>
+            <button data-region="SG"><b>SG</b>&#26032;&#21152;&#22369;</button>
+            <button data-region="TW"><b>TW</b>&#21488;&#28286;</button>
+            <button data-region="US"><b>US</b>&#32654;&#22269;</button>
+            <button data-region="GB"><b>GB</b>&#33521;&#22269;</button>
+          </div>
           <div id="homeNodeRows" class="home-node-list"></div>
         </section>
       </section>

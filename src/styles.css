@@ -1426,3 +1426,149 @@ dd {
     min-height: 34px;
   }
 }
+
+/* 0.5.1 home density pass. */
+.hero {
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.connect-column {
+  align-content: center;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.connect-column .primary,
+.connect-column .ghost {
+  width: 112px;
+}
+
+.tun-home-toggle {
+  width: 138px;
+}
+
+.hero-head {
+  align-items: start;
+}
+
+.hero-head > div {
+  min-width: 0;
+}
+
+.hero-head p {
+  display: none;
+}
+
+.metric-grid.bottom {
+  grid-template-columns: minmax(160px, 1.2fr) minmax(118px, .88fr) minmax(118px, .88fr) 100px 100px 82px;
+}
+
+.metric-grid.bottom article:nth-child(4),
+.metric-grid.bottom article:nth-child(5) {
+  max-width: 108px;
+}
+
+.quick {
+  grid-template-rows: 42px 66px;
+  gap: 7px;
+}
+
+.action-row {
+  grid-template-columns: 72px repeat(4, minmax(0, 1fr));
+  grid-template-rows: repeat(2, 30px);
+  align-items: stretch;
+}
+
+.action-row strong {
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
+.action-row button {
+  min-height: 30px;
+}
+
+.home-nodes {
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 7px;
+}
+
+.mini-head {
+  margin-bottom: 0;
+}
+
+.region-row {
+  display: grid;
+  grid-template-columns: 72px repeat(6, minmax(0, 1fr));
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.region-row strong,
+.region-row button {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.region-row button {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .78);
+  box-shadow: inset 0 0 0 1px rgba(130, 154, 187, .10), 0 8px 18px rgba(65, 91, 125, .05);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.region-row b {
+  flex: 0 0 auto;
+  min-width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  border-radius: 7px;
+  background: linear-gradient(135deg, #6fd4df, #7d95ff);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+@media (max-width: 1380px) {
+  .hero {
+    grid-template-columns: 150px minmax(0, 1fr);
+  }
+
+  .metric-grid.bottom {
+    grid-template-columns: minmax(158px, 1.18fr) minmax(108px, .8fr) minmax(112px, .82fr) 92px 92px 70px;
+  }
+}
+
+@media (max-height: 760px) {
+  .connect-column {
+    gap: 8px;
+  }
+
+  .tun-home-toggle {
+    min-height: 32px;
+  }
+
+  .quick {
+    grid-template-rows: 38px 62px;
+  }
+
+  .action-row {
+    grid-template-rows: repeat(2, 28px);
+  }
+
+  .action-row button,
+  .region-row button {
+    min-height: 28px;
+  }
+}
