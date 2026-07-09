@@ -13,7 +13,7 @@
         <div class="brand-mark">A</div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v0.5.4</span>
+          <span id="appVersionLabel" class="brand-version">v0.5.5</span>
         </div>
       </section>
 
@@ -69,7 +69,7 @@
               <small id="sessionClock">00:00:00</small>
             </div>
             <button id="connectBtn" class="primary">连接</button>
-            <button id="refreshStatusBtn" class="ghost">刷新状态</button>
+            <button id="refreshStatusBtn" class="ghost">同步状态</button>
             <label class="tun-home-toggle">
               <span>
                 <strong>TUN &#27169;&#24335;</strong>
@@ -89,7 +89,14 @@
                   <b id="nodeState">待连接</b>
                 </div>
               </div>
-              <button id="modeBtn" class="mode-pill">当前模式 <strong id="modeLabel">智能分流</strong><span>›</span></button>
+              <div class="mode-box">
+                <button id="modeBtn" class="mode-pill">当前模式 <strong id="modeLabel">智能分流</strong><span>›</span></button>
+                <div id="modeMenu" class="mode-menu hidden">
+                  <button data-mode-option="rule"><b>智能分流</b><small>按规则选择代理或直连</small></button>
+                  <button data-mode-option="global"><b>全局代理</b><small>所有流量走当前节点</small></button>
+                  <button data-mode-option="direct"><b>直连模式</b><small>临时关闭代理转发</small></button>
+                </div>
+              </div>
             </div>
 
             <div id="protectionNotice" class="notice">未接管：内核未运行，当前没有流量接管。</div>
@@ -115,11 +122,8 @@
 
         <section class="quick panel">
           <div class="best-node">
-            <span class="flag">HK</span>
-            <div>
-              <h2>&#25512;&#33616;&#33410;&#28857; <span id="bestNodeRegion">&#39321;&#28207;</span></h2>
-              <p>延迟最低 · 稳定性高</p>
-            </div>
+            <strong class="section-label">推荐节点</strong>
+            <div id="bestNodeList" class="best-node-list"></div>
             <div class="quick-actions">
               <button id="refreshNodesBtn" class="icon-button" aria-label="刷新节点">↻</button>
               <button id="setBestBtn" class="soft-blue">设为最优</button>
@@ -157,13 +161,13 @@
           <header class="table-head">
             <h2>节点</h2>
             <div class="tabs">
-              <button class="active">全部</button>
-              <button>收藏</button>
-              <button>最近使用</button>
-              <button>低延迟</button>
-              <button>亚洲</button>
-              <button>欧洲</button>
-              <button>北美</button>
+              <button class="active" data-node-filter="all">全部</button>
+              <button data-node-filter="favorite">收藏</button>
+              <button data-node-filter="recent">最近使用</button>
+              <button data-node-filter="low">低延迟</button>
+              <button data-node-filter="asia">亚洲</button>
+              <button data-node-filter="europe">欧洲</button>
+              <button data-node-filter="north-america">北美</button>
             </div>
             <div class="table-actions">
               <button id="batchTestBtn">批量测速</button>

@@ -25,6 +25,8 @@ let startedAt = Date.now();
 let statusBusy = false;
 let nodeBusy = false;
 let lastStatusAt = 0;
+let homeRegionFilter = '';
+let nodePageFilter = 'all';
 
 const regionNames = {
   HK: '\u9999\u6e2f',
@@ -48,6 +50,12 @@ function protocolLabel(value = '') {
   if (text.includes('wireguard')) return 'WireGuard';
   if (text.includes('direct')) return 'DIRECT';
   return value ? String(value) : 'DIRECT';
+}
+
+function formatProxyPort(endpoint = '') {
+  const text = String(endpoint || '').trim();
+  const match = text.match(/:(\d{2,5})$/);
+  return match ? match[1] : (text || '-');
 }
 
 function $(selector) {
@@ -99,6 +107,58 @@ function inferRegion(name = '') {
   return 'GL';
 }
 
+function regionLabel(region) {
+  return regionNames[region] || region || '全球';
+}
+
+function normalizeRows(items = []) {
+  return items.length
+    ? items.map((item) => [
+        inferRegion(item.name),
+        item.name,
+        item.server || item.name,
+        item.delay ?? -1,
+        item.alive !== false,
+        item.name === selectedNode || item.name === latestGroup?.now,
+        item.type || item.protocol || 'unknown'
+      ])
+    : fallbackNodes.map((row, index) => [...row, -1, true, index === 0, 'direct']);
+}
+
+function filterRows(rows, filter) {
+  if (filter === 'low') {
+    return [...rows]
+      .filter(([, , , delay, alive]) => alive && Number(delay) >= 0)
+      .sort((a, b) => Number(a[3]) - Number(b[3]));
+  }
+  if (filter === 'asia') return rows.filter(([region]) => ['HK', 'JP', 'SG', 'TW'].includes(region));
+  if (filter === 'europe') return rows.filter(([region]) => ['GB'].includes(region));
+  if (filter === 'north-america') return rows.filter(([region]) => ['US'].includes(region));
+  if (filter === 'favorite' || filter === 'recent') return rows.filter((row) => row[5]);
+  return rows;
+}
+
+function renderNodeRow([region, name, host, delay, alive, active]) {
+  return `
+    <div class="row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="选择 ${escapeHtml(name)}">
+      <span class="radio"></span>
+      <span class="star">☆</span>
+      <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
+      <span>${escapeHtml(host)}</span>
+      <span>${Number(delay) >= 0 ? `${Math.round(delay)} ms` : '-'}</span>
+      <span>0.0%</span>
+      <span class="load"><span class="bar"></span>38%</span>
+      <span>-</span>
+      <span class="available">${alive ? '可用' : '不可用'}</span>
+      <span class="row-actions">
+        <button data-node="${escapeHtml(name)}" aria-label="连接">▷</button>
+        <button aria-label="编辑">✎</button>
+        <button aria-label="更多">⋯</button>
+      </span>
+    </div>
+  `;
+}
+
 function setNotice(message) {
   $('#protectionNotice').textContent = message;
 }
@@ -144,67 +204,38 @@ function setPage(page) {
 }
 
 function renderRows(items = []) {
-  const rows = items.length
-    ? items.map((item) => [
-        inferRegion(item.name),
-        item.name,
-        item.server || item.name,
-        item.delay ?? -1,
-        item.alive !== false,
-        item.name === selectedNode || item.name === latestGroup?.now,
-        item.type || item.protocol || 'unknown'
-      ])
-    : fallbackNodes.map((row, index) => [...row, -1, true, index === 0, 'direct']);
-
+  const rows = normalizeRows(items);
   const recommended = rows
     .filter(([, , , delay, alive]) => alive && Number(delay) >= 0)
-    .sort((a, b) => Number(a[3]) - Number(b[3]))[0] || rows[0];
-  if (recommended) {
-    $('#bestNodeRegion').textContent = regionNames[recommended[0]] || recommended[0];
-  }
-  const activeRow = rows.find((row) => row[5]) || recommended;
+    .sort((a, b) => Number(a[3]) - Number(b[3]))
+    .slice(0, 3);
+  const bestRows = recommended.length ? recommended : rows.slice(0, 3);
+  $('#bestNodeList').innerHTML = bestRows.map(([region, name, , delay]) => `
+    <button class="best-chip" data-node="${escapeHtml(name)}">
+      <span class="flag">${escapeHtml(region)}</span>
+      <b>${escapeHtml(regionLabel(region))}</b>
+      <small>${Number(delay) >= 0 ? `${Math.round(delay)} ms` : '待测速'} · 稳定性高</small>
+    </button>
+  `).join('');
+
+  const activeRow = rows.find((row) => row[5]) || bestRows[0];
   currentProtocol = protocolLabel(activeRow?.[6] || 'direct');
   $('#protocolState').textContent = currentProtocol;
   $('#protocolMetric').textContent = currentProtocol;
 
-  $('#nodeRows').innerHTML = rows.map(([region, name, host, delay, alive, active, protocol]) => `
-    <div class="row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="选择 ${escapeHtml(name)}">
-      <span class="radio"></span>
-      <span class="star">☆</span>
-      <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
-      <span>${escapeHtml(host)}</span>
-      <span>${Number(delay) >= 0 ? `${Math.round(delay)} ms` : '-'}</span>
-      <span>0.0%</span>
-      <span class="load"><span class="bar"></span>38%</span>
-      <span>-</span>
-      <span class="available">${alive ? '可用' : '不可用'}</span>
-      <span class="row-actions">
-        <button data-node="${escapeHtml(name)}" aria-label="连接">▷</button>
-        <button aria-label="编辑">✎</button>
-        <button aria-label="更多">⋯</button>
-      </span>
-    </div>
-  `).join('');
-  $('#homeNodeRows').innerHTML = rows.slice(0, 6).map(([region, name, host, delay, alive, active, protocol]) => `
-    <div class="row home-row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button">
-      <span class="radio"></span>
-      <span class="star">\u2606</span>
-      <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
-      <span>${escapeHtml(host)}</span>
-      <span>${Number(delay) >= 0 ? `${Math.round(delay)} ms` : '-'}</span>
-      <span>0.0%</span>
-      <span class="load"><span class="bar"></span>38%</span>
-      <span>-</span>
-      <span class="available">${alive ? '\u53ef\u7528' : '\u4e0d\u53ef\u7528'}</span>
-      <span class="row-actions"><button data-node="${escapeHtml(name)}" aria-label="\u8fde\u63a5">\u25b6</button></span>
-    </div>
-  `).join('');
+  const nodeRows = filterRows(rows, nodePageFilter);
+  $('#nodeRows').innerHTML = (nodeRows.length ? nodeRows : rows).map(renderNodeRow).join('');
+
+  const homeRows = homeRegionFilter ? rows.filter(([region]) => region === homeRegionFilter) : rows.slice(0, 6);
+  $('#homeNodeRows').innerHTML = (homeRows.length ? homeRows : rows.slice(0, 6))
+    .map((row) => renderNodeRow(row).replace('class="row ', 'class="row home-row '))
+    .join('');
 }
 
 function renderProfiles() {
   const profiles = latestStatus?.settings?.profiles || [];
   $('#profileRows').innerHTML = profiles.map((profile) => `
-    <article class="list-card ${profile.id === latestStatus?.settings?.activeProfileId ? 'active' : ''}">
+    <article class="list-card ${profile.id === latestStatus?.settings?.activeProfileId ? 'active' : ''}" data-profile-row="${escapeHtml(profile.id)}" tabindex="0" role="button">
       <div><b>${escapeHtml(profile.name)}</b><small>${escapeHtml(profile.profile_type)} · ${escapeHtml(profile.updated_at || '-')}</small></div>
       <div class="card-actions">
         <button data-profile-switch="${escapeHtml(profile.id)}">启用</button>
@@ -250,7 +281,7 @@ function renderStatus(status) {
   const running = Boolean(status.running && status.controller !== false);
   const modeText = status.mode === 'global' ? '全局代理' : status.mode === 'direct' ? '直连' : '智能分流';
 
-  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.4'}`;
+  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.5'}`;
   $('.ring strong').textContent = running ? '已连接' : '未连接';
   $('.ring').classList.toggle('offline', !running);
   $('#nodeName').textContent = activeProfile.name || selectedNode || '等待节点数据';
@@ -272,9 +303,9 @@ function renderStatus(status) {
   $('#tunHomeToggle').checked = Boolean(settings.tunEnabled);
   $('#tunHomeState').textContent = settings.tunEnabled ? '已开启' : '未开启';
   $('#lanIpState').textContent = status.network?.lanIp || '-';
-  $('#proxyPortState').textContent = status.network?.proxyEndpoint || '-';
+  $('#proxyPortState').textContent = formatProxyPort(status.network?.proxyEndpoint);
   $('#outboundIpState').textContent = status.network?.outboundIp || '-';
-  $('#proxyMetric').textContent = status.network?.proxyEndpoint || '-';
+  $('#proxyMetric').textContent = formatProxyPort(status.network?.proxyEndpoint);
   $('#outboundMetric').textContent = status.network?.outboundIp || '-';
 
   const up = formatRate(traffic.up);
@@ -299,7 +330,7 @@ async function refreshStatus(force = false) {
   } catch {
     renderStatus({
       running: false,
-      appVersion: '0.5.4',
+      appVersion: '0.5.5',
       mode: 'rule',
       traffic: { up: 0, down: 0 },
       logs: [],
@@ -389,11 +420,14 @@ async function toggleCore() {
   }).catch((err) => setNotice(`操作失败：${err.message || err}`));
 }
 
-async function switchMode() {
-  const current = latestStatus?.mode || 'rule';
-  const next = current === 'rule' ? 'global' : current === 'global' ? 'direct' : 'rule';
+function toggleModeMenu() {
+  $('#modeMenu').classList.toggle('hidden');
+}
+
+async function applyMode(mode) {
   try {
-    await invoke('set_mode', { mode: next });
+    $('#modeMenu').classList.add('hidden');
+    await invoke('set_mode', { mode });
     await refreshStatus(true);
   } catch (err) {
     setNotice(`切换模式失败：${err.message || err}`);
@@ -483,10 +517,10 @@ $all('.nav button').forEach((button) => {
 });
 
 $('#connectBtn').onclick = toggleCore;
-$('#refreshStatusBtn').onclick = () => { refreshStatus(true); refreshNodes(); };
+$('#refreshStatusBtn').onclick = async () => { await refreshStatus(true); await refreshNodes(); setNotice('已同步核心状态和节点列表。'); };
 $('#refreshNodesBtn').onclick = refreshNodes;
-$('#modeBtn').onclick = switchMode;
-$('#quickModeBtn').onclick = switchMode;
+$('#modeBtn').onclick = toggleModeMenu;
+$('#quickModeBtn').onclick = toggleModeMenu;
 $('#quickIpBtn').onclick = () => refreshStatus(true);
 $('#quickTestBtn').onclick = (event) => runButtonAction(event.currentTarget, '测速中...', testNodes);
 $('#quickUpdateSubBtn').onclick = (event) => runButtonAction(event.currentTarget, '更新中...', updateActiveProfile);
@@ -545,10 +579,23 @@ if (copyEndpointBtn) copyEndpointBtn.onclick = () => navigator.clipboard?.writeT
 
 $all('[data-region]').forEach((button) => {
   button.onclick = () => {
-    selectedNode = button.dataset.region;
-    setPage('nodes');
-    setNotice(`已筛选地区：${button.textContent.trim()}`);
+    homeRegionFilter = homeRegionFilter === button.dataset.region ? '' : button.dataset.region;
+    $all('[data-region]').forEach((item) => item.classList.toggle('active', item.dataset.region === homeRegionFilter));
+    renderRows(latestGroup?.items || []);
+    setNotice(homeRegionFilter ? `已在首页筛选地区：${button.textContent.trim()}` : '已取消地区筛选。');
   };
+});
+
+$all('[data-node-filter]').forEach((button) => {
+  button.onclick = () => {
+    nodePageFilter = button.dataset.nodeFilter || 'all';
+    $all('[data-node-filter]').forEach((item) => item.classList.toggle('active', item === button));
+    renderRows(latestGroup?.items || []);
+  };
+});
+
+$all('[data-mode-option]').forEach((button) => {
+  button.onclick = () => applyMode(button.dataset.modeOption);
 });
 
 $all('[data-page-jump]').forEach((button) => {
@@ -567,6 +614,12 @@ $('#homeNodeRows').addEventListener('click', (event) => {
   selectNode(row.dataset.node);
 });
 
+$('#bestNodeList').addEventListener('click', (event) => {
+  const item = event.target.closest('[data-node]');
+  if (!item) return;
+  selectNode(item.dataset.node);
+});
+
 $('#nodeRows').addEventListener('keydown', (event) => {
   if (event.key !== 'Enter' && event.key !== ' ') return;
   const row = event.target.closest('.row[data-node]');
@@ -577,6 +630,9 @@ $('#nodeRows').addEventListener('keydown', (event) => {
 
 document.body.addEventListener('click', async (event) => {
   try {
+    if (!event.target.closest('.mode-box')) {
+      $('#modeMenu')?.classList.add('hidden');
+    }
     const closeId = event.target.closest('[data-close-connection]')?.dataset.closeConnection;
     if (closeId) {
       await invoke('close_connection', { id: closeId });
@@ -584,9 +640,11 @@ document.body.addEventListener('click', async (event) => {
       return;
     }
     const profileSwitch = event.target.closest('[data-profile-switch]')?.dataset.profileSwitch;
-    if (profileSwitch) {
+    const profileRow = event.target.closest('[data-profile-row]')?.dataset.profileRow;
+    const profileTarget = profileSwitch || (event.target.closest('.card-actions') ? '' : profileRow);
+    if (profileTarget) {
       setNotice('正在切换订阅并应用配置...');
-      await invoke('set_active_profile', { id: profileSwitch });
+      await invoke('set_active_profile', { id: profileTarget });
       await refreshStatus(true);
       await refreshNodes();
       renderProfiles();

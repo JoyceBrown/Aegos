@@ -1571,3 +1571,151 @@ dd {
     min-height: 28px;
   }
 }
+
+/* 0.5.5 interaction and alignment pass. */
+.mode-box {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.mode-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 188px;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(130, 154, 187, .16);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .96);
+  box-shadow: 0 14px 32px rgba(65, 91, 125, .14);
+}
+
+.mode-menu button {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  text-align: left;
+  border-radius: 9px;
+  background: transparent;
+}
+
+.mode-menu button:hover {
+  background: #f3f8ff;
+}
+
+.mode-menu b,
+.mode-menu small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode-menu small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.metric-grid.bottom {
+  grid-template-columns: repeat(5, minmax(0, 1fr)) 78px;
+}
+
+.quick {
+  grid-template-rows: 42px 66px;
+}
+
+.best-node {
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+}
+
+.section-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 850;
+}
+
+.best-node-list {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.best-chip {
+  min-width: 0;
+  height: 34px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, .65fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .78);
+  box-shadow: inset 0 0 0 1px rgba(130, 154, 187, .10), 0 8px 18px rgba(65, 91, 125, .05);
+  text-align: left;
+}
+
+.best-chip .flag {
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+  font-size: 11px;
+}
+
+.best-chip b,
+.best-chip small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.best-chip b {
+  font-size: 12px;
+}
+
+.best-chip small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.region-row button.active,
+.tabs button.active {
+  color: var(--blue);
+  background: #fff;
+  box-shadow: 0 8px 20px rgba(65, 91, 125, .07), inset 0 0 0 1px rgba(54, 140, 255, .14);
+}
+
+.list-card[data-profile-row] {
+  cursor: pointer;
+}
+
+.list-card[data-profile-row]:hover {
+  border-color: rgba(54, 140, 255, .26);
+  background: #f7fbff;
+}
+
+@media (max-width: 1380px) {
+  .metric-grid.bottom {
+    grid-template-columns: repeat(5, minmax(0, 1fr)) 66px;
+  }
+
+  .best-node-list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .best-chip {
+    grid-template-columns: 26px minmax(0, 1fr);
+  }
+
+  .best-chip small {
+    display: none;
+  }
+}

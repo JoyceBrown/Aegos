@@ -115,12 +115,15 @@ try {
           now: 'HK 01',
           items: [
             { name: 'HK 01', server: 'hk.example', type: 'tuic', alive: true, delay: 33 },
-            { name: 'JP 01', server: 'jp.example', type: 'trojan', alive: true, delay: 55 }
+            { name: 'HK 02', server: 'hk2.example', type: 'trojan', alive: true, delay: 42 },
+            { name: 'JP 01', server: 'jp.example', type: 'trojan', alive: true, delay: 55 },
+            { name: 'SG 01', server: 'sg.example', type: 'ss', alive: true, delay: 66 },
+            { name: 'US 01', server: 'us.example', type: 'vless', alive: true, delay: 120 }
           ]
         }];
         const status = () => ({
           product: 'Aegos',
-          appVersion: '0.5.4',
+          appVersion: '0.5.5',
           running: state.running,
           controller: state.running,
           mode: state.mode,
@@ -183,7 +186,15 @@ try {
     await click('#quickTestBtn');
     await click('#quickProxyBtn');
     await click('#quickTunBtn');
+    await click('[data-region="HK"]');
+    const hkRows = [...document.querySelectorAll('#homeNodeRows .row[data-node]')].map((row) => row.dataset.node);
+    if (!hkRows.length || hkRows.some((name) => !name.includes('HK'))) throw new Error('home region filter did not stay on home page');
+    await click('[data-region="HK"]');
+    await click('#quickModeBtn');
+    await click('[data-mode-option="global"]');
     await click('[data-page="nodes"]');
+    await click('[data-node-filter="low"]');
+    if (!document.querySelector('[data-node-filter="low"]').classList.contains('active')) throw new Error('node filter tab did not become active');
     await click('#batchTestBtn');
     document.querySelector('#nodeSearch').value = 'HK';
     document.querySelector('#nodeSearch').dispatchEvent(new Event('input', { bubbles: true }));
@@ -192,7 +203,7 @@ try {
     await click('#refreshConnectionsBtn');
     await click('#closeAllConnectionsBtn');
     await click('[data-page="profiles"]');
-    await click('[data-profile-switch="direct"]');
+    await click('[data-profile-row="direct"]');
     await click('[data-profile-update="url-test"]');
     await click('[data-page="diagnostics"]');
     await click('#runDiagBtn');
