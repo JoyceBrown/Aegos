@@ -789,6 +789,21 @@ impl CoreManager {
         self.save_settings()
     }
 
+    fn reap_exited_core(&mut self) -> Option<String> {
+        let child = self.process.as_mut()?;
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                self.process = None;
+                Some(format!("mihomo exited before ready: {status}"))
+            }
+            Ok(None) => None,
+            Err(err) => {
+                self.process = None;
+                Some(format!("mihomo status check failed: {err}"))
+            }
+        }
+    }
+
     fn start(&mut self) -> Result<JsonValue, String> {
         if self.process.is_some() {
             return Ok(json!({ "ok": true, "message": "Core already running" }));
@@ -850,7 +865,9 @@ impl CoreManager {
         self.process = Some(child);
         self.wait_for_controller()?;
         if self.settings.start_with_system_proxy || self.settings.system_proxy {
-            self.set_system_proxy(true)?;
+            if let Err(err) = self.set_system_proxy(true) {
+                self.add_log(format!("System proxy enable failed after core start: {err}"), "warn");
+            }
         }
         Ok(json!({ "ok": true }))
     }
@@ -865,14 +882,18 @@ impl CoreManager {
         Ok(json!({ "ok": true }))
     }
 
-    fn wait_for_controller(&self) -> Result<(), String> {
-        for _ in 0..32 {
-            if self.controller("GET", "/version", None, 1000).is_ok() {
+    fn wait_for_controller(&mut self) -> Result<(), String> {
+        for _ in 0..24 {
+            if let Some(reason) = self.reap_exited_core() {
+                self.add_log(&reason, "error");
+                return Err(reason);
+            }
+            if self.controller("GET", "/version", None, 300).is_ok() {
                 return Ok(());
             }
             thread::sleep(Duration::from_millis(250));
         }
-        Err("mihomo 控制接口未在 8 秒内就绪".to_string())
+        Err("mihomo 控制接口未在 6 秒内就绪，请查看日志中的核心错误。".to_string())
     }
 
     fn controller(
@@ -934,19 +955,17 @@ impl CoreManager {
     }
 
     fn status(&mut self) -> JsonValue {
-        if let Some(child) = self.process.as_mut() {
-            if matches!(child.try_wait(), Ok(Some(_))) {
-                self.process = None;
-            }
+        if let Some(reason) = self.reap_exited_core() {
+            self.add_log(reason, "warn");
         }
         let running = self.process.is_some();
         let version = if running {
-            self.controller("GET", "/version", None, 450).ok()
+            self.controller("GET", "/version", None, 300).ok()
         } else {
             None
         };
         let traffic = if running {
-            self.traffic_snapshot(650)
+            self.traffic_snapshot(450)
                 .unwrap_or_else(|_| self.last_traffic.clone())
         } else {
             json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 })
@@ -1183,13 +1202,13 @@ impl CoreManager {
         if self.process.is_some() {
             if let Some(group) = self.proxy_groups().as_array().and_then(|groups| groups.first()).cloned() {
                 if let Some(items) = group.get("items").and_then(|v| v.as_array()) {
-                    for item in items {
+                    for item in items.iter().take(8) {
                         if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
                             let endpoint = format!(
                                 "/proxies/{}/delay?timeout=3000&url=http://www.gstatic.com/generate_204",
                                 url_path_encode(name)
                             );
-                            let _ = self.controller("GET", &endpoint, None, 3200);
+                            let _ = self.controller("GET", &endpoint, None, 1400);
                         }
                     }
                 }
@@ -1212,7 +1231,7 @@ impl CoreManager {
     }
 
     fn connections(&self) -> JsonValue {
-        self.controller("GET", "/connections", None, 1500)
+        self.controller("GET", "/connections", None, 900)
             .ok()
             .and_then(|data| data.get("connections").cloned())
             .unwrap_or_else(|| json!([]))
@@ -1228,7 +1247,7 @@ impl CoreManager {
         Ok(true)
     }
 
-    fn add_profile_url(&mut self, url: &str) -> Result<Profile, String> {
+    fn download_profile_source(&self, url: &str) -> Result<YamlValue, String> {
         let parsed = reqwest::Url::parse(url).map_err(|err| err.to_string())?;
         if !matches!(parsed.scheme(), "http" | "https") {
             return Err("订阅 URL 仅支持 HTTP/HTTPS".to_string());
@@ -1243,11 +1262,17 @@ impl CoreManager {
             .map_err(|err| err.to_string())?
             .text()
             .map_err(|err| err.to_string())?;
-        let source: YamlValue = match serde_yaml::from_str::<YamlValue>(&text).ok() {
+        let source = match serde_yaml::from_str::<YamlValue>(&text).ok() {
             Some(YamlValue::Mapping(map)) => YamlValue::Mapping(map),
             _ => parse_uri_subscription(&text)
-                .ok_or_else(|| "订阅格式不支持：请使用 Clash YAML 或 ss/vmess/trojan URI 订阅".to_string())?,
+                .ok_or_else(|| "订阅格式不支持：请使用 Clash YAML 或 ss/vmess/trojan/tuic URI 订阅".to_string())?,
         };
+        Ok(source)
+    }
+
+    fn add_profile_url(&mut self, url: &str) -> Result<Profile, String> {
+        let parsed = reqwest::Url::parse(url).map_err(|err| err.to_string())?;
+        let source = self.download_profile_source(url)?;
         let patched = self.patched_config(source)?;
         let id = format!("url-{}", now_iso());
         let path = self.profile_dir.join(format!("{id}.yaml"));
@@ -1272,21 +1297,39 @@ impl CoreManager {
     }
 
     fn update_profile(&mut self, id: &str) -> Result<Profile, String> {
-        let profile = self
+        let mut profile = self
             .settings
             .profiles
             .iter()
             .find(|p| p.id == id)
             .cloned()
             .ok_or_else(|| "Profile not found".to_string())?;
-        if let Some(url) = profile.source_url.clone() {
-            let updated = self.add_profile_url(&url)?;
-            return Ok(updated);
+        let Some(url) = profile.source_url.clone() else {
+            return Ok(profile);
+        };
+        let source = self.download_profile_source(&url)?;
+        let patched = self.patched_config(source)?;
+        fs::write(
+            &profile.path,
+            serde_yaml::to_string(&patched).map_err(|err| err.to_string())?,
+        )
+        .map_err(|err| err.to_string())?;
+        profile.updated_at = now_iso();
+        profile.digest = sha256_file(Path::new(&profile.path));
+        if let Some(stored) = self.settings.profiles.iter_mut().find(|p| p.id == id) {
+            *stored = profile.clone();
+        }
+        self.save_settings()?;
+        if self.process.is_some() && self.settings.active_profile_id == id {
+            self.stop()?;
+            thread::sleep(Duration::from_millis(250));
+            self.start()?;
         }
         Ok(profile)
     }
 
     fn set_active_profile(&mut self, id: &str) -> Result<Profile, String> {
+        let was_running = self.process.is_some();
         let profile = self
             .settings
             .profiles
@@ -1296,6 +1339,11 @@ impl CoreManager {
             .ok_or_else(|| "Profile not found".to_string())?;
         self.settings.active_profile_id = id.to_string();
         self.save_settings()?;
+        if was_running {
+            self.stop()?;
+            thread::sleep(Duration::from_millis(250));
+            self.start()?;
+        }
         Ok(profile)
     }
 

@@ -103,6 +103,31 @@ function setNotice(message) {
   $('#protectionNotice').textContent = message;
 }
 
+window.addEventListener('unhandledrejection', (event) => {
+  setNotice(`操作异常：${event.reason?.message || event.reason || '未知错误'}`);
+});
+
+window.addEventListener('error', (event) => {
+  setNotice(`界面异常：${event.message || '未知错误'}`);
+});
+
+function setButtonBusy(button, busy, label) {
+  if (!button) return;
+  if (!button.dataset.idleText) button.dataset.idleText = button.textContent;
+  button.disabled = busy;
+  button.classList.toggle('busy', busy);
+  button.textContent = busy ? label : button.dataset.idleText;
+}
+
+async function runButtonAction(button, busyLabel, action) {
+  setButtonBusy(button, true, busyLabel);
+  try {
+    return await action();
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
 function isPageActive(page) {
   return document.querySelector(`[data-page-panel="${page}"]`)?.classList.contains('active');
 }
@@ -225,7 +250,7 @@ function renderStatus(status) {
   const running = Boolean(status.running && status.controller !== false);
   const modeText = status.mode === 'global' ? '全局代理' : status.mode === 'direct' ? '直连' : '智能分流';
 
-  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.3'}`;
+  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.4'}`;
   $('.ring strong').textContent = running ? '已连接' : '未连接';
   $('.ring').classList.toggle('offline', !running);
   $('#nodeName').textContent = activeProfile.name || selectedNode || '等待节点数据';
@@ -274,7 +299,7 @@ async function refreshStatus(force = false) {
   } catch {
     renderStatus({
       running: false,
-      appVersion: '0.5.3',
+      appVersion: '0.5.4',
       mode: 'rule',
       traffic: { up: 0, down: 0 },
       logs: [],
@@ -322,6 +347,7 @@ async function testNodes() {
   if (nodeBusy) return;
   nodeBusy = true;
   try {
+    setNotice('正在测速，先检测前 8 个节点以避免界面卡死。');
     const groups = await invoke('test_proxy_delays');
     latestGroup = Array.isArray(groups) ? (groups.find((group) => group.name === 'GLOBAL') || groups[0]) : null;
     selectedNode = latestGroup?.now || selectedNode;
@@ -341,6 +367,7 @@ async function updateActiveProfile() {
     return;
   }
   try {
+    setNotice('正在更新当前订阅...');
     await invoke('update_profile', { id });
     await refreshStatus(true);
     await refreshNodes();
@@ -351,17 +378,15 @@ async function updateActiveProfile() {
 }
 
 async function toggleCore() {
-  $('#connectBtn').disabled = true;
-  try {
+  const button = $('#connectBtn');
+  await runButtonAction(button, latestStatus?.running ? '正在断开...' : '正在连接...', async () => {
+    setNotice(latestStatus?.running ? '正在断开核心...' : '正在启动核心...');
     if (latestStatus?.running) await invoke('stop_core');
     else await invoke('start_core');
     await refreshStatus(true);
     await refreshNodes();
-  } catch (err) {
-    setNotice(`操作失败：${err.message || err}`);
-  } finally {
-    $('#connectBtn').disabled = false;
-  }
+    setNotice(latestStatus?.running ? '已连接，核心正在运行。' : '已断开连接。');
+  }).catch((err) => setNotice(`操作失败：${err.message || err}`));
 }
 
 async function switchMode() {
@@ -463,18 +488,26 @@ $('#refreshNodesBtn').onclick = refreshNodes;
 $('#modeBtn').onclick = switchMode;
 $('#quickModeBtn').onclick = switchMode;
 $('#quickIpBtn').onclick = () => refreshStatus(true);
-$('#quickTestBtn').onclick = testNodes;
-$('#quickUpdateSubBtn').onclick = updateActiveProfile;
-$('#quickProxyBtn').onclick = () => updateSetting('systemProxy', !latestStatus?.settings?.systemProxy);
-$('#quickTunBtn').onclick = () => updateSetting('tunEnabled', !latestStatus?.settings?.tunEnabled);
+$('#quickTestBtn').onclick = (event) => runButtonAction(event.currentTarget, '测速中...', testNodes);
+$('#quickUpdateSubBtn').onclick = (event) => runButtonAction(event.currentTarget, '更新中...', updateActiveProfile);
+$('#quickProxyBtn').onclick = (event) => runButtonAction(event.currentTarget, '切换中...', () => updateSetting('systemProxy', !latestStatus?.settings?.systemProxy));
+$('#quickTunBtn').onclick = (event) => runButtonAction(event.currentTarget, '切换中...', () => updateSetting('tunEnabled', !latestStatus?.settings?.tunEnabled));
 $('#quickCopyProxyBtn').onclick = () => navigator.clipboard?.writeText(latestStatus?.network?.proxyEndpoint || '127.0.0.1:7890');
-$('#quickRestartBtn').onclick = async () => { await invoke('restart_core'); await refreshStatus(true); await refreshNodes(); };
+$('#quickRestartBtn').onclick = (event) => runButtonAction(event.currentTarget, '重启中...', async () => { setNotice('正在重启核心...'); await invoke('restart_core'); await refreshStatus(true); await refreshNodes(); setNotice('核心已重启。'); });
 $('#setBestBtn').onclick = () => setNotice(selectedNode ? `已设为常用优先：${selectedNode}` : '请先选择一个节点');
 $('#refreshConnectionsBtn').onclick = refreshConnections;
-$('#closeAllConnectionsBtn').onclick = async () => { await invoke('close_connections'); refreshConnections(); };
+$('#closeAllConnectionsBtn').onclick = (event) => runButtonAction(event.currentTarget, '关闭中...', async () => { await invoke('close_connections'); refreshConnections(); });
 $('#runDiagBtn').onclick = () => runDiagnostics();
 $('#clearLogsBtn').onclick = async () => { await invoke('clear_logs'); await refreshStatus(true); };
-$('#restartCoreBtn').onclick = async () => { await invoke('restart_core'); await refreshStatus(true); await refreshNodes(); };
+$('#restartCoreBtn').onclick = (event) => runButtonAction(event.currentTarget, '重启中...', async () => { setNotice('正在重启核心...'); await invoke('restart_core'); await refreshStatus(true); await refreshNodes(); setNotice('核心已重启。'); });
+const batchTestBtn = $('#batchTestBtn');
+if (batchTestBtn) batchTestBtn.onclick = (event) => runButtonAction(event.currentTarget, '测速中...', testNodes);
+const nodeSearch = $('#nodeSearch');
+if (nodeSearch) nodeSearch.oninput = () => {
+  const keyword = nodeSearch.value.trim().toLowerCase();
+  const items = latestGroup?.items || [];
+  renderRows(keyword ? items.filter((item) => `${item.name || ''} ${item.server || ''}`.toLowerCase().includes(keyword)) : items);
+};
 $('#savePortBtn').onclick = async () => {
   await updateSetting('mixedPort', Number($('#mixedPortInput').value || 7890));
   await updateSetting('controllerPort', Number($('#controllerPortInput').value || 19090));
@@ -543,28 +576,40 @@ $('#nodeRows').addEventListener('keydown', (event) => {
 });
 
 document.body.addEventListener('click', async (event) => {
-  const closeId = event.target.closest('[data-close-connection]')?.dataset.closeConnection;
-  if (closeId) {
-    await invoke('close_connection', { id: closeId });
-    refreshConnections();
-    return;
-  }
-  const profileSwitch = event.target.closest('[data-profile-switch]')?.dataset.profileSwitch;
-  if (profileSwitch) {
-    await invoke('set_active_profile', { id: profileSwitch });
-    await refreshStatus(true);
-    return;
-  }
-  const profileUpdate = event.target.closest('[data-profile-update]')?.dataset.profileUpdate;
-  if (profileUpdate) {
-    await invoke('update_profile', { id: profileUpdate });
-    await refreshStatus(true);
-    return;
-  }
-  const profileRemove = event.target.closest('[data-profile-remove]')?.dataset.profileRemove;
-  if (profileRemove) {
-    await invoke('remove_profile', { id: profileRemove });
-    await refreshStatus(true);
+  try {
+    const closeId = event.target.closest('[data-close-connection]')?.dataset.closeConnection;
+    if (closeId) {
+      await invoke('close_connection', { id: closeId });
+      refreshConnections();
+      return;
+    }
+    const profileSwitch = event.target.closest('[data-profile-switch]')?.dataset.profileSwitch;
+    if (profileSwitch) {
+      setNotice('正在切换订阅并应用配置...');
+      await invoke('set_active_profile', { id: profileSwitch });
+      await refreshStatus(true);
+      await refreshNodes();
+      renderProfiles();
+      setNotice('订阅已切换并应用。');
+      return;
+    }
+    const profileUpdate = event.target.closest('[data-profile-update]')?.dataset.profileUpdate;
+    if (profileUpdate) {
+      setNotice('正在更新订阅...');
+      await invoke('update_profile', { id: profileUpdate });
+      await refreshStatus(true);
+      await refreshNodes();
+      renderProfiles();
+      setNotice('订阅已更新。');
+      return;
+    }
+    const profileRemove = event.target.closest('[data-profile-remove]')?.dataset.profileRemove;
+    if (profileRemove) {
+      await invoke('remove_profile', { id: profileRemove });
+      await refreshStatus(true);
+    }
+  } catch (err) {
+    setNotice(`操作失败：${err.message || err}`);
   }
 });
 
