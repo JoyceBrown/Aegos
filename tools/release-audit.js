@@ -62,6 +62,8 @@ check('region filters live with home node table', indexHtml.includes('class="reg
 check('protocol UI does not display core name', indexHtml.includes('id="protocolState"') && indexHtml.includes('id="protocolMetric"') && !indexHtml.includes('>mihomo<'), 'protocolState/protocolMetric');
 check('Rust window controls are wired', ['window_minimize', 'window_toggle_maximize', 'window_close', 'window_start_dragging'].every((name) => mainRs.includes(name) && appJs.includes(name)), 'window commands');
 check('subscription URI parser is available', mainRs.includes('parse_uri_subscription') && mainRs.includes('base64'), 'URI/base64 subscriptions');
+check('TUIC URI subscriptions are supported', mainRs.includes('parse_tuic_uri') && mainRs.includes('line.starts_with("tuic://")'), 'tuic:// parser');
+check('traffic stream uses snapshot reader', mainRs.includes('fn traffic_snapshot') && !mainRs.includes('controller("GET", "/traffic"'), '/traffic snapshot');
 
 const result = {
   ok: fail.length === 0,

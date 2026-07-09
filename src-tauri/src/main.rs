@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{BufRead, BufReader},
-    net::TcpListener,
+    net::{TcpListener, UdpSocket},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
@@ -243,6 +243,68 @@ fn parse_vmess_uri(uri: &str, index: usize) -> Option<YamlValue> {
     Some(YamlValue::Mapping(map))
 }
 
+fn truthy(value: &str) -> bool {
+    matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+}
+
+fn parse_tuic_uri(uri: &str, index: usize) -> Option<YamlValue> {
+    let raw = uri.strip_prefix("tuic://")?;
+    let (before_name, name_part) = raw.split_once('#').unwrap_or((raw, ""));
+    let (main, query) = before_name.split_once('?').unwrap_or((before_name, ""));
+    let (auth, host_port) = main.split_once('@')?;
+    let (uuid, password) = auth.split_once(':')?;
+    let (server, port) = host_port.rsplit_once(':')?;
+    let mut map = Mapping::new();
+    set_yaml(
+        &mut map,
+        "name",
+        yaml_str(if name_part.is_empty() {
+            format!("TUIC {index}")
+        } else {
+            percent_decode(name_part)
+        }),
+    );
+    set_yaml(&mut map, "type", yaml_str("tuic"));
+    set_yaml(&mut map, "server", yaml_str(server));
+    set_yaml(&mut map, "port", yaml_num(port.parse().ok()?));
+    set_yaml(&mut map, "uuid", yaml_str(percent_decode(uuid)));
+    set_yaml(&mut map, "password", yaml_str(percent_decode(password)));
+    if let Some(sni) = query_value(query, "sni") {
+        set_yaml(&mut map, "sni", yaml_str(sni));
+    }
+    if let Some(alpn) = query_value(query, "alpn") {
+        set_yaml(
+            &mut map,
+            "alpn",
+            YamlValue::Sequence(
+                alpn.split(',')
+                    .filter(|item| !item.is_empty())
+                    .map(|item| yaml_str(item.to_string()))
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(fp) = query_value(query, "fp") {
+        set_yaml(&mut map, "client-fingerprint", yaml_str(fp));
+    }
+    if let Some(cc) = query_value(query, "congestion_control") {
+        set_yaml(&mut map, "congestion-controller", yaml_str(cc));
+    }
+    if let Some(mode) = query_value(query, "udp_relay_mode") {
+        set_yaml(&mut map, "udp-relay-mode", yaml_str(mode));
+    }
+    if let Some(reduce_rtt) = query_value(query, "reduce_rtt") {
+        set_yaml(&mut map, "reduce-rtt", YamlValue::Bool(truthy(&reduce_rtt)));
+    }
+    if let Some(udp) = query_value(query, "udp") {
+        set_yaml(&mut map, "udp", YamlValue::Bool(truthy(&udp)));
+    }
+    if let Some(tfo) = query_value(query, "tfo") {
+        set_yaml(&mut map, "fast-open", YamlValue::Bool(truthy(&tfo)));
+    }
+    Some(YamlValue::Mapping(map))
+}
+
 fn parse_uri_subscription(text: &str) -> Option<YamlValue> {
     let body = if text.contains("://") { text.to_string() } else { b64_decode_text(text)? };
     let mut proxies = Vec::new();
@@ -253,6 +315,8 @@ fn parse_uri_subscription(text: &str) -> Option<YamlValue> {
             parse_trojan_uri(line, index + 1)
         } else if line.starts_with("vmess://") {
             parse_vmess_uri(line, index + 1)
+        } else if line.starts_with("tuic://") {
+            parse_tuic_uri(line, index + 1)
         } else {
             None
         };
@@ -266,6 +330,32 @@ fn parse_uri_subscription(text: &str) -> Option<YamlValue> {
     let mut root = Mapping::new();
     set_yaml(&mut root, "proxies", YamlValue::Sequence(proxies));
     Some(YamlValue::Mapping(root))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_base64_tuic_subscription() {
+        let uri = "tuic://00000000-0000-4000-8000-000000000000:secret@example.com:443?sni=example.com&alpn=h3&congestion_control=bbr&udp_relay_mode=native&reduce_rtt=true#HK%20TUIC";
+        let encoded = general_purpose::STANDARD.encode(uri);
+        let parsed = parse_uri_subscription(&encoded).expect("tuic subscription should parse");
+        let proxies = parsed
+            .as_mapping()
+            .and_then(|root| root.get(yaml_key("proxies")))
+            .and_then(YamlValue::as_sequence)
+            .expect("proxies sequence");
+        let proxy = proxies[0].as_mapping().expect("proxy mapping");
+
+        assert_eq!(proxy.get(yaml_key("type")).and_then(YamlValue::as_str), Some("tuic"));
+        assert_eq!(proxy.get(yaml_key("name")).and_then(YamlValue::as_str), Some("HK TUIC"));
+        assert_eq!(
+            proxy.get(yaml_key("congestion-controller")).and_then(YamlValue::as_str),
+            Some("bbr")
+        );
+        assert_eq!(proxy.get(yaml_key("reduce-rtt")).and_then(YamlValue::as_bool), Some(true));
+    }
 }
 
 fn get_mapping_mut(value: &mut YamlValue) -> &mut Mapping {
@@ -350,13 +440,13 @@ fn run_powershell(script: &str) -> Result<String, String> {
 }
 
 fn primary_lan_ip() -> String {
-    let script = r#"
-$ip = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-  Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
-  Select-Object -First 1 -ExpandProperty IPAddress
-if ($ip) { $ip } else { '-' }
-"#;
-    run_powershell(script).unwrap_or_else(|_| "-".to_string())
+    UdpSocket::bind("0.0.0.0:0")
+        .and_then(|socket| {
+            let _ = socket.connect("8.8.8.8:80");
+            socket.local_addr()
+        })
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_else(|_| "-".to_string())
 }
 
 fn build_proxy_script(enable: bool, mixed_port: u16) -> String {
@@ -823,6 +913,26 @@ impl CoreManager {
         })
     }
 
+    fn traffic_snapshot(&self, timeout_ms: u64) -> Result<JsonValue, String> {
+        let client = Client::builder()
+            .timeout(Duration::from_millis(timeout_ms))
+            .build()
+            .map_err(|err| err.to_string())?;
+        let url = format!("http://127.0.0.1:{}/traffic", self.settings.controller_port);
+        let res = client
+            .get(url)
+            .bearer_auth(&self.settings.secret)
+            .send()
+            .map_err(|err| err.to_string())?;
+        if !res.status().is_success() {
+            return Err(format!("Controller HTTP {}", res.status()));
+        }
+        let mut reader = BufReader::new(res);
+        let mut line = String::new();
+        reader.read_line(&mut line).map_err(|err| err.to_string())?;
+        serde_json::from_str(line.trim()).map_err(|err| err.to_string())
+    }
+
     fn status(&mut self) -> JsonValue {
         if let Some(child) = self.process.as_mut() {
             if matches!(child.try_wait(), Ok(Some(_))) {
@@ -836,7 +946,7 @@ impl CoreManager {
             None
         };
         let traffic = if running {
-            self.controller("GET", "/traffic", None, 450)
+            self.traffic_snapshot(650)
                 .unwrap_or_else(|_| self.last_traffic.clone())
         } else {
             json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 })

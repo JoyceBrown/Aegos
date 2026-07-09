@@ -225,7 +225,7 @@ function renderStatus(status) {
   const running = Boolean(status.running && status.controller !== false);
   const modeText = status.mode === 'global' ? '全局代理' : status.mode === 'direct' ? '直连' : '智能分流';
 
-  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.2'}`;
+  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.3'}`;
   $('.ring strong').textContent = running ? '已连接' : '未连接';
   $('.ring').classList.toggle('offline', !running);
   $('#nodeName').textContent = activeProfile.name || selectedNode || '等待节点数据';
@@ -274,7 +274,7 @@ async function refreshStatus(force = false) {
   } catch {
     renderStatus({
       running: false,
-      appVersion: '0.5.2',
+      appVersion: '0.5.3',
       mode: 'rule',
       traffic: { up: 0, down: 0 },
       logs: [],
