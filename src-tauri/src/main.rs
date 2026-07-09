@@ -8,6 +8,7 @@ use serde_json::{json, Value as JsonValue};
 use serde_yaml::{Mapping, Value as YamlValue};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     fs,
     io::{BufRead, BufReader},
     net::{TcpListener, UdpSocket},
@@ -76,6 +77,8 @@ struct CoreManager {
     last_traffic: JsonValue,
     lan_ip_cache: String,
     lan_ip_checked_at: u64,
+    outbound_ip_cache: String,
+    outbound_ip_checked_at: u64,
 }
 
 struct AppState {
@@ -605,6 +608,8 @@ impl CoreManager {
             last_traffic: json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 }),
             lan_ip_cache: "-".to_string(),
             lan_ip_checked_at: 0,
+            outbound_ip_cache: "-".to_string(),
+            outbound_ip_checked_at: 0,
         };
         manager.ensure_direct_profile()?;
         manager.save_settings()?;
@@ -1013,7 +1018,7 @@ impl CoreManager {
             "network": {
                 "lanIp": lan_ip,
                 "proxyEndpoint": format!("127.0.0.1:{}", self.settings.mixed_port),
-                "outboundIp": "-"
+                "outboundIp": self.cached_outbound_ip()
             },
             "settings": self.public_settings(),
             "protection": self.protection_status(),
@@ -1029,6 +1034,60 @@ impl CoreManager {
         self.lan_ip_cache = primary_lan_ip();
         self.lan_ip_checked_at = now;
         self.lan_ip_cache.clone()
+    }
+
+    fn cached_outbound_ip(&self) -> String {
+        if self.outbound_ip_cache.trim().is_empty() {
+            "-".to_string()
+        } else {
+            self.outbound_ip_cache.clone()
+        }
+    }
+
+    fn refresh_outbound_ip(&mut self) -> Result<String, String> {
+        if self.process.is_none() {
+            self.outbound_ip_cache = "-".to_string();
+            self.outbound_ip_checked_at = now_secs();
+            return Err("请先连接核心后再刷新落地 IP".to_string());
+        }
+        let proxy_url = format!("http://127.0.0.1:{}", self.settings.mixed_port);
+        let proxy = reqwest::Proxy::all(&proxy_url).map_err(|err| err.to_string())?;
+        let client = Client::builder()
+            .proxy(proxy)
+            .timeout(Duration::from_secs(8))
+            .build()
+            .map_err(|err| err.to_string())?;
+        let services = [
+            "https://api.ipify.org",
+            "https://ifconfig.me/ip",
+            "https://icanhazip.com",
+        ];
+        let mut last_error = String::new();
+        for url in services {
+            match client.get(url).send().and_then(|res| res.error_for_status()) {
+                Ok(res) => match res.text() {
+                    Ok(text) => {
+                        let ip = text.trim().trim_matches('"').to_string();
+                        if !ip.is_empty() && ip.len() <= 64 {
+                            self.outbound_ip_cache = ip.clone();
+                            self.outbound_ip_checked_at = now_secs();
+                            self.add_log(format!("Outbound IP refreshed: {ip}"), "info");
+                            return Ok(ip);
+                        }
+                    }
+                    Err(err) => last_error = err.to_string(),
+                },
+                Err(err) => last_error = err.to_string(),
+            }
+        }
+        self.outbound_ip_checked_at = now_secs();
+        let reason = if last_error.is_empty() {
+            "无法获取落地 IP".to_string()
+        } else {
+            format!("无法获取落地 IP: {last_error}")
+        };
+        self.add_log(&reason, "warn");
+        Err(reason)
     }
 
     fn public_settings(&self) -> JsonValue {
@@ -1225,22 +1284,77 @@ impl CoreManager {
     }
 
     fn test_proxy_delays(&self) -> JsonValue {
-        if self.process.is_some() {
-            if let Some(group) = self.proxy_groups().as_array().and_then(|groups| groups.first()).cloned() {
-                if let Some(items) = group.get("items").and_then(|v| v.as_array()) {
-                    for item in items.iter().take(8) {
-                        if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
-                            let endpoint = format!(
-                                "/proxies/{}/delay?timeout=3000&url=http://www.gstatic.com/generate_204",
-                                url_path_encode(name)
+        let mut groups = self.proxy_groups();
+        if self.process.is_none() {
+            return groups;
+        }
+
+        let names: Vec<String> = groups
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(|group| group.get("items"))
+            .and_then(|items| items.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.get("name").and_then(|value| value.as_str()))
+                    .map(ToString::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let controller_port = self.settings.controller_port;
+        let secret = self.settings.secret.clone();
+        let handles = names
+            .into_iter()
+            .map(|name| {
+                let secret = secret.clone();
+                thread::spawn(move || {
+                    let client = Client::builder()
+                        .timeout(Duration::from_millis(4200))
+                        .build();
+                    let delay = client
+                        .ok()
+                        .and_then(|client| {
+                            let url = format!(
+                                "http://127.0.0.1:{}/proxies/{}/delay?timeout=3000&url=http://www.gstatic.com/generate_204",
+                                controller_port,
+                                url_path_encode(&name)
                             );
-                            let _ = self.controller("GET", &endpoint, None, 4200);
+                            client.get(url).bearer_auth(&secret).send().ok()
+                        })
+                        .and_then(|res| res.error_for_status().ok())
+                        .and_then(|res| res.json::<JsonValue>().ok())
+                        .and_then(|data| data.get("delay").and_then(|value| value.as_i64()))
+                        .unwrap_or(-1);
+                    (name, delay)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let delays: HashMap<String, i64> = handles
+            .into_iter()
+            .filter_map(|handle| handle.join().ok())
+            .collect();
+
+        if let Some(items) = groups
+            .as_array_mut()
+            .and_then(|items| items.first_mut())
+            .and_then(|group| group.get_mut("items"))
+            .and_then(|items| items.as_array_mut())
+        {
+            for item in items {
+                if let Some(name) = item.get("name").and_then(|value| value.as_str()) {
+                    if let Some(delay) = delays.get(name).copied() {
+                        if let Some(map) = item.as_object_mut() {
+                            map.insert("delay".to_string(), json!(delay));
+                            map.insert("alive".to_string(), json!(delay >= 0));
                         }
                     }
                 }
             }
         }
-        self.proxy_groups()
+        groups
     }
 
     fn change_proxy(&mut self, group: &str, proxy: &str) -> Result<bool, String> {
@@ -1457,6 +1571,11 @@ fn test_proxy_delays(state: State<AppState>) -> Result<JsonValue, String> {
 }
 
 #[tauri::command]
+fn refresh_outbound_ip(state: State<AppState>) -> Result<String, String> {
+    state.core.lock().unwrap().refresh_outbound_ip()
+}
+
+#[tauri::command]
 fn change_proxy(state: State<AppState>, group: String, proxy: String) -> Result<bool, String> {
     state.core.lock().unwrap().change_proxy(&group, &proxy)
 }
@@ -1551,6 +1670,7 @@ fn main() {
             set_mode,
             proxy_groups,
             test_proxy_delays,
+            refresh_outbound_ip,
             change_proxy,
             connections,
             close_connection,

@@ -123,7 +123,7 @@ try {
         }];
         const status = () => ({
           product: 'Aegos',
-          appVersion: '0.5.6',
+          appVersion: '0.5.7',
           running: state.running,
           controller: state.running,
           mode: state.mode,
@@ -158,6 +158,7 @@ try {
           if (command === 'proxy_groups' || command === 'test_proxy_delays') return groups;
           if (command === 'set_mode') { state.mode = args.mode; return args.mode; }
           if (command === 'change_proxy') { groups[0].now = args.proxy; return true; }
+          if (command === 'refresh_outbound_ip') return '203.0.113.8';
           if (command === 'set_system_proxy') { state.systemProxy = args.enable; return true; }
           if (command === 'update_setting') { if (args.key === 'tunEnabled') state.tunEnabled = args.value; return status().settings; }
           if (command === 'update_profile') return profiles.find((item) => item.id === args.id);
@@ -182,6 +183,7 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 180));
     };
     await click('#connectBtn');
+    await click('#quickIpBtn');
     await click('#quickUpdateSubBtn');
     await click('#quickTestBtn');
     await click('#quickProxyBtn');
@@ -210,7 +212,7 @@ try {
     await click('[data-page="settings"]');
     await click('#restartCoreBtn');
     const commands = window.__aegosCalls.map((item) => item.command);
-    const required = ['start_core', 'update_profile', 'test_proxy_delays', 'set_system_proxy', 'update_setting', 'change_proxy', 'connections', 'close_connections', 'set_active_profile', 'diagnostics', 'restart_core'];
+    const required = ['start_core', 'refresh_outbound_ip', 'update_profile', 'test_proxy_delays', 'set_system_proxy', 'update_setting', 'change_proxy', 'connections', 'close_connections', 'set_active_profile', 'diagnostics', 'restart_core'];
     return {
       commands,
       missing: required.filter((name) => !commands.includes(name)),

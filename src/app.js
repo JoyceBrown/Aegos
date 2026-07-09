@@ -296,7 +296,7 @@ function renderStatus(status) {
   const running = Boolean(status.running);
   const modeText = status.mode === 'global' ? '全局代理' : status.mode === 'direct' ? '直连' : '智能分流';
 
-  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.6'}`;
+  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.7'}`;
   $('.ring strong').textContent = running ? '已连接' : '未连接';
   $('.ring').classList.toggle('offline', !running);
   $('#nodeName').textContent = selectedNode || latestGroup?.now || activeProfile.name || '等待节点数据';
@@ -345,7 +345,7 @@ async function refreshStatus(force = false) {
   } catch {
     renderStatus({
       running: false,
-      appVersion: '0.5.6',
+      appVersion: '0.5.7',
       mode: 'rule',
       traffic: { up: 0, down: 0 },
       logs: [],
@@ -403,6 +403,20 @@ async function testNodes() {
     setNotice(`节点测速失败：${err.message || err}`);
   } finally {
     nodeBusy = false;
+  }
+}
+
+async function refreshOutboundIp() {
+  try {
+    setNotice('正在通过当前代理查询落地 IP...');
+    const ip = await invoke('refresh_outbound_ip');
+    $('#outboundIpState').textContent = ip || '-';
+    $('#outboundMetric').textContent = ip || '-';
+    await refreshStatus(true);
+    setNotice(`落地 IP 已刷新：${ip || '-'}`);
+  } catch (err) {
+    await refreshStatus(true);
+    setNotice(`刷新落地 IP 失败：${err.message || err}`);
   }
 }
 
@@ -536,7 +550,7 @@ $('#refreshStatusBtn').onclick = async () => { await refreshStatus(true); await 
 $('#refreshNodesBtn').onclick = refreshNodes;
 $('#modeBtn').onclick = toggleModeMenu;
 $('#quickModeBtn').onclick = toggleModeMenu;
-$('#quickIpBtn').onclick = () => refreshStatus(true);
+$('#quickIpBtn').onclick = (event) => runButtonAction(event.currentTarget, '刷新中...', refreshOutboundIp);
 $('#quickTestBtn').onclick = (event) => runButtonAction(event.currentTarget, '测速中...', testNodes);
 $('#quickUpdateSubBtn').onclick = (event) => runButtonAction(event.currentTarget, '更新中...', updateActiveProfile);
 $('#quickProxyBtn').onclick = (event) => runButtonAction(event.currentTarget, '切换中...', () => updateSetting('systemProxy', !latestStatus?.settings?.systemProxy));
