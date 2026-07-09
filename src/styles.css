@@ -1740,13 +1740,47 @@ dd {
   }
 }
 
-/* 0.5.7 stability pass: keep proxy port and outbound IP columns equal. */
+/* 0.5.8 stability pass: fixed status, metric, and home-node grids. */
+.status-card dl div:has(#proxyPortState),
+.status-card dl div:has(#outboundIpState) {
+  display: none;
+}
+
 .metric-grid.bottom {
-  grid-template-columns: minmax(118px, .95fr) minmax(118px, .95fr) minmax(112px, .9fr) 96px 96px 52px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, .9fr) 96px 96px 56px;
+}
+
+.home-nodes {
+  --home-node-columns: 36px 42px minmax(0, 1.35fr) minmax(0, 1fr) 92px 84px 92px;
+}
+
+.home-row-head,
+.home-node-list .row {
+  grid-template-columns: var(--home-node-columns);
+  gap: 8px;
+  padding: 0 14px;
+}
+
+.home-row-head {
+  min-height: 30px;
+  border-bottom: 1px solid rgba(130, 154, 187, .10);
+  background: rgba(255, 255, 255, .96);
+}
+
+.home-node-list {
+  grid-auto-rows: 40px;
+}
+
+.home-node-list .row {
+  height: 40px;
 }
 
 @media (max-width: 1380px) {
   .metric-grid.bottom {
-    grid-template-columns: minmax(108px, .9fr) minmax(108px, .9fr) minmax(104px, .86fr) 92px 92px 48px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, .85fr) 92px 92px 48px;
+  }
+
+  .home-nodes {
+    --home-node-columns: 30px 34px minmax(0, 1.25fr) minmax(0, .95fr) 82px 76px 82px;
   }
 }

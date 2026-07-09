@@ -8,7 +8,7 @@ use serde_json::{json, Value as JsonValue};
 use serde_yaml::{Mapping, Value as YamlValue};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     io::{BufRead, BufReader},
     net::{TcpListener, UdpSocket},
@@ -1291,64 +1291,72 @@ impl CoreManager {
 
         let names: Vec<String> = groups
             .as_array()
-            .and_then(|items| items.first())
-            .and_then(|group| group.get("items"))
-            .and_then(|items| items.as_array())
-            .map(|items| {
-                items
+            .map(|groups| {
+                let mut seen = HashSet::new();
+                groups
                     .iter()
+                    .filter_map(|group| group.get("items").and_then(|items| items.as_array()))
+                    .flatten()
                     .filter_map(|item| item.get("name").and_then(|value| value.as_str()))
-                    .map(ToString::to_string)
+                    .filter(|name| !matches!(*name, "DIRECT" | "REJECT"))
+                    .filter_map(|name| {
+                        if seen.insert(name.to_string()) {
+                            Some(name.to_string())
+                        } else {
+                            None
+                        }
+                    })
                     .collect()
             })
             .unwrap_or_default();
 
         let controller_port = self.settings.controller_port;
         let secret = self.settings.secret.clone();
-        let handles = names
-            .into_iter()
-            .map(|name| {
-                let secret = secret.clone();
-                thread::spawn(move || {
-                    let client = Client::builder()
-                        .timeout(Duration::from_millis(4200))
-                        .build();
-                    let delay = client
-                        .ok()
-                        .and_then(|client| {
-                            let url = format!(
-                                "http://127.0.0.1:{}/proxies/{}/delay?timeout=3000&url=http://www.gstatic.com/generate_204",
-                                controller_port,
-                                url_path_encode(&name)
-                            );
-                            client.get(url).bearer_auth(&secret).send().ok()
-                        })
-                        .and_then(|res| res.error_for_status().ok())
-                        .and_then(|res| res.json::<JsonValue>().ok())
-                        .and_then(|data| data.get("delay").and_then(|value| value.as_i64()))
-                        .unwrap_or(-1);
-                    (name, delay)
+        let mut delays = HashMap::new();
+        for chunk in names.chunks(8) {
+            let handles = chunk
+                .iter()
+                .cloned()
+                .map(|name| {
+                    let secret = secret.clone();
+                    thread::spawn(move || {
+                        let client = Client::builder()
+                            .timeout(Duration::from_millis(4200))
+                            .build();
+                        let delay = client
+                            .ok()
+                            .and_then(|client| {
+                                let url = format!(
+                                    "http://127.0.0.1:{}/proxies/{}/delay?timeout=3000&url=http://www.gstatic.com/generate_204",
+                                    controller_port,
+                                    url_path_encode(&name)
+                                );
+                                client.get(url).bearer_auth(&secret).send().ok()
+                            })
+                            .and_then(|res| res.error_for_status().ok())
+                            .and_then(|res| res.json::<JsonValue>().ok())
+                            .and_then(|data| data.get("delay").and_then(|value| value.as_i64()))
+                            .unwrap_or(-1);
+                        (name, delay)
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
+                .collect::<Vec<_>>();
+            for (name, delay) in handles.into_iter().filter_map(|handle| handle.join().ok()) {
+                delays.insert(name, delay);
+            }
+        }
 
-        let delays: HashMap<String, i64> = handles
-            .into_iter()
-            .filter_map(|handle| handle.join().ok())
-            .collect();
-
-        if let Some(items) = groups
-            .as_array_mut()
-            .and_then(|items| items.first_mut())
-            .and_then(|group| group.get_mut("items"))
-            .and_then(|items| items.as_array_mut())
-        {
-            for item in items {
-                if let Some(name) = item.get("name").and_then(|value| value.as_str()) {
-                    if let Some(delay) = delays.get(name).copied() {
-                        if let Some(map) = item.as_object_mut() {
-                            map.insert("delay".to_string(), json!(delay));
-                            map.insert("alive".to_string(), json!(delay >= 0));
+        if let Some(group_items) = groups.as_array_mut() {
+            for group in group_items {
+                if let Some(items) = group.get_mut("items").and_then(|items| items.as_array_mut()) {
+                    for item in items {
+                        if let Some(name) = item.get("name").and_then(|value| value.as_str()) {
+                            if let Some(delay) = delays.get(name).copied() {
+                                if let Some(map) = item.as_object_mut() {
+                                    map.insert("delay".to_string(), json!(delay));
+                                    map.insert("alive".to_string(), json!(delay >= 0));
+                                }
+                            }
                         }
                     }
                 }

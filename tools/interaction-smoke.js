@@ -114,16 +114,16 @@ try {
           type: 'Selector',
           now: 'HK 01',
           items: [
-            { name: 'HK 01', server: 'hk.example', type: 'tuic', alive: true, delay: 33 },
-            { name: 'HK 02', server: 'hk2.example', type: 'trojan', alive: true, delay: 42 },
-            { name: 'JP 01', server: 'jp.example', type: 'trojan', alive: true, delay: 55 },
-            { name: 'SG 01', server: 'sg.example', type: 'ss', alive: true, delay: 66 },
-            { name: 'US 01', server: 'us.example', type: 'vless', alive: true, delay: 120 }
+            { name: 'HK 01', server: 'hk.example', type: 'tuic', alive: true, delay: -1 },
+            { name: 'HK 02', server: 'hk2.example', type: 'trojan', alive: true, delay: -1 },
+            { name: 'JP 01', server: 'jp.example', type: 'trojan', alive: true, delay: -1 },
+            { name: 'SG 01', server: 'sg.example', type: 'ss', alive: true, delay: -1 },
+            { name: 'US 01', server: 'us.example', type: 'vless', alive: true, delay: -1 }
           ]
         }];
         const status = () => ({
           product: 'Aegos',
-          appVersion: '0.5.7',
+          appVersion: '0.5.8',
           running: state.running,
           controller: state.running,
           mode: state.mode,
@@ -155,7 +155,11 @@ try {
           if (command === 'start_core') { state.running = true; return { ok: true }; }
           if (command === 'stop_core') { state.running = false; return { ok: true }; }
           if (command === 'restart_core') { state.running = true; return { ok: true }; }
-          if (command === 'proxy_groups' || command === 'test_proxy_delays') return groups;
+          if (command === 'proxy_groups') return groups;
+          if (command === 'test_proxy_delays') {
+            groups[0].items.forEach((item, index) => { item.delay = 31 + index * 17; item.alive = true; });
+            return groups;
+          }
           if (command === 'set_mode') { state.mode = args.mode; return args.mode; }
           if (command === 'change_proxy') { groups[0].now = args.proxy; return true; }
           if (command === 'refresh_outbound_ip') return '203.0.113.8';
@@ -186,6 +190,7 @@ try {
     await click('#quickIpBtn');
     await click('#quickUpdateSubBtn');
     await click('#quickTestBtn');
+    if (!document.querySelector('#homeNodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('home node delays did not update after quick speed test');
     await click('#quickProxyBtn');
     await click('#quickTunBtn');
     await click('[data-region="HK"]');
@@ -198,6 +203,7 @@ try {
     await click('[data-node-filter="low"]');
     if (!document.querySelector('[data-node-filter="low"]').classList.contains('active')) throw new Error('node filter tab did not become active');
     await click('#batchTestBtn');
+    if (!document.querySelector('#nodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('node page delays did not update after batch speed test');
     document.querySelector('#nodeSearch').value = 'HK';
     document.querySelector('#nodeSearch').dispatchEvent(new Event('input', { bubbles: true }));
     await click('#nodeRows .row[data-node]');

@@ -113,15 +113,18 @@ function regionLabel(region) {
 
 function normalizeRows(items = []) {
   return items.length
-    ? items.map((item) => [
-        inferRegion(item.name),
-        item.name,
-        item.server || item.name,
-        item.delay ?? -1,
-        item.alive !== false,
-        item.name === selectedNode || item.name === latestGroup?.now,
-        item.type || item.protocol || 'unknown'
-      ])
+    ? items.map((item) => {
+        const delay = Number(item.delay ?? -1);
+        return [
+          inferRegion(item.name),
+          item.name,
+          item.server || item.name,
+          delay,
+          item.alive !== false || delay < 0,
+          item.name === selectedNode || item.name === latestGroup?.now,
+          item.type || item.protocol || 'unknown'
+        ];
+      })
     : fallbackNodes.map((row, index) => [...row, -1, true, index === 0, 'direct']);
 }
 
@@ -138,7 +141,9 @@ function filterRows(rows, filter) {
   return rows;
 }
 
+/*
 function renderNodeRow([region, name, host, delay, alive, active]) {
+  const statusText = Number(delay) >= 0 ? '可用' : (alive ? '待测速' : '不可用');
   return `
     <div class="row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="选择 ${escapeHtml(name)}">
       <span class="radio"></span>
@@ -160,6 +165,7 @@ function renderNodeRow([region, name, host, delay, alive, active]) {
 }
 
 function renderHomeNodeRow([region, name, host, delay, alive, active]) {
+  const statusText = Number(delay) >= 0 ? '可用' : (alive ? '待测速' : '不可用');
   return `
     <div class="row home-row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="选择 ${escapeHtml(name)}">
       <span class="radio"></span>
@@ -169,6 +175,47 @@ function renderHomeNodeRow([region, name, host, delay, alive, active]) {
       <span>${Number(delay) >= 0 ? `${Math.round(delay)} ms` : '-'}</span>
       <span>0.0%</span>
       <span class="available">${alive ? '可用' : '不可用'}</span>
+    </div>
+  `;
+}
+
+*/
+
+function renderNodeRow([region, name, host, delay, alive, active]) {
+  const delayValue = Number(delay);
+  const statusText = delayValue >= 0 ? '\u53ef\u7528' : (alive ? '\u5f85\u6d4b\u901f' : '\u4e0d\u53ef\u7528');
+  return `
+    <div class="row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="select ${escapeHtml(name)}">
+      <span class="radio"></span>
+      <span class="star">&#9734;</span>
+      <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
+      <span>${escapeHtml(host)}</span>
+      <span>${delayValue >= 0 ? `${Math.round(delayValue)} ms` : '-'}</span>
+      <span>0.0%</span>
+      <span class="load"><span class="bar"></span>38%</span>
+      <span>-</span>
+      <span class="available">${escapeHtml(statusText)}</span>
+      <span class="row-actions">
+        <button data-node="${escapeHtml(name)}" aria-label="connect">&#9655;</button>
+        <button aria-label="edit">&#9998;</button>
+        <button aria-label="more">&#8943;</button>
+      </span>
+    </div>
+  `;
+}
+
+function renderHomeNodeRow([region, name, host, delay, alive, active]) {
+  const delayValue = Number(delay);
+  const statusText = delayValue >= 0 ? '\u53ef\u7528' : (alive ? '\u5f85\u6d4b\u901f' : '\u4e0d\u53ef\u7528');
+  return `
+    <div class="row home-row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="select ${escapeHtml(name)}">
+      <span class="radio"></span>
+      <span class="star">&#9734;</span>
+      <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
+      <span>${escapeHtml(host)}</span>
+      <span>${delayValue >= 0 ? `${Math.round(delayValue)} ms` : '-'}</span>
+      <span>0.0%</span>
+      <span class="available">${escapeHtml(statusText)}</span>
     </div>
   `;
 }
@@ -296,7 +343,7 @@ function renderStatus(status) {
   const running = Boolean(status.running);
   const modeText = status.mode === 'global' ? '全局代理' : status.mode === 'direct' ? '直连' : '智能分流';
 
-  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.7'}`;
+  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.8'}`;
   $('.ring strong').textContent = running ? '已连接' : '未连接';
   $('.ring').classList.toggle('offline', !running);
   $('#nodeName').textContent = selectedNode || latestGroup?.now || activeProfile.name || '等待节点数据';
@@ -345,7 +392,7 @@ async function refreshStatus(force = false) {
   } catch {
     renderStatus({
       running: false,
-      appVersion: '0.5.7',
+      appVersion: '0.5.8',
       mode: 'rule',
       traffic: { up: 0, down: 0 },
       logs: [],
