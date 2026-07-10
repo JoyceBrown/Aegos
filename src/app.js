@@ -414,7 +414,7 @@ function renderHomeNodeSummary(rows = []) {
   if (recommendedMetaEl) {
     recommendedMetaEl.textContent = recommendedRow
       ? `${recommendedDelay}${sameNode ? ' / \u5df2\u662f\u5f53\u524d' : ''}`
-      : '-';
+      : '\u5f85\u6d4b\u901f';
   }
 
   const autoGroup = isAutoStrategyGroup(latestGroup);
