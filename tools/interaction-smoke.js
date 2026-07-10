@@ -195,6 +195,11 @@ try {
               state.activeProfileId = args.payload?.id;
               result = { profile: profiles.find((item) => item.id === args.payload?.id) };
             }
+            if (args.kind === 'renameProfile') {
+              const profile = profiles.find((item) => item.id === args.payload?.id);
+              if (profile) profile.name = args.payload?.name;
+              result = { profile };
+            }
             if (args.kind === 'removeProfile') {
               const index = profiles.findIndex((item) => item.id === args.payload?.id);
               if (index >= 0) profiles.splice(index, 1);
@@ -343,10 +348,15 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 20));
     };
     await click('#connectBtn');
+    if (document.querySelector('#connectBtn')?.textContent.trim() !== '断开连接') throw new Error('connect button did not optimistically show disconnect');
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'refreshOutboundIp')) throw new Error('first connect did not auto refresh outbound IP');
     if (document.querySelector('#quickIpBtn')) throw new Error('manual outbound IP quick action still renders');
     await click('#quickKillBtn');
     await new Promise((resolve) => setTimeout(resolve, 420));
+    if (!document.querySelector('#quickKillBtn .kill-icon')) throw new Error('disconnect protection icon is not using stable css icon');
     if (!document.querySelector('#killToggle')?.checked) throw new Error('quick kill protection did not update setting');
+    if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'updateSetting' && item.args.payload?.key === 'killSwitchEnabled')) throw new Error('quick kill protection did not call backend setting');
     await click('#quickUpdateSubBtn');
     if (!document.querySelector('[data-home-mode="region"]')?.classList.contains('active')) throw new Error('home did not default to common regions');
     if (!document.querySelector('[data-region="HK"]')?.classList.contains('active')) throw new Error('home did not default to Hong Kong region');
@@ -435,7 +445,10 @@ try {
     await click('[data-node-filter="low"]');
     if (!document.querySelector('[data-node-filter="low"]').classList.contains('active')) throw new Error('node filter tab did not become active');
     await new Promise((resolve) => setTimeout(resolve, 420));
+    const switchCallsBeforeBatchSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     await click('#batchTestBtn');
+    const switchCallsAfterBatchSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
+    if (switchCallsAfterBatchSpeed !== switchCallsBeforeBatchSpeed) throw new Error('batch speed test triggered a proxy switch');
     if (!document.querySelector('#nodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('node page delays did not update after batch speed test');
     const lowRows = [...document.querySelectorAll('#nodeRows .row[data-node]')];
     const lowDelayValues = lowRows.map((row) => Number(row.querySelector('.delay-good')?.textContent.replace(/[^0-9]/g, '')));
@@ -469,6 +482,11 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 20));
     if (!document.querySelector('[data-profile-row="direct"]')?.classList.contains('active')) throw new Error('profile row did not become active optimistically');
     await new Promise((resolve) => setTimeout(resolve, 420));
+    window.prompt = () => 'Renamed Smoke Sub';
+    await click('[data-profile-rename="url-test"]');
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    if (!document.querySelector('[data-profile-row="url-test"]')?.textContent.includes('Renamed Smoke Sub')) throw new Error('profile rename did not update row');
+    if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'renameProfile')) throw new Error('profile rename did not use background job');
     await click('[data-profile-update="url-test"]');
     if (!document.querySelector('[data-profile-row="url-test"]')?.classList.contains('is-pending')) throw new Error('profile update did not show row pending feedback immediately');
     if (document.querySelector('[data-profile-update="url-test"]')?.disabled) throw new Error('profile update button became disabled during pending feedback');
@@ -527,7 +545,7 @@ try {
     return {
       commands,
       missing: required.filter((name) => !commands.includes(name)),
-      missingJobKinds: ['startCore', 'stopCore', 'restartCore', 'setMode', 'changeProxy', 'repairSystemProxy', 'setActiveProfile', 'removeProfile', 'updateSetting', 'updateSettings', 'refreshOutboundIp', 'updateProfile', 'updateAllProfiles', 'recoverNetwork', 'addProfileUrl'].filter((name) => !jobKinds.includes(name)),
+      missingJobKinds: ['startCore', 'stopCore', 'restartCore', 'setMode', 'changeProxy', 'repairSystemProxy', 'setActiveProfile', 'removeProfile', 'renameProfile', 'updateSetting', 'updateSettings', 'refreshOutboundIp', 'updateProfile', 'updateAllProfiles', 'recoverNetwork', 'addProfileUrl'].filter((name) => !jobKinds.includes(name)),
       advancedSettings: advancedSettingsCall?.args?.payload?.updates || null,
       jobCenterText,
       notice: document.querySelector('#protectionNotice')?.textContent || ''

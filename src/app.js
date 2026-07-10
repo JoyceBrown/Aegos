@@ -336,12 +336,16 @@ function compareHomeRows(a, b) {
     || Number(a[10]) - Number(b[10]);
 }
 
+function rememberRankedRow(rows, row, compare, limit) {
+  rows.push(row);
+  rows.sort(compare);
+  if (rows.length > limit) rows.length = limit;
+}
+
 function rememberBestRow(bestRows, row) {
   const delay = Number(row[3]);
   if (!row[4] || row[7] === 'cooldown' || delay <= 0 || delay >= 100) return;
-  bestRows.push(row);
-  bestRows.sort(compareBestRows);
-  if (bestRows.length > 3) bestRows.length = 3;
+  rememberRankedRow(bestRows, row, compareBestRows, 3);
 }
 
 function delayClass(value) {
@@ -548,23 +552,27 @@ window.addEventListener('error', (event) => {
   window.addEventListener(eventName, recordUserInteraction, { capture: true, passive: true });
 });
 
-function setButtonBusy(button, busy, label) {
+function setButtonBusy(button, busy, label, options = {}) {
   if (!button) return;
   if (!button.dataset.idleText) button.dataset.idleText = button.textContent;
   button.classList.toggle('busy', busy);
   button.classList.toggle('is-pending', busy);
   button.setAttribute('aria-busy', busy ? 'true' : 'false');
   button.dataset.busy = busy ? 'true' : '';
-  button.textContent = busy ? label : button.dataset.idleText;
+  if (options.preserveContent) {
+    button.dataset.busyLabel = busy ? label : '';
+  } else {
+    button.textContent = busy ? label : button.dataset.idleText;
+  }
 }
 
-async function runButtonAction(button, busyLabel, action) {
+async function runButtonAction(button, busyLabel, action, options = {}) {
   if (button?.dataset.busy === 'true') return null;
-  setButtonBusy(button, true, busyLabel);
+  setButtonBusy(button, true, busyLabel, options);
   try {
     return await runForegroundAction(action);
   } finally {
-    setButtonBusy(button, false);
+    setButtonBusy(button, false, '', options);
   }
 }
 
@@ -922,7 +930,7 @@ function renderRows(items = []) {
       if (nodeRows.length < nodeRenderLimit) nodeRows.push(row);
     }
     if (rowMatchesHomeFilter(row)) {
-      homeRows.push(row);
+      rememberRankedRow(homeRows, row, compareHomeRows, homeNodeRenderLimit);
     }
   }
 
@@ -937,7 +945,7 @@ function renderRows(items = []) {
     ? `<p class="empty">\u5df2\u663e\u793a\u524d ${nodeRows.length} \u4e2a\u8282\u70b9\uff0c\u8bf7\u641c\u7d22\u6216\u7b5b\u9009\u7f29\u5c0f\u8303\u56f4\u3002</p>`
     : '';
   $('#nodeRows').innerHTML = nodeRows.map(renderNodeRow).join('') + overflowNotice || '<p class="empty">\u6682\u65e0\u7b26\u5408\u6761\u4ef6\u7684\u8282\u70b9\u3002</p>';
-  const sortedHomeRows = homeRows.sort(compareHomeRows);
+  const sortedHomeRows = homeRows;
   const homeFallbackRows = homeNodeMode === 'frequent' || homeNodeMode === 'region' ? fallbackBestRows : [];
   const homeEmptyText = homeNodeMode === 'favorite'
     ? '\u6682\u65e0\u6536\u85cf\u8282\u70b9\u3002'
@@ -1015,6 +1023,7 @@ renderProfiles = function renderProfiles() {
       <small class="profile-source-summary">${escapeHtml(summary)}</small>
       <div class="card-actions">
         <button data-profile-switch="${escapeHtml(profile.id)}">\u542f\u7528</button>
+        <button data-profile-rename="${escapeHtml(profile.id)}" ${profile.id === 'direct' ? 'disabled' : ''}>\u91cd\u547d\u540d</button>
         <button data-profile-update="${escapeHtml(profile.id)}">\u66f4\u65b0</button>
         <button data-profile-remove="${escapeHtml(profile.id)}" ${profile.id === 'direct' ? 'disabled' : ''}>\u5220\u9664</button>
       </div>
@@ -1572,6 +1581,14 @@ async function updateProfileJob(id) {
   });
 }
 
+async function renameProfileJob(id, name) {
+  return runBackgroundJob('renameProfile', { id, name }, {
+    pendingNotice: '\u6b63\u5728\u540e\u53f0\u91cd\u547d\u540d\u8ba2\u9605...',
+    successNotice: '\u8ba2\u9605\u5df2\u91cd\u547d\u540d\u3002',
+    failureNotice: (err) => `\u8ba2\u9605\u91cd\u547d\u540d\u5931\u8d25\uff1a${err.message || err}`
+  });
+}
+
 async function updateAllProfilesJob() {
   return runBackgroundJob('updateAllProfiles', {}, {
     pendingNotice: '正在后台更新全部订阅...',
@@ -1639,6 +1656,7 @@ async function corePowerJob(kind, options = {}) {
     onSuccess: async () => {
       await refreshStatus(true);
       await refreshNodes(true);
+      if (kind === 'startCore') await refreshOutboundIpAfterNodeChange();
     },
     successNotice: options.successNotice,
     failureNotice: options.failureNotice
@@ -1689,7 +1707,11 @@ async function updateActiveProfile() {
 
 async function toggleCore() {
   const button = $('#connectBtn');
-  await runButtonAction(button, latestStatus?.running ? '正在断开...' : '正在连接...', async () => {
+  if (button?.dataset.busy === 'true') return;
+  button.dataset.busy = 'true';
+  button.classList.add('is-pending');
+  button.setAttribute('aria-busy', 'true');
+  try {
     setNotice(latestStatus?.running ? '正在断开核心...' : '正在启动核心...');
     const stopping = Boolean(latestStatus?.running);
     await corePowerJob(stopping ? 'stopCore' : 'startCore', {
@@ -1698,7 +1720,14 @@ async function toggleCore() {
       failureNotice: (err) => `核心操作失败：${err.message || err}`
     });
     setNotice(latestStatus?.running ? '已连接，核心正在运行。' : '已断开连接。');
-  }).catch((err) => setNotice(`操作失败：${err.message || err}`));
+  } catch (err) {
+    setNotice(`操作失败：${err.message || err}`);
+  } finally {
+    button.dataset.busy = '';
+    button.classList.remove('is-pending');
+    button.setAttribute('aria-busy', 'false');
+    if (latestStatus) renderStatus(latestStatus);
+  }
 }
 
 function toggleModeMenu() {
@@ -2109,7 +2138,7 @@ $('#refreshStatusBtn').onclick = async () => { await refreshStatus(true); await 
 if ($('#refreshNodesBtn')) $('#refreshNodesBtn').onclick = refreshNodes;
 $('#modeBtn').onclick = toggleModeMenu;
 $('#quickModeBtn').onclick = toggleModeMenu;
-$('#quickKillBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '切换中...', () => updateSetting('killSwitchEnabled', !latestStatus?.settings?.killSwitchEnabled)));
+$('#quickKillBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '切换中...', () => updateSetting('killSwitchEnabled', !latestStatus?.settings?.killSwitchEnabled), { preserveContent: true }));
 $('#quickTestBtn').onclick = (event) => runButtonAction(event.currentTarget, '测速中...', testNodes);
 $('#smartRecoverBtn').onclick = (event) => runButtonAction(event.currentTarget, '自愈中...', () => recoverNetworkJob(true, true));
 $('#quickUpdateSubBtn').onclick = (event) => runButtonAction(event.currentTarget, '更新中...', updateActiveProfile);
@@ -2369,6 +2398,33 @@ document.body.addEventListener('click', async (event) => {
         pendingNotice: '已选择订阅，正在后台应用配置...',
         successNotice: '订阅已切换并应用。',
         failureNotice: (err) => `订阅切换失败：${err.message || err}`
+      });
+      return;
+    }
+    const profileRename = event.target.closest('[data-profile-rename]')?.dataset.profileRename;
+    if (profileRename) {
+      const profile = (latestStatus?.settings?.profiles || []).find((item) => item.id === profileRename);
+      const nextName = window.prompt('\u8f93\u5165\u65b0\u8ba2\u9605\u540d\u79f0', profile?.name || '');
+      if (nextName == null) return;
+      const trimmed = nextName.trim();
+      if (!trimmed) {
+        setNotice('\u8ba2\u9605\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a\u3002');
+        return;
+      }
+      await runOptimisticAction({
+        apply: () => optimisticProfilePatch(profileRename, { name: trimmed }),
+        commit: async () => {
+          const result = await renameProfileJob(profileRename, trimmed);
+          if (!result) throw new Error(lastBackgroundJobError || 'profile rename failed');
+          return result;
+        },
+        refresh: async () => {
+          await refreshStatus(true);
+          renderProfiles();
+        },
+        pendingNotice: '\u8ba2\u9605\u540d\u79f0\u5df2\u66f4\u65b0\uff0c\u6b63\u5728\u540e\u53f0\u4fdd\u5b58...',
+        successNotice: '\u8ba2\u9605\u5df2\u91cd\u547d\u540d\u3002',
+        failureNotice: (err) => `\u8ba2\u9605\u91cd\u547d\u540d\u5931\u8d25\uff1a${err.message || err}`
       });
       return;
     }

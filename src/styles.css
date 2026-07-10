@@ -782,6 +782,32 @@ h1 {
   font-weight: 900;
 }
 
+.quick-row .kill-icon {
+  position: relative;
+  width: 18px;
+  min-width: 18px;
+  padding: 0;
+  border-radius: 0;
+  clip-path: polygon(50% 0%, 86% 14%, 78% 70%, 50% 100%, 22% 70%, 14% 14%);
+  background: linear-gradient(135deg, #f87171, #ef4444);
+}
+
+.quick-row .kill-icon::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 8px;
+  width: 8px;
+  height: 2px;
+  border-radius: 999px;
+  background: #fff;
+  transform: rotate(-35deg);
+}
+
+.quick-row button.active .kill-icon {
+  background: linear-gradient(135deg, #34d399, #16a34a);
+}
+
 .quick-profile-menu {
   position: absolute;
   z-index: 24;

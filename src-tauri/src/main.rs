@@ -2372,13 +2372,36 @@ New-Item -ItemType Directory -Path (Split-Path -Parent $snapshotPath) -Force | O
 if (-not (Test-Path -LiteralPath $snapshotPath)) {{
   Get-NetFirewallProfile | Select-Object Name,DefaultOutboundAction | ConvertTo-Json | Set-Content -LiteralPath $snapshotPath -Encoding UTF8
 }}
-Get-NetFirewallRule -Group '{}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-{}
-Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Block
+try {{
+  Get-NetFirewallRule -Group '{}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+  {}
+  Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Block
+  $rules = @(Get-NetFirewallRule -Group '{}' -ErrorAction SilentlyContinue)
+  if ($rules.Count -lt 1) {{ throw '断网保护未创建 Aegos 放行规则' }}
+  $badProfiles = @(Get-NetFirewallProfile | Where-Object {{ $_.DefaultOutboundAction -ne 'Block' }})
+  if ($badProfiles.Count -gt 0) {{ throw '断网保护未成功阻止直连出站流量' }}
+}} catch {{
+  $failure = $_.Exception.Message
+  try {{
+    if (Test-Path -LiteralPath $snapshotPath) {{
+      $profiles = Get-Content -LiteralPath $snapshotPath -Raw | ConvertFrom-Json
+      foreach ($profile in @($profiles)) {{
+        Set-NetFirewallProfile -Profile $profile.Name -DefaultOutboundAction $profile.DefaultOutboundAction
+      }}
+      Remove-Item -LiteralPath $snapshotPath -Force
+    }} else {{
+      Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Allow
+    }}
+    Get-NetFirewallRule -Group '{}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+  }} catch {{}}
+  throw $failure
+}}
 "#,
             ps_escape(snapshot.to_string_lossy()),
             ps_escape(&group),
-            allow_rules
+            allow_rules,
+            ps_escape(&group),
+            ps_escape(&group)
         )
     } else {
         format!(
@@ -2397,8 +2420,11 @@ if (Test-Path -LiteralPath $snapshotPath) {{
   Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Allow
 }}
 Get-NetFirewallRule -Group '{}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+$rules = @(Get-NetFirewallRule -Group '{}' -ErrorAction SilentlyContinue)
+if ($rules.Count -gt 0) {{ throw '断网保护规则未完全关闭' }}
 "#,
             ps_escape(snapshot.to_string_lossy()),
+            ps_escape(&group),
             ps_escape(&group)
         )
     }
@@ -4686,6 +4712,27 @@ impl CoreManager {
         Ok(profile)
     }
 
+    fn rename_profile(&mut self, id: &str, name: &str) -> Result<Profile, String> {
+        let next_name = name.trim();
+        if next_name.is_empty() {
+            return Err("订阅名称不能为空".to_string());
+        }
+        if next_name.chars().count() > 80 {
+            return Err("订阅名称不能超过 80 个字符".to_string());
+        }
+        let profile = self
+            .settings
+            .profiles
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or_else(|| "Profile not found".to_string())?;
+        profile.name = next_name.to_string();
+        let renamed = profile.clone();
+        self.save_settings()?;
+        self.add_log(format!("Profile renamed: {} -> {}", renamed.id, renamed.name), "info");
+        Ok(renamed)
+    }
+
     fn remove_profile(&mut self, id: &str) -> Result<bool, String> {
         if id == "direct" {
             return Err("内置直连配置不能删除".to_string());
@@ -5328,6 +5375,7 @@ fn lock_operation_queue<'a>(
 fn job_label(kind: &str) -> String {
     match kind {
         "addProfileUrl" => "导入订阅",
+        "renameProfile" => "重命名订阅",
         "updateProfile" => "更新订阅",
         "recoverNetwork" => "网络自愈",
         "refreshOutboundIp" => "刷新落地 IP",
@@ -5417,6 +5465,7 @@ fn start_job(
         kind.as_str(),
         "addProfileUrl"
             | "updateProfile"
+            | "renameProfile"
             | "updateAllProfiles"
             | "recoverNetwork"
             | "refreshOutboundIp"
@@ -5489,6 +5538,25 @@ fn start_job(
                             .map(|profile| json!({ "profile": profile }))
                     });
                 profile_id
+            }
+            "renameProfile" => {
+                let result = payload
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| "Missing profile id".to_string())
+                    .and_then(|profile_id| {
+                        let name = payload
+                            .get("name")
+                            .and_then(|value| value.as_str())
+                            .ok_or_else(|| "Missing profile name".to_string())?;
+                        set_job_state(&jobs, &id, "running", 1, 2, "正在重命名订阅");
+                        let _operation = lock_operation_queue(&operations, "renameProfile")?;
+                        core.lock()
+                            .unwrap()
+                            .rename_profile(profile_id, name)
+                            .map(|profile| json!({ "profile": profile }))
+                    });
+                result
             }
             "updateAllProfiles" => {
                 update_all_profiles_detached(core.clone(), operations.clone(), jobs.clone(), &id)
