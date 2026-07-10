@@ -17,9 +17,12 @@
 - `npm run smoke:interactions`
 - `npm run smoke:ui`
 - `npm run smoke:perf`
+- `npm run check`
+- `npm run audit:release`
+- `npm run build`
 
 ## Artifact
 
-Source-only checkpoint. No installer was produced for this small version.
+`src-tauri/target/release/bundle/nsis/Aegos_2.6.8_x64-setup.exe`
 
-SHA-256: Source-only
+SHA-256: `136ab587083697f07e0c1b4be6b2a188bcee1f4fcaedf67fe71196ae1b84b330`
