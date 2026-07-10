@@ -27,6 +27,36 @@ let nodeBusy = false;
 let lastStatusAt = 0;
 let homeRegionFilter = '';
 let nodePageFilter = 'all';
+let speedTestTimer = null;
+let recoveryBusy = false;
+let lastRecoveryAt = 0;
+let pageLoadTimer = null;
+let pageLoadToken = 0;
+let foregroundBusy = 0;
+let backgroundJobBusy = 0;
+let lastBackgroundJobError = '';
+let latestDiagnostics = null;
+let jobCenterSyncBusy = false;
+let jobCenterLastSyncAt = 0;
+const jobRecords = new Map();
+const terminalJobStates = new Set(['succeeded', 'failed', 'cancelled']);
+
+const uiStore = {
+  state: {
+    page: 'home',
+    homeRegionFilter: '',
+    nodePageFilter: 'all'
+  },
+  listeners: new Set(),
+  set(patch) {
+    this.state = { ...this.state, ...patch };
+    this.listeners.forEach((listener) => listener(this.state));
+  },
+  subscribe(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+};
 
 const regionNames = {
   HK: '\u9999\u6e2f',
@@ -52,6 +82,12 @@ function protocolLabel(value = '') {
   return value ? String(value) : 'DIRECT';
 }
 
+function modeLabel(mode = '') {
+  if (mode === 'global') return '\u5168\u5c40\u4ee3\u7406';
+  if (mode === 'direct') return '\u76f4\u8fde';
+  return '\u667a\u80fd\u5206\u6d41';
+}
+
 function formatProxyPort(endpoint = '') {
   const text = String(endpoint || '').trim();
   const match = text.match(/:(\d{2,5})$/);
@@ -65,6 +101,32 @@ function $(selector) {
 function $all(selector) {
   return [...document.querySelectorAll(selector)];
 }
+
+const defaultAppVersion = ($('#appVersionLabel')?.textContent || 'v0.0.0').replace(/^v/i, '').trim() || '0.0.0';
+const defaultMixedPort = 7891;
+const defaultControllerPort = 19091;
+const speedTestPollMs = 300;
+const nodeRenderLimit = 60;
+const homeNodeRenderLimit = 8;
+const pageNavSettleMs = 550;
+const pageCacheTtlMs = {
+  connections: 15000,
+  diagnostics: 30000,
+  profiles: 15000,
+  logs: 5000
+};
+const navButtons = new Map($all('.nav button').map((button) => [button.dataset.page, button]));
+const pagePanels = new Map($all('.page').map((panel) => [panel.dataset.pagePanel, panel]));
+let renderedPage = '';
+let renderedHomeRegionFilter = null;
+let renderedNodePageFilter = null;
+let lastNavAt = 0;
+const pageCacheState = {
+  connections: { loaded: false, loading: false, updatedAt: 0 },
+  diagnostics: { loaded: false, loading: false, updatedAt: 0 },
+  profiles: { loaded: false, loading: false, updatedAt: 0 },
+  logs: { loaded: false, loading: false, updatedAt: 0 }
+};
 
 function invoke(command, args = {}) {
   const bridge = window.__TAURI__?.core?.invoke;
@@ -120,7 +182,7 @@ function normalizeRows(items = []) {
           item.name,
           item.server || item.name,
           delay,
-          item.alive !== false || delay < 0,
+          item.alive !== false || delay <= 0,
           item.name === selectedNode || item.name === latestGroup?.now,
           item.type || item.protocol || 'unknown'
         ];
@@ -131,7 +193,7 @@ function normalizeRows(items = []) {
 function filterRows(rows, filter) {
   if (filter === 'low') {
     return [...rows]
-      .filter(([, , , delay, alive]) => alive && Number(delay) >= 0)
+      .filter(([, , , delay, alive]) => alive && Number(delay) > 0 && Number(delay) < 100)
       .sort((a, b) => Number(a[3]) - Number(b[3]));
   }
   if (filter === 'asia') return rows.filter(([region]) => ['HK', 'JP', 'SG', 'TW'].includes(region));
@@ -139,6 +201,14 @@ function filterRows(rows, filter) {
   if (filter === 'north-america') return rows.filter(([region]) => ['US'].includes(region));
   if (filter === 'favorite' || filter === 'recent') return rows.filter((row) => row[5]);
   return rows;
+}
+
+function delayClass(value) {
+  const delay = Number(value);
+  if (delay > 0 && delay < 100) return 'delay-good';
+  if (delay >= 100) return 'delay-bad';
+  if (delay === 0) return 'delay-testing';
+  return 'delay-muted';
 }
 
 /*
@@ -183,14 +253,16 @@ function renderHomeNodeRow([region, name, host, delay, alive, active]) {
 
 function renderNodeRow([region, name, host, delay, alive, active]) {
   const delayValue = Number(delay);
-  const statusText = delayValue >= 0 ? '\u53ef\u7528' : (alive ? '\u5f85\u6d4b\u901f' : '\u4e0d\u53ef\u7528');
+  const delayText = delayValue > 0 ? `${Math.round(delayValue)} ms` : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : '-');
+  const delayState = delayClass(delayValue);
+  const statusText = delayValue > 0 ? '\u53ef\u7528' : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : (alive ? '\u5f85\u6d4b\u901f' : '\u4e0d\u53ef\u7528'));
   return `
     <div class="row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="select ${escapeHtml(name)}">
       <span class="radio"></span>
       <span class="star">&#9734;</span>
       <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
       <span>${escapeHtml(host)}</span>
-      <span>${delayValue >= 0 ? `${Math.round(delayValue)} ms` : '-'}</span>
+      <span class="${delayState}">${delayText}</span>
       <span>0.0%</span>
       <span class="load"><span class="bar"></span>38%</span>
       <span>-</span>
@@ -206,22 +278,37 @@ function renderNodeRow([region, name, host, delay, alive, active]) {
 
 function renderHomeNodeRow([region, name, host, delay, alive, active]) {
   const delayValue = Number(delay);
-  const statusText = delayValue >= 0 ? '\u53ef\u7528' : (alive ? '\u5f85\u6d4b\u901f' : '\u4e0d\u53ef\u7528');
+  const delayText = delayValue > 0 ? `${Math.round(delayValue)} ms` : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : '-');
+  const delayState = delayClass(delayValue);
+  const statusText = delayValue > 0 ? '\u53ef\u7528' : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : (alive ? '\u5f85\u6d4b\u901f' : '\u4e0d\u53ef\u7528'));
   return `
     <div class="row home-row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="select ${escapeHtml(name)}">
       <span class="radio"></span>
       <span class="star">&#9734;</span>
       <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
       <span>${escapeHtml(host)}</span>
-      <span>${delayValue >= 0 ? `${Math.round(delayValue)} ms` : '-'}</span>
+      <span class="${delayState}">${delayText}</span>
       <span>0.0%</span>
       <span class="available">${escapeHtml(statusText)}</span>
     </div>
   `;
 }
 
+function noticeLevel(message = '') {
+  const text = String(message).toLowerCase();
+  if (/失败|异常|错误|不可用|缺失|failed|error|exception/.test(text)) return 'bad';
+  if (/需要|警告|warning|not elevated|require|权限|冲突/.test(text)) return 'warn';
+  if (/正在|中\.\.\.|请求|测速|导入|更新|同步|running|pending/.test(text)) return 'info';
+  return 'ok';
+}
+
 function setNotice(message) {
-  $('#protectionNotice').textContent = message;
+  const notice = $('#protectionNotice');
+  const level = noticeLevel(message);
+  notice.textContent = message;
+  notice.classList.toggle('is-bad', level === 'bad');
+  notice.classList.toggle('is-warn', level === 'warn');
+  notice.classList.toggle('is-info', level === 'info');
 }
 
 window.addEventListener('unhandledrejection', (event) => {
@@ -235,17 +322,239 @@ window.addEventListener('error', (event) => {
 function setButtonBusy(button, busy, label) {
   if (!button) return;
   if (!button.dataset.idleText) button.dataset.idleText = button.textContent;
-  button.disabled = busy;
   button.classList.toggle('busy', busy);
+  button.classList.toggle('is-pending', busy);
+  button.setAttribute('aria-busy', busy ? 'true' : 'false');
+  button.dataset.busy = busy ? 'true' : '';
   button.textContent = busy ? label : button.dataset.idleText;
 }
 
 async function runButtonAction(button, busyLabel, action) {
+  if (button?.dataset.busy === 'true') return null;
   setButtonBusy(button, true, busyLabel);
+  try {
+    return await runForegroundAction(action);
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function runForegroundAction(action) {
+  foregroundBusy += 1;
   try {
     return await action();
   } finally {
-    setButtonBusy(button, false);
+    foregroundBusy = Math.max(0, foregroundBusy - 1);
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeJob(job = {}) {
+  const updatedAt = Number(job.updated_at || job.updatedAt || job.started_at || job.startedAt || Math.floor(Date.now() / 1000));
+  return {
+    ...job,
+    state: job.state || 'running',
+    label: job.label || job.kind || 'Job',
+    message: job.message || job.error || '',
+    progress: Number(job.progress || 0),
+    total: Number(job.total || 0),
+    updatedAt
+  };
+}
+
+function rememberJob(job) {
+  if (!job?.id) return;
+  const existing = jobRecords.get(job.id) || {};
+  const normalized = normalizeJob({
+    ...existing,
+    ...job,
+    payload: job.payload ?? existing.payload
+  });
+  jobRecords.set(normalized.id, normalized);
+  const sorted = [...jobRecords.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  sorted.slice(12).forEach((item) => jobRecords.delete(item.id));
+  renderJobCenter();
+}
+
+function jobStateLabel(state = '') {
+  if (state === 'succeeded') return '\u5b8c\u6210';
+  if (state === 'failed') return '\u5931\u8d25';
+  if (state === 'cancelled') return '\u5df2\u53d6\u6d88';
+  if (state === 'queued') return '\u6392\u961f';
+  return '\u8fd0\u884c\u4e2d';
+}
+
+function jobProgressText(job) {
+  const total = Number(job.total || 0);
+  const progress = Number(job.progress || 0);
+  if (total > 1) return `${Math.min(progress, total)}/${total}`;
+  return jobStateLabel(job.state);
+}
+
+function renderJobCenter() {
+  const box = $('#jobRows');
+  if (!box) return;
+  const jobs = [...jobRecords.values()]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 5);
+  if (!jobs.length) {
+    box.innerHTML = '<p class="empty">&#26242;&#26080;&#21518;&#21488;&#20219;&#21153;</p>';
+    return;
+  }
+  box.innerHTML = jobs.map((job) => {
+    const state = terminalJobStates.has(job.state) ? job.state : 'running';
+    const action = state === 'running'
+      ? `<button data-job-cancel="${escapeHtml(job.id)}">&#21462;&#28040;</button>`
+      : state !== 'succeeded'
+        ? `<button data-job-retry="${escapeHtml(job.id)}">&#37325;&#35797;</button>`
+        : '';
+    return `
+      <article class="job-row ${escapeHtml(state)}">
+        <div>
+          <b>${escapeHtml(job.label)}</b>
+          <small>${escapeHtml(job.message || job.kind || '-')}</small>
+        </div>
+        <span>${escapeHtml(jobProgressText(job))}</span>
+        ${action}
+      </article>
+    `;
+  }).join('');
+}
+
+async function syncJobCenter(force = false) {
+  const hasActive = [...jobRecords.values()].some((job) => !terminalJobStates.has(job.state));
+  if (!force && !hasActive) return;
+  if (!force && Date.now() - jobCenterLastSyncAt < 1800) return;
+  if (jobCenterSyncBusy) return;
+  jobCenterSyncBusy = true;
+  jobCenterLastSyncAt = Date.now();
+  try {
+    const jobs = await invoke('job_status', {});
+    if (Array.isArray(jobs)) jobs.forEach(rememberJob);
+  } catch {
+  } finally {
+    jobCenterSyncBusy = false;
+  }
+}
+
+async function requestJobCancel(id) {
+  if (!id) return;
+  try {
+    const job = await invoke('cancel_job', { id });
+    rememberJob(job);
+    setNotice('已发送后台任务取消请求。');
+  } catch (err) {
+    setNotice(`取消后台任务失败：${err.message || err}`);
+  }
+}
+
+async function retryJob(id) {
+  const job = jobRecords.get(id);
+  if (!job?.kind) return;
+  setNotice(`正在重试后台任务：${job.label || job.kind}`);
+  await runBackgroundJob(job.kind, job.payload || {});
+}
+
+async function runBackgroundJob(kind, payload = {}, options = {}) {
+  backgroundJobBusy += 1;
+  try {
+    if (options.pendingNotice) setNotice(options.pendingNotice);
+    const started = await invoke('start_job', { kind, payload });
+    rememberJob({ ...started, payload });
+    let job = started;
+    while (job && !['succeeded', 'failed', 'cancelled'].includes(job.state)) {
+      await sleep(options.pollMs || 350);
+      job = await invoke('job_status', { id: started.id });
+      rememberJob(job);
+      if (options.progressNotice) {
+        const message = options.progressNotice(job);
+        if (message) setNotice(message);
+      } else if (job?.message) {
+        const total = Number(job.total || 0);
+        const progress = Number(job.progress || 0);
+        setNotice(total > 1 ? `${job.label}：${job.message} ${progress}/${total}` : `${job.label}：${job.message}`);
+      }
+    }
+    if (job?.state === 'succeeded') {
+      rememberJob(job);
+      const value = job.result;
+      lastBackgroundJobError = '';
+      if (options.onSuccess) await options.onSuccess(value, job);
+      if (options.successNotice) setNotice(resolveMessage(options.successNotice, value));
+      return value;
+    }
+    const reason = job?.error || job?.message || '后台任务失败';
+    rememberJob(job);
+    lastBackgroundJobError = reason;
+    if (options.failureNotice) setNotice(resolveMessage(options.failureNotice, new Error(reason)));
+    else setNotice(`${job?.label || '后台任务'}失败：${reason}`);
+    return null;
+  } catch (err) {
+    lastBackgroundJobError = err.message || String(err);
+    if (options.failureNotice) setNotice(resolveMessage(options.failureNotice, err));
+    else setNotice(`后台任务异常：${err.message || err}`);
+    return null;
+  } finally {
+    backgroundJobBusy = Math.max(0, backgroundJobBusy - 1);
+  }
+}
+
+function cloneUiValue(value) {
+  if (value == null) return value;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function snapshotUiState() {
+  return {
+    latestStatus: cloneUiValue(latestStatus),
+    latestGroup: cloneUiValue(latestGroup),
+    selectedNode,
+    uiState: cloneUiValue(uiStore.state),
+    homeRegionFilter,
+    nodePageFilter
+  };
+}
+
+function restoreUiState(snapshot) {
+  latestStatus = cloneUiValue(snapshot.latestStatus);
+  latestGroup = cloneUiValue(snapshot.latestGroup);
+  selectedNode = snapshot.selectedNode || '';
+  uiStore.set(snapshot.uiState || {
+    page: uiStore.state.page,
+    homeRegionFilter: snapshot.homeRegionFilter || '',
+    nodePageFilter: snapshot.nodePageFilter || 'all'
+  });
+  if (latestStatus) renderStatus(latestStatus);
+  renderRows(latestGroup?.items || []);
+}
+
+function resolveMessage(message, value) {
+  return typeof message === 'function' ? message(value) : message;
+}
+
+async function runOptimisticAction(options) {
+  const snapshot = options.snapshot?.() || snapshotUiState();
+  foregroundBusy += 1;
+  try {
+    options.apply?.(snapshot);
+    const pendingNotice = resolveMessage(options.pendingNotice);
+    if (pendingNotice) setNotice(pendingNotice);
+    const result = await options.commit?.();
+    await options.refresh?.(result);
+    const successNotice = resolveMessage(options.successNotice, result);
+    if (successNotice) setNotice(successNotice);
+    return result;
+  } catch (err) {
+    if (options.rollback) options.rollback(snapshot, err);
+    else restoreUiState(snapshot);
+    const failureNotice = resolveMessage(options.failureNotice, err) || `操作失败：${err.message || err}`;
+    setNotice(failureNotice);
+    return null;
+  } finally {
+    foregroundBusy = Math.max(0, foregroundBusy - 1);
   }
 }
 
@@ -253,21 +562,101 @@ function isPageActive(page) {
   return document.querySelector(`[data-page-panel="${page}"]`)?.classList.contains('active');
 }
 
+function runWhenIdle(task, timeout = 1200) {
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(task, { timeout });
+    return;
+  }
+  setTimeout(task, 0);
+}
+
+function markPageCache(page) {
+  if (!pageCacheState[page]) return;
+  pageCacheState[page].loaded = true;
+  pageCacheState[page].loading = false;
+  pageCacheState[page].updatedAt = Date.now();
+}
+
+function shouldRefreshPageCache(page) {
+  const state = pageCacheState[page];
+  if (!state || state.loading) return false;
+  return !state.loaded || Date.now() - state.updatedAt > (pageCacheTtlMs[page] || 15000);
+}
+
+function renderUiState(state = uiStore.state) {
+  homeRegionFilter = state.homeRegionFilter || '';
+  nodePageFilter = state.nodePageFilter || 'all';
+  const page = pageNames[state.page] ? state.page : 'home';
+  if (renderedPage !== page) {
+    navButtons.get(renderedPage)?.classList.remove('active');
+    pagePanels.get(renderedPage)?.classList.remove('active');
+    navButtons.get(page)?.classList.add('active');
+    pagePanels.get(page)?.classList.add('active');
+    renderedPage = page;
+  }
+  $('#pageTitle').textContent = pageNames[page];
+  if (renderedHomeRegionFilter !== homeRegionFilter) {
+    $all('[data-region]').forEach((button) => button.classList.toggle('active', button.dataset.region === homeRegionFilter));
+    renderedHomeRegionFilter = homeRegionFilter;
+  }
+  if (renderedNodePageFilter !== nodePageFilter) {
+    $all('[data-node-filter]').forEach((button) => button.classList.toggle('active', button.dataset.nodeFilter === nodePageFilter));
+    renderedNodePageFilter = nodePageFilter;
+  }
+}
+
 function setPage(page) {
   const next = pageNames[page] ? page : 'home';
-  $all('.nav button').forEach((button) => button.classList.toggle('active', button.dataset.page === next));
-  $all('.page').forEach((panel) => panel.classList.toggle('active', panel.dataset.pagePanel === next));
-  $('#pageTitle').textContent = pageNames[next];
-  if (next === 'connections') refreshConnections();
-  if (next === 'diagnostics') runDiagnostics(false);
-  if (next === 'logs') renderLogs();
-  if (next === 'profiles') renderProfiles();
+  if (uiStore.state.page === next) return;
+  lastNavAt = Date.now();
+  uiStore.set({ page: next });
+  schedulePageLoad(next);
+}
+
+function schedulePageLoad(page) {
+  pageLoadToken += 1;
+  const token = pageLoadToken;
+  if (pageLoadTimer) clearTimeout(pageLoadTimer);
+  pageLoadTimer = setTimeout(() => {
+    if (token !== pageLoadToken || uiStore.state.page !== page) return;
+    if (Date.now() - lastNavAt < pageNavSettleMs) return;
+    runWhenIdle(() => {
+      if (token !== pageLoadToken || uiStore.state.page !== page) return;
+      if (foregroundBusy > 0) return;
+      if (page === 'connections' && shouldRefreshPageCache(page)) refreshConnections(token);
+      if (page === 'diagnostics' && shouldRefreshPageCache(page)) runDiagnostics(false, token);
+      if (page === 'logs' && shouldRefreshPageCache(page)) {
+        renderLogs();
+        markPageCache(page);
+      }
+      if (page === 'profiles' && shouldRefreshPageCache(page)) {
+        renderProfiles();
+        markPageCache(page);
+      }
+    });
+  }, pageNavSettleMs);
+}
+
+let rowRenderFrame = null;
+let pendingRowItems = null;
+const rowRenderSettleMs = 320;
+
+function scheduleRowsRender(items = latestGroup?.items || []) {
+  pendingRowItems = items;
+  if (rowRenderFrame) clearTimeout(rowRenderFrame);
+  const run = () => {
+    rowRenderFrame = null;
+    const nextItems = pendingRowItems || [];
+    pendingRowItems = null;
+    renderRows(nextItems);
+  };
+  rowRenderFrame = setTimeout(run, rowRenderSettleMs);
 }
 
 function renderRows(items = []) {
   const rows = normalizeRows(items);
   const recommended = rows
-    .filter(([, , , delay, alive]) => alive && Number(delay) >= 0)
+    .filter(([, , , delay, alive]) => alive && Number(delay) > 0)
     .sort((a, b) => Number(a[3]) - Number(b[3]))
     .slice(0, 3);
   const bestRows = recommended.length ? recommended : rows.slice(0, 3);
@@ -275,7 +664,7 @@ function renderRows(items = []) {
     <button class="best-chip" data-node="${escapeHtml(name)}">
       <span class="flag">${escapeHtml(region)}</span>
       <b>${escapeHtml(regionLabel(region))}</b>
-      <small>${Number(delay) >= 0 ? `${Math.round(delay)} ms` : '待测速'} · 稳定性高</small>
+      <small>${Number(delay) > 0 ? `${Math.round(delay)} ms` : Number(delay) === 0 ? '测速中' : '待测速'} · 稳定性高</small>
     </button>
   `).join('');
 
@@ -286,7 +675,7 @@ function renderRows(items = []) {
   if (activeRow?.[1]) $('#nodeName').textContent = activeRow[1];
 
   const nodeRows = filterRows(rows, nodePageFilter);
-  $('#nodeRows').innerHTML = (nodeRows.length ? nodeRows : rows).map(renderNodeRow).join('');
+  $('#nodeRows').innerHTML = nodeRows.map(renderNodeRow).join('') || '<p class="empty">暂无符合条件的节点。</p>';
 
   const homeRows = homeRegionFilter ? rows.filter(([region]) => region === homeRegionFilter) : rows.slice(0, 6);
   $('#homeNodeRows').innerHTML = (homeRows.length ? homeRows : rows.slice(0, 6))
@@ -294,11 +683,48 @@ function renderRows(items = []) {
     .join('');
 }
 
+renderRows = function renderRows(items = []) {
+  const rows = normalizeRows(items);
+  const recommended = rows
+    .filter(([, , , delay, alive]) => alive && Number(delay) > 0)
+    .sort((a, b) => Number(a[3]) - Number(b[3]))
+    .slice(0, 3);
+  const bestRows = recommended.length ? recommended : rows.slice(0, 3);
+  $('#bestNodeList').innerHTML = bestRows.map(([region, name, , delay]) => `
+    <button class="best-chip" data-node="${escapeHtml(name)}">
+      <span class="flag">${escapeHtml(region)}</span>
+      <b>${escapeHtml(regionLabel(region))}</b>
+      <small>${Number(delay) > 0 ? `${Math.round(delay)} ms` : Number(delay) === 0 ? '测速中' : '待测速'} · 稳定性高</small>
+    </button>
+  `).join('');
+
+  const activeRow = rows.find((row) => row[5]) || bestRows[0];
+  currentProtocol = protocolLabel(activeRow?.[6] || 'direct');
+  $('#protocolState').textContent = currentProtocol;
+  $('#protocolMetric').textContent = currentProtocol;
+  if (activeRow?.[1]) $('#nodeName').textContent = activeRow[1];
+
+  const nodeRows = filterRows(rows, nodePageFilter);
+  const visibleNodeRows = nodeRows.slice(0, nodeRenderLimit);
+  const overflowNotice = nodeRows.length > visibleNodeRows.length
+    ? `<p class="empty">已显示前 ${visibleNodeRows.length} 个节点，请搜索或筛选缩小范围。</p>`
+    : '';
+  $('#nodeRows').innerHTML = visibleNodeRows.map(renderNodeRow).join('') + overflowNotice || '<p class="empty">暂无符合条件的节点。</p>';
+
+  const homeRows = homeRegionFilter
+    ? rows.filter(([region]) => region === homeRegionFilter).slice(0, homeNodeRenderLimit)
+    : rows.slice(0, 6);
+  $('#homeNodeRows').innerHTML = (homeRows.length ? homeRows : rows.slice(0, 6))
+    .map(renderHomeNodeRow)
+    .join('');
+};
+
 function renderProfiles() {
   const profiles = latestStatus?.settings?.profiles || [];
   $('#profileRows').innerHTML = profiles.map((profile) => `
     <article class="list-card ${profile.id === latestStatus?.settings?.activeProfileId ? 'active' : ''}" data-profile-row="${escapeHtml(profile.id)}" tabindex="0" role="button">
       <div><b>${escapeHtml(profile.name)}</b><small>${escapeHtml(profile.profile_type)} · ${escapeHtml(profile.updated_at || '-')}</small></div>
+      <small class="profile-source-summary">${Number(profile.node_count || profile.nodeCount || 0)} nodes</small>
       <div class="card-actions">
         <button data-profile-switch="${escapeHtml(profile.id)}">启用</button>
         <button data-profile-update="${escapeHtml(profile.id)}">更新</button>
@@ -308,8 +734,66 @@ function renderProfiles() {
   `).join('') || '<p class="empty">暂无订阅。</p>';
 }
 
+function profilePendingText(label = 'syncing') {
+  const labels = {
+    syncing: '\u540c\u6b65\u4e2d',
+    updating: '\u66f4\u65b0\u4e2d',
+    importing: '\u5bfc\u5165\u4e2d'
+  };
+  return labels[label] || label;
+}
+
+function profileSummaryText(profile) {
+  const nodes = Number(profile.node_count ?? profile.nodeCount ?? 0);
+  const groups = Number(profile.proxy_group_count ?? profile.proxyGroupCount ?? 0);
+  const suffix = profile.metadataStatus === 'repaired'
+    ? ` / ${'\u5df2\u4fee\u590d'}`
+    : profile.metadataStatus === 'stale'
+      ? ` / ${'\u9700\u66f4\u65b0'}`
+      : '';
+  return groups > 0 ? `${nodes} nodes / ${groups} groups${suffix}` : `${nodes} nodes${suffix}`;
+}
+
+renderProfiles = function renderProfiles() {
+  const profiles = latestStatus?.settings?.profiles || [];
+  $('#profileRows').innerHTML = profiles.map((profile) => {
+    const pending = Boolean(profile.uiPending);
+    const summary = pending ? profilePendingText(profile.uiPendingLabel) : profileSummaryText(profile);
+    return `
+    <article class="list-card ${profile.id === latestStatus?.settings?.activeProfileId ? 'active' : ''} ${pending ? 'is-pending' : ''}" data-profile-row="${escapeHtml(profile.id)}" tabindex="0" role="button" aria-busy="${pending ? 'true' : 'false'}">
+      <div><b>${escapeHtml(profile.name)}</b><small>${escapeHtml(profile.profile_type)} / ${escapeHtml(profile.updated_at || '-')}</small></div>
+      <small class="profile-source-summary">${escapeHtml(summary)}</small>
+      <div class="card-actions">
+        <button data-profile-switch="${escapeHtml(profile.id)}">\u542f\u7528</button>
+        <button data-profile-update="${escapeHtml(profile.id)}">\u66f4\u65b0</button>
+        <button data-profile-remove="${escapeHtml(profile.id)}" ${profile.id === 'direct' ? 'disabled' : ''}>\u5220\u9664</button>
+      </div>
+    </article>
+  `;
+  }).join('') || '<p class="empty">\u6682\u65e0\u8ba2\u9605\u3002</p>';
+};
+
 function renderSettings(status) {
   const settings = status.settings || {};
+  const reliability = settings.reliability || {};
+  const permissions = status.permissions || {};
+  const adminState = $('#adminState');
+  if (adminState) {
+    adminState.textContent = permissions.isAdmin ? '管理员运行中' : '普通权限';
+    adminState.classList.toggle('ok', Boolean(permissions.isAdmin));
+    adminState.classList.toggle('bad', !permissions.isAdmin);
+  }
+  const mixedPort = settings.mixedPort || defaultMixedPort;
+  const controllerPort = settings.controllerPort || defaultControllerPort;
+  $('#settingsPortSummary').textContent = String(mixedPort);
+  $('#settingsControllerSummary').textContent = String(controllerPort);
+  $('#settingsRuntimeSummary').textContent = latestStatus?.running
+    ? (settings.tunEnabled ? 'TUN 接管中' : settings.systemProxy ? '系统代理接管' : '核心运行中')
+    : '未接管';
+  $('#settingsProxySummary').textContent = settings.systemProxy ? '系统代理已开启' : '系统代理未开启';
+  $('#settingsReliabilitySummary').textContent = reliability.auto === false
+    ? '自动自愈关闭'
+    : `自动自愈开启 / ${reliability.candidateLimit || 24} 候选`;
   $('#systemProxyToggle').checked = Boolean(settings.systemProxy);
   $('#startProxyToggle').checked = Boolean(settings.startWithSystemProxy);
   $('#tunToggle').checked = Boolean(settings.tunEnabled);
@@ -317,10 +801,14 @@ function renderSettings(status) {
   $('#killToggle').checked = Boolean(settings.killSwitchEnabled);
   $('#ipv6Toggle').checked = Boolean(settings.ipv6Enabled);
   $('#allowLanToggle').checked = Boolean(settings.allowLan);
-  $('#mixedPortInput').value = settings.mixedPort || 7890;
-  $('#controllerPortInput').value = settings.controllerPort || 19090;
+  $('#mixedPortInput').value = mixedPort;
+  $('#controllerPortInput').value = controllerPort;
   $('#tunStackSelect').value = settings.tunStack || 'mixed';
   $('#logLevelSelect').value = settings.logLevel || 'info';
+  $('#reliabilityAutoToggle').checked = reliability.auto !== false;
+  $('#profileFailoverToggle').checked = reliability.profileFailover !== false;
+  $('#reliabilityMaxDelayInput').value = reliability.maxDelayMs || 800;
+  $('#reliabilityCandidateLimitInput').value = reliability.candidateLimit || 24;
 }
 
 function renderLogs() {
@@ -328,6 +816,18 @@ function renderLogs() {
   $('#logRows').innerHTML = logs.slice(-160).reverse().map((entry) => `
     <div class="log-row"><span>${escapeHtml(entry.at)}</span><b>${escapeHtml(entry.level)}</b><code>${escapeHtml(entry.line)}</code></div>
   `).join('') || '<p class="empty">暂无日志。</p>';
+}
+
+function warmStaticPageCaches() {
+  if (!latestStatus) return;
+  if (!pageCacheState.profiles.loaded) {
+    renderProfiles();
+    markPageCache('profiles');
+  }
+  if (!pageCacheState.logs.loaded) {
+    renderLogs();
+    markPageCache('logs');
+  }
 }
 
 function renderStatus(status) {
@@ -341,9 +841,9 @@ function renderStatus(status) {
   const activeProfile = status.activeProfile || {};
   const traffic = status.traffic || {};
   const running = Boolean(status.running);
-  const modeText = status.mode === 'global' ? '全局代理' : status.mode === 'direct' ? '直连' : '智能分流';
+  const modeText = modeLabel(status.mode);
 
-  $('#appVersionLabel').textContent = `v${status.appVersion || '0.5.8'}`;
+  $('#appVersionLabel').textContent = `v${status.appVersion || defaultAppVersion}`;
   $('.ring strong').textContent = running ? '已连接' : '未连接';
   $('.ring').classList.toggle('offline', !running);
   $('#nodeName').textContent = selectedNode || latestGroup?.now || activeProfile.name || '等待节点数据';
@@ -379,10 +879,153 @@ function renderStatus(status) {
   renderSettings(status);
   if (isPageActive('profiles')) renderProfiles();
   if (isPageActive('logs')) renderLogs();
+  warmStaticPageCaches();
+}
+
+function applyOptimisticMode(mode) {
+  if (latestStatus) latestStatus = { ...latestStatus, mode };
+  $('#modeLabel').textContent = modeLabel(mode);
+}
+
+function applyOptimisticProfile(profileId) {
+  if (!latestStatus?.settings) return;
+  const profiles = latestStatus.settings.profiles || [];
+  const profile = profiles.find((item) => item.id === profileId);
+  latestStatus = {
+    ...latestStatus,
+    activeProfile: profile ? { ...(latestStatus.activeProfile || {}), ...profile } : latestStatus.activeProfile,
+    settings: { ...latestStatus.settings, activeProfileId: profileId }
+  };
+  renderProfiles();
+}
+
+function applyOptimisticNode(name) {
+  selectedNode = name;
+  if (latestGroup) latestGroup = { ...latestGroup, now: name };
+  renderRows(latestGroup?.items || []);
+}
+
+function applyOptimisticSetting(key, value) {
+  if (!latestStatus?.settings) return;
+  if (key === 'reliabilityAuto' || key === 'reliabilityProfileFailover') {
+    const reliability = latestStatus.settings.reliability || {};
+    latestStatus = {
+      ...latestStatus,
+      settings: {
+        ...latestStatus.settings,
+        reliability: {
+          ...reliability,
+          [key === 'reliabilityAuto' ? 'auto' : 'profileFailover']: Boolean(value)
+        }
+      }
+    };
+    renderStatus(latestStatus);
+    return;
+  }
+  latestStatus = {
+    ...latestStatus,
+    settings: { ...latestStatus.settings, [key]: value }
+  };
+  renderStatus(latestStatus);
+}
+
+function applyOptimisticProfileRemove(profileId) {
+  if (!latestStatus?.settings) return;
+  const profiles = latestStatus.settings.profiles || [];
+  const nextProfiles = profiles.filter((profile) => profile.id !== profileId);
+  const activeProfileId = latestStatus.settings.activeProfileId === profileId
+    ? (nextProfiles[0]?.id || 'direct')
+    : latestStatus.settings.activeProfileId;
+  latestStatus = {
+    ...latestStatus,
+    activeProfile: nextProfiles.find((profile) => profile.id === activeProfileId) || latestStatus.activeProfile,
+    settings: {
+      ...latestStatus.settings,
+      profiles: nextProfiles,
+      activeProfileId
+    }
+  };
+  renderProfiles();
+}
+
+function applyOptimisticLogsClear() {
+  if (!latestStatus) return;
+  latestStatus = { ...latestStatus, logs: [] };
+  if (isPageActive('logs')) renderLogs();
+}
+
+function removeConnectionElement(button) {
+  const row = button?.closest('.simple-row');
+  if (row) row.remove();
+  if (!$('#connectionRows')?.querySelector('.simple-row')) {
+    $('#connectionRows').innerHTML = '<p class="empty">当前没有活动连接。</p>';
+  }
+}
+
+function optimisticProfilePatch(profileId, patch) {
+  if (!latestStatus?.settings) return;
+  const profiles = latestStatus.settings.profiles || [];
+  latestStatus = {
+    ...latestStatus,
+    settings: {
+      ...latestStatus.settings,
+      profiles: profiles.map((profile) => profile.id === profileId ? { ...profile, ...patch } : profile)
+    }
+  };
+  renderProfiles();
+}
+
+function applyOptimisticProfilePending(profileId, label = 'syncing') {
+  optimisticProfilePatch(profileId, { uiPending: true, uiPendingLabel: label });
+}
+
+function applyOptimisticProfilesPending(label = 'syncing') {
+  if (!latestStatus?.settings) return;
+  const profiles = latestStatus.settings.profiles || [];
+  latestStatus = {
+    ...latestStatus,
+    settings: {
+      ...latestStatus.settings,
+      profiles: profiles.map((profile) => {
+        if (profile.id === 'direct' || profile.profile_type === 'builtin') return profile;
+        return { ...profile, uiPending: true, uiPendingLabel: label };
+      })
+    }
+  };
+  renderProfiles();
+}
+
+function applyOptimisticProfileImport(url) {
+  if (!latestStatus?.settings) return '';
+  const host = (() => {
+    try { return new URL(url).host || url; } catch { return url || 'remote'; }
+  })();
+  const tempId = `pending-${Date.now()}`;
+  const pendingProfile = {
+    id: tempId,
+    name: host,
+    profile_type: 'url',
+    updated_at: 'pending',
+    node_count: 0,
+    uiPending: true,
+    uiPendingLabel: 'importing'
+  };
+  latestStatus = {
+    ...latestStatus,
+    settings: {
+      ...latestStatus.settings,
+      profiles: [...(latestStatus.settings.profiles || []), pendingProfile],
+      activeProfileId: tempId
+    },
+    activeProfile: pendingProfile
+  };
+  renderProfiles();
+  return tempId;
 }
 
 async function refreshStatus(force = false) {
   if (statusBusy) return;
+  if (!force && (foregroundBusy > 0 || backgroundJobBusy > 0)) return;
   const now = Date.now();
   if (!force && now - lastStatusAt < 1800) return;
   lastStatusAt = now;
@@ -392,16 +1035,17 @@ async function refreshStatus(force = false) {
   } catch {
     renderStatus({
       running: false,
-      appVersion: '0.5.8',
+      appVersion: defaultAppVersion,
       mode: 'rule',
       traffic: { up: 0, down: 0 },
       logs: [],
-      network: { lanIp: '-', proxyEndpoint: '127.0.0.1:7890', outboundIp: '-' },
+      network: { lanIp: '-', proxyEndpoint: `127.0.0.1:${defaultMixedPort}`, outboundIp: '-' },
+      permissions: { isAdmin: false, requiresAdminFor: ['TUN', 'Kill Switch'] },
       settings: {
         activeProfileId: 'direct',
         profiles: [],
-        mixedPort: 7890,
-        controllerPort: 19090,
+        mixedPort: defaultMixedPort,
+        controllerPort: defaultControllerPort,
         startWithSystemProxy: true,
         dnsHijackEnabled: true,
         tunEnabled: false,
@@ -410,7 +1054,14 @@ async function refreshStatus(force = false) {
         ipv6Enabled: false,
         allowLan: false,
         tunStack: 'mixed',
-        logLevel: 'info'
+        logLevel: 'info',
+        reliability: {
+          auto: true,
+          profileFailover: true,
+          failureThreshold: 2,
+          maxDelayMs: 800,
+          candidateLimit: 24
+        }
       },
       protection: { label: '未接管' },
       activeProfile: { name: 'Aegos 本地预览' }
@@ -420,14 +1071,15 @@ async function refreshStatus(force = false) {
   }
 }
 
-async function refreshNodes() {
+async function refreshNodes(force = false) {
   if (nodeBusy) return;
+  if (!force && (foregroundBusy > 0 || backgroundJobBusy > 0)) return;
   nodeBusy = true;
   try {
     const groups = await invoke('proxy_groups');
     latestGroup = Array.isArray(groups) ? (groups.find((group) => group.name === 'GLOBAL') || groups[0]) : null;
     selectedNode = latestGroup?.now || selectedNode;
-    renderRows(latestGroup?.items || []);
+    scheduleRowsRender(latestGroup?.items || []);
   } catch {
     latestGroup = null;
     renderRows();
@@ -436,21 +1088,52 @@ async function refreshNodes() {
   }
 }
 
-async function testNodes() {
-  if (nodeBusy) return;
-  nodeBusy = true;
+function stopSpeedTestPolling() {
+  if (speedTestTimer) clearInterval(speedTestTimer);
+  speedTestTimer = null;
+}
+
+async function pollSpeedTest() {
   try {
-    setNotice('正在测速，先检测前 8 个节点以避免界面卡死。');
-    const groups = await invoke('test_proxy_delays');
-    latestGroup = Array.isArray(groups) ? (groups.find((group) => group.name === 'GLOBAL') || groups[0]) : null;
-    selectedNode = latestGroup?.now || selectedNode;
-    renderRows(latestGroup?.items || []);
-    setNotice('节点测速已完成。');
+    const status = await invoke('speed_test_status');
+    await refreshNodes(true);
+    if (status.running) {
+      setNotice(`正在测速：${status.completed || 0}/${status.total || 0}，成功 ${status.ok || 0}，失败 ${status.failed || 0}`);
+      return;
+    }
+    stopSpeedTestPolling();
+    setNotice(`节点测速已完成：成功 ${status.ok || 0}，失败 ${status.failed || 0}，共 ${status.total || 0} 个。`);
+  } catch (err) {
+    stopSpeedTestPolling();
+    setNotice(`读取测速进度失败：${err.message || err}`);
+  }
+}
+
+async function testNodes() {
+  if (speedTestTimer) return;
+  try {
+    const status = await invoke('start_proxy_delay_test');
+    await refreshNodes(true);
+    setNotice(`测速已在后台开始：0/${status.total || 0}`);
+    speedTestTimer = setInterval(pollSpeedTest, speedTestPollMs);
+    await pollSpeedTest();
   } catch (err) {
     setNotice(`节点测速失败：${err.message || err}`);
-  } finally {
-    nodeBusy = false;
   }
+}
+
+async function refreshOutboundIpJob() {
+  await runBackgroundJob('refreshOutboundIp', {}, {
+    pendingNotice: '正在后台查询落地 IP...',
+    onSuccess: async (result) => {
+      const ip = result?.ip || '-';
+      $('#outboundIpState').textContent = ip;
+      $('#outboundMetric').textContent = ip;
+      await refreshStatus(true);
+    },
+    successNotice: (result) => `落地 IP 已刷新：${result?.ip || '-'}`,
+    failureNotice: (err) => `刷新落地 IP 失败：${err.message || err}`
+  });
 }
 
 async function refreshOutboundIp() {
@@ -467,31 +1150,198 @@ async function refreshOutboundIp() {
   }
 }
 
+async function recoverNetwork(showHealthyNotice = true, force = false) {
+  if (recoveryBusy) return null;
+  recoveryBusy = true;
+  lastRecoveryAt = Date.now();
+  try {
+    if (showHealthyNotice) setNotice('Aegos 2.0 自愈引擎正在检查出口...');
+    const result = await invoke('recover_network', { force });
+    await refreshStatus(true);
+    await refreshNodes(true);
+    if (result?.ok && result?.action === 'none') {
+      if (showHealthyNotice) setNotice('网络出口健康，无需切换。');
+      return result;
+    }
+    if (result?.action === 'observe') {
+      if (showHealthyNotice) setNotice(`自愈观察中：${result.failures || 0}/${result.threshold || 0}`);
+      return result;
+    }
+    const recovery = result?.result || {};
+    if (result?.ok && result?.profileChanged) {
+      setNotice(`已切换订阅并恢复：${result.profile?.name || '-'} / ${recovery.proxy || '-'}`);
+      return result;
+    }
+    if (result?.ok) {
+      setNotice(`已自动切换到可用节点：${recovery.proxy || '-'} (${recovery.delay || '-'} ms)`);
+      return result;
+    }
+    setNotice(`自愈失败：${result?.probe?.reason || '没有找到可用节点'}`);
+    return result;
+  } catch (err) {
+    await refreshStatus(true);
+    setNotice(`自愈失败：${err.message || err}`);
+    return null;
+  } finally {
+    recoveryBusy = false;
+  }
+}
+
+async function recoverNetworkJob(showHealthyNotice = true, force = false) {
+  if (recoveryBusy) return null;
+  recoveryBusy = true;
+  lastRecoveryAt = Date.now();
+  try {
+    const result = await runBackgroundJob('recoverNetwork', { force }, {
+      pendingNotice: showHealthyNotice ? 'Aegos 正在后台执行网络自愈...' : '',
+      progressNotice: (job) => showHealthyNotice && job?.message ? `网络自愈：${job.message}` : '',
+      failureNotice: (err) => `自愈失败：${err.message || err}`
+    });
+    await refreshStatus(true);
+    await refreshNodes(true);
+    if (!result) return null;
+    if (result?.ok && result?.action === 'none') {
+      if (showHealthyNotice) setNotice('网络出口健康，无需切换。');
+      return result;
+    }
+    if (result?.action === 'observe') {
+      if (showHealthyNotice) setNotice(`自愈观察中：${result.failures || 0}/${result.threshold || 0}`);
+      return result;
+    }
+    const recovery = result?.result || {};
+    if (result?.ok && result?.profileChanged) {
+      setNotice(`已切换订阅并恢复：${result.profile?.name || '-'} / ${recovery.proxy || '-'}`);
+      return result;
+    }
+    if (result?.ok) {
+      setNotice(`已自动切换到可用节点：${recovery.proxy || '-'} (${recovery.delay || '-'} ms)`);
+      return result;
+    }
+    setNotice(`自愈失败：${result?.probe?.reason || '没有找到可用节点'}`);
+    return result;
+  } finally {
+    recoveryBusy = false;
+  }
+}
+
+async function updateProfileJob(id) {
+  return runBackgroundJob('updateProfile', { id }, {
+    pendingNotice: '正在后台更新订阅...',
+    successNotice: '订阅已更新。',
+    failureNotice: (err) => `订阅更新失败：${err.message || err}`
+  });
+}
+
+async function updateAllProfilesJob() {
+  return runBackgroundJob('updateAllProfiles', {}, {
+    pendingNotice: '正在后台更新全部订阅...',
+    successNotice: (result) => `全部订阅更新完成：${result?.updated?.length || 0} 成功，${result?.failed?.length || 0} 失败`,
+    failureNotice: (err) => `全部订阅更新失败：${err.message || err}`
+  });
+}
+
+async function addProfileUrlJob(url) {
+  return runBackgroundJob('addProfileUrl', { url }, {
+    pendingNotice: '正在后台导入订阅...',
+    successNotice: '订阅已导入。',
+    failureNotice: (err) => `订阅导入失败：${err.message || err}`
+  });
+}
+
+async function setActiveProfileJob(id) {
+  return runBackgroundJob('setActiveProfile', { id }, {
+    pendingNotice: '正在后台应用订阅...',
+    successNotice: '订阅已切换并应用。',
+    failureNotice: (err) => `订阅切换失败：${err.message || err}`
+  });
+}
+
+async function removeProfileJob(id) {
+  return runBackgroundJob('removeProfile', { id }, {
+    pendingNotice: '正在后台删除订阅...',
+    successNotice: '订阅已删除。',
+    failureNotice: (err) => `删除订阅失败：${err.message || err}`
+  });
+}
+
+async function updateSettingsJob(updates) {
+  return runBackgroundJob('updateSettings', { updates }, {
+    pendingNotice: '正在后台保存设置...',
+    successNotice: '设置已保存。',
+    failureNotice: (err) => `保存设置失败：${err.message || err}`
+  });
+}
+
+async function corePowerJob(kind, options = {}) {
+  const snapshot = snapshotUiState();
+  const targetRunning = kind === 'stopCore' ? false : true;
+  if (latestStatus) {
+    latestStatus = { ...latestStatus, running: targetRunning };
+    renderStatus(latestStatus);
+  }
+  const result = await runBackgroundJob(kind, {}, {
+    pendingNotice: options.pendingNotice,
+    progressNotice: (job) => job?.message ? `${job.label}：${job.message}` : '',
+    onSuccess: async () => {
+      await refreshStatus(true);
+      await refreshNodes(true);
+    },
+    successNotice: options.successNotice,
+    failureNotice: options.failureNotice
+  });
+  if (!result) {
+    const reason = lastBackgroundJobError || '核心任务失败';
+    restoreUiState(snapshot);
+    await refreshStatus(true).catch(() => {});
+    if (isPageActive('logs')) renderLogs();
+    if (isPageActive('diagnostics')) await runDiagnostics(false).catch(() => {});
+    if (options.failureNotice) setNotice(resolveMessage(options.failureNotice, new Error(reason)));
+  }
+  return result;
+}
+
+async function maybeAutoRecover() {
+  const reliability = latestStatus?.settings?.reliability || {};
+  if (foregroundBusy > 0 || backgroundJobBusy > 0) return;
+  if (reliability.auto === false || !latestStatus?.running || recoveryBusy) return;
+  if (Date.now() - lastRecoveryAt < 60000) return;
+  await recoverNetworkJob(false, false);
+}
+
 async function updateActiveProfile() {
   const id = latestStatus?.settings?.activeProfileId;
   if (!id || id === 'direct') {
     setNotice('当前没有可更新的远程订阅。');
     return;
   }
-  try {
-    setNotice('正在更新当前订阅...');
-    await invoke('update_profile', { id });
-    await refreshStatus(true);
-    await refreshNodes();
-    setNotice('订阅已更新。');
-  } catch (err) {
-    setNotice(`订阅更新失败：${err.message || err}`);
-  }
+  await runOptimisticAction({
+    apply: () => applyOptimisticProfilePending(id, 'updating'),
+    commit: async () => {
+      const result = await updateProfileJob(id);
+      if (!result) throw new Error(lastBackgroundJobError || 'subscription update failed');
+      return result;
+    },
+    refresh: async () => {
+      await refreshStatus(true);
+      await refreshNodes(true);
+      renderProfiles();
+    },
+    pendingNotice: '正在更新当前订阅...',
+    successNotice: '订阅已更新。',
+    failureNotice: (err) => `订阅更新失败：${err.message || err}`
+  });
 }
 
 async function toggleCore() {
   const button = $('#connectBtn');
   await runButtonAction(button, latestStatus?.running ? '正在断开...' : '正在连接...', async () => {
     setNotice(latestStatus?.running ? '正在断开核心...' : '正在启动核心...');
-    if (latestStatus?.running) await invoke('stop_core');
-    else await invoke('start_core');
-    await refreshStatus(true);
-    await refreshNodes();
+    const stopping = Boolean(latestStatus?.running);
+    await corePowerJob(stopping ? 'stopCore' : 'startCore', {
+      pendingNotice: stopping ? '正在后台断开核心...' : '正在后台启动核心...',
+      successNotice: stopping ? '已断开连接。' : '已连接，核心正在运行。',
+      failureNotice: (err) => `核心操作失败：${err.message || err}`
+    });
     setNotice(latestStatus?.running ? '已连接，核心正在运行。' : '已断开连接。');
   }).catch((err) => setNotice(`操作失败：${err.message || err}`));
 }
@@ -500,71 +1350,215 @@ function toggleModeMenu() {
   $('#modeMenu').classList.toggle('hidden');
 }
 
+async function restartCoreJob() {
+  return corePowerJob('restartCore', {
+    pendingNotice: '正在后台重启核心...',
+    successNotice: '核心已重启。',
+    failureNotice: (err) => `重启核心失败：${err.message || err}`
+  });
+}
+
 async function applyMode(mode) {
-  try {
-    $('#modeMenu').classList.add('hidden');
-    await invoke('set_mode', { mode });
-    await refreshStatus(true);
-  } catch (err) {
-    setNotice(`切换模式失败：${err.message || err}`);
-  }
+  $('#modeMenu').classList.add('hidden');
+  await runOptimisticAction({
+    apply: () => applyOptimisticMode(mode),
+    commit: () => runBackgroundJob('setMode', { mode }, {
+      pendingNotice: '正在后台切换模式...',
+      failureNotice: (err) => `切换模式失败：${err.message || err}`
+    }),
+    refresh: () => refreshStatus(true),
+    pendingNotice: '正在后台切换模式...',
+    successNotice: '模式已切换。',
+    failureNotice: (err) => `切换模式失败：${err.message || err}`
+  });
 }
 
 async function selectNode(name) {
   if (!name) return;
-  selectedNode = name;
-  renderRows(latestGroup?.items || []);
   if (!latestGroup?.name || !latestStatus?.running) {
+    applyOptimisticNode(name);
     setNotice(`已选择节点：${name}`);
     return;
   }
-  try {
-    await invoke('change_proxy', { group: latestGroup.name, proxy: name });
-    setNotice(`已切换节点：${name}`);
-    await refreshNodes();
-  } catch (err) {
-    setNotice(`切换节点失败：${err.message || err}`);
-  }
+  await runOptimisticAction({
+    apply: () => applyOptimisticNode(name),
+    commit: () => runBackgroundJob('changeProxy', { group: latestGroup.name, proxy: name }, {
+      pendingNotice: '正在后台切换节点...',
+      failureNotice: (err) => `切换节点失败：${err.message || err}`
+    }),
+    refresh: () => refreshNodes(true),
+    pendingNotice: '正在后台切换节点...',
+    successNotice: `已切换节点：${name}`,
+    failureNotice: (err) => `切换节点失败：${err.message || err}`
+  });
 }
 
 async function updateSetting(key, value) {
-  try {
-    if (key === 'systemProxy') await invoke('set_system_proxy', { enable: Boolean(value) });
-    else await invoke('update_setting', { key, value });
+  if (value && ['tunEnabled', 'killSwitchEnabled'].includes(key) && !latestStatus?.permissions?.isAdmin) {
     await refreshStatus(true);
-    await refreshNodes();
-    setNotice('设置已更新。');
-  } catch (err) {
-    await refreshStatus(true);
-    setNotice(`设置失败：${err.message || err}`);
+    setNotice('TUN 和 Kill Switch 需要管理员权限，请先在设置中以管理员身份重启 Aegos。');
+    return;
   }
+  await runOptimisticAction({
+    apply: () => applyOptimisticSetting(key, value),
+    commit: () => runBackgroundJob('updateSetting', { key, value }, {
+      pendingNotice: '正在后台同步设置...',
+      failureNotice: (err) => `设置同步失败：${err.message || err}`
+    }),
+    refresh: async () => {
+      await refreshStatus(true);
+      await refreshNodes(true);
+    },
+    pendingNotice: '设置已更新，正在后台同步...',
+    successNotice: '设置已同步。',
+    failureNotice: (err) => `设置失败：${err.message || err}`
+  });
 }
 
-async function refreshConnections() {
+function isCurrentPageTask(token, page) {
+  return token == null || (token === pageLoadToken && uiStore.state.page === page);
+}
+
+async function refreshConnections(token = null) {
+  if (pageCacheState.connections.loading) return;
+  pageCacheState.connections.loading = true;
   try {
     const items = await invoke('connections');
+    if (!isCurrentPageTask(token, 'connections')) return;
     $('#connectionRows').innerHTML = (Array.isArray(items) ? items : []).map((item) => {
       const chains = Array.isArray(item.chains) ? item.chains.join(' › ') : '-';
       const traffic = `${formatRate(item.upload)} / ${formatRate(item.download)}`;
       const target = item.metadata?.host || item.metadata?.destinationIP || item.id || '-';
       return `<div class="simple-row"><span>${escapeHtml(target)}</span><span>${escapeHtml(item.rule || '-')}</span><span>${escapeHtml(chains)}</span><span>${traffic}</span><button data-close-connection="${escapeHtml(item.id)}">关闭</button></div>`;
     }).join('') || '<p class="empty">当前没有活动连接。</p>';
+    markPageCache('connections');
   } catch (err) {
+    if (!isCurrentPageTask(token, 'connections')) return;
     $('#connectionRows').innerHTML = `<p class="empty">连接管理不可用：${escapeHtml(err.message || err)}</p>`;
+    markPageCache('connections');
+  } finally {
+    pageCacheState.connections.loading = false;
   }
 }
 
-async function runDiagnostics(showNotice = true) {
+function normalizeDiagnosticCheck(item = {}) {
+  const ok = Boolean(item.ok);
+  const severity = ok ? 'ok' : (item.severity || 'warning');
+  return {
+    name: item.name || 'Check',
+    ok,
+    severity,
+    category: item.category || 'general',
+    detail: item.detail || '-',
+    hint: item.hint || '',
+    actionable: Boolean(item.actionable || (!ok && item.hint))
+  };
+}
+
+function diagnosticSeverityLabel(check) {
+  if (check.ok) return '通过';
+  if (check.severity === 'error') return '错误';
+  return '警告';
+}
+
+function diagnosticSeverityRank(check) {
+  if (check.severity === 'error') return 0;
+  if (check.severity === 'warning') return 1;
+  if (!check.ok) return 2;
+  return 3;
+}
+
+function diagnosticReportText(data = latestDiagnostics) {
+  if (!data) return 'Aegos diagnostics: no report';
+  const checks = (data.checks || []).map(normalizeDiagnosticCheck);
+  const summary = data.summary || {};
+  const status = data.status || {};
+  const lines = [
+    `Aegos Diagnostics ${data.appVersion || defaultAppVersion}`,
+    `Generated: ${data.generatedAt || '-'}`,
+    `Running: ${status.running ? 'yes' : 'no'}`,
+    `Mode: ${status.mode || '-'}`,
+    `Active profile: ${status.activeProfile?.name || '-'}`,
+    `Proxy endpoint: ${status.network?.proxyEndpoint || '-'}`,
+    `Summary: ${summary.errors || 0} errors, ${summary.warnings || 0} warnings, ${summary.failed || 0} failed checks`,
+    ''
+  ];
+  checks.forEach((check) => {
+    lines.push(`[${check.severity}] ${check.name}: ${check.ok ? 'ok' : 'failed'}`);
+    lines.push(`  detail: ${check.detail}`);
+    if (check.hint) lines.push(`  hint: ${check.hint}`);
+  });
+  return lines.join('\n');
+}
+
+function renderDiagnosticSummary(data, checks) {
+  const summary = data.summary || {};
+  const errors = Number(summary.errors || checks.filter((item) => item.severity === 'error').length);
+  const warnings = Number(summary.warnings || checks.filter((item) => item.severity === 'warning').length);
+  const failed = Number(summary.failed || checks.filter((item) => !item.ok).length);
+  const statusClass = errors > 0 ? 'is-bad' : warnings > 0 ? 'is-warn' : 'is-ok';
+  const statusText = errors > 0 ? '需要处理' : warnings > 0 ? '需要关注' : '状态正常';
+  const nextActions = Array.isArray(summary.nextActions) && summary.nextActions.length
+    ? summary.nextActions
+    : checks.filter((item) => item.actionable).map((item) => item.hint).filter(Boolean).slice(0, 3);
+  $('#diagSummary').innerHTML = `
+    <div class="diagnostic-status ${statusClass}">
+      <b>${escapeHtml(statusText)}</b>
+      <span>${checks.length} 项检查 / ${failed} 项异常</span>
+    </div>
+    <div class="diagnostic-metrics">
+      <span><b>${errors}</b>错误</span>
+      <span><b>${warnings}</b>警告</span>
+      <span><b>${checks.length - failed}</b>通过</span>
+    </div>
+    <div class="diagnostic-actions">
+      ${nextActions.length ? nextActions.map((action) => `<small>${escapeHtml(action)}</small>`).join('') : '<small>未发现需要立即处理的问题。</small>'}
+    </div>
+  `;
+}
+
+function renderDiagnosticRows(checks) {
+  const sorted = [...checks].sort((a, b) => diagnosticSeverityRank(a) - diagnosticSeverityRank(b));
+  $('#diagRows').innerHTML = sorted.map((item) => `
+    <article class="list-card diagnostic-row severity-${escapeHtml(item.severity)}">
+      <div>
+        <b>${escapeHtml(item.name)}</b>
+        <small>${escapeHtml(item.detail)}</small>
+        ${item.hint ? `<small class="diagnostic-hint">${escapeHtml(item.hint)}</small>` : ''}
+      </div>
+      <span class="${item.ok ? 'ok' : item.severity === 'error' ? 'bad' : 'warn'}">${diagnosticSeverityLabel(item)}</span>
+    </article>
+  `).join('') || '<p class="empty">暂无诊断结果。</p>';
+}
+
+async function runDiagnostics(showNotice = true, token = null) {
+  if (pageCacheState.diagnostics.loading) return;
+  pageCacheState.diagnostics.loading = true;
   try {
     const data = await invoke('diagnostics');
-    const checks = data.checks || [];
-    $('#diagRows').innerHTML = checks.map((item) => `
-      <article class="list-card"><div><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.detail || '-')}</small></div><span class="${item.ok ? 'ok' : 'bad'}">${item.ok ? '通过' : '异常'}</span></article>
-    `).join('');
-    if (showNotice) setNotice(`诊断完成：${checks.filter((item) => item.ok).length} 项通过`);
+    if (!isCurrentPageTask(token, 'diagnostics')) return;
+    latestDiagnostics = data;
+    const checks = (data.checks || []).map(normalizeDiagnosticCheck);
+    renderDiagnosticSummary(data, checks);
+    renderDiagnosticRows(checks);
+    const errors = checks.filter((item) => item.severity === 'error').length;
+    const warnings = checks.filter((item) => item.severity === 'warning').length;
+    if (showNotice) setNotice(`诊断完成：${checks.filter((item) => item.ok).length} 项通过，${errors} 项错误，${warnings} 项警告`);
+    markPageCache('diagnostics');
   } catch (err) {
+    if (!isCurrentPageTask(token, 'diagnostics')) return;
+    latestDiagnostics = null;
+    $('#diagSummary').innerHTML = `
+      <div class="diagnostic-status is-bad">
+        <b>诊断不可用</b>
+        <span>无法读取诊断结果</span>
+      </div>
+    `;
     $('#diagRows').innerHTML = `<p class="empty">诊断失败：${escapeHtml(err.message || err)}</p>`;
     if (showNotice) setNotice(`诊断失败：${err.message || err}`);
+    markPageCache('diagnostics');
+  } finally {
+    pageCacheState.diagnostics.loading = false;
   }
 }
 
@@ -589,56 +1583,135 @@ function tick() {
 }
 
 $all('.nav button').forEach((button) => {
-  button.onclick = () => setPage(button.dataset.page);
+  button.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    setPage(button.dataset.page);
+  });
+  button.onclick = (event) => {
+    if (event.detail !== 0) return;
+    setPage(button.dataset.page);
+  };
 });
 
 $('#connectBtn').onclick = toggleCore;
-$('#refreshStatusBtn').onclick = async () => { await refreshStatus(true); await refreshNodes(); setNotice('已同步核心状态和节点列表。'); };
+$('#refreshStatusBtn').onclick = async () => { await refreshStatus(true); await refreshNodes(true); setNotice('已同步核心状态和节点列表。'); };
 $('#refreshNodesBtn').onclick = refreshNodes;
 $('#modeBtn').onclick = toggleModeMenu;
 $('#quickModeBtn').onclick = toggleModeMenu;
-$('#quickIpBtn').onclick = (event) => runButtonAction(event.currentTarget, '刷新中...', refreshOutboundIp);
+$('#quickIpBtn').onclick = (event) => runButtonAction(event.currentTarget, '刷新中...', refreshOutboundIpJob);
 $('#quickTestBtn').onclick = (event) => runButtonAction(event.currentTarget, '测速中...', testNodes);
+$('#smartRecoverBtn').onclick = (event) => runButtonAction(event.currentTarget, '自愈中...', () => recoverNetworkJob(true, true));
 $('#quickUpdateSubBtn').onclick = (event) => runButtonAction(event.currentTarget, '更新中...', updateActiveProfile);
-$('#quickProxyBtn').onclick = (event) => runButtonAction(event.currentTarget, '切换中...', () => updateSetting('systemProxy', !latestStatus?.settings?.systemProxy));
-$('#quickTunBtn').onclick = (event) => runButtonAction(event.currentTarget, '切换中...', () => updateSetting('tunEnabled', !latestStatus?.settings?.tunEnabled));
-$('#quickCopyProxyBtn').onclick = () => navigator.clipboard?.writeText(latestStatus?.network?.proxyEndpoint || '127.0.0.1:7890');
-$('#quickRestartBtn').onclick = (event) => runButtonAction(event.currentTarget, '重启中...', async () => { setNotice('正在重启核心...'); await invoke('restart_core'); await refreshStatus(true); await refreshNodes(); setNotice('核心已重启。'); });
+$('#quickProxyBtn').onclick = () => updateSetting('systemProxy', !latestStatus?.settings?.systemProxy);
+$('#quickTunBtn').onclick = () => updateSetting('tunEnabled', !latestStatus?.settings?.tunEnabled);
+$('#quickCopyProxyBtn').onclick = () => navigator.clipboard?.writeText(latestStatus?.network?.proxyEndpoint || `127.0.0.1:${defaultMixedPort}`);
+$('#quickRestartBtn').onclick = (event) => runButtonAction(event.currentTarget, '重启中...', restartCoreJob);
 $('#setBestBtn').onclick = () => setNotice(selectedNode ? `已设为常用优先：${selectedNode}` : '请先选择一个节点');
 $('#refreshConnectionsBtn').onclick = refreshConnections;
-$('#closeAllConnectionsBtn').onclick = (event) => runButtonAction(event.currentTarget, '关闭中...', async () => { await invoke('close_connections'); refreshConnections(); });
+$('#closeAllConnectionsBtn').onclick = (event) => runButtonAction(event.currentTarget, '关闭中...', () => runOptimisticAction({
+  apply: () => { $('#connectionRows').innerHTML = '<p class="empty">当前没有活动连接。</p>'; },
+  commit: () => invoke('close_connections'),
+  refresh: () => refreshConnections(),
+  rollback: () => refreshConnections(),
+  pendingNotice: '已清空连接列表，正在后台关闭连接...',
+  successNotice: '连接已关闭。',
+  failureNotice: (err) => `关闭连接失败：${err.message || err}`
+}));
 $('#runDiagBtn').onclick = () => runDiagnostics();
-$('#clearLogsBtn').onclick = async () => { await invoke('clear_logs'); await refreshStatus(true); };
-$('#restartCoreBtn').onclick = (event) => runButtonAction(event.currentTarget, '重启中...', async () => { setNotice('正在重启核心...'); await invoke('restart_core'); await refreshStatus(true); await refreshNodes(); setNotice('核心已重启。'); });
+const copyDiagBtn = $('#copyDiagBtn');
+if (copyDiagBtn) copyDiagBtn.onclick = (event) => runButtonAction(event.currentTarget, '复制中...', async () => {
+  if (!latestDiagnostics) await runDiagnostics(false);
+  const report = diagnosticReportText(latestDiagnostics);
+  await navigator.clipboard?.writeText(report);
+  setNotice('诊断报告已复制。');
+});
+$('#clearLogsBtn').onclick = () => runOptimisticAction({
+  apply: () => applyOptimisticLogsClear(),
+  commit: () => invoke('clear_logs'),
+  refresh: () => refreshStatus(true),
+  pendingNotice: '日志已清空，正在后台同步...',
+  successNotice: '日志已清空。',
+  failureNotice: (err) => `清空日志失败：${err.message || err}`
+});
+$('#restartCoreBtn').onclick = (event) => runButtonAction(event.currentTarget, '重启中...', restartCoreJob);
 const batchTestBtn = $('#batchTestBtn');
 if (batchTestBtn) batchTestBtn.onclick = (event) => runButtonAction(event.currentTarget, '测速中...', testNodes);
 const nodeSearch = $('#nodeSearch');
 if (nodeSearch) nodeSearch.oninput = () => {
   const keyword = nodeSearch.value.trim().toLowerCase();
   const items = latestGroup?.items || [];
-  renderRows(keyword ? items.filter((item) => `${item.name || ''} ${item.server || ''}`.toLowerCase().includes(keyword)) : items);
+  scheduleRowsRender(keyword ? items.filter((item) => `${item.name || ''} ${item.server || ''}`.toLowerCase().includes(keyword)) : items);
 };
-$('#savePortBtn').onclick = async () => {
-  await updateSetting('mixedPort', Number($('#mixedPortInput').value || 7890));
-  await updateSetting('controllerPort', Number($('#controllerPortInput').value || 19090));
-  await updateSetting('tunStack', $('#tunStackSelect').value);
-  await updateSetting('logLevel', $('#logLevelSelect').value);
-};
-$('#addProfileBtn').onclick = async () => {
+$('#savePortBtn').onclick = (event) => runButtonAction(event.currentTarget, '保存中...', async () => {
+  try {
+    await updateSettingsJob({
+      mixedPort: Number($('#mixedPortInput').value || defaultMixedPort),
+      controllerPort: Number($('#controllerPortInput').value || defaultControllerPort),
+      tunStack: $('#tunStackSelect').value,
+      logLevel: $('#logLevelSelect').value,
+      reliabilityMaxDelayMs: Number($('#reliabilityMaxDelayInput').value || 800),
+      reliabilityCandidateLimit: Number($('#reliabilityCandidateLimitInput').value || 24)
+    });
+    await refreshStatus(true);
+    await refreshNodes(true);
+    setNotice('端口和高级设置已保存。');
+  } catch (err) {
+    await refreshStatus(true);
+    setNotice(`保存高级设置失败：${err.message || err}`);
+  }
+});
+const elevateBtn = $('#elevateBtn');
+if (elevateBtn) elevateBtn.onclick = (event) => runButtonAction(event.currentTarget, '请求中...', async () => {
+  try {
+    setNotice('正在请求管理员权限...');
+    await invoke('relaunch_as_admin');
+  } catch (err) {
+    setNotice(`管理员重启失败：${err.message || err}`);
+  }
+});
+$('#addProfileBtn').onclick = (event) => runButtonAction(event.currentTarget, '导入中...', async () => {
   const url = $('#profileUrlInput').value.trim();
   if (!url) return;
-  try {
-    await invoke('add_profile_url', { url });
-    $('#profileUrlInput').value = '';
-    await refreshStatus(true);
-    await refreshNodes();
-    setNotice('订阅已导入。');
-  } catch (err) {
-    setNotice(`订阅导入失败：${err.message || err}`);
-  }
-};
+  await runOptimisticAction({
+    apply: () => applyOptimisticProfileImport(url),
+    commit: async () => {
+      const result = await addProfileUrlJob(url);
+      if (!result) throw new Error(lastBackgroundJobError || 'subscription import failed');
+      return result;
+    },
+    refresh: async () => {
+      $('#profileUrlInput').value = '';
+      await refreshStatus(true);
+      await refreshNodes(true);
+      renderProfiles();
+    },
+    pendingNotice: '正在后台导入订阅...',
+    successNotice: '订阅已导入。',
+    failureNotice: (err) => `订阅导入失败：${err.message || err}`
+  });
+});
 const copyEndpointBtn = $('#copyEndpointBtn');
 if (copyEndpointBtn) copyEndpointBtn.onclick = () => navigator.clipboard?.writeText($('#nodeHost')?.textContent || '');
+const updateAllProfilesBtn = $('#updateAllProfilesBtn');
+if (updateAllProfilesBtn) updateAllProfilesBtn.onclick = (event) => runButtonAction(event.currentTarget, '更新中...', async () => {
+  await runOptimisticAction({
+    apply: () => applyOptimisticProfilesPending('updating'),
+    commit: async () => {
+      const result = await updateAllProfilesJob();
+      if (!result) throw new Error(lastBackgroundJobError || 'all subscription updates failed');
+      return result;
+    },
+    refresh: async () => {
+      await refreshStatus(true);
+      await refreshNodes(true);
+      renderProfiles();
+    },
+    pendingNotice: '正在后台更新全部订阅...',
+    successNotice: (result) => `全部订阅更新完成：${result?.updated?.length || 0} 成功，${result?.failed?.length || 0} 失败`,
+    failureNotice: (err) => `全部订阅更新失败：${err.message || err}`
+  });
+});
 
 [
   ['systemProxyToggle', 'systemProxy'],
@@ -648,25 +1721,26 @@ if (copyEndpointBtn) copyEndpointBtn.onclick = () => navigator.clipboard?.writeT
   ['dnsToggle', 'dnsHijackEnabled'],
   ['killToggle', 'killSwitchEnabled'],
   ['ipv6Toggle', 'ipv6Enabled'],
-  ['allowLanToggle', 'allowLan']
+  ['allowLanToggle', 'allowLan'],
+  ['reliabilityAutoToggle', 'reliabilityAuto'],
+  ['profileFailoverToggle', 'reliabilityProfileFailover']
 ].forEach(([id, key]) => {
   $(`#${id}`).onchange = (event) => updateSetting(key, event.target.checked);
 });
 
 $all('[data-region]').forEach((button) => {
   button.onclick = () => {
-    homeRegionFilter = homeRegionFilter === button.dataset.region ? '' : button.dataset.region;
-    $all('[data-region]').forEach((item) => item.classList.toggle('active', item.dataset.region === homeRegionFilter));
-    renderRows(latestGroup?.items || []);
-    setNotice(homeRegionFilter ? `已在首页筛选地区：${button.textContent.trim()}` : '已取消地区筛选。');
+    const nextRegion = uiStore.state.homeRegionFilter === button.dataset.region ? '' : button.dataset.region;
+    uiStore.set({ homeRegionFilter: nextRegion });
+    scheduleRowsRender(latestGroup?.items || []);
+    setNotice(nextRegion ? `已在首页筛选地区：${button.textContent.trim()}` : '已取消地区筛选。');
   };
 });
 
 $all('[data-node-filter]').forEach((button) => {
   button.onclick = () => {
-    nodePageFilter = button.dataset.nodeFilter || 'all';
-    $all('[data-node-filter]').forEach((item) => item.classList.toggle('active', item === button));
-    renderRows(latestGroup?.items || []);
+    uiStore.set({ nodePageFilter: button.dataset.nodeFilter || 'all' });
+    scheduleRowsRender(latestGroup?.items || []);
   };
 });
 
@@ -709,48 +1783,97 @@ document.body.addEventListener('click', async (event) => {
     if (!event.target.closest('.mode-box')) {
       $('#modeMenu')?.classList.add('hidden');
     }
-    const closeId = event.target.closest('[data-close-connection]')?.dataset.closeConnection;
+    const cancelJobId = event.target.closest('[data-job-cancel]')?.dataset.jobCancel;
+    if (cancelJobId) {
+      await requestJobCancel(cancelJobId);
+      return;
+    }
+    const retryJobId = event.target.closest('[data-job-retry]')?.dataset.jobRetry;
+    if (retryJobId) {
+      await retryJob(retryJobId);
+      return;
+    }
+    const closeButton = event.target.closest('[data-close-connection]');
+    const closeId = closeButton?.dataset.closeConnection;
     if (closeId) {
-      await invoke('close_connection', { id: closeId });
-      refreshConnections();
+      await runOptimisticAction({
+        apply: () => removeConnectionElement(closeButton),
+        commit: () => invoke('close_connection', { id: closeId }),
+        refresh: () => refreshConnections(),
+        rollback: () => refreshConnections(),
+        pendingNotice: '已从列表移除连接，正在后台关闭...',
+        successNotice: '连接已关闭。',
+        failureNotice: (err) => `关闭连接失败：${err.message || err}`
+      });
       return;
     }
     const profileSwitch = event.target.closest('[data-profile-switch]')?.dataset.profileSwitch;
     const profileRow = event.target.closest('[data-profile-row]')?.dataset.profileRow;
     const profileTarget = profileSwitch || (event.target.closest('.card-actions') ? '' : profileRow);
     if (profileTarget) {
-      setNotice('正在切换订阅并应用配置...');
-      await invoke('set_active_profile', { id: profileTarget });
-      await refreshStatus(true);
-      await refreshNodes();
-      renderProfiles();
-      setNotice('订阅已切换并应用。');
+      await runOptimisticAction({
+        apply: () => applyOptimisticProfile(profileTarget),
+        commit: () => setActiveProfileJob(profileTarget),
+        refresh: async () => {
+          await refreshStatus(true);
+          await refreshNodes(true);
+          renderProfiles();
+        },
+        pendingNotice: '已选择订阅，正在后台应用配置...',
+        successNotice: '订阅已切换并应用。',
+        failureNotice: (err) => `订阅切换失败：${err.message || err}`
+      });
       return;
     }
     const profileUpdate = event.target.closest('[data-profile-update]')?.dataset.profileUpdate;
     if (profileUpdate) {
-      setNotice('正在更新订阅...');
-      await invoke('update_profile', { id: profileUpdate });
-      await refreshStatus(true);
-      await refreshNodes();
-      renderProfiles();
-      setNotice('订阅已更新。');
+      await runOptimisticAction({
+        apply: () => applyOptimisticProfilePending(profileUpdate, 'updating'),
+        commit: async () => {
+          const result = await updateProfileJob(profileUpdate);
+          if (!result) throw new Error(lastBackgroundJobError || 'subscription update failed');
+          return result;
+        },
+        refresh: async () => {
+          await refreshStatus(true);
+          await refreshNodes(true);
+          renderProfiles();
+        },
+        pendingNotice: '正在更新订阅...',
+        successNotice: '订阅已更新。',
+        failureNotice: (err) => `订阅更新失败：${err.message || err}`
+      });
       return;
     }
     const profileRemove = event.target.closest('[data-profile-remove]')?.dataset.profileRemove;
     if (profileRemove) {
-      await invoke('remove_profile', { id: profileRemove });
-      await refreshStatus(true);
+      await runOptimisticAction({
+        apply: () => applyOptimisticProfileRemove(profileRemove),
+        commit: () => removeProfileJob(profileRemove),
+        refresh: async () => {
+          await refreshStatus(true);
+          await refreshNodes(true);
+          renderProfiles();
+        },
+        pendingNotice: '订阅已从列表移除，正在后台删除...',
+        successNotice: '订阅已删除。',
+        failureNotice: (err) => `删除订阅失败：${err.message || err}`
+      });
     }
   } catch (err) {
     setNotice(`操作失败：${err.message || err}`);
   }
 });
 
+uiStore.subscribe(renderUiState);
+renderUiState();
+renderJobCenter();
 renderRows();
 wireWindowControls();
 refreshStatus(true);
 refreshNodes();
 tick();
 setInterval(tick, 1000);
+setInterval(() => syncJobCenter(false), 2500);
 setInterval(refreshStatus, 8000);
+setInterval(maybeAutoRecover, 60000);

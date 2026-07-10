@@ -14,7 +14,7 @@ use std::{
     net::{TcpListener, UdpSocket},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{mpsc, Arc, Mutex},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -25,6 +25,29 @@ use std::os::windows::process::CommandExt;
 
 const APP_NAME: &str = "Aegos";
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+const AEGOS_DEFAULT_MIXED_PORT: u16 = 7891;
+const AEGOS_DEFAULT_CONTROLLER_PORT: u16 = 19091;
+const RESERVED_MIXED_PORTS: &[u16] = &[7890];
+
+fn default_reliability_auto() -> bool {
+    true
+}
+
+fn default_reliability_profile_failover() -> bool {
+    true
+}
+
+fn default_reliability_failure_threshold() -> u64 {
+    2
+}
+
+fn default_reliability_max_delay_ms() -> u64 {
+    800
+}
+
+fn default_reliability_candidate_limit() -> u64 {
+    24
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Profile {
@@ -35,8 +58,32 @@ struct Profile {
     path: String,
     #[serde(default)]
     source_url: Option<String>,
+    #[serde(default)]
+    node_count: usize,
+    #[serde(default)]
+    proxy_group_count: usize,
     updated_at: String,
     digest: String,
+}
+
+#[derive(Clone, Default)]
+struct ProfileSourceSummary {
+    format: String,
+    proxies: usize,
+    proxy_groups: usize,
+    rules: usize,
+    unsupported_lines: usize,
+}
+
+struct ProfileSource {
+    config: YamlValue,
+    summary: ProfileSourceSummary,
+}
+
+struct RenderedProfile {
+    yaml: String,
+    digest: String,
+    report: JsonValue,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -55,6 +102,18 @@ struct Settings {
     ipv6_enabled: bool,
     allow_lan: bool,
     log_level: String,
+    #[serde(default = "default_reliability_auto")]
+    reliability_auto: bool,
+    #[serde(default = "default_reliability_profile_failover")]
+    reliability_profile_failover: bool,
+    #[serde(default = "default_reliability_failure_threshold")]
+    reliability_failure_threshold: u64,
+    #[serde(default = "default_reliability_max_delay_ms")]
+    reliability_max_delay_ms: u64,
+    #[serde(default = "default_reliability_candidate_limit")]
+    reliability_candidate_limit: u64,
+    #[serde(default)]
+    selected_proxy_map: HashMap<String, String>,
     profiles: Vec<Profile>,
 }
 
@@ -65,6 +124,25 @@ struct LogEntry {
     line: String,
 }
 
+#[derive(Clone, Default)]
+struct SpeedTestState {
+    running: bool,
+    started_at: u64,
+    updated_at: u64,
+    total: usize,
+    completed: usize,
+    ok: usize,
+    failed: usize,
+    delays: HashMap<String, i64>,
+    error: Option<String>,
+}
+
+#[derive(Clone)]
+struct SpeedTestTarget {
+    name: String,
+    protocol: String,
+}
+
 struct CoreManager {
     app_data: PathBuf,
     home_dir: PathBuf,
@@ -73,16 +151,38 @@ struct CoreManager {
     settings_path: PathBuf,
     settings: Settings,
     process: Option<Child>,
+    runtime_profile_id: Option<String>,
+    runtime_config_digest: Option<String>,
     logs: Arc<Mutex<Vec<LogEntry>>>,
     last_traffic: JsonValue,
+    speed_test: Arc<Mutex<SpeedTestState>>,
     lan_ip_cache: String,
     lan_ip_checked_at: u64,
     outbound_ip_cache: String,
     outbound_ip_checked_at: u64,
+    reliability_failures: u64,
 }
 
 struct AppState {
-    core: Mutex<CoreManager>,
+    core: Arc<Mutex<CoreManager>>,
+    jobs: Arc<Mutex<HashMap<String, JobRecord>>>,
+    operations: Arc<Mutex<()>>,
+}
+
+#[derive(Clone, Serialize)]
+struct JobRecord {
+    id: String,
+    kind: String,
+    label: String,
+    state: String,
+    started_at: u64,
+    updated_at: u64,
+    progress: u64,
+    total: u64,
+    message: String,
+    result: Option<JsonValue>,
+    error: Option<String>,
+    cancel_requested: bool,
 }
 
 fn now_iso() -> String {
@@ -107,6 +207,10 @@ fn sha256_file(path: &Path) -> String {
     format!("{:x}", Sha256::digest(data))
 }
 
+fn sha256_text(text: &str) -> String {
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
 fn ensure_dir(path: &Path) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|err| err.to_string())
 }
@@ -125,6 +229,35 @@ fn yaml_str(value: impl Into<String>) -> YamlValue {
 
 fn yaml_num(value: u64) -> YamlValue {
     YamlValue::Number(value.into())
+}
+
+fn port_from_value(value: &JsonValue, fallback: u16, label: &str) -> Result<u16, String> {
+    let port = value.as_u64().unwrap_or(u64::from(fallback));
+    if !(1024..=65535).contains(&port) {
+        return Err(format!("{label} must be between 1024 and 65535"));
+    }
+    Ok(port as u16)
+}
+
+fn mixed_port_from_value(value: &JsonValue, fallback: u16) -> Result<u16, String> {
+    let port = port_from_value(value, fallback, "Mixed proxy port")?;
+    if RESERVED_MIXED_PORTS.contains(&port) {
+        return Err("7890 已由 FlClash/Codex 使用，Aegos 请使用 7891 或其他端口。".to_string());
+    }
+    Ok(port)
+}
+
+fn string_choice_from_value(
+    value: &JsonValue,
+    fallback: &str,
+    allowed: &[&str],
+    label: &str,
+) -> Result<String, String> {
+    let text = value.as_str().unwrap_or(fallback);
+    if !allowed.contains(&text) {
+        return Err(format!("{label} must be one of: {}", allowed.join(", ")));
+    }
+    Ok(text.to_string())
 }
 
 fn percent_decode(input: &str) -> String {
@@ -155,6 +288,66 @@ fn url_path_encode(input: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+fn test_proxy_delay_request(
+    client: &Client,
+    controller_port: u16,
+    secret: &str,
+    name: &str,
+    test_url: &str,
+    timeout_ms: u64,
+) -> i64 {
+    let url = format!(
+        "http://127.0.0.1:{}/proxies/{}/delay?timeout={}&url={}",
+        controller_port,
+        url_path_encode(name),
+        timeout_ms,
+        url_path_encode(test_url)
+    );
+    client
+        .get(url)
+        .bearer_auth(secret)
+        .send()
+        .ok()
+        .and_then(|res| res.error_for_status().ok())
+        .and_then(|res| res.json::<JsonValue>().ok())
+        .and_then(|data| data.get("delay").and_then(|value| value.as_i64()))
+        .unwrap_or(-1)
+}
+
+fn is_tuic_protocol(protocol: &str) -> bool {
+    protocol.trim().eq_ignore_ascii_case("tuic")
+}
+
+fn test_proxy_delay_with_retry(
+    client: &Client,
+    controller_port: u16,
+    secret: &str,
+    name: &str,
+    protocol: &str,
+) -> i64 {
+    if is_tuic_protocol(protocol) {
+        return test_proxy_delay_request(
+            client,
+            controller_port,
+            secret,
+            name,
+            "https://www.gstatic.com/generate_204",
+            2800,
+        );
+    }
+    [
+        ("http://www.gstatic.com/generate_204", 4500),
+        ("https://www.gstatic.com/generate_204", 4500),
+        ("http://cp.cloudflare.com/generate_204", 4500),
+    ]
+    .iter()
+    .map(|(url, timeout_ms)| {
+        test_proxy_delay_request(client, controller_port, secret, name, url, *timeout_ms)
+    })
+    .find(|delay| *delay >= 0)
+    .unwrap_or(-1)
 }
 
 fn b64_decode_text(input: &str) -> Option<String> {
@@ -188,9 +381,17 @@ fn query_value(query: &str, key: &str) -> Option<String> {
 fn parse_ss_uri(uri: &str, index: usize) -> Option<YamlValue> {
     let raw = uri.strip_prefix("ss://")?;
     let (body, name_part) = raw.split_once('#').unwrap_or((raw, ""));
-    let name = if name_part.is_empty() { format!("SS {index}") } else { percent_decode(name_part) };
+    let name = if name_part.is_empty() {
+        format!("SS {index}")
+    } else {
+        percent_decode(name_part)
+    };
     let body = body.split_once('?').map(|(left, _)| left).unwrap_or(body);
-    let decoded = if body.contains('@') { percent_decode(body) } else { b64_decode_text(body)? };
+    let decoded = if body.contains('@') {
+        percent_decode(body)
+    } else {
+        b64_decode_text(body)?
+    };
     let (auth, host_port) = decoded.rsplit_once('@')?;
     let (method, password) = auth.split_once(':')?;
     let (server, port) = host_port.rsplit_once(':')?;
@@ -211,7 +412,15 @@ fn parse_trojan_uri(uri: &str, index: usize) -> Option<YamlValue> {
     let (password, host_port) = main.split_once('@')?;
     let (server, port) = host_port.rsplit_once(':')?;
     let mut map = Mapping::new();
-    set_yaml(&mut map, "name", yaml_str(if name_part.is_empty() { format!("Trojan {index}") } else { percent_decode(name_part) }));
+    set_yaml(
+        &mut map,
+        "name",
+        yaml_str(if name_part.is_empty() {
+            format!("Trojan {index}")
+        } else {
+            percent_decode(name_part)
+        }),
+    );
     set_yaml(&mut map, "type", yaml_str("trojan"));
     set_yaml(&mut map, "server", yaml_str(server));
     set_yaml(&mut map, "port", yaml_num(port.parse().ok()?));
@@ -230,24 +439,54 @@ fn parse_vmess_uri(uri: &str, index: usize) -> Option<YamlValue> {
     let port = data.get("port")?.as_str()?.parse().ok()?;
     let uuid = data.get("id")?.as_str()?;
     let mut map = Mapping::new();
-    set_yaml(&mut map, "name", yaml_str(data.get("ps").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(percent_decode).unwrap_or_else(|| format!("VMess {index}"))));
+    set_yaml(
+        &mut map,
+        "name",
+        yaml_str(
+            data.get("ps")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(percent_decode)
+                .unwrap_or_else(|| format!("VMess {index}")),
+        ),
+    );
     set_yaml(&mut map, "type", yaml_str("vmess"));
     set_yaml(&mut map, "server", yaml_str(server));
     set_yaml(&mut map, "port", yaml_num(port));
     set_yaml(&mut map, "uuid", yaml_str(uuid));
-    set_yaml(&mut map, "alterId", yaml_num(data.get("aid").and_then(|v| v.as_str()).and_then(|v| v.parse().ok()).unwrap_or(0)));
-    set_yaml(&mut map, "cipher", yaml_str(data.get("scy").and_then(|v| v.as_str()).unwrap_or("auto")));
+    set_yaml(
+        &mut map,
+        "alterId",
+        yaml_num(
+            data.get("aid")
+                .and_then(|v| v.as_str())
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+        ),
+    );
+    set_yaml(
+        &mut map,
+        "cipher",
+        yaml_str(data.get("scy").and_then(|v| v.as_str()).unwrap_or("auto")),
+    );
     if matches!(data.get("tls").and_then(|v| v.as_str()), Some("tls")) {
         set_yaml(&mut map, "tls", YamlValue::Bool(true));
     }
-    if let Some(network) = data.get("net").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+    if let Some(network) = data
+        .get("net")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
         set_yaml(&mut map, "network", yaml_str(network));
     }
     Some(YamlValue::Mapping(map))
 }
 
 fn truthy(value: &str) -> bool {
-    matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn parse_tuic_uri(uri: &str, index: usize) -> Option<YamlValue> {
@@ -308,10 +547,112 @@ fn parse_tuic_uri(uri: &str, index: usize) -> Option<YamlValue> {
     Some(YamlValue::Mapping(map))
 }
 
+fn summarize_profile_source(
+    config: &YamlValue,
+    format: &str,
+    unsupported_lines: usize,
+) -> Result<ProfileSourceSummary, String> {
+    let proxies = yaml_sequence(config, "proxies")
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let proxy_groups = yaml_sequence(config, "proxy-groups")
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let rules = yaml_sequence(config, "rules")
+        .map(|items| items.len())
+        .unwrap_or(0);
+    if proxies == 0 {
+        return Err("订阅解析成功，但没有可用 proxies 节点".to_string());
+    }
+    Ok(ProfileSourceSummary {
+        format: format.to_string(),
+        proxies,
+        proxy_groups,
+        rules,
+        unsupported_lines,
+    })
+}
+
+fn profile_file_summary(profile: &Profile) -> Result<ProfileSourceSummary, String> {
+    let path = Path::new(&profile.path);
+    if !path.exists() {
+        return Err(format!("profile file missing: {}", profile.path));
+    }
+    let raw = fs::read_to_string(path).map_err(|err| format!("profile file read failed: {err}"))?;
+    let config: YamlValue =
+        serde_yaml::from_str(&raw).map_err(|err| format!("profile YAML parse failed: {err}"))?;
+    summarize_profile_source(&config, "profile-file", 0)
+}
+
+fn should_repair_profile_metadata(profile: &Profile) -> bool {
+    profile.profile_type == "url"
+        && !profile.path.trim().is_empty()
+        && (profile.node_count == 0 || profile.proxy_group_count == 0)
+}
+
+fn derived_profile_metadata(profile: &Profile) -> (usize, usize, &'static str, Option<String>) {
+    if !should_repair_profile_metadata(profile) {
+        return (
+            profile.node_count,
+            profile.proxy_group_count,
+            "stored",
+            None,
+        );
+    }
+    match profile_file_summary(profile) {
+        Ok(summary) => {
+            let status = if summary.proxies != profile.node_count
+                || summary.proxy_groups != profile.proxy_group_count
+            {
+                "repaired"
+            } else {
+                "stored"
+            };
+            (summary.proxies, summary.proxy_groups, status, None)
+        }
+        Err(err) => (
+            profile.node_count,
+            profile.proxy_group_count,
+            "stale",
+            Some(err),
+        ),
+    }
+}
+
+fn public_profile(profile: &Profile) -> JsonValue {
+    let (node_count, proxy_group_count, metadata_status, metadata_error) =
+        derived_profile_metadata(profile);
+    json!({
+        "id": &profile.id,
+        "name": &profile.name,
+        "type": &profile.profile_type,
+        "profile_type": &profile.profile_type,
+        "path": &profile.path,
+        "source_url": &profile.source_url,
+        "node_count": node_count,
+        "nodeCount": node_count,
+        "proxy_group_count": proxy_group_count,
+        "proxyGroupCount": proxy_group_count,
+        "updated_at": &profile.updated_at,
+        "digest": &profile.digest,
+        "metadataStatus": metadata_status,
+        "metadataError": metadata_error
+    })
+}
+
 fn parse_uri_subscription(text: &str) -> Option<YamlValue> {
-    let body = if text.contains("://") { text.to_string() } else { b64_decode_text(text)? };
+    let body = if text.contains("://") {
+        text.to_string()
+    } else {
+        b64_decode_text(text)?
+    };
     let mut proxies = Vec::new();
-    for (index, line) in body.lines().map(str::trim).filter(|line| !line.is_empty()).enumerate() {
+    for (index, line) in body
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .enumerate()
+    {
         let item = if line.starts_with("ss://") {
             parse_ss_uri(line, index + 1)
         } else if line.starts_with("trojan://") {
@@ -335,6 +676,389 @@ fn parse_uri_subscription(text: &str) -> Option<YamlValue> {
     Some(YamlValue::Mapping(root))
 }
 
+fn parse_uri_subscription_source(text: &str) -> Result<ProfileSource, String> {
+    let config = parse_uri_subscription(text).ok_or_else(|| {
+        "订阅格式不支持：不是 Clash YAML，也不是可识别的 ss/vmess/trojan/tuic URI 订阅".to_string()
+    })?;
+    let body = if text.contains("://") {
+        text.to_string()
+    } else {
+        b64_decode_text(text).unwrap_or_default()
+    };
+    let unsupported_lines = body
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| {
+            !line.starts_with("ss://")
+                && !line.starts_with("trojan://")
+                && !line.starts_with("vmess://")
+                && !line.starts_with("tuic://")
+        })
+        .count();
+    let summary = summarize_profile_source(&config, "uri", unsupported_lines)?;
+    Ok(ProfileSource { config, summary })
+}
+
+fn download_profile_source_url(url: &str) -> Result<ProfileSource, String> {
+    let parsed = reqwest::Url::parse(url).map_err(|err| format!("订阅 URL 无效：{err}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("订阅 URL 仅支持 HTTP/HTTPS".to_string());
+    }
+    let text = Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|err| format!("download client init failed: {err}"))?
+        .get(url)
+        .header("User-Agent", format!("Aegos/{}", env!("CARGO_PKG_VERSION")))
+        .send()
+        .map_err(|err| format!("subscription download failed: {err}"))?
+        .error_for_status()
+        .map_err(|err| format!("subscription download failed: bad HTTP status: {err}"))?
+        .text()
+        .map_err(|err| format!("subscription read failed: {err}"))?;
+    if text.trim().is_empty() {
+        return Err("subscription download returned empty content".to_string());
+    }
+    let source = match serde_yaml::from_str::<YamlValue>(&text).ok() {
+        Some(YamlValue::Mapping(map)) => {
+            let config = YamlValue::Mapping(map);
+            let summary = summarize_profile_source(&config, "clash-yaml", 0)?;
+            ProfileSource { config, summary }
+        }
+        _ => parse_uri_subscription_source(&text)?,
+    };
+    Ok(source)
+}
+
+fn patch_config_with_settings(source: YamlValue, settings: &Settings) -> Result<YamlValue, String> {
+    let mut config = match source {
+        YamlValue::Mapping(map) => map,
+        _ => Mapping::new(),
+    };
+    for key in [
+        "port",
+        "socks-port",
+        "redir-port",
+        "tproxy-port",
+        "mixed-port",
+    ] {
+        config.remove(yaml_key(key));
+    }
+    set_yaml(
+        &mut config,
+        "mixed-port",
+        YamlValue::Number(settings.mixed_port.into()),
+    );
+    set_yaml(
+        &mut config,
+        "allow-lan",
+        YamlValue::Bool(settings.allow_lan),
+    );
+    set_yaml(
+        &mut config,
+        "bind-address",
+        YamlValue::String(if settings.allow_lan { "*" } else { "127.0.0.1" }.to_string()),
+    );
+    set_yaml(
+        &mut config,
+        "mode",
+        YamlValue::String(settings.mode.clone()),
+    );
+    set_yaml(
+        &mut config,
+        "log-level",
+        YamlValue::String(settings.log_level.clone()),
+    );
+    set_yaml(
+        &mut config,
+        "external-controller",
+        YamlValue::String(format!("127.0.0.1:{}", settings.controller_port)),
+    );
+    set_yaml(
+        &mut config,
+        "secret",
+        YamlValue::String(settings.secret.clone()),
+    );
+    set_yaml(&mut config, "ipv6", YamlValue::Bool(settings.ipv6_enabled));
+    set_yaml(
+        &mut config,
+        "find-process-mode",
+        YamlValue::String("strict".to_string()),
+    );
+
+    if settings.tun_enabled {
+        let tun = config
+            .entry(yaml_key("tun"))
+            .or_insert_with(|| YamlValue::Mapping(Mapping::new()));
+        let tun_map = get_mapping_mut(tun);
+        set_yaml(tun_map, "enable", YamlValue::Bool(true));
+        set_yaml(
+            tun_map,
+            "stack",
+            YamlValue::String(settings.tun_stack.clone()),
+        );
+        set_yaml(tun_map, "auto-route", YamlValue::Bool(true));
+        set_yaml(tun_map, "auto-detect-interface", YamlValue::Bool(true));
+        set_yaml(
+            tun_map,
+            "dns-hijack",
+            if settings.dns_hijack_enabled {
+                YamlValue::Sequence(vec![YamlValue::String("any:53".to_string())])
+            } else {
+                YamlValue::Sequence(Vec::new())
+            },
+        );
+    } else if let Some(tun) = config.get_mut(yaml_key("tun")) {
+        set_yaml(get_mapping_mut(tun), "enable", YamlValue::Bool(false));
+    }
+
+    let proxy_names: Vec<YamlValue> = config
+        .get(yaml_key("proxies"))
+        .and_then(|v| v.as_sequence())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get(yaml_key("name")).and_then(|v| v.as_str()))
+                .map(|name| YamlValue::String(name.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let has_proxy_group = matches!(config.get(yaml_key("proxy-groups")), Some(YamlValue::Sequence(items)) if !items.is_empty());
+    if !proxy_names.is_empty() && !has_proxy_group {
+        let mut group = Mapping::new();
+        set_yaml(&mut group, "name", yaml_str("GLOBAL"));
+        set_yaml(&mut group, "type", yaml_str("select"));
+        set_yaml(
+            &mut group,
+            "proxies",
+            YamlValue::Sequence(proxy_names.clone()),
+        );
+        set_yaml(
+            &mut config,
+            "proxy-groups",
+            YamlValue::Sequence(vec![YamlValue::Mapping(group)]),
+        );
+    }
+
+    if !matches!(config.get(yaml_key("rules")), Some(YamlValue::Sequence(items)) if !items.is_empty())
+    {
+        let target = if proxy_names.is_empty() {
+            "DIRECT"
+        } else {
+            "GLOBAL"
+        };
+        set_yaml(
+            &mut config,
+            "rules",
+            YamlValue::Sequence(vec![YamlValue::String(format!("MATCH,{target}"))]),
+        );
+    }
+    Ok(YamlValue::Mapping(config))
+}
+
+fn yaml_sequence<'a>(config: &'a YamlValue, key: &str) -> Option<&'a Vec<YamlValue>> {
+    config
+        .get(yaml_key(key))
+        .and_then(|value| value.as_sequence())
+}
+
+fn yaml_mapping_name(item: &YamlValue) -> Option<&str> {
+    item.as_mapping()?
+        .get(yaml_key("name"))
+        .and_then(|value| value.as_str())
+}
+
+fn preflight_runtime_config(
+    config: &YamlValue,
+    profile: &Profile,
+    settings: &Settings,
+) -> Result<JsonValue, String> {
+    let root = config
+        .as_mapping()
+        .ok_or_else(|| "配置预检失败：根节点必须是 YAML 对象".to_string())?;
+    let proxies = yaml_sequence(config, "proxies")
+        .cloned()
+        .unwrap_or_default();
+    let proxy_groups = yaml_sequence(config, "proxy-groups")
+        .cloned()
+        .unwrap_or_default();
+    let rules = yaml_sequence(config, "rules").cloned().unwrap_or_default();
+    let builtin_direct = profile.id == "direct" || profile.profile_type == "builtin";
+    let mut names = HashSet::new();
+    let mut duplicate_names = Vec::new();
+    let mut missing_fields = Vec::new();
+
+    for (index, proxy) in proxies.iter().enumerate() {
+        let Some(map) = proxy.as_mapping() else {
+            missing_fields.push(format!("proxies[{}] 不是对象", index));
+            continue;
+        };
+        let name = map
+            .get(yaml_key("name"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim();
+        if name.is_empty() {
+            missing_fields.push(format!("proxies[{}] 缺少 name", index));
+        } else if !names.insert(name.to_string()) {
+            duplicate_names.push(name.to_string());
+        }
+        if map
+            .get(yaml_key("type"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
+            missing_fields.push(format!(
+                "{} 缺少 type",
+                if name.is_empty() { "proxy" } else { name }
+            ));
+        }
+    }
+
+    if !builtin_direct && proxies.is_empty() {
+        return Err("配置预检失败：订阅没有可用 proxies 节点".to_string());
+    }
+    if !duplicate_names.is_empty() {
+        duplicate_names.sort();
+        duplicate_names.dedup();
+        return Err(format!(
+            "配置预检失败：存在重复节点名 {}",
+            duplicate_names.join(", ")
+        ));
+    }
+    if !missing_fields.is_empty() {
+        return Err(format!("配置预检失败：{}", missing_fields.join("；")));
+    }
+    if !proxies.is_empty() && proxy_groups.is_empty() {
+        return Err("配置预检失败：存在节点但没有 proxy-groups".to_string());
+    }
+    if rules.is_empty() {
+        return Err("配置预检失败：rules 为空".to_string());
+    }
+
+    let proxy_name_set = proxies
+        .iter()
+        .filter_map(yaml_mapping_name)
+        .map(|name| name.to_string())
+        .collect::<HashSet<_>>();
+    let proxy_group_name_set = proxy_groups
+        .iter()
+        .filter_map(yaml_mapping_name)
+        .map(|name| name.to_string())
+        .collect::<HashSet<_>>();
+    let mut bad_refs = Vec::new();
+    for group in &proxy_groups {
+        let Some(map) = group.as_mapping() else {
+            continue;
+        };
+        let group_name = map
+            .get(yaml_key("name"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("proxy-group");
+        if let Some(items) = map
+            .get(yaml_key("proxies"))
+            .and_then(|value| value.as_sequence())
+        {
+            for item in items {
+                let Some(name) = item.as_str() else {
+                    continue;
+                };
+                let upper = name.to_ascii_uppercase();
+                if matches!(
+                    upper.as_str(),
+                    "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS" | "COMPATIBLE"
+                ) || proxy_name_set.contains(name)
+                    || proxy_group_name_set.contains(name)
+                {
+                    continue;
+                }
+                bad_refs.push(format!("{group_name}->{name}"));
+            }
+        }
+    }
+    if !bad_refs.is_empty() {
+        bad_refs.sort();
+        bad_refs.dedup();
+        return Err(format!(
+            "配置预检失败：代理组引用了不存在的节点 {}",
+            bad_refs.join(", ")
+        ));
+    }
+
+    let mixed_port = root
+        .get(yaml_key("mixed-port"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    if mixed_port != u64::from(settings.mixed_port) {
+        return Err(format!(
+            "配置预检失败：mixed-port 应为 {}，实际为 {}",
+            settings.mixed_port, mixed_port
+        ));
+    }
+    let controller = root
+        .get(yaml_key("external-controller"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if !controller.ends_with(&format!(":{}", settings.controller_port)) {
+        return Err(format!(
+            "配置预检失败：external-controller 应使用端口 {}",
+            settings.controller_port
+        ));
+    }
+
+    Ok(json!({
+        "ok": true,
+        "profile": profile.name,
+        "proxies": proxies.len(),
+        "proxyGroups": proxy_groups.len(),
+        "rules": rules.len(),
+        "mixedPort": settings.mixed_port,
+        "controllerPort": settings.controller_port
+    }))
+}
+
+fn query_outbound_ip(mixed_port: u16) -> Result<String, String> {
+    let proxy_url = format!("http://127.0.0.1:{mixed_port}");
+    let proxy = reqwest::Proxy::all(&proxy_url).map_err(|err| err.to_string())?;
+    let client = Client::builder()
+        .proxy(proxy)
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let services = [
+        "https://api.ipify.org",
+        "https://ifconfig.me/ip",
+        "https://icanhazip.com",
+    ];
+    let mut last_error = String::new();
+    for url in services {
+        match client
+            .get(url)
+            .send()
+            .and_then(|res| res.error_for_status())
+        {
+            Ok(res) => match res.text() {
+                Ok(text) => {
+                    let ip = text.trim().trim_matches('"').to_string();
+                    if !ip.is_empty() && ip.len() <= 64 {
+                        return Ok(ip);
+                    }
+                }
+                Err(err) => last_error = err.to_string(),
+            },
+            Err(err) => last_error = err.to_string(),
+        }
+    }
+    if last_error.is_empty() {
+        Err("无法获取落地 IP".to_string())
+    } else {
+        Err(format!("无法获取落地 IP: {last_error}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,13 +1075,229 @@ mod tests {
             .expect("proxies sequence");
         let proxy = proxies[0].as_mapping().expect("proxy mapping");
 
-        assert_eq!(proxy.get(yaml_key("type")).and_then(YamlValue::as_str), Some("tuic"));
-        assert_eq!(proxy.get(yaml_key("name")).and_then(YamlValue::as_str), Some("HK TUIC"));
         assert_eq!(
-            proxy.get(yaml_key("congestion-controller")).and_then(YamlValue::as_str),
+            proxy.get(yaml_key("type")).and_then(YamlValue::as_str),
+            Some("tuic")
+        );
+        assert_eq!(
+            proxy.get(yaml_key("name")).and_then(YamlValue::as_str),
+            Some("HK TUIC")
+        );
+        assert_eq!(
+            proxy
+                .get(yaml_key("congestion-controller"))
+                .and_then(YamlValue::as_str),
             Some("bbr")
         );
-        assert_eq!(proxy.get(yaml_key("reduce-rtt")).and_then(YamlValue::as_bool), Some(true));
+        assert_eq!(
+            proxy
+                .get(yaml_key("reduce-rtt"))
+                .and_then(YamlValue::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn preflight_allows_proxy_groups_to_reference_groups() {
+        let config: YamlValue = serde_yaml::from_str(
+            r#"
+mixed-port: 7891
+external-controller: 127.0.0.1:19091
+secret: test
+proxies:
+  - name: Node A
+    type: ss
+    server: example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: Auto
+    type: select
+    proxies:
+      - Node A
+  - name: Final
+    type: select
+    proxies:
+      - Auto
+      - DIRECT
+      - PASS
+rules:
+  - MATCH,Final
+"#,
+        )
+        .expect("yaml");
+        let mut settings = default_settings();
+        settings.secret = "test".to_string();
+        let profile = Profile {
+            id: "url-test".to_string(),
+            name: "test".to_string(),
+            profile_type: "url".to_string(),
+            path: "test.yaml".to_string(),
+            source_url: None,
+            node_count: 1,
+            proxy_group_count: 2,
+            updated_at: "test".to_string(),
+            digest: "test".to_string(),
+        };
+
+        let report = preflight_runtime_config(&config, &profile, &settings)
+            .expect("group-to-group references should pass preflight");
+        assert_eq!(
+            report.get("proxyGroups").and_then(JsonValue::as_u64),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn resolves_proxy_group_references_to_leaf_proxy() {
+        let groups = vec![
+            json!({
+                "name": "Auto",
+                "type": "URLTest",
+                "now": "Node A",
+                "items": [{ "name": "Node A", "type": "ss" }]
+            }),
+            json!({
+                "name": "Final",
+                "type": "Selector",
+                "now": "Auto",
+                "items": [{ "name": "Auto", "type": "Group", "group": true }]
+            }),
+        ];
+        let mut selected = HashMap::new();
+        selected.insert("Final".to_string(), "Auto".to_string());
+        selected.insert("Auto".to_string(), "Node A".to_string());
+
+        assert_eq!(resolve_group_leaf(&groups, &selected, "Final", 0), "Node A");
+        assert_eq!(resolve_group_leaf(&groups, &selected, "Auto", 0), "Node A");
+    }
+
+    #[test]
+    fn runtime_config_digest_is_stable_until_settings_change() {
+        let source: YamlValue = serde_yaml::from_str(
+            r#"
+proxies:
+  - name: Node A
+    type: ss
+    server: example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies:
+      - Node A
+rules:
+  - MATCH,Proxy
+"#,
+        )
+        .expect("yaml");
+        let mut settings = default_settings();
+        settings.secret = "test".to_string();
+        let first = patch_config_with_settings(source.clone(), &settings).expect("first patch");
+        let second = patch_config_with_settings(source, &settings).expect("second patch");
+        let first_yaml = serde_yaml::to_string(&first).expect("first yaml");
+        let second_yaml = serde_yaml::to_string(&second).expect("second yaml");
+        assert_eq!(sha256_text(&first_yaml), sha256_text(&second_yaml));
+
+        settings.mode = "global".to_string();
+        let changed = patch_config_with_settings(first, &settings).expect("changed patch");
+        let changed_yaml = serde_yaml::to_string(&changed).expect("changed yaml");
+        assert_ne!(sha256_text(&second_yaml), sha256_text(&changed_yaml));
+    }
+
+    #[test]
+    fn operation_queue_is_exclusive() {
+        let operations = Arc::new(Mutex::new(()));
+        let guard = lock_operation_queue(&operations, "test").expect("queue lock");
+        assert!(operations.try_lock().is_err());
+        drop(guard);
+        assert!(operations.try_lock().is_ok());
+    }
+
+    #[test]
+    fn running_switch_preflight_accepts_two_local_profiles() {
+        let mut settings = default_settings();
+        settings.secret = "test".to_string();
+        let profile_a = Profile {
+            id: "local-a".to_string(),
+            name: "Local A".to_string(),
+            profile_type: "local".to_string(),
+            path: "a.yaml".to_string(),
+            source_url: None,
+            node_count: 1,
+            proxy_group_count: 1,
+            updated_at: "test".to_string(),
+            digest: "a".to_string(),
+        };
+        let profile_b = Profile {
+            id: "local-b".to_string(),
+            name: "Local B".to_string(),
+            profile_type: "local".to_string(),
+            path: "b.yaml".to_string(),
+            source_url: None,
+            node_count: 1,
+            proxy_group_count: 2,
+            updated_at: "test".to_string(),
+            digest: "b".to_string(),
+        };
+        let yaml_a: YamlValue = serde_yaml::from_str(
+            r#"
+mixed-port: 7891
+external-controller: 127.0.0.1:19091
+secret: test
+proxies:
+  - name: A
+    type: ss
+    server: a.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies:
+      - A
+      - DIRECT
+rules:
+  - MATCH,Proxy
+"#,
+        )
+        .expect("yaml a");
+        let yaml_b: YamlValue = serde_yaml::from_str(
+            r#"
+mixed-port: 7891
+external-controller: 127.0.0.1:19091
+secret: test
+proxies:
+  - name: B
+    type: ss
+    server: b.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: Auto
+    type: url-test
+    proxies:
+      - B
+  - name: Proxy
+    type: select
+    proxies:
+      - Auto
+      - DIRECT
+rules:
+  - MATCH,Proxy
+"#,
+        )
+        .expect("yaml b");
+
+        preflight_runtime_config(&yaml_a, &profile_a, &settings)
+            .expect("profile a should preflight");
+        preflight_runtime_config(&yaml_b, &profile_b, &settings)
+            .expect("profile b should preflight with group reference");
     }
 }
 
@@ -371,8 +1311,8 @@ fn get_mapping_mut(value: &mut YamlValue) -> &mut Mapping {
 fn default_settings() -> Settings {
     Settings {
         active_profile_id: "direct".to_string(),
-        mixed_port: 7890,
-        controller_port: 19090,
+        mixed_port: AEGOS_DEFAULT_MIXED_PORT,
+        controller_port: AEGOS_DEFAULT_CONTROLLER_PORT,
         secret: hex_random(24),
         mode: "rule".to_string(),
         system_proxy: false,
@@ -384,6 +1324,12 @@ fn default_settings() -> Settings {
         ipv6_enabled: false,
         allow_lan: false,
         log_level: "info".to_string(),
+        reliability_auto: default_reliability_auto(),
+        reliability_profile_failover: default_reliability_profile_failover(),
+        reliability_failure_threshold: default_reliability_failure_threshold(),
+        reliability_max_delay_ms: default_reliability_max_delay_ms(),
+        reliability_candidate_limit: default_reliability_candidate_limit(),
+        selected_proxy_map: HashMap::new(),
         profiles: Vec::new(),
     }
 }
@@ -407,12 +1353,12 @@ fn is_port_free(port: u16) -> bool {
     TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
-fn find_free_port(current: u16, fallback: u16) -> Result<u16, String> {
-    if is_port_free(current) {
+fn find_free_port(current: u16, fallback: u16, reserved: &[u16]) -> Result<u16, String> {
+    if !reserved.contains(&current) && is_port_free(current) {
         return Ok(current);
     }
     for port in fallback..fallback + 80 {
-        if is_port_free(port) {
+        if !reserved.contains(&port) && is_port_free(port) {
             return Ok(port);
         }
     }
@@ -445,6 +1391,101 @@ fn normalize_proxy_item(mut proxy: JsonValue) -> JsonValue {
     proxy
 }
 
+fn builtin_proxy_item(name: &str) -> JsonValue {
+    json!({
+        "name": name,
+        "server": name,
+        "type": name,
+        "alive": true,
+        "delay": -1,
+        "builtin": true
+    })
+}
+
+fn yaml_proxy_to_json(proxy: &YamlValue) -> Option<JsonValue> {
+    let map = proxy.as_mapping()?;
+    let name = map
+        .get(yaml_key("name"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("Proxy");
+    let server = map
+        .get(yaml_key("server"))
+        .and_then(|value| value.as_str())
+        .unwrap_or(name);
+    let protocol = map
+        .get(yaml_key("type"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    Some(json!({
+        "name": name,
+        "server": server,
+        "type": protocol,
+        "alive": true,
+        "delay": -1
+    }))
+}
+
+fn group_selected_name(group: &JsonValue, selected_map: &HashMap<String, String>) -> String {
+    let group_name = group
+        .get("name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    selected_map
+        .get(group_name)
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .or_else(|| {
+            group
+                .get("now")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| value.to_string())
+        })
+        .unwrap_or_default()
+}
+
+fn resolve_group_leaf(
+    groups: &[JsonValue],
+    selected_map: &HashMap<String, String>,
+    name: &str,
+    depth: usize,
+) -> String {
+    if depth > 8 {
+        return name.to_string();
+    }
+    let Some(group) = groups
+        .iter()
+        .find(|group| group.get("name").and_then(|value| value.as_str()) == Some(name))
+    else {
+        return name.to_string();
+    };
+    let selected = group_selected_name(group, selected_map);
+    if selected.is_empty() || selected == name {
+        return name.to_string();
+    }
+    resolve_group_leaf(groups, selected_map, &selected, depth + 1)
+}
+
+fn is_recovery_candidate_name(name: &str) -> bool {
+    let text = name.trim();
+    if text.is_empty() {
+        return false;
+    }
+    let upper = text.to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "DIRECT" | "REJECT" | "REJECT-DROP" | "COMPATIBLE"
+    ) {
+        return false;
+    }
+    let lower = text.to_ascii_lowercase();
+    ![
+        "traffic", "expire", "剩余", "到期", "套餐", "官网", "流量", "过期",
+    ]
+    .iter()
+    .any(|needle| lower.contains(&needle.to_ascii_lowercase()))
+}
+
 fn ps_escape(value: impl AsRef<str>) -> String {
     value.as_ref().replace('\'', "''")
 }
@@ -466,6 +1507,17 @@ fn run_powershell(script: &str) -> Result<String, String> {
     } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
+}
+
+fn is_process_elevated() -> bool {
+    run_powershell(
+        r#"
+$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { 'true' } else { 'false' }
+"#,
+    )
+    .map(|output| output.trim().eq_ignore_ascii_case("true"))
+    .unwrap_or(false)
 }
 
 fn primary_lan_ip() -> String {
@@ -604,14 +1656,19 @@ impl CoreManager {
             settings_path,
             settings,
             process: None,
+            runtime_profile_id: None,
+            runtime_config_digest: None,
             logs: Arc::new(Mutex::new(Vec::new())),
             last_traffic: json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 }),
+            speed_test: Arc::new(Mutex::new(SpeedTestState::default())),
             lan_ip_cache: "-".to_string(),
             lan_ip_checked_at: 0,
             outbound_ip_cache: "-".to_string(),
             outbound_ip_checked_at: 0,
+            reliability_failures: 0,
         };
         manager.ensure_direct_profile()?;
+        manager.repair_profile_metadata();
         manager.save_settings()?;
         Ok(manager)
     }
@@ -653,12 +1710,158 @@ impl CoreManager {
                     profile_type: "builtin".to_string(),
                     path: path.to_string_lossy().to_string(),
                     source_url: None,
+                    node_count: 0,
+                    proxy_group_count: 0,
                     updated_at: now_iso(),
                     digest: sha256_file(&path),
                 },
             );
         }
         Ok(())
+    }
+
+    fn repair_profile_metadata(&mut self) -> usize {
+        let mut repaired = Vec::new();
+        let mut failed = Vec::new();
+        for profile in &mut self.settings.profiles {
+            if !should_repair_profile_metadata(profile) {
+                continue;
+            }
+            match profile_file_summary(profile) {
+                Ok(summary) => {
+                    let changed = profile.node_count != summary.proxies
+                        || profile.proxy_group_count != summary.proxy_groups;
+                    if changed {
+                        profile.node_count = summary.proxies;
+                        profile.proxy_group_count = summary.proxy_groups;
+                        repaired.push(format!(
+                            "{}: {} nodes / {} groups",
+                            profile.name, summary.proxies, summary.proxy_groups
+                        ));
+                    }
+                }
+                Err(err) => failed.push(format!("{}: {err}", profile.name)),
+            }
+        }
+        for line in &repaired {
+            self.add_log(
+                format!("Profile metadata repaired from file: {line}"),
+                "info",
+            );
+        }
+        for line in failed {
+            self.add_log(format!("Profile metadata repair skipped: {line}"), "warn");
+        }
+        repaired.len()
+    }
+
+    fn validate_port_settings_snapshot(settings: &Settings) -> Result<(), String> {
+        if RESERVED_MIXED_PORTS.contains(&settings.mixed_port) {
+            return Err(
+                "Mixed proxy port 7890 is reserved for FlClash/Codex; use 7891 or another free port"
+                    .to_string(),
+            );
+        }
+        if settings.mixed_port == settings.controller_port {
+            return Err(format!(
+                "Mixed proxy port {} cannot equal controller port {}",
+                settings.mixed_port, settings.controller_port
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_port_settings(&self) -> Result<(), String> {
+        Self::validate_port_settings_snapshot(&self.settings)
+    }
+
+    fn apply_port_candidate_value(
+        settings: &mut Settings,
+        key: &str,
+        value: &JsonValue,
+    ) -> Result<(), String> {
+        match key {
+            "mixedPort" => {
+                settings.mixed_port = mixed_port_from_value(value, settings.mixed_port)?;
+            }
+            "controllerPort" => {
+                settings.controller_port =
+                    port_from_value(value, settings.controller_port, "Controller port")?;
+            }
+            "startWithSystemProxy"
+            | "tunEnabled"
+            | "tunStack"
+            | "dnsHijackEnabled"
+            | "ipv6Enabled"
+            | "allowLan"
+            | "logLevel"
+            | "reliabilityAuto"
+            | "reliabilityProfileFailover"
+            | "reliabilityFailureThreshold"
+            | "reliabilityMaxDelayMs"
+            | "reliabilityCandidateLimit"
+            | "killSwitchEnabled" => {}
+            _ => return Err(format!("Unsupported setting: {key}")),
+        }
+        Ok(())
+    }
+
+    fn validate_setting_update_candidate(
+        &self,
+        key: &str,
+        value: &JsonValue,
+    ) -> Result<(), String> {
+        let mut candidate = self.settings.clone();
+        Self::apply_port_candidate_value(&mut candidate, key, value)?;
+        Self::validate_port_settings_snapshot(&candidate)
+    }
+
+    fn validate_settings_update_candidate(
+        &self,
+        map: &serde_json::Map<String, JsonValue>,
+    ) -> Result<(), String> {
+        let mut candidate = self.settings.clone();
+        for (key, value) in map {
+            Self::apply_port_candidate_value(&mut candidate, key, value)?;
+        }
+        Self::validate_port_settings_snapshot(&candidate)
+    }
+
+    fn rollback_settings_after_failure(
+        &mut self,
+        previous_settings: Settings,
+        restart_previous_runtime: bool,
+        reason: String,
+    ) -> String {
+        self.add_log(
+            format!("Settings update failed; rolling back: {reason}"),
+            "error",
+        );
+        if restart_previous_runtime && self.process.is_some() {
+            let _ = self.stop();
+            thread::sleep(Duration::from_millis(250));
+        }
+        self.settings = previous_settings;
+        let mut rollback_errors = Vec::new();
+        if let Err(err) = self.save_settings() {
+            rollback_errors.push(format!("save failed: {err}"));
+        }
+        if let Err(err) = self.ensure_direct_profile() {
+            rollback_errors.push(format!("direct profile refresh failed: {err}"));
+        }
+        if restart_previous_runtime {
+            if let Err(err) = self.start() {
+                rollback_errors.push(format!("restart previous runtime failed: {err}"));
+            }
+        }
+        if rollback_errors.is_empty() {
+            format!("{reason}; settings rolled back")
+        } else {
+            format!(
+                "{reason}; settings rollback had errors: {}",
+                rollback_errors.join("; ")
+            )
+        }
     }
 
     fn active_profile(&self) -> Option<Profile> {
@@ -671,152 +1874,186 @@ impl CoreManager {
     }
 
     fn patched_config(&self, source: YamlValue) -> Result<YamlValue, String> {
-        let mut config = match source {
-            YamlValue::Mapping(map) => map,
-            _ => Mapping::new(),
-        };
-        for key in [
-            "port",
-            "socks-port",
-            "redir-port",
-            "tproxy-port",
-            "mixed-port",
-        ] {
-            config.remove(yaml_key(key));
-        }
-        set_yaml(
-            &mut config,
-            "mixed-port",
-            YamlValue::Number(self.settings.mixed_port.into()),
-        );
-        set_yaml(
-            &mut config,
-            "allow-lan",
-            YamlValue::Bool(self.settings.allow_lan),
-        );
-        set_yaml(
-            &mut config,
-            "bind-address",
-            YamlValue::String(
-                if self.settings.allow_lan {
-                    "*"
-                } else {
-                    "127.0.0.1"
-                }
-                .to_string(),
-            ),
-        );
-        set_yaml(
-            &mut config,
-            "mode",
-            YamlValue::String(self.settings.mode.clone()),
-        );
-        set_yaml(
-            &mut config,
-            "log-level",
-            YamlValue::String(self.settings.log_level.clone()),
-        );
-        set_yaml(
-            &mut config,
-            "external-controller",
-            YamlValue::String(format!("127.0.0.1:{}", self.settings.controller_port)),
-        );
-        set_yaml(
-            &mut config,
-            "secret",
-            YamlValue::String(self.settings.secret.clone()),
-        );
-        set_yaml(
-            &mut config,
-            "ipv6",
-            YamlValue::Bool(self.settings.ipv6_enabled),
-        );
-        set_yaml(
-            &mut config,
-            "find-process-mode",
-            YamlValue::String("strict".to_string()),
-        );
-
-        if self.settings.tun_enabled {
-            let tun = config
-                .entry(yaml_key("tun"))
-                .or_insert_with(|| YamlValue::Mapping(Mapping::new()));
-            let tun_map = get_mapping_mut(tun);
-            set_yaml(tun_map, "enable", YamlValue::Bool(true));
-            set_yaml(
-                tun_map,
-                "stack",
-                YamlValue::String(self.settings.tun_stack.clone()),
-            );
-            set_yaml(tun_map, "auto-route", YamlValue::Bool(true));
-            set_yaml(tun_map, "auto-detect-interface", YamlValue::Bool(true));
-            set_yaml(
-                tun_map,
-                "dns-hijack",
-                if self.settings.dns_hijack_enabled {
-                    YamlValue::Sequence(vec![YamlValue::String("any:53".to_string())])
-                } else {
-                    YamlValue::Sequence(Vec::new())
-                },
-            );
-        } else if let Some(tun) = config.get_mut(yaml_key("tun")) {
-            set_yaml(get_mapping_mut(tun), "enable", YamlValue::Bool(false));
-        }
-
-        let proxy_names: Vec<YamlValue> = config
-            .get(yaml_key("proxies"))
-            .and_then(|v| v.as_sequence())
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| item.get(yaml_key("name")).and_then(|v| v.as_str()))
-                    .map(|name| YamlValue::String(name.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let has_proxy_group = matches!(config.get(yaml_key("proxy-groups")), Some(YamlValue::Sequence(items)) if !items.is_empty());
-        if !proxy_names.is_empty() && !has_proxy_group {
-            let mut group = Mapping::new();
-            set_yaml(&mut group, "name", yaml_str("GLOBAL"));
-            set_yaml(&mut group, "type", yaml_str("select"));
-            set_yaml(&mut group, "proxies", YamlValue::Sequence(proxy_names.clone()));
-            set_yaml(
-                &mut config,
-                "proxy-groups",
-                YamlValue::Sequence(vec![YamlValue::Mapping(group)]),
-            );
-        }
-
-        if !matches!(config.get(yaml_key("rules")), Some(YamlValue::Sequence(items)) if !items.is_empty())
-        {
-            let target = if proxy_names.is_empty() { "DIRECT" } else { "GLOBAL" };
-            set_yaml(
-                &mut config,
-                "rules",
-                YamlValue::Sequence(vec![YamlValue::String(format!("MATCH,{target}"))]),
-            );
-        }
-        Ok(YamlValue::Mapping(config))
+        patch_config_with_settings(source, &self.settings)
     }
 
-    fn patch_profile_file(&mut self, profile: &Profile) -> Result<(), String> {
+    fn preflight_profile_file(&self, profile: &Profile) -> Result<JsonValue, String> {
+        self.render_runtime_profile(profile)
+            .map(|rendered| rendered.report)
+    }
+
+    fn render_runtime_profile(&self, profile: &Profile) -> Result<RenderedProfile, String> {
         let path = PathBuf::from(&profile.path);
-        let source: YamlValue = fs::read_to_string(&path)
-            .ok()
-            .and_then(|raw| serde_yaml::from_str(&raw).ok())
-            .unwrap_or_else(|| YamlValue::Mapping(Mapping::new()));
+        let raw = fs::read_to_string(&path)
+            .map_err(|err| format!("profile config read failed {}: {err}", path.display()))?;
+        let source: YamlValue = serde_yaml::from_str(&raw)
+            .map_err(|err| format!("profile YAML parse failed {}: {err}", path.display()))?;
         let patched = self.patched_config(source)?;
+        let report = preflight_runtime_config(&patched, profile, &self.settings)?;
+        let yaml = serde_yaml::to_string(&patched).map_err(|err| err.to_string())?;
+        let digest = sha256_text(&yaml);
+        Ok(RenderedProfile {
+            yaml,
+            digest,
+            report,
+        })
+    }
+
+    fn patch_profile_file(&mut self, profile: &Profile) -> Result<String, String> {
+        let path = PathBuf::from(&profile.path);
+        let rendered = self.render_runtime_profile(profile)?;
+        let current_digest = sha256_file(&path);
+        if current_digest != rendered.digest {
+            fs::write(&path, &rendered.yaml).map_err(|err| err.to_string())?;
+        }
+        ensure_dir(&self.home_dir)?;
+        let runtime_path = self.runtime_profile_path();
+        fs::write(&runtime_path, &rendered.yaml).map_err(|err| {
+            format!(
+                "runtime profile write failed {}: {err}",
+                runtime_path.display()
+            )
+        })?;
+        self.add_log(
+            format!(
+                "Config preflight passed: {} proxies, {} groups, digest {}{}",
+                rendered
+                    .report
+                    .get("proxies")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0),
+                rendered
+                    .report
+                    .get("proxyGroups")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0),
+                &rendered.digest[..12.min(rendered.digest.len())],
+                if current_digest == rendered.digest {
+                    " (unchanged)"
+                } else {
+                    ""
+                }
+            ),
+            "info",
+        );
+        Ok(rendered.digest)
+    }
+
+    #[allow(dead_code)]
+    fn patch_profile_file_legacy(&mut self, profile: &Profile) -> Result<(), String> {
+        let path = PathBuf::from(&profile.path);
+        let raw = fs::read_to_string(&path)
+            .map_err(|err| format!("配置读取失败 {}: {err}", path.display()))?;
+        let source: YamlValue = serde_yaml::from_str(&raw)
+            .map_err(|err| format!("YAML 解析失败 {}: {err}", path.display()))?;
+        let patched = self.patched_config(source)?;
+        let report = preflight_runtime_config(&patched, profile, &self.settings)?;
         fs::write(
             &path,
             serde_yaml::to_string(&patched).map_err(|err| err.to_string())?,
         )
         .map_err(|err| err.to_string())?;
+        self.add_log(
+            format!(
+                "Config preflight passed: {} proxies, {} groups",
+                report
+                    .get("proxies")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0),
+                report
+                    .get("proxyGroups")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0)
+            ),
+            "info",
+        );
         Ok(())
     }
 
+    fn runtime_profile_path(&self) -> PathBuf {
+        self.home_dir.join("aegos-runtime-profile.yaml")
+    }
+
+    fn write_runtime_profile_copy(&self, profile: &Profile) -> Result<PathBuf, String> {
+        ensure_dir(&self.home_dir)?;
+        let source_path = PathBuf::from(&profile.path);
+        let raw = fs::read_to_string(&source_path).map_err(|err| {
+            format!(
+                "runtime profile source read failed {}: {err}",
+                source_path.display()
+            )
+        })?;
+        let runtime_path = self.runtime_profile_path();
+        fs::write(&runtime_path, raw).map_err(|err| {
+            format!(
+                "runtime profile write failed {}: {err}",
+                runtime_path.display()
+            )
+        })?;
+        Ok(runtime_path)
+    }
+
+    fn hot_reload_profile(&mut self, profile: &Profile) -> Result<JsonValue, String> {
+        let config_digest = self.patch_profile_file(profile)?;
+        let same_runtime = self.runtime_profile_id.as_deref() == Some(profile.id.as_str())
+            && self.runtime_config_digest.as_deref() == Some(config_digest.as_str());
+        if same_runtime && self.controller("GET", "/version", None, 900).is_ok() {
+            self.add_log(
+                format!(
+                    "Profile apply skipped; unchanged runtime config digest: {}",
+                    &config_digest[..12.min(config_digest.len())]
+                ),
+                "info",
+            );
+            return Ok(json!({
+                "ok": true,
+                "skipped": true,
+                "reason": "unchanged runtime config digest",
+                "digest": config_digest
+            }));
+        }
+        let runtime_path = self.runtime_profile_path();
+        let result = self.controller(
+            "PUT",
+            "/configs?force=true",
+            Some(json!({ "path": runtime_path.to_string_lossy().to_string() })),
+            8000,
+        )?;
+        self.wait_for_controller()?;
+        self.runtime_profile_id = Some(profile.id.clone());
+        self.runtime_config_digest = Some(config_digest.clone());
+        if self.settings.start_with_system_proxy || self.settings.system_proxy {
+            if let Err(err) = self.set_system_proxy(true) {
+                self.add_log(
+                    format!("System proxy enable failed after profile hot reload: {err}"),
+                    "warn",
+                );
+            }
+        }
+        self.add_log(
+            format!(
+                "Profile hot reloaded via mihomo controller: {} digest {}",
+                profile.name,
+                &config_digest[..12.min(config_digest.len())]
+            ),
+            "info",
+        );
+        Ok(result)
+    }
+
     fn ensure_runtime_ports(&mut self) -> Result<(), String> {
-        self.settings.mixed_port = find_free_port(self.settings.mixed_port, 7890)?;
-        self.settings.controller_port = find_free_port(self.settings.controller_port, 19090)?;
+        self.settings.mixed_port = find_free_port(
+            self.settings.mixed_port,
+            AEGOS_DEFAULT_MIXED_PORT,
+            RESERVED_MIXED_PORTS,
+        )?;
+        let controller_reserved = [self.settings.mixed_port];
+        self.settings.controller_port = find_free_port(
+            self.settings.controller_port,
+            AEGOS_DEFAULT_CONTROLLER_PORT,
+            &controller_reserved,
+        )?;
+        self.validate_port_settings()?;
         self.save_settings()
     }
 
@@ -825,42 +2062,107 @@ impl CoreManager {
         match child.try_wait() {
             Ok(Some(status)) => {
                 self.process = None;
+                self.runtime_profile_id = None;
                 Some(format!("mihomo exited before ready: {status}"))
             }
             Ok(None) => None,
             Err(err) => {
                 self.process = None;
+                self.runtime_profile_id = None;
                 Some(format!("mihomo status check failed: {err}"))
             }
         }
     }
 
-    fn start(&mut self) -> Result<JsonValue, String> {
-        if self.process.is_some() {
-            return Ok(json!({ "ok": true, "message": "Core already running" }));
+    fn recent_logs(&self, limit: usize) -> Vec<LogEntry> {
+        let logs = self.logs.lock().unwrap();
+        let mut items = logs.iter().rev().take(limit).cloned().collect::<Vec<_>>();
+        items.reverse();
+        items
+    }
+
+    fn recent_log_summary(&self, limit: usize) -> String {
+        let items = self.recent_logs(limit);
+        if items.is_empty() {
+            return "无最近日志".to_string();
         }
+        items
+            .into_iter()
+            .map(|entry| format!("[{}] {}", entry.level, entry.line))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+
+    fn start_failure_message(&self, profile: Option<&Profile>, reason: &str) -> String {
+        let profile_name = profile
+            .map(|item| item.name.as_str())
+            .unwrap_or("未选择订阅");
+        let profile_path = profile.map(|item| item.path.as_str()).unwrap_or("-");
+        format!(
+            "核心启动失败：{reason}；订阅：{profile_name}；配置：{profile_path}；核心：{}；端口：mixed {} / controller {}；最近日志：{}",
+            self.core_path.display(),
+            self.settings.mixed_port,
+            self.settings.controller_port,
+            self.recent_log_summary(8)
+        )
+    }
+
+    fn start(&mut self) -> Result<JsonValue, String> {
         if !self.core_path.exists() {
             return Err(format!(
                 "mihomo core not found: {}",
                 self.core_path.display()
             ));
         }
-        self.ensure_runtime_ports()?;
+        self.ensure_runtime_ports()
+            .map_err(|err| self.start_failure_message(None, &format!("端口准备失败：{err}")))?;
         let profile = self
             .active_profile()
             .ok_or_else(|| "没有活动配置".to_string())?;
-        self.patch_profile_file(&profile)?;
-        ensure_dir(&self.home_dir)?;
+        if self.process.is_some() {
+            let same_profile = self.runtime_profile_id.as_deref() == Some(profile.id.as_str());
+            if same_profile && self.controller("GET", "/version", None, 900).is_ok() {
+                return Ok(json!({ "ok": true, "message": "Core already running" }));
+            }
+            let restore_system_proxy = self.settings.system_proxy;
+            self.add_log(
+                "Runtime profile or controller drift detected; restarting mihomo",
+                "warn",
+            );
+            self.stop()?;
+            self.restore_system_proxy_preference(restore_system_proxy);
+            thread::sleep(Duration::from_millis(250));
+        }
+        let config_digest = self.patch_profile_file(&profile).map_err(|err| {
+            self.start_failure_message(Some(&profile), &format!("配置生成失败：{err}"))
+        })?;
+        ensure_dir(&self.home_dir).map_err(|err| {
+            self.start_failure_message(Some(&profile), &format!("运行目录准备失败：{err}"))
+        })?;
+        let runtime_profile_path = self.write_runtime_profile_copy(&profile).map_err(|err| {
+            self.start_failure_message(
+                Some(&profile),
+                &format!("runtime profile write failed: {err}"),
+            )
+        })?;
+        let runtime_profile_arg = runtime_profile_path.to_string_lossy().to_string();
         self.add_log(format!("Starting mihomo: {}", profile.name), "info");
         let mut command = Command::new(&self.core_path);
         command
-            .args(["-d", &self.home_dir.to_string_lossy(), "-f", &profile.path])
+            .args([
+                "-d",
+                &self.home_dir.to_string_lossy(),
+                "-f",
+                &runtime_profile_arg,
+            ])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW);
-        let mut child = command.spawn().map_err(|err| err.to_string())?;
+        let mut child = command.spawn().map_err(|err| {
+            self.start_failure_message(Some(&profile), &format!("核心进程启动失败：{err}"))
+        })?;
         if let Some(stdout) = child.stdout.take() {
             let logs = self.logs.clone();
             thread::spawn(move || {
@@ -894,22 +2196,57 @@ impl CoreManager {
             });
         }
         self.process = Some(child);
-        self.wait_for_controller()?;
+        if let Err(err) = self.wait_for_controller() {
+            let message = self.start_failure_message(Some(&profile), &err);
+            self.terminate_core_process("Stopping failed mihomo startup");
+            return Err(message);
+        }
+        self.runtime_profile_id = Some(profile.id.clone());
+        self.runtime_config_digest = Some(config_digest);
         if self.settings.start_with_system_proxy || self.settings.system_proxy {
             if let Err(err) = self.set_system_proxy(true) {
-                self.add_log(format!("System proxy enable failed after core start: {err}"), "warn");
+                self.add_log(
+                    format!("System proxy enable failed after core start: {err}"),
+                    "warn",
+                );
             }
         }
         Ok(json!({ "ok": true }))
     }
 
-    fn stop(&mut self) -> Result<JsonValue, String> {
-        let _ = self.set_system_proxy(false);
+    fn terminate_core_process(&mut self, message: &str) {
         if let Some(mut child) = self.process.take() {
-            self.add_log("Stopping mihomo", "info");
+            self.add_log(message, "warn");
             let _ = child.kill();
             let _ = child.wait();
         }
+        self.runtime_profile_id = None;
+        self.runtime_config_digest = None;
+    }
+
+    fn restore_system_proxy_preference(&mut self, enabled: bool) {
+        if enabled && !self.settings.system_proxy {
+            self.settings.system_proxy = true;
+            if let Err(err) = self.save_settings() {
+                self.add_log(
+                    format!("Failed to restore system proxy preference: {err}"),
+                    "warn",
+                );
+            }
+        }
+    }
+
+    fn restart_core_preserving_proxy(&mut self, delay_ms: u64) -> Result<JsonValue, String> {
+        let restore_system_proxy = self.settings.system_proxy;
+        self.stop()?;
+        self.restore_system_proxy_preference(restore_system_proxy);
+        thread::sleep(Duration::from_millis(delay_ms));
+        self.start()
+    }
+
+    fn stop(&mut self) -> Result<JsonValue, String> {
+        let _ = self.set_system_proxy(false);
+        self.terminate_core_process("Stopping mihomo");
         Ok(json!({ "ok": true }))
     }
 
@@ -935,6 +2272,7 @@ impl CoreManager {
         timeout_ms: u64,
     ) -> Result<JsonValue, String> {
         let client = Client::builder()
+            .no_proxy()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
             .map_err(|err| err.to_string())?;
@@ -951,10 +2289,15 @@ impl CoreManager {
             req = req.json(&body);
         }
         let res = req.send().map_err(|err| err.to_string())?;
-        if !res.status().is_success() {
-            return Err(format!("Controller HTTP {}", res.status()));
-        }
+        let status = res.status();
         let text = res.text().map_err(|err| err.to_string())?;
+        if !status.is_success() {
+            return Err(if text.trim().is_empty() {
+                format!("Controller HTTP {status}")
+            } else {
+                format!("Controller HTTP {status}: {}", text.trim())
+            });
+        }
         if text.trim().is_empty() {
             return Ok(json!({}));
         }
@@ -967,6 +2310,7 @@ impl CoreManager {
 
     fn traffic_snapshot(&self, timeout_ms: u64) -> Result<JsonValue, String> {
         let client = Client::builder()
+            .no_proxy()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
             .map_err(|err| err.to_string())?;
@@ -990,13 +2334,8 @@ impl CoreManager {
             self.add_log(reason, "warn");
         }
         let running = self.process.is_some();
-        let version = if running {
-            self.controller("GET", "/version", None, 900).ok()
-        } else {
-            None
-        };
         let traffic = if running {
-            self.traffic_snapshot(450)
+            self.traffic_snapshot(120)
                 .unwrap_or_else(|_| self.last_traffic.clone())
         } else {
             json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 })
@@ -1010,7 +2349,7 @@ impl CoreManager {
             "shell": "tauri",
             "running": running,
             "controller": running,
-            "version": version,
+            "version": JsonValue::Null,
             "traffic": traffic,
             "mode": self.settings.mode,
             "systemProxy": self.settings.system_proxy,
@@ -1020,6 +2359,11 @@ impl CoreManager {
                 "proxyEndpoint": format!("127.0.0.1:{}", self.settings.mixed_port),
                 "outboundIp": self.cached_outbound_ip()
             },
+            "permissions": {
+                "isAdmin": is_process_elevated(),
+                "requiresAdminFor": ["TUN", "Kill Switch"]
+            },
+            "speedTest": self.speed_test_snapshot(),
             "settings": self.public_settings(),
             "protection": self.protection_status(),
             "logs": self.logs.lock().unwrap().clone()
@@ -1044,6 +2388,7 @@ impl CoreManager {
         }
     }
 
+    #[allow(dead_code)]
     fn refresh_outbound_ip(&mut self) -> Result<String, String> {
         if self.process.is_none() {
             self.outbound_ip_cache = "-".to_string();
@@ -1064,7 +2409,11 @@ impl CoreManager {
         ];
         let mut last_error = String::new();
         for url in services {
-            match client.get(url).send().and_then(|res| res.error_for_status()) {
+            match client
+                .get(url)
+                .send()
+                .and_then(|res| res.error_for_status())
+            {
                 Ok(res) => match res.text() {
                     Ok(text) => {
                         let ip = text.trim().trim_matches('"').to_string();
@@ -1095,7 +2444,7 @@ impl CoreManager {
             "activeProfileId": self.settings.active_profile_id,
             "mixedPort": self.settings.mixed_port,
             "controllerPort": self.settings.controller_port,
-            "profiles": self.settings.profiles,
+            "profiles": self.public_profiles(),
             "startWithSystemProxy": self.settings.start_with_system_proxy,
             "systemProxy": self.settings.system_proxy,
             "killSwitchEnabled": self.settings.kill_switch_enabled,
@@ -1105,8 +2454,25 @@ impl CoreManager {
             "ipv6Enabled": self.settings.ipv6_enabled,
             "allowLan": self.settings.allow_lan,
             "logLevel": self.settings.log_level,
-            "runtimes": { "mihomo": self.core_path.exists() }
+            "selectedProxyMap": &self.settings.selected_proxy_map,
+            "reliability": {
+                "auto": self.settings.reliability_auto,
+                "profileFailover": self.settings.reliability_profile_failover,
+                "failureThreshold": self.settings.reliability_failure_threshold,
+                "maxDelayMs": self.settings.reliability_max_delay_ms,
+                "candidateLimit": self.settings.reliability_candidate_limit,
+                "failures": self.reliability_failures
+            },
+            "runtimes": { "mihomo": self.core_path.exists() },
+            "reservedPorts": {
+                "mixed": RESERVED_MIXED_PORTS,
+                "reason": "7890 is reserved for FlClash/Codex traffic"
+            }
         })
+    }
+
+    fn public_profiles(&self) -> Vec<JsonValue> {
+        self.settings.profiles.iter().map(public_profile).collect()
     }
 
     fn protection_status(&self) -> JsonValue {
@@ -1151,6 +2517,11 @@ impl CoreManager {
     }
 
     fn set_kill_switch(&mut self, enable: bool) -> Result<bool, String> {
+        if enable && !is_process_elevated() {
+            return Err(
+                "Kill Switch 需要管理员权限，请在设置中以管理员身份重启 Aegos。".to_string(),
+            );
+        }
         run_powershell(&build_kill_switch_script(
             enable,
             &self.app_data,
@@ -1161,45 +2532,158 @@ impl CoreManager {
         Ok(enable)
     }
 
-    fn update_setting(&mut self, key: &str, value: JsonValue) -> Result<JsonValue, String> {
-        let was_running = self.process.is_some();
-        let restart = matches!(
-            key,
-            "tunEnabled"
-                | "tunStack"
-                | "dnsHijackEnabled"
-                | "ipv6Enabled"
-                | "allowLan"
-                | "logLevel"
-        );
+    fn apply_setting_value(&mut self, key: &str, value: &JsonValue) -> Result<bool, String> {
         match key {
             "startWithSystemProxy" => {
                 self.settings.start_with_system_proxy = value.as_bool().unwrap_or(false)
             }
-            "tunEnabled" => self.settings.tun_enabled = value.as_bool().unwrap_or(false),
-            "tunStack" => self.settings.tun_stack = value.as_str().unwrap_or("mixed").to_string(),
+            "tunEnabled" => {
+                let enable = value.as_bool().unwrap_or(false);
+                if enable && !is_process_elevated() {
+                    return Err(
+                        "TUN 模式需要管理员权限，请在设置中以管理员身份重启 Aegos。".to_string()
+                    );
+                }
+                self.settings.tun_enabled = enable;
+            }
+            "tunStack" => {
+                self.settings.tun_stack = string_choice_from_value(
+                    value,
+                    "mixed",
+                    &["mixed", "gvisor", "system"],
+                    "TUN stack",
+                )?
+            }
             "dnsHijackEnabled" => {
                 self.settings.dns_hijack_enabled = value.as_bool().unwrap_or(true)
             }
             "ipv6Enabled" => self.settings.ipv6_enabled = value.as_bool().unwrap_or(false),
             "allowLan" => self.settings.allow_lan = value.as_bool().unwrap_or(false),
-            "logLevel" => self.settings.log_level = value.as_str().unwrap_or("info").to_string(),
-            "mixedPort" => self.settings.mixed_port = value.as_u64().unwrap_or(7890) as u16,
+            "logLevel" => {
+                self.settings.log_level = string_choice_from_value(
+                    value,
+                    "info",
+                    &["debug", "info", "warning", "error"],
+                    "Log level",
+                )?
+            }
+            "reliabilityAuto" => self.settings.reliability_auto = value.as_bool().unwrap_or(true),
+            "reliabilityProfileFailover" => {
+                self.settings.reliability_profile_failover = value.as_bool().unwrap_or(true)
+            }
+            "reliabilityFailureThreshold" => {
+                self.settings.reliability_failure_threshold = value
+                    .as_u64()
+                    .unwrap_or(default_reliability_failure_threshold())
+                    .clamp(1, 10)
+            }
+            "reliabilityMaxDelayMs" => {
+                self.settings.reliability_max_delay_ms = value
+                    .as_u64()
+                    .unwrap_or(default_reliability_max_delay_ms())
+                    .clamp(100, 10000)
+            }
+            "reliabilityCandidateLimit" => {
+                self.settings.reliability_candidate_limit = value
+                    .as_u64()
+                    .unwrap_or(default_reliability_candidate_limit())
+                    .clamp(3, 200)
+            }
+            "mixedPort" => {
+                self.settings.mixed_port = mixed_port_from_value(value, self.settings.mixed_port)?
+            }
             "controllerPort" => {
-                self.settings.controller_port = value.as_u64().unwrap_or(19090) as u16
+                self.settings.controller_port =
+                    port_from_value(value, self.settings.controller_port, "Controller port")?
             }
             "killSwitchEnabled" => {
                 self.set_kill_switch(value.as_bool().unwrap_or(false))?;
-                return Ok(self.public_settings());
+                return Ok(false);
             }
             _ => return Err(format!("Unsupported setting: {key}")),
         }
-        self.save_settings()?;
-        self.ensure_direct_profile()?;
+        Ok(matches!(
+            key,
+            "mixedPort"
+                | "controllerPort"
+                | "tunEnabled"
+                | "tunStack"
+                | "dnsHijackEnabled"
+                | "ipv6Enabled"
+                | "allowLan"
+                | "logLevel"
+        ))
+    }
+
+    fn restart_after_settings_if_needed(
+        &mut self,
+        was_running: bool,
+        restart: bool,
+    ) -> Result<(), String> {
         if restart && was_running {
-            self.stop()?;
-            thread::sleep(Duration::from_millis(350));
-            self.start()?;
+            self.restart_core_preserving_proxy(350)?;
+        }
+        Ok(())
+    }
+
+    fn update_setting(&mut self, key: &str, value: JsonValue) -> Result<JsonValue, String> {
+        let previous_settings = self.settings.clone();
+        let was_running = self.process.is_some();
+        self.validate_setting_update_candidate(key, &value)?;
+        let restart = match self.apply_setting_value(key, &value) {
+            Ok(restart) => restart,
+            Err(err) => {
+                return Err(self.rollback_settings_after_failure(previous_settings, false, err));
+            }
+        };
+        if let Err(err) = self.validate_port_settings() {
+            return Err(self.rollback_settings_after_failure(previous_settings, false, err));
+        }
+        if let Err(err) = self.save_settings() {
+            self.settings = previous_settings;
+            return Err(format!("Settings save failed: {err}"));
+        }
+        if let Err(err) = self.ensure_direct_profile() {
+            return Err(self.rollback_settings_after_failure(previous_settings, false, err));
+        }
+        if let Err(err) = self.restart_after_settings_if_needed(was_running, restart) {
+            return Err(self.rollback_settings_after_failure(previous_settings, was_running, err));
+        }
+        Ok(self.public_settings())
+    }
+
+    fn update_settings(&mut self, updates: JsonValue) -> Result<JsonValue, String> {
+        let map = updates
+            .as_object()
+            .ok_or_else(|| "Settings update must be an object".to_string())?;
+        let previous_settings = self.settings.clone();
+        let was_running = self.process.is_some();
+        let mut restart = false;
+        self.validate_settings_update_candidate(map)?;
+        for (key, value) in map {
+            restart |= match self.apply_setting_value(key, value) {
+                Ok(item_restart) => item_restart,
+                Err(err) => {
+                    return Err(self.rollback_settings_after_failure(
+                        previous_settings,
+                        false,
+                        err,
+                    ));
+                }
+            };
+        }
+        if let Err(err) = self.validate_port_settings() {
+            return Err(self.rollback_settings_after_failure(previous_settings, false, err));
+        }
+        if let Err(err) = self.save_settings() {
+            self.settings = previous_settings;
+            return Err(format!("Settings save failed: {err}"));
+        }
+        if let Err(err) = self.ensure_direct_profile() {
+            return Err(self.rollback_settings_after_failure(previous_settings, false, err));
+        }
+        if let Err(err) = self.restart_after_settings_if_needed(was_running, restart) {
+            return Err(self.rollback_settings_after_failure(previous_settings, was_running, err));
         }
         Ok(self.public_settings())
     }
@@ -1217,6 +2701,7 @@ impl CoreManager {
     }
 
     fn proxy_groups(&self) -> JsonValue {
+        let mut result = None;
         if self.process.is_some() {
             if let Ok(data) = self.controller("GET", "/proxies", None, 1200) {
                 if let Some(proxies) = data.get("proxies").and_then(|v| v.as_object()) {
@@ -1239,11 +2724,14 @@ impl CoreManager {
                             })
                         })
                         .collect();
-                    return json!(groups);
+                    result = Some(json!(groups));
                 }
             }
         }
-        self.profile_proxy_groups()
+        let mut groups = result.unwrap_or_else(|| self.profile_proxy_groups());
+        self.apply_group_resolution(&mut groups);
+        self.apply_speed_test_delays(&mut groups);
+        groups
     }
 
     fn profile_proxy_groups(&self) -> JsonValue {
@@ -1251,45 +2739,125 @@ impl CoreManager {
             return json!([]);
         };
         let raw = fs::read_to_string(profile.path).unwrap_or_default();
-        let config: YamlValue = serde_yaml::from_str(&raw).unwrap_or_else(|_| YamlValue::Mapping(Mapping::new()));
+        let config: YamlValue =
+            serde_yaml::from_str(&raw).unwrap_or_else(|_| YamlValue::Mapping(Mapping::new()));
         let proxies = config
             .get(yaml_key("proxies"))
             .and_then(|v| v.as_sequence())
             .cloned()
             .unwrap_or_default();
-        if proxies.is_empty() {
+        let proxy_items = proxies
+            .iter()
+            .filter_map(yaml_proxy_to_json)
+            .map(|item| {
+                let name = item
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                (name, item)
+            })
+            .collect::<HashMap<_, _>>();
+        if proxy_items.is_empty() {
             return json!([]);
         }
-        let items: Vec<JsonValue> = proxies
-            .into_iter()
-            .filter_map(|proxy| {
-                let map = proxy.as_mapping()?;
-                let name = map.get(yaml_key("name")).and_then(|v| v.as_str()).unwrap_or("Proxy");
-                let server = map.get(yaml_key("server")).and_then(|v| v.as_str()).unwrap_or(name);
-                let protocol = map.get(yaml_key("type")).and_then(|v| v.as_str()).unwrap_or("unknown");
+        let proxy_groups = config
+            .get(yaml_key("proxy-groups"))
+            .and_then(|value| value.as_sequence())
+            .cloned()
+            .unwrap_or_default();
+        let group_names = proxy_groups
+            .iter()
+            .filter_map(yaml_mapping_name)
+            .map(|name| name.to_string())
+            .collect::<HashSet<_>>();
+        let groups = proxy_groups
+            .iter()
+            .filter_map(|group| {
+                let map = group.as_mapping()?;
+                let name = map
+                    .get(yaml_key("name"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("GLOBAL");
+                let group_type = map
+                    .get(yaml_key("type"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("Selector");
+                let all = map
+                    .get(yaml_key("proxies"))
+                    .and_then(|value| value.as_sequence())
+                    .cloned()
+                    .unwrap_or_default();
+                let items = all
+                    .iter()
+                    .filter_map(|item| item.as_str())
+                    .map(|item_name| {
+                        proxy_items
+                            .get(item_name)
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                if group_names.contains(item_name) {
+                                    json!({
+                                        "name": item_name,
+                                        "server": item_name,
+                                        "type": "Group",
+                                        "alive": true,
+                                        "delay": -1,
+                                        "group": true
+                                    })
+                                } else {
+                                    builtin_proxy_item(item_name)
+                                }
+                            })
+                    })
+                    .collect::<Vec<_>>();
+                if items.is_empty() {
+                    return None;
+                }
+                let now = self
+                    .settings
+                    .selected_proxy_map
+                    .get(name)
+                    .cloned()
+                    .or_else(|| {
+                        map.get(yaml_key("now"))
+                            .and_then(|value| value.as_str())
+                            .map(|value| value.to_string())
+                    })
+                    .or_else(|| {
+                        items
+                            .first()
+                            .and_then(|item| item.get("name"))
+                            .and_then(|value| value.as_str())
+                            .map(|value| value.to_string())
+                    })
+                    .unwrap_or_default();
                 Some(json!({
                     "name": name,
-                    "server": server,
-                    "type": protocol,
-                    "alive": true,
-                    "delay": -1
+                    "type": group_type,
+                    "now": now,
+                    "testUrl": map.get(yaml_key("url")).and_then(|value| value.as_str()).unwrap_or(""),
+                    "items": items
                 }))
             })
-            .collect();
+            .collect::<Vec<_>>();
+        if !groups.is_empty() {
+            return json!(groups);
+        }
+        let items: Vec<JsonValue> = proxy_items.into_values().collect();
         if items.is_empty() {
             return json!([]);
         }
-        let now = items.first().and_then(|item| item.get("name")).cloned().unwrap_or(json!(""));
+        let now = items
+            .first()
+            .and_then(|item| item.get("name"))
+            .cloned()
+            .unwrap_or(json!(""));
         json!([{ "name": "GLOBAL", "type": "Selector", "now": now, "items": items }])
     }
 
-    fn test_proxy_delays(&self) -> JsonValue {
-        let mut groups = self.proxy_groups();
-        if self.process.is_none() {
-            return groups;
-        }
-
-        let names: Vec<String> = groups
+    fn collect_proxy_targets(groups: &JsonValue) -> Vec<SpeedTestTarget> {
+        groups
             .as_array()
             .map(|groups| {
                 let mut seen = HashSet::new();
@@ -1297,61 +2865,107 @@ impl CoreManager {
                     .iter()
                     .filter_map(|group| group.get("items").and_then(|items| items.as_array()))
                     .flatten()
-                    .filter_map(|item| item.get("name").and_then(|value| value.as_str()))
-                    .filter(|name| !matches!(*name, "DIRECT" | "REJECT"))
-                    .filter_map(|name| {
+                    .filter_map(|item| {
+                        let name = item
+                            .get("realProxyName")
+                            .or_else(|| item.get("name"))
+                            .and_then(|value| value.as_str())?;
+                        if matches!(name, "DIRECT" | "REJECT") {
+                            return None;
+                        }
                         if seen.insert(name.to_string()) {
-                            Some(name.to_string())
+                            Some(SpeedTestTarget {
+                                name: name.to_string(),
+                                protocol: item
+                                    .get("type")
+                                    .or_else(|| item.get("protocol"))
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or("unknown")
+                                    .to_string(),
+                            })
                         } else {
                             None
                         }
                     })
                     .collect()
             })
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
 
-        let controller_port = self.settings.controller_port;
-        let secret = self.settings.secret.clone();
-        let mut delays = HashMap::new();
-        for chunk in names.chunks(8) {
-            let handles = chunk
-                .iter()
+    fn apply_group_resolution(&self, groups: &mut JsonValue) {
+        let Some(snapshot) = groups.as_array().cloned() else {
+            return;
+        };
+        let group_names = snapshot
+            .iter()
+            .filter_map(|group| group.get("name").and_then(|value| value.as_str()))
+            .map(|name| name.to_string())
+            .collect::<HashSet<_>>();
+        let Some(group_items) = groups.as_array_mut() else {
+            return;
+        };
+        for group in group_items {
+            let group_name = group
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string();
+            let selected = self
+                .settings
+                .selected_proxy_map
+                .get(&group_name)
                 .cloned()
-                .map(|name| {
-                    let secret = secret.clone();
-                    thread::spawn(move || {
-                        let client = Client::builder()
-                            .timeout(Duration::from_millis(4200))
-                            .build();
-                        let delay = client
-                            .ok()
-                            .and_then(|client| {
-                                let url = format!(
-                                    "http://127.0.0.1:{}/proxies/{}/delay?timeout=3000&url=http://www.gstatic.com/generate_204",
-                                    controller_port,
-                                    url_path_encode(&name)
-                                );
-                                client.get(url).bearer_auth(&secret).send().ok()
-                            })
-                            .and_then(|res| res.error_for_status().ok())
-                            .and_then(|res| res.json::<JsonValue>().ok())
-                            .and_then(|data| data.get("delay").and_then(|value| value.as_i64()))
-                            .unwrap_or(-1);
-                        (name, delay)
-                    })
-                })
-                .collect::<Vec<_>>();
-            for (name, delay) in handles.into_iter().filter_map(|handle| handle.join().ok()) {
-                delays.insert(name, delay);
+                .unwrap_or_else(|| group_selected_name(group, &self.settings.selected_proxy_map));
+            if !selected.is_empty() {
+                if let Some(map) = group.as_object_mut() {
+                    map.insert("now".to_string(), json!(selected));
+                }
+            }
+            if let Some(items) = group
+                .get_mut("items")
+                .and_then(|items| items.as_array_mut())
+            {
+                for item in items {
+                    let Some(name) = item
+                        .get("name")
+                        .and_then(|value| value.as_str())
+                        .map(|value| value.to_string())
+                    else {
+                        continue;
+                    };
+                    if !group_names.contains(&name) {
+                        continue;
+                    }
+                    let leaf =
+                        resolve_group_leaf(&snapshot, &self.settings.selected_proxy_map, &name, 0);
+                    if let Some(map) = item.as_object_mut() {
+                        map.insert("group".to_string(), json!(true));
+                        map.insert("type".to_string(), json!("Group"));
+                        map.insert("realProxyName".to_string(), json!(leaf));
+                    }
+                }
             }
         }
+    }
 
+    fn apply_speed_test_delays(&self, groups: &mut JsonValue) {
+        let speed = self.speed_test.lock().unwrap().clone();
+        if speed.delays.is_empty() {
+            return;
+        }
         if let Some(group_items) = groups.as_array_mut() {
             for group in group_items {
-                if let Some(items) = group.get_mut("items").and_then(|items| items.as_array_mut()) {
+                if let Some(items) = group
+                    .get_mut("items")
+                    .and_then(|items| items.as_array_mut())
+                {
                     for item in items {
-                        if let Some(name) = item.get("name").and_then(|value| value.as_str()) {
-                            if let Some(delay) = delays.get(name).copied() {
+                        if let Some(name) = item
+                            .get("realProxyName")
+                            .or_else(|| item.get("name"))
+                            .and_then(|value| value.as_str())
+                        {
+                            if let Some(delay) = speed.delays.get(name).copied() {
                                 if let Some(map) = item.as_object_mut() {
                                     map.insert("delay".to_string(), json!(delay));
                                     map.insert("alive".to_string(), json!(delay >= 0));
@@ -1362,17 +2976,468 @@ impl CoreManager {
                 }
             }
         }
+    }
+
+    fn speed_test_snapshot(&self) -> JsonValue {
+        let speed = self.speed_test.lock().unwrap().clone();
+        json!({
+            "running": speed.running,
+            "startedAt": speed.started_at,
+            "updatedAt": speed.updated_at,
+            "total": speed.total,
+            "completed": speed.completed,
+            "ok": speed.ok,
+            "failed": speed.failed,
+            "error": speed.error,
+            "delays": speed.delays
+        })
+    }
+
+    fn start_proxy_delay_test(&mut self) -> Result<JsonValue, String> {
+        if self.process.is_none() || self.controller("GET", "/version", None, 900).is_err() {
+            self.add_log(
+                "Speed test found controller unavailable; restarting active profile",
+                "warn",
+            );
+            if let Err(err) = self.restart_core_preserving_proxy(250) {
+                self.add_log(format!("Speed test restart failed: {err}"), "error");
+                let mut speed = self.speed_test.lock().unwrap();
+                speed.running = false;
+                speed.error = Some(err.clone());
+                return Err(err);
+            }
+        }
+        let groups = self.proxy_groups();
+        let targets = Self::collect_proxy_targets(&groups);
+        let total = targets.len();
+        if total == 0 {
+            return Ok(self.speed_test_snapshot());
+        }
+
+        let controller_port = self.settings.controller_port;
+        let secret = self.settings.secret.clone();
+        let speed_test = self.speed_test.clone();
+        {
+            let mut speed = speed_test.lock().unwrap();
+            if speed.running {
+                drop(speed);
+                return Ok(self.speed_test_snapshot());
+            }
+            let now = now_secs();
+            *speed = SpeedTestState {
+                running: true,
+                started_at: now,
+                updated_at: now,
+                total,
+                completed: 0,
+                ok: 0,
+                failed: 0,
+                delays: targets
+                    .iter()
+                    .map(|target| (target.name.clone(), 0))
+                    .collect(),
+                error: None,
+            };
+        }
+
+        self.add_log(format!("Speed test started: {total} nodes"), "info");
+        thread::spawn(move || {
+            let client = match Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_millis(6500))
+                .build()
+            {
+                Ok(client) => Arc::new(client),
+                Err(err) => {
+                    let mut speed = speed_test.lock().unwrap();
+                    speed.running = false;
+                    speed.error = Some(err.to_string());
+                    speed.updated_at = now_secs();
+                    return;
+                }
+            };
+            let (tuic_targets, normal_targets): (Vec<_>, Vec<_>) = targets
+                .into_iter()
+                .partition(|target| is_tuic_protocol(&target.protocol));
+            for (phase_targets, chunk_size) in [(normal_targets, 50usize), (tuic_targets, 12usize)]
+            {
+                for chunk in phase_targets.chunks(chunk_size) {
+                    if !speed_test.lock().unwrap().running {
+                        return;
+                    }
+                    let (tx, rx) = mpsc::channel();
+                    let mut handles = Vec::with_capacity(chunk.len());
+                    for target in chunk.iter().cloned() {
+                        let tx = tx.clone();
+                        let secret = secret.clone();
+                        let client = client.clone();
+                        handles.push(thread::spawn(move || {
+                            let delay = test_proxy_delay_with_retry(
+                                &client,
+                                controller_port,
+                                &secret,
+                                &target.name,
+                                &target.protocol,
+                            );
+                            let _ = tx.send((target.name, delay));
+                        }));
+                    }
+                    drop(tx);
+                    for (name, delay) in rx {
+                        let mut speed = speed_test.lock().unwrap();
+                        if !speed.running {
+                            return;
+                        }
+                        speed.completed += 1;
+                        if delay > 0 {
+                            speed.ok += 1;
+                        } else {
+                            speed.failed += 1;
+                        }
+                        speed.delays.insert(name, delay);
+                        speed.updated_at = now_secs();
+                    }
+                    for handle in handles {
+                        let _ = handle.join();
+                    }
+                }
+            }
+            let mut speed = speed_test.lock().unwrap();
+            speed.running = false;
+            speed.updated_at = now_secs();
+        });
+        Ok(self.speed_test_snapshot())
+    }
+
+    fn test_proxy_delays(&mut self) -> JsonValue {
+        let _ = self.start_proxy_delay_test();
+        let mut groups = self.proxy_groups();
+        self.apply_speed_test_delays(&mut groups);
         groups
     }
 
+    fn cancel_proxy_delay_test(&mut self) -> JsonValue {
+        let mut speed = self.speed_test.lock().unwrap();
+        if speed.running {
+            speed.running = false;
+            speed.error = Some("cancelled".to_string());
+            speed.updated_at = now_secs();
+        }
+        json!({ "ok": true })
+    }
+
+    fn probe_proxy_network(&self, timeout_ms: u64) -> JsonValue {
+        if self.process.is_none() {
+            return json!({
+                "ok": false,
+                "url": "",
+                "status": 0,
+                "reason": "core stopped"
+            });
+        }
+        let proxy_url = format!("http://127.0.0.1:{}", self.settings.mixed_port);
+        let proxy = match reqwest::Proxy::all(&proxy_url) {
+            Ok(proxy) => proxy,
+            Err(err) => {
+                return json!({
+                    "ok": false,
+                    "url": "",
+                    "status": 0,
+                    "reason": err.to_string()
+                })
+            }
+        };
+        let client = match Client::builder()
+            .no_proxy()
+            .proxy(proxy)
+            .timeout(Duration::from_millis(timeout_ms))
+            .build()
+        {
+            Ok(client) => client,
+            Err(err) => {
+                return json!({
+                    "ok": false,
+                    "url": "",
+                    "status": 0,
+                    "reason": err.to_string()
+                })
+            }
+        };
+        let mut last_error = "probe failed".to_string();
+        for url in [
+            "http://www.gstatic.com/generate_204",
+            "https://www.gstatic.com/generate_204",
+            "https://api.ipify.org",
+        ] {
+            match client.get(url).send() {
+                Ok(res) => {
+                    let status = res.status().as_u16();
+                    if status < 500 {
+                        return json!({
+                            "ok": true,
+                            "url": url,
+                            "status": status,
+                            "reason": ""
+                        });
+                    }
+                    last_error = format!("HTTP {status}");
+                }
+                Err(err) => last_error = err.to_string(),
+            }
+        }
+        json!({
+            "ok": false,
+            "url": "",
+            "status": 0,
+            "reason": last_error
+        })
+    }
+
+    fn recovery_group_rank(name: &str) -> usize {
+        match name {
+            "GLOBAL" => 0,
+            "Proxy" => 1,
+            "Proxies" => 2,
+            _ => 10,
+        }
+    }
+
+    fn recovery_candidates(&self) -> Vec<(String, String, i64)> {
+        let groups = self.proxy_groups();
+        let Some(group_items) = groups.as_array() else {
+            return Vec::new();
+        };
+        let mut group_refs = group_items.iter().collect::<Vec<_>>();
+        group_refs.sort_by_key(|group| {
+            group
+                .get("name")
+                .and_then(|value| value.as_str())
+                .map(Self::recovery_group_rank)
+                .unwrap_or(99)
+        });
+        let client = match Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(
+                self.settings.reliability_max_delay_ms.saturating_add(1600),
+            ))
+            .build()
+        {
+            Ok(client) => client,
+            Err(err) => {
+                self.add_log(format!("Recovery delay client failed: {err}"), "warn");
+                return Vec::new();
+            }
+        };
+        let mut seen = HashSet::new();
+        let mut tested = 0usize;
+        let mut results = Vec::new();
+        let limit = self.settings.reliability_candidate_limit as usize;
+        let max_delay = self.settings.reliability_max_delay_ms as i64;
+        for group in group_refs {
+            let group_name = group
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string();
+            let current = group
+                .get("now")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let Some(items) = group.get("items").and_then(|value| value.as_array()) else {
+                continue;
+            };
+            for item in items {
+                if tested >= limit {
+                    break;
+                }
+                let Some(name) = item.get("name").and_then(|value| value.as_str()) else {
+                    continue;
+                };
+                let protocol = item
+                    .get("type")
+                    .or_else(|| item.get("protocol"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown");
+                if name == current || !is_recovery_candidate_name(name) {
+                    continue;
+                }
+                let key = format!("{group_name}\n{name}");
+                if !seen.insert(key) {
+                    continue;
+                }
+                tested += 1;
+                let delay = test_proxy_delay_request(
+                    &client,
+                    self.settings.controller_port,
+                    &self.settings.secret,
+                    name,
+                    "https://www.gstatic.com/generate_204",
+                    if is_tuic_protocol(protocol) {
+                        2800
+                    } else {
+                        self.settings
+                            .reliability_max_delay_ms
+                            .saturating_add(1600)
+                            .clamp(1800, 5000)
+                    },
+                );
+                if delay > 0 && delay <= max_delay {
+                    results.push((group_name.clone(), name.to_string(), delay));
+                }
+            }
+        }
+        results.sort_by_key(|(_, _, delay)| *delay);
+        results
+    }
+
+    fn try_recover_current_profile(&mut self) -> Result<Option<JsonValue>, String> {
+        let candidates = self.recovery_candidates();
+        for (group, proxy, delay) in candidates.into_iter().take(5) {
+            self.add_log(
+                format!("Recovery candidate: {group} -> {proxy} ({delay} ms)"),
+                "info",
+            );
+            self.change_proxy(&group, &proxy)?;
+            thread::sleep(Duration::from_millis(650));
+            let probe = self.probe_proxy_network(6000);
+            if probe.get("ok").and_then(|value| value.as_bool()) == Some(true) {
+                return Ok(Some(json!({
+                    "action": "switchProxy",
+                    "group": group,
+                    "proxy": proxy,
+                    "delay": delay,
+                    "probe": probe
+                })));
+            }
+            self.add_log(
+                format!("Recovery candidate failed after switch: {group} -> {proxy}"),
+                "warn",
+            );
+        }
+        Ok(None)
+    }
+
+    fn recover_network(&mut self, force: bool) -> Result<JsonValue, String> {
+        self.add_log("Reliability recovery requested", "info");
+        if self.process.is_none() {
+            self.start()?;
+        }
+        let before = self.probe_proxy_network(6000);
+        if before.get("ok").and_then(|value| value.as_bool()) == Some(true) {
+            self.reliability_failures = 0;
+            return Ok(json!({
+                "ok": true,
+                "healthy": true,
+                "action": "none",
+                "failures": self.reliability_failures,
+                "probe": before,
+                "settings": self.public_settings()
+            }));
+        }
+        self.reliability_failures = self.reliability_failures.saturating_add(1);
+        if !force && self.reliability_failures < self.settings.reliability_failure_threshold {
+            self.add_log(
+                format!(
+                    "Recovery observing failure {}/{}",
+                    self.reliability_failures, self.settings.reliability_failure_threshold
+                ),
+                "warn",
+            );
+            return Ok(json!({
+                "ok": false,
+                "healthy": false,
+                "action": "observe",
+                "failures": self.reliability_failures,
+                "threshold": self.settings.reliability_failure_threshold,
+                "probe": before,
+                "settings": self.public_settings()
+            }));
+        }
+        if let Some(result) = self.try_recover_current_profile()? {
+            self.add_log("Reliability recovery switched proxy", "info");
+            self.reliability_failures = 0;
+            return Ok(json!({
+                "ok": true,
+                "healthy": true,
+                "profileChanged": false,
+                "failures": self.reliability_failures,
+                "result": result,
+                "settings": self.public_settings()
+            }));
+        }
+        if self.settings.reliability_profile_failover {
+            let original_profile_id = self.settings.active_profile_id.clone();
+            let profile_ids = self
+                .settings
+                .profiles
+                .iter()
+                .filter(|profile| {
+                    profile.id != original_profile_id
+                        && profile.id != "direct"
+                        && profile.profile_type != "builtin"
+                })
+                .map(|profile| profile.id.clone())
+                .collect::<Vec<_>>();
+            for profile_id in profile_ids {
+                let profile = self.set_active_profile(&profile_id)?;
+                self.add_log(format!("Recovery trying profile: {}", profile.name), "info");
+                if let Some(result) = self.try_recover_current_profile()? {
+                    self.add_log(
+                        format!("Reliability recovery switched profile: {}", profile.name),
+                        "info",
+                    );
+                    self.reliability_failures = 0;
+                    return Ok(json!({
+                        "ok": true,
+                        "healthy": true,
+                        "profileChanged": true,
+                        "failures": self.reliability_failures,
+                        "profile": profile,
+                        "result": result,
+                        "settings": self.public_settings()
+                    }));
+                }
+            }
+            if self.settings.active_profile_id != original_profile_id {
+                let _ = self.set_active_profile(&original_profile_id);
+            }
+        }
+        Ok(json!({
+            "ok": false,
+            "healthy": false,
+            "action": "failed",
+            "failures": self.reliability_failures,
+            "probe": before,
+            "settings": self.public_settings()
+        }))
+    }
+
     fn change_proxy(&mut self, group: &str, proxy: &str) -> Result<bool, String> {
+        let previous = self
+            .settings
+            .selected_proxy_map
+            .insert(group.to_string(), proxy.to_string());
+        self.save_settings()?;
         if self.process.is_some() {
-            self.controller(
+            if let Err(err) = self.controller(
                 "PUT",
-                &format!("/proxies/{}", group),
+                &format!("/proxies/{}", url_path_encode(group)),
                 Some(json!({ "name": proxy })),
                 5000,
-            )?;
+            ) {
+                match previous {
+                    Some(value) => {
+                        self.settings
+                            .selected_proxy_map
+                            .insert(group.to_string(), value);
+                    }
+                    None => {
+                        self.settings.selected_proxy_map.remove(group);
+                    }
+                }
+                let _ = self.save_settings();
+                return Err(err);
+            }
             let _ = self.controller("DELETE", "/connections", None, 1500);
         }
         Ok(true)
@@ -1395,6 +3460,7 @@ impl CoreManager {
         Ok(true)
     }
 
+    #[allow(dead_code)]
     fn download_profile_source(&self, url: &str) -> Result<YamlValue, String> {
         let parsed = reqwest::Url::parse(url).map_err(|err| err.to_string())?;
         if !matches!(parsed.scheme(), "http" | "https") {
@@ -1412,12 +3478,14 @@ impl CoreManager {
             .map_err(|err| err.to_string())?;
         let source = match serde_yaml::from_str::<YamlValue>(&text).ok() {
             Some(YamlValue::Mapping(map)) => YamlValue::Mapping(map),
-            _ => parse_uri_subscription(&text)
-                .ok_or_else(|| "订阅格式不支持：请使用 Clash YAML 或 ss/vmess/trojan/tuic URI 订阅".to_string())?,
+            _ => parse_uri_subscription(&text).ok_or_else(|| {
+                "订阅格式不支持：请使用 Clash YAML 或 ss/vmess/trojan/tuic URI 订阅".to_string()
+            })?,
         };
         Ok(source)
     }
 
+    #[allow(dead_code)]
     fn add_profile_url(&mut self, url: &str) -> Result<Profile, String> {
         let parsed = reqwest::Url::parse(url).map_err(|err| err.to_string())?;
         let source = self.download_profile_source(url)?;
@@ -1435,6 +3503,12 @@ impl CoreManager {
             profile_type: "url".to_string(),
             path: path.to_string_lossy().to_string(),
             source_url: Some(url.to_string()),
+            node_count: yaml_sequence(&patched, "proxies")
+                .map(|items| items.len())
+                .unwrap_or(0),
+            proxy_group_count: yaml_sequence(&patched, "proxy-groups")
+                .map(|items| items.len())
+                .unwrap_or(0),
             updated_at: now_iso(),
             digest: sha256_file(&path),
         };
@@ -1444,6 +3518,7 @@ impl CoreManager {
         Ok(profile)
     }
 
+    #[allow(dead_code)]
     fn update_profile(&mut self, id: &str) -> Result<Profile, String> {
         let mut profile = self
             .settings
@@ -1469,15 +3544,14 @@ impl CoreManager {
         }
         self.save_settings()?;
         if self.process.is_some() && self.settings.active_profile_id == id {
-            self.stop()?;
-            thread::sleep(Duration::from_millis(250));
-            self.start()?;
+            self.restart_core_preserving_proxy(250)?;
         }
         Ok(profile)
     }
 
     fn set_active_profile(&mut self, id: &str) -> Result<Profile, String> {
         let was_running = self.process.is_some();
+        let previous_profile_id = self.settings.active_profile_id.clone();
         let profile = self
             .settings
             .profiles
@@ -1485,13 +3559,61 @@ impl CoreManager {
             .find(|p| p.id == id)
             .cloned()
             .ok_or_else(|| "Profile not found".to_string())?;
+        self.add_log(
+            format!(
+                "Profile switch requested: {} -> {} ({}, path {}, running {was_running})",
+                previous_profile_id, profile.id, profile.name, profile.path
+            ),
+            "info",
+        );
+        self.preflight_profile_file(&profile).map_err(|err| {
+            let message = format!(
+                "Profile switch preflight failed for {} at {}: {err}",
+                profile.name, profile.path
+            );
+            self.add_log(&message, "error");
+            message
+        })?;
         self.settings.active_profile_id = id.to_string();
         self.save_settings()?;
         if was_running {
-            self.stop()?;
-            thread::sleep(Duration::from_millis(250));
-            self.start()?;
+            let restore_system_proxy = self.settings.system_proxy;
+            let apply_result = self.hot_reload_profile(&profile).or_else(|hot_err| {
+                self.add_log(
+                    format!("Profile hot reload failed; falling back to restart: {hot_err}"),
+                    "warn",
+                );
+                self.restart_core_preserving_proxy(250)
+            });
+            if let Err(start_err) = apply_result {
+                let _ = self.stop();
+                self.restore_system_proxy_preference(restore_system_proxy);
+                self.settings.active_profile_id = previous_profile_id.clone();
+                let save_result = self.save_settings();
+                let rollback_result = if save_result.is_ok() {
+                    self.start().map(|_| ())
+                } else {
+                    save_result.map(|_| ())
+                };
+                let message = match rollback_result {
+                    Ok(_) => format!(
+                        "Profile switch failed and rolled back to {previous_profile_id}: {start_err}"
+                    ),
+                    Err(rollback_err) => format!(
+                        "Profile switch failed: {start_err}; rollback to {previous_profile_id} also failed: {rollback_err}"
+                    ),
+                };
+                self.add_log(&message, "error");
+                return Err(message);
+            }
         }
+        self.add_log(
+            format!(
+                "Profile switch completed: {} ({})",
+                profile.id, profile.name
+            ),
+            "info",
+        );
         Ok(profile)
     }
 
@@ -1499,31 +3621,886 @@ impl CoreManager {
         if id == "direct" {
             return Err("内置直连配置不能删除".to_string());
         }
-        if let Some(profile) = self.settings.profiles.iter().find(|p| p.id == id) {
-            let _ = fs::remove_file(&profile.path);
+        let was_running = self.process.is_some();
+        let was_active = self.settings.active_profile_id == id;
+        let remove_path = self
+            .settings
+            .profiles
+            .iter()
+            .find(|p| p.id == id)
+            .map(|profile| profile.path.clone());
+        if was_running && was_active {
+            let restore_system_proxy = self.settings.system_proxy;
+            self.stop()?;
+            self.restore_system_proxy_preference(restore_system_proxy);
+            thread::sleep(Duration::from_millis(250));
+        }
+        if let Some(path) = remove_path {
+            let _ = fs::remove_file(path);
         }
         self.settings.profiles.retain(|p| p.id != id);
-        if self.settings.active_profile_id == id {
+        if was_active {
             self.settings.active_profile_id = "direct".to_string();
         }
         self.save_settings()?;
+        if was_running && was_active {
+            self.start()?;
+        }
         Ok(true)
     }
 
     fn diagnostics(&mut self) -> JsonValue {
+        let is_admin = is_process_elevated();
+        let admin_required = self.settings.tun_enabled || self.settings.kill_switch_enabled;
+        let admin_ok = is_admin || !admin_required;
+        let active_profile = self.active_profile();
+        let active_profile_path = active_profile
+            .as_ref()
+            .map(|profile| PathBuf::from(&profile.path));
+        let active_profile_exists = active_profile_path
+            .as_ref()
+            .map(|path| path.exists())
+            .unwrap_or(false);
+        let profile_preflight = active_profile
+            .as_ref()
+            .ok_or_else(|| "no active profile".to_string())
+            .and_then(|profile| {
+                let path = PathBuf::from(&profile.path);
+                let raw = fs::read_to_string(&path)
+                    .map_err(|err| format!("配置读取失败 {}: {err}", path.display()))?;
+                let source: YamlValue = serde_yaml::from_str(&raw)
+                    .map_err(|err| format!("YAML 解析失败 {}: {err}", path.display()))?;
+                let patched = self.patched_config(source)?;
+                preflight_runtime_config(&patched, profile, &self.settings).map(|report| {
+                    format!(
+                        "{} proxies, {} groups, {} rules",
+                        report
+                            .get("proxies")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or(0),
+                        report
+                            .get("proxyGroups")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or(0),
+                        report
+                            .get("rules")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or(0)
+                    )
+                })
+            });
+        let profile_preflight_ok = profile_preflight.is_ok();
+        let profile_preflight_detail = profile_preflight.unwrap_or_else(|err| err);
+        let recent_logs = self.recent_logs(8);
+        let recent_error = recent_logs.iter().rev().find(|entry| {
+            matches!(entry.level.as_str(), "error" | "warn")
+                || entry.line.to_ascii_lowercase().contains("error")
+        });
+        let recent_log_detail = if recent_logs.is_empty() {
+            "no recent core logs".to_string()
+        } else {
+            recent_logs
+                .iter()
+                .map(|entry| format!("[{}] {}", entry.level, entry.line))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+        let recent_logs_ok = recent_error.is_none();
+        let check =
+            |name: &str, ok: bool, detail: String, severity: &str, category: &str, hint: &str| {
+                json!({
+                    "name": name,
+                    "ok": ok,
+                    "detail": detail,
+                    "severity": if ok { "ok" } else { severity },
+                    "category": category,
+                    "hint": if ok { "" } else { hint },
+                    "actionable": !ok && !hint.is_empty()
+                })
+            };
+        let checks =
+            vec![
+            check(
+                "mihomo core",
+                self.core_path.exists(),
+                self.core_path.to_string_lossy().to_string(),
+                "error",
+                "runtime",
+                "核心文件缺失或路径不可用，请重新放置 resources/core/mihomo.exe 后再启动。",
+            ),
+            check(
+                "Active profile config",
+                active_profile_exists,
+                active_profile_path
+                    .clone()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "no active profile".to_string()),
+                "error",
+                "profile",
+                "当前订阅配置文件不存在，请切换到可用订阅或重新导入订阅。",
+            ),
+            check(
+                "Profile preflight",
+                profile_preflight_ok,
+                profile_preflight_detail,
+                "error",
+                "profile",
+                "订阅预检失败，请优先检查订阅内容、代理组引用和端口配置。",
+            ),
+            check(
+                "Tauri shell",
+                true,
+                "Aegos".to_string(),
+                "warning",
+                "app",
+                "",
+            ),
+            check(
+                "Administrator",
+                admin_ok,
+                if is_admin {
+                    "elevated".to_string()
+                } else if admin_required {
+                    "not elevated; TUN and Kill Switch require admin restart".to_string()
+                } else {
+                    "not elevated; only required when TUN or Kill Switch is enabled".to_string()
+                },
+                "warning",
+                "permission",
+                "TUN 或 Kill Switch 已启用时，需要在设置页以管理员身份重启 Aegos。",
+            ),
+            check(
+                "FlClash/Codex port isolation",
+                self.settings.mixed_port != 7890,
+                format!("Aegos mixed port: {}, reserved: 7890", self.settings.mixed_port),
+                "error",
+                "network",
+                "Aegos 不能占用 7890，建议保持 mixed port 为 7891，避免和 FlClash/Codex 代理冲突。",
+            ),
+            check(
+                "Controller port",
+                self.settings.controller_port != self.settings.mixed_port,
+                format!("127.0.0.1:{}", self.settings.controller_port),
+                "error",
+                "network",
+                "控制端口不能和代理端口相同，请在设置页改成 19091 或其他未占用端口。",
+            ),
+            check(
+                "System Proxy",
+                true,
+                if self.settings.system_proxy { "enabled" } else { "disabled" }.to_string(),
+                "warning",
+                "network",
+                "",
+            ),
+            check(
+                "TUN",
+                !self.settings.tun_enabled || is_admin,
+                if self.settings.tun_enabled { "enabled" } else { "disabled" }.to_string(),
+                "warning",
+                "permission",
+                "TUN 已启用但当前不是管理员权限，请在设置页以管理员身份重启。",
+            ),
+            check(
+                "Kill Switch",
+                !self.settings.kill_switch_enabled || is_admin,
+                if self.settings.kill_switch_enabled { "enabled" } else { "disabled" }.to_string(),
+                "warning",
+                "permission",
+                "Kill Switch 已启用但当前不是管理员权限，请在设置页以管理员身份重启。",
+            ),
+            check(
+                "Recent core logs",
+                recent_logs_ok,
+                recent_log_detail,
+                "warning",
+                "logs",
+                "最近核心日志出现 warning/error，请打开日志页查看启动失败或代理连接失败的上下文。",
+            ),
+        ];
+        let failed_count = checks
+            .iter()
+            .filter(|item| {
+                !item
+                    .get("ok")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false)
+            })
+            .count();
+        let error_count = checks
+            .iter()
+            .filter(|item| item.get("severity").and_then(|value| value.as_str()) == Some("error"))
+            .count();
+        let warning_count = checks
+            .iter()
+            .filter(|item| item.get("severity").and_then(|value| value.as_str()) == Some("warning"))
+            .count();
+        let next_actions = checks
+            .iter()
+            .filter(|item| {
+                !item
+                    .get("ok")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false)
+                    && item
+                        .get("actionable")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false)
+            })
+            .filter_map(|item| {
+                item.get("hint")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            })
+            .take(3)
+            .collect::<Vec<_>>();
         json!({
             "generatedAt": now_iso(),
             "appVersion": env!("CARGO_PKG_VERSION"),
             "status": self.status(),
-            "checks": [
-                { "name": "mihomo core", "ok": self.core_path.exists(), "detail": self.core_path.to_string_lossy() },
-                { "name": "Tauri shell", "ok": true, "detail": "Aegos" },
-                { "name": "System Proxy", "ok": true, "detail": if self.settings.system_proxy { "enabled" } else { "disabled" } },
-                { "name": "TUN", "ok": true, "detail": if self.settings.tun_enabled { "enabled" } else { "disabled" } },
-                { "name": "Kill Switch", "ok": true, "detail": if self.settings.kill_switch_enabled { "enabled" } else { "disabled" } }
-            ]
+            "summary": {
+                "total": checks.len(),
+                "failed": failed_count,
+                "errors": error_count,
+                "warnings": warning_count,
+                "nextActions": next_actions
+            },
+            "checks": checks
         })
     }
+}
+
+fn add_profile_url_detached(
+    core: Arc<Mutex<CoreManager>>,
+    operations: Arc<Mutex<()>>,
+    url: &str,
+) -> Result<Profile, String> {
+    let parsed = reqwest::Url::parse(url).map_err(|err| err.to_string())?;
+    let (settings, profile_dir) = {
+        let core = core.lock().unwrap();
+        (core.settings.clone(), core.profile_dir.clone())
+    };
+    let source = download_profile_source_url(url)?;
+    let summary = source.summary.clone();
+    let patched = patch_config_with_settings(source.config, &settings)?;
+    let id = format!("url-{}", now_iso());
+    let path = profile_dir.join(format!("{id}.yaml"));
+    let mut profile = Profile {
+        id: id.clone(),
+        name: parsed.host_str().unwrap_or("remote").to_string(),
+        profile_type: "url".to_string(),
+        path: path.to_string_lossy().to_string(),
+        source_url: Some(url.to_string()),
+        node_count: summary.proxies,
+        proxy_group_count: summary.proxy_groups,
+        updated_at: now_iso(),
+        digest: String::new(),
+    };
+    preflight_runtime_config(&patched, &profile, &settings)?;
+    fs::write(
+        &path,
+        serde_yaml::to_string(&patched).map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    profile.digest = sha256_file(&path);
+    {
+        let _operation = lock_operation_queue(&operations, "addProfileUrl apply")?;
+        let mut core = core.lock().unwrap();
+        let was_running = core.process.is_some();
+        let previous_profile_id = core.settings.active_profile_id.clone();
+        let previous_system_proxy = core.settings.system_proxy;
+        core.settings.profiles.push(profile.clone());
+        core.settings.active_profile_id = id;
+        if let Err(err) = core.save_settings() {
+            core.settings.profiles.retain(|item| item.id != profile.id);
+            core.settings.active_profile_id = previous_profile_id;
+            let _ = fs::remove_file(&path);
+            return Err(err);
+        }
+        core.add_log(
+            format!(
+                "Profile imported: {} ({} nodes, {} groups, {} rules, {}, {} unsupported lines)",
+                profile.name,
+                summary.proxies,
+                summary.proxy_groups,
+                summary.rules,
+                summary.format,
+                summary.unsupported_lines
+            ),
+            "info",
+        );
+        if was_running {
+            if let Err(start_err) = core.restart_core_preserving_proxy(250) {
+                let _ = core.stop();
+                core.restore_system_proxy_preference(previous_system_proxy);
+                core.settings.profiles.retain(|item| item.id != profile.id);
+                core.settings.active_profile_id = previous_profile_id.clone();
+                let _ = fs::remove_file(&path);
+                let save_result = core.save_settings();
+                let rollback_result = if save_result.is_ok() {
+                    core.start().map(|_| ())
+                } else {
+                    save_result.map(|_| ())
+                };
+                return Err(match rollback_result {
+                    Ok(_) => format!(
+                        "Profile import applied but startup failed; rolled back to {previous_profile_id}: {start_err}"
+                    ),
+                    Err(rollback_err) => format!(
+                        "Profile import startup failed: {start_err}; rollback to {previous_profile_id} also failed: {rollback_err}"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(profile)
+}
+
+fn update_profile_detached(
+    core: Arc<Mutex<CoreManager>>,
+    operations: Arc<Mutex<()>>,
+    id: &str,
+) -> Result<Profile, String> {
+    let (mut profile, settings) = {
+        let core = core.lock().unwrap();
+        let profile = core
+            .settings
+            .profiles
+            .iter()
+            .find(|p| p.id == id)
+            .cloned()
+            .ok_or_else(|| "Profile not found".to_string())?;
+        (profile, core.settings.clone())
+    };
+    let Some(url) = profile.source_url.clone() else {
+        return Ok(profile);
+    };
+    let source = download_profile_source_url(&url)?;
+    let summary = source.summary.clone();
+    let patched = patch_config_with_settings(source.config, &settings)?;
+    profile.node_count = summary.proxies;
+    profile.proxy_group_count = summary.proxy_groups;
+    preflight_runtime_config(&patched, &profile, &settings)?;
+    let previous_profile = profile.clone();
+    let profile_path = PathBuf::from(&profile.path);
+    let previous_raw = fs::read_to_string(&profile_path).ok();
+    let temp_path = profile_path.with_file_name(format!(
+        "{}.{}.tmp",
+        profile_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("profile"),
+        hex_random(4)
+    ));
+    fs::write(
+        &temp_path,
+        serde_yaml::to_string(&patched).map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    if let Err(err) = fs::copy(&temp_path, &profile_path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err.to_string());
+    }
+    let _ = fs::remove_file(&temp_path);
+    profile.updated_at = now_iso();
+    profile.digest = sha256_file(&profile_path);
+    {
+        let _operation = lock_operation_queue(&operations, "updateProfile apply")?;
+        let mut core = core.lock().unwrap();
+        let was_running = core.process.is_some();
+        let was_active = core.settings.active_profile_id == id;
+        let previous_system_proxy = core.settings.system_proxy;
+        let Some(stored) = core.settings.profiles.iter_mut().find(|p| p.id == id) else {
+            if let Some(raw) = previous_raw.as_ref() {
+                let _ = fs::write(&profile_path, raw);
+            }
+            return Err("Profile was removed before update completed".to_string());
+        };
+        *stored = profile.clone();
+        if let Err(err) = core.save_settings() {
+            if let Some(raw) = previous_raw.as_ref() {
+                let _ = fs::write(&profile_path, raw);
+            }
+            if let Some(stored) = core.settings.profiles.iter_mut().find(|p| p.id == id) {
+                *stored = previous_profile.clone();
+            }
+            return Err(format!(
+                "Profile update save failed; restored previous file: {err}"
+            ));
+        }
+        core.add_log(
+            format!(
+                "Profile updated: {} ({} nodes, {} groups, {} rules, {}, {} unsupported lines)",
+                profile.name,
+                summary.proxies,
+                summary.proxy_groups,
+                summary.rules,
+                summary.format,
+                summary.unsupported_lines
+            ),
+            "info",
+        );
+        if was_running && was_active {
+            if let Err(start_err) = core.restart_core_preserving_proxy(250) {
+                let _ = core.stop();
+                core.restore_system_proxy_preference(previous_system_proxy);
+                if let Some(raw) = previous_raw.as_ref() {
+                    let _ = fs::write(&profile_path, raw);
+                }
+                if let Some(stored) = core.settings.profiles.iter_mut().find(|p| p.id == id) {
+                    *stored = previous_profile.clone();
+                }
+                let save_result = core.save_settings();
+                let rollback_result = if save_result.is_ok() {
+                    core.start().map(|_| ())
+                } else {
+                    save_result.map(|_| ())
+                };
+                return Err(match rollback_result {
+                    Ok(_) => format!(
+                        "Profile update applied but startup failed; restored previous subscription: {start_err}"
+                    ),
+                    Err(rollback_err) => format!(
+                        "Profile update startup failed: {start_err}; restoring previous subscription also failed: {rollback_err}"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(profile)
+}
+
+fn refresh_outbound_ip_detached(core: Arc<Mutex<CoreManager>>) -> Result<String, String> {
+    let mixed_port = {
+        let mut core = core.lock().unwrap();
+        if core.process.is_none() {
+            core.outbound_ip_cache = "-".to_string();
+            core.outbound_ip_checked_at = now_secs();
+            return Err("请先连接核心后再刷新落地 IP".to_string());
+        }
+        core.settings.mixed_port
+    };
+    let ip = query_outbound_ip(mixed_port);
+    let mut core = core.lock().unwrap();
+    core.outbound_ip_checked_at = now_secs();
+    match ip {
+        Ok(ip) => {
+            core.outbound_ip_cache = ip.clone();
+            core.add_log(format!("Outbound IP refreshed: {ip}"), "info");
+            Ok(ip)
+        }
+        Err(reason) => {
+            core.add_log(&reason, "warn");
+            Err(reason)
+        }
+    }
+}
+
+fn update_all_profiles_detached(
+    core: Arc<Mutex<CoreManager>>,
+    operations: Arc<Mutex<()>>,
+    jobs: Arc<Mutex<HashMap<String, JobRecord>>>,
+    job_id: &str,
+) -> Result<JsonValue, String> {
+    let profile_ids = {
+        let core = core.lock().unwrap();
+        core.settings
+            .profiles
+            .iter()
+            .filter(|profile| profile.source_url.is_some() && profile.profile_type != "builtin")
+            .map(|profile| profile.id.clone())
+            .collect::<Vec<_>>()
+    };
+    if profile_ids.is_empty() {
+        return Err("No URL subscriptions to update".to_string());
+    }
+    let total = profile_ids.len() as u64;
+    let mut updated = Vec::new();
+    let mut failed = Vec::new();
+    for (index, profile_id) in profile_ids.iter().enumerate() {
+        if job_cancel_requested(&jobs, job_id) {
+            finish_cancelled(&jobs, job_id, "cancelled");
+            return Ok(json!({
+                "updated": updated,
+                "failed": failed,
+                "cancelled": true
+            }));
+        }
+        set_job_state(
+            &jobs,
+            job_id,
+            "running",
+            index as u64 + 1,
+            total,
+            &format!("updating {profile_id}"),
+        );
+        match update_profile_detached(core.clone(), operations.clone(), profile_id) {
+            Ok(profile) => updated.push(profile),
+            Err(err) => failed.push(json!({ "id": profile_id, "error": err })),
+        }
+    }
+    if updated.is_empty() {
+        return Err(format!(
+            "All subscriptions failed to update: {}",
+            failed.len()
+        ));
+    }
+    Ok(json!({
+        "updated": updated,
+        "failed": failed,
+        "total": total
+    }))
+}
+
+fn lock_operation_queue<'a>(
+    operations: &'a Arc<Mutex<()>>,
+    label: &str,
+) -> Result<std::sync::MutexGuard<'a, ()>, String> {
+    operations
+        .lock()
+        .map_err(|_| format!("Operation queue poisoned while waiting for {label}"))
+}
+
+fn job_label(kind: &str) -> String {
+    match kind {
+        "addProfileUrl" => "导入订阅",
+        "updateProfile" => "更新订阅",
+        "recoverNetwork" => "网络自愈",
+        "refreshOutboundIp" => "刷新落地 IP",
+        "startCore" => "连接核心",
+        "stopCore" => "断开核心",
+        "restartCore" => "重启核心",
+        "setActiveProfile" => "切换订阅",
+        "updateSettings" => "保存设置",
+        "updateSetting" => "保存设置",
+        "setMode" => "切换模式",
+        "changeProxy" => "切换节点",
+        _ => "后台任务",
+    }
+    .to_string()
+}
+
+fn set_job_state(
+    jobs: &Arc<Mutex<HashMap<String, JobRecord>>>,
+    id: &str,
+    state: &str,
+    progress: u64,
+    total: u64,
+    message: &str,
+) {
+    if let Some(job) = jobs.lock().unwrap().get_mut(id) {
+        if job.cancel_requested && job.state == "cancelled" {
+            return;
+        }
+        job.state = state.to_string();
+        job.progress = progress;
+        job.total = total;
+        job.message = message.to_string();
+        job.updated_at = now_secs();
+    }
+}
+
+fn job_cancel_requested(jobs: &Arc<Mutex<HashMap<String, JobRecord>>>, id: &str) -> bool {
+    jobs.lock()
+        .unwrap()
+        .get(id)
+        .map(|job| job.cancel_requested)
+        .unwrap_or(false)
+}
+
+fn finish_cancelled(jobs: &Arc<Mutex<HashMap<String, JobRecord>>>, id: &str, message: &str) {
+    if let Some(job) = jobs.lock().unwrap().get_mut(id) {
+        job.state = "cancelled".to_string();
+        job.message = message.to_string();
+        job.updated_at = now_secs();
+        job.error = None;
+    }
+}
+
+fn finish_job(
+    jobs: &Arc<Mutex<HashMap<String, JobRecord>>>,
+    id: &str,
+    result: Result<JsonValue, String>,
+) {
+    if let Some(job) = jobs.lock().unwrap().get_mut(id) {
+        job.updated_at = now_secs();
+        match result {
+            Ok(value) => {
+                job.state = "succeeded".to_string();
+                job.progress = job.total.max(1);
+                job.total = job.progress;
+                job.message = "完成".to_string();
+                job.result = Some(value);
+                job.error = None;
+            }
+            Err(err) => {
+                job.state = "failed".to_string();
+                job.message = err.clone();
+                job.error = Some(err);
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn start_job(
+    state: State<AppState>,
+    kind: String,
+    payload: JsonValue,
+) -> Result<JsonValue, String> {
+    if !matches!(
+        kind.as_str(),
+        "addProfileUrl"
+            | "updateProfile"
+            | "updateAllProfiles"
+            | "recoverNetwork"
+            | "refreshOutboundIp"
+            | "startCore"
+            | "stopCore"
+            | "restartCore"
+            | "setActiveProfile"
+            | "removeProfile"
+            | "updateSettings"
+            | "updateSetting"
+            | "setMode"
+            | "changeProxy"
+    ) {
+        return Err(format!("Unsupported job kind: {kind}"));
+    }
+    let id = format!("job-{}-{}", now_secs(), hex_random(4));
+    let now = now_secs();
+    let record = JobRecord {
+        id: id.clone(),
+        kind: kind.clone(),
+        label: job_label(&kind),
+        state: "queued".to_string(),
+        started_at: now,
+        updated_at: now,
+        progress: 0,
+        total: 1,
+        message: "等待执行".to_string(),
+        result: None,
+        error: None,
+        cancel_requested: false,
+    };
+    state
+        .jobs
+        .lock()
+        .unwrap()
+        .insert(id.clone(), record.clone());
+
+    let core = state.core.clone();
+    let jobs = state.jobs.clone();
+    let operations = state.operations.clone();
+    thread::spawn(move || {
+        set_job_state(&jobs, &id, "running", 0, 3, "正在准备");
+        if job_cancel_requested(&jobs, &id) {
+            finish_cancelled(&jobs, &id, "cancelled before start");
+            return;
+        }
+        let result = match kind.as_str() {
+            "addProfileUrl" => {
+                let url = payload
+                    .get("url")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| "Missing url".to_string())
+                    .and_then(|url| {
+                        set_job_state(&jobs, &id, "running", 1, 3, "正在下载订阅");
+                        add_profile_url_detached(core.clone(), operations.clone(), url)
+                            .map(|profile| json!({ "profile": profile }))
+                    });
+                url
+            }
+            "updateProfile" => {
+                let profile_id = payload
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| "Missing profile id".to_string())
+                    .and_then(|profile_id| {
+                        set_job_state(&jobs, &id, "running", 1, 3, "正在更新订阅");
+                        update_profile_detached(core.clone(), operations.clone(), profile_id)
+                            .map(|profile| json!({ "profile": profile }))
+                    });
+                profile_id
+            }
+            "updateAllProfiles" => {
+                update_all_profiles_detached(core.clone(), operations.clone(), jobs.clone(), &id)
+            }
+            "refreshOutboundIp" => {
+                set_job_state(&jobs, &id, "running", 1, 2, "正在查询落地 IP");
+                refresh_outbound_ip_detached(core.clone()).map(|ip| json!({ "ip": ip }))
+            }
+            "recoverNetwork" => {
+                let force = payload
+                    .get("force")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+                set_job_state(&jobs, &id, "running", 1, 4, "正在执行网络自愈");
+                (|| -> Result<JsonValue, String> {
+                    let _operation = lock_operation_queue(&operations, "recoverNetwork")?;
+                    core.lock().unwrap().recover_network(force)
+                })()
+            }
+            "startCore" => {
+                set_job_state(&jobs, &id, "running", 1, 4, "正在启动核心");
+                (|| -> Result<JsonValue, String> {
+                    let _operation = lock_operation_queue(&operations, "startCore")?;
+                    core.lock().unwrap().start()
+                })()
+            }
+            "stopCore" => {
+                set_job_state(&jobs, &id, "running", 1, 2, "正在断开核心");
+                (|| -> Result<JsonValue, String> {
+                    let _operation = lock_operation_queue(&operations, "stopCore")?;
+                    core.lock().unwrap().stop()
+                })()
+            }
+            "restartCore" => {
+                set_job_state(&jobs, &id, "running", 1, 5, "正在重启核心");
+                (|| -> Result<JsonValue, String> {
+                    let _operation = lock_operation_queue(&operations, "restartCore")?;
+                    let mut core = core.lock().unwrap();
+                    core.restart_core_preserving_proxy(350)
+                })()
+            }
+            "setActiveProfile" => {
+                let profile_id = payload
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| "Missing profile id".to_string())
+                    .and_then(|profile_id| {
+                        set_job_state(&jobs, &id, "running", 1, 4, "正在应用订阅");
+                        let _operation = lock_operation_queue(&operations, "setActiveProfile")?;
+                        core.lock()
+                            .unwrap()
+                            .set_active_profile(profile_id)
+                            .map(|profile| json!({ "profile": profile }))
+                    });
+                profile_id
+            }
+            "removeProfile" => {
+                let profile_id = payload
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| "Missing profile id".to_string())
+                    .and_then(|profile_id| {
+                        set_job_state(&jobs, &id, "running", 1, 4, "removing profile");
+                        let _operation = lock_operation_queue(&operations, "removeProfile")?;
+                        core.lock()
+                            .unwrap()
+                            .remove_profile(profile_id)
+                            .map(|removed| json!({ "removed": removed, "id": profile_id }))
+                    });
+                profile_id
+            }
+            "updateSettings" => {
+                let updates = payload
+                    .get("updates")
+                    .cloned()
+                    .unwrap_or_else(|| payload.clone());
+                set_job_state(&jobs, &id, "running", 1, 4, "正在保存设置");
+                (|| -> Result<JsonValue, String> {
+                    let _operation = lock_operation_queue(&operations, "updateSettings")?;
+                    core.lock()
+                        .unwrap()
+                        .update_settings(updates)
+                        .map(|settings| json!({ "settings": settings }))
+                })()
+            }
+            "updateSetting" => (|| -> Result<JsonValue, String> {
+                let key = payload
+                    .get("key")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| "Missing setting key".to_string())?;
+                let value = payload
+                    .get("value")
+                    .cloned()
+                    .ok_or_else(|| "Missing setting value".to_string())?;
+                set_job_state(&jobs, &id, "running", 1, 3, "正在保存设置");
+                let _operation = lock_operation_queue(&operations, "updateSetting")?;
+                let mut core = core.lock().unwrap();
+                if key == "systemProxy" {
+                    core.set_system_proxy(value.as_bool().unwrap_or(false))?;
+                    Ok(json!({ "settings": core.public_settings() }))
+                } else {
+                    core.update_setting(key, value)
+                        .map(|settings| json!({ "settings": settings }))
+                }
+            })(),
+            "setMode" => {
+                let mode = payload
+                    .get("mode")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| "Missing mode".to_string())
+                    .and_then(|mode| {
+                        set_job_state(&jobs, &id, "running", 1, 2, "正在切换模式");
+                        let _operation = lock_operation_queue(&operations, "setMode")?;
+                        core.lock()
+                            .unwrap()
+                            .set_mode(mode)
+                            .map(|mode| json!({ "mode": mode }))
+                    });
+                mode
+            }
+            "changeProxy" => (|| -> Result<JsonValue, String> {
+                let group = payload
+                    .get("group")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| "Missing proxy group".to_string())?;
+                let proxy = payload
+                    .get("proxy")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| "Missing proxy name".to_string())?;
+                set_job_state(&jobs, &id, "running", 1, 2, "正在切换节点");
+                let _operation = lock_operation_queue(&operations, "changeProxy")?;
+                core.lock().unwrap().change_proxy(group, proxy)?;
+                Ok(json!({ "group": group, "proxy": proxy }))
+            })(),
+            _ => Err("Unsupported job kind".to_string()),
+        };
+        finish_job(&jobs, &id, result);
+    });
+
+    Ok(json!(record))
+}
+
+#[tauri::command]
+fn job_status(state: State<AppState>, id: Option<String>) -> Result<JsonValue, String> {
+    let mut jobs = state.jobs.lock().unwrap();
+    let now = now_secs();
+    jobs.retain(|_, job| {
+        matches!(job.state.as_str(), "queued" | "running")
+            || now.saturating_sub(job.updated_at) < 600
+    });
+    if let Some(id) = id {
+        return jobs
+            .get(&id)
+            .cloned()
+            .map(|job| json!(job))
+            .ok_or_else(|| "Job not found".to_string());
+    }
+    let mut items = jobs.values().cloned().collect::<Vec<_>>();
+    items.sort_by_key(|job| job.started_at);
+    Ok(json!(items))
+}
+
+#[tauri::command]
+fn cancel_job(state: State<AppState>, id: String) -> Result<JsonValue, String> {
+    let mut jobs = state.jobs.lock().unwrap();
+    let job = jobs
+        .get_mut(&id)
+        .ok_or_else(|| "Job not found".to_string())?;
+    job.cancel_requested = true;
+    if job.state == "queued" {
+        job.state = "cancelled".to_string();
+        job.message = "已取消".to_string();
+        job.updated_at = now_secs();
+    }
+    if job.state == "running" {
+        job.message = "cancel requested".to_string();
+        job.updated_at = now_secs();
+    }
+    Ok(json!(job.clone()))
 }
 
 #[tauri::command]
@@ -1533,24 +4510,26 @@ fn app_status(state: State<AppState>) -> Result<JsonValue, String> {
 
 #[tauri::command]
 fn start_core(state: State<AppState>) -> Result<JsonValue, String> {
+    let _operation = lock_operation_queue(&state.operations, "start_core command")?;
     state.core.lock().unwrap().start()
 }
 
 #[tauri::command]
 fn stop_core(state: State<AppState>) -> Result<JsonValue, String> {
+    let _operation = lock_operation_queue(&state.operations, "stop_core command")?;
     state.core.lock().unwrap().stop()
 }
 
 #[tauri::command]
 fn restart_core(state: State<AppState>) -> Result<JsonValue, String> {
+    let _operation = lock_operation_queue(&state.operations, "restart_core command")?;
     let mut core = state.core.lock().unwrap();
-    core.stop()?;
-    thread::sleep(Duration::from_millis(350));
-    core.start()
+    core.restart_core_preserving_proxy(350)
 }
 
 #[tauri::command]
 fn set_system_proxy(state: State<AppState>, enable: bool) -> Result<bool, String> {
+    let _operation = lock_operation_queue(&state.operations, "set_system_proxy command")?;
     state.core.lock().unwrap().set_system_proxy(enable)
 }
 
@@ -1560,11 +4539,38 @@ fn update_setting(
     key: String,
     value: JsonValue,
 ) -> Result<JsonValue, String> {
+    let _operation = lock_operation_queue(&state.operations, "update_setting command")?;
     state.core.lock().unwrap().update_setting(&key, value)
 }
 
 #[tauri::command]
+fn update_settings(state: State<AppState>, updates: JsonValue) -> Result<JsonValue, String> {
+    let _operation = lock_operation_queue(&state.operations, "update_settings command")?;
+    state.core.lock().unwrap().update_settings(updates)
+}
+
+#[tauri::command]
+fn relaunch_as_admin(app: AppHandle) -> Result<bool, String> {
+    let exe = std::env::current_exe().map_err(|err| err.to_string())?;
+    let cwd = exe
+        .parent()
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    run_powershell(&format!(
+        "Start-Process -FilePath '{}' -WorkingDirectory '{}' -Verb RunAs",
+        ps_escape(exe.to_string_lossy()),
+        ps_escape(cwd.to_string_lossy())
+    ))?;
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(250));
+        app.exit(0);
+    });
+    Ok(true)
+}
+
+#[tauri::command]
 fn set_mode(state: State<AppState>, mode: String) -> Result<String, String> {
+    let _operation = lock_operation_queue(&state.operations, "set_mode command")?;
     state.core.lock().unwrap().set_mode(&mode)
 }
 
@@ -1574,17 +4580,43 @@ fn proxy_groups(state: State<AppState>) -> Result<JsonValue, String> {
 }
 
 #[tauri::command]
+fn start_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
+    state.core.lock().unwrap().start_proxy_delay_test()
+}
+
+#[tauri::command]
+fn speed_test_status(state: State<AppState>) -> Result<JsonValue, String> {
+    Ok(state.core.lock().unwrap().speed_test_snapshot())
+}
+
+#[tauri::command]
+fn cancel_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
+    Ok(state.core.lock().unwrap().cancel_proxy_delay_test())
+}
+
+#[tauri::command]
+fn recover_network(state: State<AppState>, force: Option<bool>) -> Result<JsonValue, String> {
+    let _operation = lock_operation_queue(&state.operations, "recover_network command")?;
+    state
+        .core
+        .lock()
+        .unwrap()
+        .recover_network(force.unwrap_or(false))
+}
+
+#[tauri::command]
 fn test_proxy_delays(state: State<AppState>) -> Result<JsonValue, String> {
     Ok(state.core.lock().unwrap().test_proxy_delays())
 }
 
 #[tauri::command]
 fn refresh_outbound_ip(state: State<AppState>) -> Result<String, String> {
-    state.core.lock().unwrap().refresh_outbound_ip()
+    refresh_outbound_ip_detached(state.core.clone())
 }
 
 #[tauri::command]
 fn change_proxy(state: State<AppState>, group: String, proxy: String) -> Result<bool, String> {
+    let _operation = lock_operation_queue(&state.operations, "change_proxy command")?;
     state.core.lock().unwrap().change_proxy(&group, &proxy)
 }
 
@@ -1605,21 +4637,23 @@ fn close_connections(state: State<AppState>) -> Result<bool, String> {
 
 #[tauri::command]
 fn add_profile_url(state: State<AppState>, url: String) -> Result<Profile, String> {
-    state.core.lock().unwrap().add_profile_url(&url)
+    add_profile_url_detached(state.core.clone(), state.operations.clone(), &url)
 }
 
 #[tauri::command]
 fn update_profile(state: State<AppState>, id: String) -> Result<Profile, String> {
-    state.core.lock().unwrap().update_profile(&id)
+    update_profile_detached(state.core.clone(), state.operations.clone(), &id)
 }
 
 #[tauri::command]
 fn set_active_profile(state: State<AppState>, id: String) -> Result<Profile, String> {
+    let _operation = lock_operation_queue(&state.operations, "set_active_profile command")?;
     state.core.lock().unwrap().set_active_profile(&id)
 }
 
 #[tauri::command]
 fn remove_profile(state: State<AppState>, id: String) -> Result<bool, String> {
+    let _operation = lock_operation_queue(&state.operations, "remove_profile command")?;
     state.core.lock().unwrap().remove_profile(&id)
 }
 
@@ -1664,19 +4698,30 @@ fn main() {
         .setup(|app| {
             let core = CoreManager::new(&app.handle())?;
             app.manage(AppState {
-                core: Mutex::new(core),
+                core: Arc::new(Mutex::new(core)),
+                jobs: Arc::new(Mutex::new(HashMap::new())),
+                operations: Arc::new(Mutex::new(())),
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            start_job,
+            job_status,
+            cancel_job,
             app_status,
             start_core,
             stop_core,
             restart_core,
             set_system_proxy,
             update_setting,
+            update_settings,
+            relaunch_as_admin,
             set_mode,
             proxy_groups,
+            start_proxy_delay_test,
+            speed_test_status,
+            cancel_proxy_delay_test,
+            recover_network,
             test_proxy_delays,
             refresh_outbound_ip,
             change_proxy,

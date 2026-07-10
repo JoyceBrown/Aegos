@@ -13,7 +13,7 @@
         <div class="brand-mark">A</div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v0.5.8</span>
+          <span id="appVersionLabel" class="brand-version">v2.4.0</span>
         </div>
       </section>
 
@@ -47,6 +47,13 @@
         <p id="sideUpRate" class="rate up">↑ 0 B/s</p>
         <p id="sideDownRate" class="rate down">↓ 0 B/s</p>
         <div class="mini-chart" aria-hidden="true"><span></span></div>
+      </section>
+
+      <section class="side-card job-card">
+        <h3>&#21518;&#21488;&#20219;&#21153;</h3>
+        <div id="jobRows" class="job-list">
+          <p class="empty">&#26242;&#26080;&#21518;&#21488;&#20219;&#21153;</p>
+        </div>
       </section>
     </aside>
 
@@ -132,7 +139,7 @@
 
           <div class="quick-row action-row">
             <strong>快捷操作</strong>
-            <button id="quickTestBtn"><span>✓</span>一键测速</button>            <button id="quickUpdateSubBtn"><span>&#8635;</span>&#26356;&#26032;&#35746;&#38405;</button>            <button id="quickProxyBtn"><span>PX</span>&#31995;&#32479;&#20195;&#29702;</button>
+            <button id="quickTestBtn"><span>✓</span>一键测速</button>            <button id="smartRecoverBtn"><span>2.0</span>智能自愈</button>            <button id="quickUpdateSubBtn"><span>&#8635;</span>&#26356;&#26032;&#35746;&#38405;</button>            <button id="quickProxyBtn"><span>PX</span>&#31995;&#32479;&#20195;&#29702;</button>
             <button id="quickIpBtn"><span>IP</span>刷新落地 IP</button>
             <button id="quickModeBtn"><span>⇄</span>切换模式</button>            <button id="quickTunBtn"><span>T</span>TUN &#27169;&#24335;</button>            <button id="quickCopyProxyBtn"><span>CP</span>&#22797;&#21046;&#20195;&#29702;</button>            <button id="quickRestartBtn"><span>R</span>&#37325;&#21551;&#20869;&#26680;</button>
           </div>
@@ -199,13 +206,16 @@
       </section>
 
       <section class="page" data-page-panel="profiles">
-        <section class="panel fill page-card">
+        <section class="panel fill page-card diagnostic-card">
           <header class="section-head">
             <div><h2>订阅</h2><p>导入、更新、切换订阅配置。</p></div>
           </header>
           <div class="form-row">
             <input id="profileUrlInput" placeholder="https://example.com/sub.yaml">
             <button id="addProfileBtn" class="primary compact">导入订阅</button>
+          </div>
+          <div class="settings-actions">
+            <button id="updateAllProfilesBtn" class="ghost compact">&#26356;&#26032;&#20840;&#37096;</button>
           </div>
           <div id="profileRows" class="card-list"></div>
         </section>
@@ -215,8 +225,12 @@
         <section class="panel fill page-card">
           <header class="section-head">
             <div><h2>诊断</h2><p>检查内核、端口、代理、TUN 与 Kill Switch 状态。</p></div>
-            <button id="runDiagBtn" class="primary compact">运行诊断</button>
+            <div class="section-actions">
+              <button id="copyDiagBtn" class="ghost compact">复制报告</button>
+              <button id="runDiagBtn" class="primary compact">运行诊断</button>
+            </div>
           </header>
+          <div id="diagSummary" class="diagnostic-summary"></div>
           <div id="diagRows" class="card-list"></div>
         </section>
       </section>
@@ -236,24 +250,71 @@
           <header class="section-head">
             <div><h2>设置</h2><p>核心接管、代理、安全和端口设置。</p></div>
           </header>
-          <div class="settings-grid">
-            <label class="switch-row"><span><b>系统代理</b><small>写入 Windows 代理并刷新 WinInet</small></span><input id="systemProxyToggle" type="checkbox"></label>
-            <label class="switch-row"><span><b>启动连接后自动开启系统代理</b><small>适合日常桌面代理</small></span><input id="startProxyToggle" type="checkbox"></label>
-            <label class="switch-row"><span><b>TUN 模式</b><small>全局接管应用流量，可能需要管理员权限</small></span><input id="tunToggle" type="checkbox"></label>
-            <label class="switch-row"><span><b>DNS 防泄漏</b><small>启用 DNS hijack: any:53</small></span><input id="dnsToggle" type="checkbox"></label>
-            <label class="switch-row"><span><b>Kill Switch</b><small>通过 Windows 防火墙阻断非代理出站</small></span><input id="killToggle" type="checkbox"></label>
-            <label class="switch-row"><span><b>IPv6</b><small>按订阅与内核能力启用 IPv6</small></span><input id="ipv6Toggle" type="checkbox"></label>
-            <label class="switch-row"><span><b>允许局域网</b><small>代理监听从 127.0.0.1 扩展到局域网</small></span><input id="allowLanToggle" type="checkbox"></label>
-          </div>
-          <div class="form-grid">
-            <label><span>混合代理端口</span><input id="mixedPortInput" type="number" min="1024" max="65535"></label>
-            <label><span>控制端口</span><input id="controllerPortInput" type="number" min="1024" max="65535"></label>
-            <label><span>TUN Stack</span><select id="tunStackSelect"><option value="mixed">mixed</option><option value="gvisor">gvisor</option><option value="system">system</option></select></label>
-            <label><span>日志等级</span><select id="logLevelSelect"><option value="info">info</option><option value="warning">warning</option><option value="error">error</option><option value="debug">debug</option></select></label>
-          </div>
-          <div class="settings-actions">
-            <button id="savePortBtn" class="primary compact">保存端口/高级项</button>
-            <button id="restartCoreBtn" class="ghost">重启内核</button>
+          <div class="settings-layout">
+            <section class="settings-section settings-overview">
+              <div class="settings-summary-grid">
+                <article><span>权限</span><b id="adminState">普通权限</b></article>
+                <article><span>代理端口</span><b id="settingsPortSummary">7891</b></article>
+                <article><span>控制端口</span><b id="settingsControllerSummary">19091</b></article>
+                <article><span>接管状态</span><b id="settingsRuntimeSummary">未接管</b></article>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <header class="settings-section-head">
+                <h3>代理接管</h3>
+                <span id="settingsProxySummary">系统代理未开启</span>
+              </header>
+              <div class="settings-grid compact-grid">
+                <label class="switch-row"><span><b>系统代理</b><small>Windows 代理开关</small></span><input id="systemProxyToggle" type="checkbox"></label>
+                <label class="switch-row"><span><b>连接后自动系统代理</b><small>启动核心后自动接管</small></span><input id="startProxyToggle" type="checkbox"></label>
+                <label class="switch-row"><span><b>允许局域网</b><small>开放局域网访问</small></span><input id="allowLanToggle" type="checkbox"></label>
+                <label class="switch-row"><span><b>IPv6</b><small>启用 IPv6 支持</small></span><input id="ipv6Toggle" type="checkbox"></label>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <header class="settings-section-head">
+                <h3>安全与网络</h3>
+                <span>TUN / DNS / Kill Switch</span>
+              </header>
+              <div class="settings-grid compact-grid">
+                <label class="switch-row"><span><b>TUN 模式</b><small>接管应用流量</small></span><input id="tunToggle" type="checkbox"></label>
+                <label class="switch-row"><span><b>DNS 防泄漏</b><small>DNS hijack: any:53</small></span><input id="dnsToggle" type="checkbox"></label>
+                <label class="switch-row"><span><b>Kill Switch</b><small>阻断非代理出站</small></span><input id="killToggle" type="checkbox"></label>
+                <label class="input-row"><span><b>TUN Stack</b><small>内核栈选择</small></span><select id="tunStackSelect"><option value="mixed">mixed</option><option value="gvisor">gvisor</option><option value="system">system</option></select></label>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <header class="settings-section-head">
+                <h3>自愈策略</h3>
+                <span id="settingsReliabilitySummary">自动自愈开启</span>
+              </header>
+              <div class="settings-grid compact-grid">
+                <label class="switch-row"><span><b>Aegos 自愈引擎</b><small>异常时自动恢复</small></span><input id="reliabilityAutoToggle" type="checkbox"></label>
+                <label class="switch-row"><span><b>订阅故障转移</b><small>切换可用订阅</small></span><input id="profileFailoverToggle" type="checkbox"></label>
+                <label class="input-row"><span><b>最大延迟 ms</b><small>候选节点阈值</small></span><input id="reliabilityMaxDelayInput" type="number" min="100" max="10000"></label>
+                <label class="input-row"><span><b>候选数量</b><small>测速候选上限</small></span><input id="reliabilityCandidateLimitInput" type="number" min="3" max="200"></label>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <header class="settings-section-head">
+                <h3>高级运行时</h3>
+                <span>端口与日志</span>
+              </header>
+              <div class="form-grid">
+                <label><span>混合代理端口</span><input id="mixedPortInput" type="number" min="1024" max="65535"></label>
+                <label><span>控制端口</span><input id="controllerPortInput" type="number" min="1024" max="65535"></label>
+                <label><span>日志等级</span><select id="logLevelSelect"><option value="info">info</option><option value="warning">warning</option><option value="error">error</option><option value="debug">debug</option></select></label>
+              </div>
+              <div class="settings-actions">
+                <button id="savePortBtn" class="primary compact">保存高级项</button>
+                <button id="elevateBtn" class="ghost">管理员重启</button>
+                <button id="restartCoreBtn" class="ghost">重启内核</button>
+              </div>
+            </section>
           </div>
         </section>
       </section>

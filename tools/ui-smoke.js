@@ -152,6 +152,16 @@ async function auditViewport(page, width, height) {
     }).map((el) => el.textContent.trim());
     const metricIcons = all('.metric-icon').map((el) => el.getBoundingClientRect().width);
     const homeRows = all('#homeNodeRows .row').filter(visible).length;
+    const regionBox = box('.region-row');
+    const homeHeadBox = box('.home-row-head');
+    const firstHomeRowBox = box('#homeNodeRows .row');
+    const homeNodeLayout = regionBox && homeHeadBox && firstHomeRowBox ? {
+      regionToHeadGap: homeHeadBox.top - regionBox.bottom,
+      headToFirstRowGap: firstHomeRowBox.top - homeHeadBox.bottom,
+      headHeight: homeHeadBox.height,
+      firstRowTop: firstHomeRowBox.top,
+      firstRowHeight: firstHomeRowBox.height
+    } : null;
     const tunHome = document.querySelector('#tunHomeToggle');
     const tunHomeVisible = Boolean(tunHome && visible(tunHome));
     const navBox = box('.nav');
@@ -172,12 +182,21 @@ async function auditViewport(page, width, height) {
     const settingsActive = settingsPanel?.classList.contains('active') || false;
     const tunToggleVisible = Boolean(tunToggle && visible(tunToggle));
     const settingsBox = box('[data-page-panel="settings"] .page-card');
+    const settingsSummary = box('.settings-summary-grid');
+    const settingsSections = all('[data-page-panel="settings"] .settings-section').filter(visible).length;
+    document.querySelector('[data-page="diagnostics"]').click();
+    document.querySelector('#diagSummary').innerHTML = '<div class="diagnostic-status is-warn"><b>需要关注</b><span>2 项检查 / 1 项异常</span></div><div class="diagnostic-metrics"><span><b>0</b>错误</span><span><b>1</b>警告</span><span><b>1</b>通过</span></div><div class="diagnostic-actions"><small>打开日志页查看最近核心 warning。</small></div>';
+    document.querySelector('#diagRows').innerHTML = '<article class="list-card diagnostic-row severity-warning"><div><b>Recent core logs</b><small>[warn] mock warning</small><small class="diagnostic-hint">打开日志页查看最近核心 warning。</small></div><span class="warn">警告</span></article><article class="list-card diagnostic-row severity-ok"><div><b>mihomo core</b><small>mock</small></div><span class="ok">通过</span></article>';
+    const diagnosticsBase = collectBase();
+    const diagnosticsPanel = document.querySelector('[data-page-panel="diagnostics"]');
+    const diagnosticsActive = diagnosticsPanel?.classList.contains('active') || false;
+    const diagnosticsSummary = box('#diagSummary');
     document.querySelector('[data-page="home"]').click();
     return {
       width: window.innerWidth,
       height: window.innerHeight,
-      overflowX: Math.max(homeBase.overflowX, nodeBase.overflowX, settingsBase.overflowX),
-      textOverflow: [...homeBase.textOverflow, ...nodeBase.textOverflow, ...settingsBase.textOverflow],
+      overflowX: Math.max(homeBase.overflowX, nodeBase.overflowX, settingsBase.overflowX, diagnosticsBase.overflowX),
+      textOverflow: [...homeBase.textOverflow, ...nodeBase.textOverflow, ...settingsBase.textOverflow, ...diagnosticsBase.textOverflow],
       quickEscapes,
       visibleRows,
       tableOverflowX: tableEl ? tableEl.scrollWidth - tableEl.clientWidth : 0,
@@ -187,6 +206,7 @@ async function auditViewport(page, width, height) {
       ringWidth: box('.ring')?.width || 0,
       tunHomeVisible,
       homeRows,
+      homeNodeLayout,
       sidebarWrappedRows,
       sidebarOverlap,
       hero: box('.hero'),
@@ -194,8 +214,12 @@ async function auditViewport(page, width, height) {
       nodes: box('.nodes'),
       settings: settingsBox,
       settingsActive,
+      settingsSummary,
+      settingsSections,
       tunToggleVisible,
-      badPanels: [...homeBase.badPanels, ...nodeBase.badPanels, ...settingsBase.badPanels]
+      diagnosticsActive,
+      diagnosticsSummary,
+      badPanels: [...homeBase.badPanels, ...nodeBase.badPanels, ...settingsBase.badPanels, ...diagnosticsBase.badPanels]
     };
   })()`);
 
@@ -226,7 +250,8 @@ try {
   const reports = [
     await auditViewport(page, 1280, 820),
     await auditViewport(page, 1180, 700),
-    await auditViewport(page, 1700, 900)
+    await auditViewport(page, 1700, 900),
+    await auditViewport(page, 1280, 1080)
   ];
   const failures = [];
   for (const report of reports) {
@@ -234,14 +259,23 @@ try {
     if (report.tableOverflowX > 1) failures.push(`${report.width}x${report.height}: node table horizontal overflow ${report.tableOverflowX}px`);
     if (report.visibleRows < 5) failures.push(`${report.width}x${report.height}: only ${report.visibleRows} node rows visible`);
     if (!report.settingsActive) failures.push(`${report.width}x${report.height}: settings page did not activate`);
+    if (!report.settingsSummary || report.settingsSummary.height < 48) failures.push(`${report.width}x${report.height}: settings summary did not render with stable height`);
+    if (report.settingsSections < 5) failures.push(`${report.width}x${report.height}: settings sections missing, found ${report.settingsSections}`);
+    if (!report.diagnosticsActive) failures.push(`${report.width}x${report.height}: diagnostics page did not activate`);
     if (!report.tunToggleVisible) failures.push(`${report.width}x${report.height}: TUN toggle is not visible`);
     if (!report.tunHomeVisible) failures.push(`${report.width}x${report.height}: home TUN toggle is not visible`);
     if (report.homeRows < 5) failures.push(`${report.width}x${report.height}: only ${report.homeRows} home node rows visible`);
+    if (!report.homeNodeLayout) failures.push(`${report.width}x${report.height}: home node layout metrics missing`);
+    if (report.homeNodeLayout?.regionToHeadGap < -1) failures.push(`${report.width}x${report.height}: home region row overlaps table head by ${Math.abs(report.homeNodeLayout.regionToHeadGap)}px`);
+    if (report.homeNodeLayout?.headToFirstRowGap < -1) failures.push(`${report.width}x${report.height}: home table head overlaps first row by ${Math.abs(report.homeNodeLayout.headToFirstRowGap)}px`);
+    if (report.homeNodeLayout?.headToFirstRowGap > 16) failures.push(`${report.width}x${report.height}: home table head is separated from first row by ${report.homeNodeLayout.headToFirstRowGap}px`);
+    if (report.homeNodeLayout?.headHeight > 42) failures.push(`${report.width}x${report.height}: home table head stretched to ${report.homeNodeLayout.headHeight}px`);
     if (report.maxMetricIcon > 24) failures.push(`${report.width}x${report.height}: metric icon width ${report.maxMetricIcon}px`);
     if (report.sidebarOverlap) failures.push(`${report.width}x${report.height}: sidebar navigation overlaps status card`);
     if (report.sidebarWrappedRows.length) failures.push(`${report.width}x${report.height}: sidebar status rows wrap: ${report.sidebarWrappedRows.join(', ')}`);
     if (report.quickEscapes.length) failures.push(`${report.width}x${report.height}: quick buttons escape container: ${report.quickEscapes.join(', ')}`);
     if (report.badPanels.length) failures.push(`${report.width}x${report.height}: panels outside viewport: ${report.badPanels.join(', ')}`);
+    if (!report.diagnosticsSummary || report.diagnosticsSummary.height < 48) failures.push(`${report.width}x${report.height}: diagnostic summary did not render with stable height`);
     const seriousTextOverflow = report.textOverflow.filter((text) => text && !text.includes('127.0.0.1'));
     if (seriousTextOverflow.length) failures.push(`${report.width}x${report.height}: text overflow: ${seriousTextOverflow.join(', ')}`);
   }

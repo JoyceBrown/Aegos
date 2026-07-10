@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const chromeCandidates = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
@@ -103,7 +104,20 @@ try {
           mode: 'rule',
           activeProfileId: 'url-test',
           systemProxy: false,
-          tunEnabled: false
+          tunEnabled: false,
+          settings: {
+            mixedPort: 7891,
+            controllerPort: 19091,
+            tunStack: 'mixed',
+            logLevel: 'info',
+            reliability: {
+              auto: true,
+              profileFailover: true,
+              failureThreshold: 2,
+              maxDelayMs: 800,
+              candidateLimit: 24
+            }
+          }
         };
         const profiles = [
           { id: 'direct', name: 'Direct', profile_type: 'builtin', updated_at: '0' },
@@ -121,22 +135,24 @@ try {
             { name: 'US 01', server: 'us.example', type: 'vless', alive: true, delay: -1 }
           ]
         }];
+        const jobs = new Map();
         const status = () => ({
           product: 'Aegos',
-          appVersion: '0.5.8',
+          appVersion: '${pkg.version}',
           running: state.running,
           controller: state.running,
           mode: state.mode,
           traffic: { up: 128, down: 256 },
           logs: [],
           activeProfile: profiles.find((item) => item.id === state.activeProfileId),
-          network: { lanIp: '192.168.1.2', proxyEndpoint: '127.0.0.1:7890', outboundIp: '-' },
+          network: { lanIp: '192.168.1.2', proxyEndpoint: '127.0.0.1:' + state.settings.mixedPort, outboundIp: '-' },
+          permissions: { isAdmin: false, requiresAdminFor: ['TUN', 'Kill Switch'] },
           protection: { label: state.running ? 'Core running' : 'Idle' },
           settings: {
             activeProfileId: state.activeProfileId,
             profiles,
-            mixedPort: 7890,
-            controllerPort: 19090,
+            mixedPort: state.settings.mixedPort,
+            controllerPort: state.settings.controllerPort,
             systemProxy: state.systemProxy,
             tunEnabled: state.tunEnabled,
             startWithSystemProxy: true,
@@ -144,8 +160,9 @@ try {
             killSwitchEnabled: false,
             ipv6Enabled: false,
             allowLan: false,
-            tunStack: 'mixed',
-            logLevel: 'info'
+            tunStack: state.settings.tunStack,
+            logLevel: state.settings.logLevel,
+            reliability: state.settings.reliability
           }
         });
         window.__aegosCalls = calls;
@@ -156,21 +173,106 @@ try {
           if (command === 'stop_core') { state.running = false; return { ok: true }; }
           if (command === 'restart_core') { state.running = true; return { ok: true }; }
           if (command === 'proxy_groups') return groups;
+          if (command === 'start_job') {
+            const id = 'job-' + (jobs.size + 1);
+            let result = {};
+            if (args.kind === 'refreshOutboundIp') result = { ip: '203.0.113.8' };
+            if (args.kind === 'startCore') { state.running = true; result = { ok: true }; }
+            if (args.kind === 'stopCore') { state.running = false; result = { ok: true }; }
+            if (args.kind === 'restartCore') { state.running = true; result = { ok: true }; }
+            if (args.kind === 'setActiveProfile') {
+              state.activeProfileId = args.payload?.id;
+              result = { profile: profiles.find((item) => item.id === args.payload?.id) };
+            }
+            if (args.kind === 'removeProfile') {
+              const index = profiles.findIndex((item) => item.id === args.payload?.id);
+              if (index >= 0) profiles.splice(index, 1);
+              if (state.activeProfileId === args.payload?.id) state.activeProfileId = profiles[0]?.id || 'direct';
+              result = { removed: true, id: args.payload?.id };
+            }
+            if (args.kind === 'updateSettings') {
+              Object.assign(state.settings, args.payload?.updates || {});
+              result = { settings: status().settings };
+            }
+            if (args.kind === 'updateSetting') {
+              if (args.payload?.key === 'systemProxy') state.systemProxy = Boolean(args.payload.value);
+              if (args.payload?.key === 'tunEnabled') state.tunEnabled = Boolean(args.payload.value);
+              else state.settings[args.payload?.key] = args.payload?.value;
+              result = { settings: status().settings };
+            }
+            if (args.kind === 'setMode') { state.mode = args.payload?.mode; result = { mode: state.mode }; }
+            if (args.kind === 'changeProxy') {
+              groups[0].now = args.payload?.proxy;
+              result = { group: args.payload?.group, proxy: args.payload?.proxy };
+            }
+            if (args.kind === 'recoverNetwork') {
+              state.running = true;
+              groups[0].now = 'HK 02';
+              result = { ok: true, profileChanged: false, result: { action: 'switchProxy', group: 'GLOBAL', proxy: 'HK 02', delay: 48 } };
+            }
+            if (args.kind === 'updateProfile') result = { profile: profiles.find((item) => item.id === args.payload?.id) };
+            if (args.kind === 'updateAllProfiles') result = { updated: profiles.filter((item) => item.sourceUrl), failed: [], total: 1 };
+            if (args.kind === 'addProfileUrl') result = { profile: profiles[1] };
+            const job = { id, kind: args.kind, label: args.kind, state: 'succeeded', progress: 1, total: 1, message: 'done', result, error: null };
+            jobs.set(id, job);
+            return { ...job, state: 'running' };
+          }
+          if (command === 'job_status') {
+            if (!args.id) return [...jobs.values()];
+            return jobs.get(args.id) || { id: args.id, state: 'failed', message: 'missing mock job' };
+          }
+          if (command === 'cancel_job') {
+            const job = jobs.get(args.id) || { id: args.id, kind: 'unknown', label: 'unknown', progress: 0, total: 1 };
+            job.state = 'cancelled';
+            job.message = 'cancelled';
+            jobs.set(args.id, job);
+            return job;
+          }
+          if (command === 'start_proxy_delay_test') {
+            groups[0].items.forEach((item, index) => { item.delay = [31, 48, 116, 132, 99][index]; item.alive = true; });
+            return { running: false, total: groups[0].items.length, completed: groups[0].items.length, ok: groups[0].items.length, failed: 0 };
+          }
+          if (command === 'speed_test_status') {
+            return { running: false, total: groups[0].items.length, completed: groups[0].items.length, ok: groups[0].items.length, failed: 0 };
+          }
           if (command === 'test_proxy_delays') {
-            groups[0].items.forEach((item, index) => { item.delay = 31 + index * 17; item.alive = true; });
+            groups[0].items.forEach((item, index) => { item.delay = [31, 48, 116, 132, 99][index]; item.alive = true; });
             return groups;
           }
-          if (command === 'set_mode') { state.mode = args.mode; return args.mode; }
+          if (command === 'recover_network') {
+            state.running = true;
+            groups[0].now = 'HK 02';
+            return { ok: true, profileChanged: false, result: { action: 'switchProxy', group: 'GLOBAL', proxy: 'HK 02', delay: 48 } };
+          }
+          if (command === 'set_mode') { await new Promise((resolve) => setTimeout(resolve, 350)); state.mode = args.mode; return args.mode; }
           if (command === 'change_proxy') { groups[0].now = args.proxy; return true; }
           if (command === 'refresh_outbound_ip') return '203.0.113.8';
-          if (command === 'set_system_proxy') { state.systemProxy = args.enable; return true; }
-          if (command === 'update_setting') { if (args.key === 'tunEnabled') state.tunEnabled = args.value; return status().settings; }
+          if (command === 'set_system_proxy') { await new Promise((resolve) => setTimeout(resolve, 350)); state.systemProxy = args.enable; return true; }
+          if (command === 'update_setting') { await new Promise((resolve) => setTimeout(resolve, 350)); if (args.key === 'tunEnabled') state.tunEnabled = args.value; return status().settings; }
+          if (command === 'update_settings') { Object.assign(state.settings, args.updates || {}); return status().settings; }
           if (command === 'update_profile') return profiles.find((item) => item.id === args.id);
-          if (command === 'set_active_profile') { state.activeProfileId = args.id; return profiles.find((item) => item.id === args.id); }
+          if (command === 'set_active_profile') { await new Promise((resolve) => setTimeout(resolve, 350)); state.activeProfileId = args.id; return profiles.find((item) => item.id === args.id); }
+          if (command === 'remove_profile') { await new Promise((resolve) => setTimeout(resolve, 350)); const index = profiles.findIndex((item) => item.id === args.id); if (index >= 0) profiles.splice(index, 1); if (state.activeProfileId === args.id) state.activeProfileId = profiles[0]?.id || 'direct'; return true; }
           if (command === 'add_profile_url') return profiles[1];
           if (command === 'connections') return [{ id: '1', metadata: { host: 'example.com' }, rule: 'MATCH', chains: ['GLOBAL', 'HK 01'], upload: 1, download: 2 }];
-          if (command === 'close_connection' || command === 'close_connections' || command === 'clear_logs') return true;
-          if (command === 'diagnostics') return { checks: [{ name: 'core', ok: true, detail: 'mock' }] };
+          if (command === 'close_connection' || command === 'close_connections' || command === 'clear_logs') { await new Promise((resolve) => setTimeout(resolve, 350)); return true; }
+          if (command === 'diagnostics') return {
+            generatedAt: new Date().toISOString(),
+            appVersion: '${pkg.version}',
+            status: status(),
+            summary: {
+              total: 2,
+              failed: 1,
+              errors: 0,
+              warnings: 1,
+              nextActions: ['Open logs and inspect the latest core warning.']
+            },
+            checks: [
+              { name: 'mihomo core', ok: true, detail: 'mock', severity: 'ok', category: 'runtime', hint: '' },
+              { name: 'Recent core logs', ok: false, detail: '[warn] mock warning', severity: 'warning', category: 'logs', hint: 'Open logs and inspect the latest core warning.', actionable: true }
+            ]
+          };
+          if (command === 'relaunch_as_admin') return true;
           if (command.startsWith('window_')) return true;
           return true;
         } } };
@@ -186,46 +288,132 @@ try {
       el.click();
       await new Promise((resolve) => setTimeout(resolve, 180));
     };
+    const navDown = async (selector) => {
+      const el = document.querySelector(selector);
+      if (!el) throw new Error('missing selector ' + selector);
+      el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    };
     await click('#connectBtn');
     await click('#quickIpBtn');
     await click('#quickUpdateSubBtn');
     await click('#quickTestBtn');
+    await click('#smartRecoverBtn');
+    await new Promise((resolve) => setTimeout(resolve, 420));
     if (!document.querySelector('#homeNodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('home node delays did not update after quick speed test');
-    await click('#quickProxyBtn');
+    if (!document.querySelector('.delay-good') || !document.querySelector('.delay-bad')) throw new Error('delay color classes did not render green/red states');
+    document.querySelector('#quickProxyBtn').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    if (document.querySelector('#quickProxyBtn')?.disabled) throw new Error('home proxy quick action became blocking while backend was pending');
+    if (!document.querySelector('#systemProxyToggle')?.checked) throw new Error('system proxy toggle did not update optimistically');
+    await new Promise((resolve) => setTimeout(resolve, 420));
     await click('#quickTunBtn');
-    await click('[data-region="HK"]');
+    document.querySelector('[data-region="HK"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    if (!document.querySelector('[data-region="HK"]')?.classList.contains('active')) throw new Error('home region menu did not update through store immediately');
+    await new Promise((resolve) => setTimeout(resolve, 420));
     const hkRows = [...document.querySelectorAll('#homeNodeRows .row[data-node]')].map((row) => row.dataset.node);
     if (!hkRows.length || hkRows.some((name) => !name.includes('HK'))) throw new Error('home region filter did not stay on home page');
     await click('[data-region="HK"]');
     await click('#quickModeBtn');
-    await click('[data-mode-option="global"]');
-    await click('[data-page="nodes"]');
+    document.querySelector('[data-mode-option="global"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    if (document.querySelector('#modeLabel')?.textContent.trim() !== '全局代理') throw new Error('mode label did not update optimistically');
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    const connectionCallsBeforeNav = window.__aegosCalls.filter((item) => item.command === 'connections').length;
+    const diagnosticCallsBeforeNav = window.__aegosCalls.filter((item) => item.command === 'diagnostics').length;
+    await navDown('[data-page="connections"]');
+    if (!document.querySelector('[data-page="connections"]')?.classList.contains('active')) throw new Error('sidebar navigation did not activate on pointerdown');
+    if (!document.querySelector('[data-page-panel="connections"]')?.classList.contains('active')) throw new Error('connections page panel did not activate immediately');
+    await navDown('[data-page="settings"]');
+    await navDown('[data-page="diagnostics"]');
+    await navDown('[data-page="profiles"]');
+    await navDown('[data-page="logs"]');
+    await navDown('[data-page="home"]');
+    await navDown('[data-page="connections"]');
+    await navDown('[data-page="settings"]');
+    await new Promise((resolve) => setTimeout(resolve, 140));
+    const connectionCallsAfterCancel = window.__aegosCalls.filter((item) => item.command === 'connections').length;
+    const diagnosticCallsAfterCancel = window.__aegosCalls.filter((item) => item.command === 'diagnostics').length;
+    if (connectionCallsAfterCancel !== connectionCallsBeforeNav) throw new Error('stale navigation data load was not cancelled after leaving the page');
+    if (diagnosticCallsAfterCancel !== diagnosticCallsBeforeNav) throw new Error('rapid cached navigation triggered diagnostics before the quiet period');
+    await navDown('[data-page="nodes"]');
     await click('[data-node-filter="low"]');
     if (!document.querySelector('[data-node-filter="low"]').classList.contains('active')) throw new Error('node filter tab did not become active');
+    await new Promise((resolve) => setTimeout(resolve, 420));
     await click('#batchTestBtn');
     if (!document.querySelector('#nodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('node page delays did not update after batch speed test');
+    const lowRows = [...document.querySelectorAll('#nodeRows .row[data-node]')];
+    const lowDelayValues = lowRows.map((row) => Number(row.querySelector('.delay-good')?.textContent.replace(/[^0-9]/g, '')));
+    if (!lowRows.length || lowDelayValues.some((value) => !Number.isFinite(value) || value >= 100)) throw new Error('low latency filter included nodes at or above 100 ms');
+    if (document.querySelector('#nodeRows .delay-bad')) throw new Error('low latency filter rendered a red high-latency node');
     document.querySelector('#nodeSearch').value = 'HK';
     document.querySelector('#nodeSearch').dispatchEvent(new Event('input', { bubbles: true }));
     await click('#nodeRows .row[data-node]');
     await click('[data-page="connections"]');
     await click('#refreshConnectionsBtn');
-    await click('#closeAllConnectionsBtn');
+    document.querySelector('#closeAllConnectionsBtn').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    if (document.querySelector('#connectionRows .simple-row')) throw new Error('connections did not clear optimistically');
+    await new Promise((resolve) => setTimeout(resolve, 420));
     await click('[data-page="profiles"]');
-    await click('[data-profile-row="direct"]');
+    document.querySelector('[data-profile-row="direct"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    if (!document.querySelector('[data-profile-row="direct"]')?.classList.contains('active')) throw new Error('profile row did not become active optimistically');
+    await new Promise((resolve) => setTimeout(resolve, 420));
     await click('[data-profile-update="url-test"]');
+    if (!document.querySelector('[data-profile-row="url-test"]')?.classList.contains('is-pending')) throw new Error('profile update did not show row pending feedback immediately');
+    if (document.querySelector('[data-profile-update="url-test"]')?.disabled) throw new Error('profile update button became disabled during pending feedback');
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    await click('#updateAllProfilesBtn');
+    if (!document.querySelector('[data-profile-row="url-test"]')?.classList.contains('is-pending')) throw new Error('update all did not mark remote profile rows pending immediately');
+    if (document.querySelector('#updateAllProfilesBtn')?.disabled) throw new Error('update all button became disabled during pending feedback');
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    document.querySelector('#profileUrlInput').value = 'https://example.com/new-sub.yaml';
+    await click('#addProfileBtn');
+    if (!document.querySelector('[data-profile-row^="pending-"]')?.classList.contains('is-pending')) throw new Error('profile import did not insert a pending row immediately');
+    if (document.querySelector('#addProfileBtn')?.disabled) throw new Error('profile import button became disabled during pending feedback');
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    document.querySelector('[data-profile-remove="url-test"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    if (document.querySelector('[data-profile-row="url-test"]')) throw new Error('profile row did not remove optimistically');
+    await new Promise((resolve) => setTimeout(resolve, 420));
     await click('[data-page="diagnostics"]');
     await click('#runDiagBtn');
+    if (!document.querySelector('#diagSummary .diagnostic-status')) throw new Error('diagnostic summary did not render');
+    if (!document.querySelector('#diagRows .diagnostic-row.severity-warning')) throw new Error('diagnostic severity row did not render');
+    if (!document.querySelector('#diagRows .diagnostic-hint')) throw new Error('diagnostic actionable hint did not render');
     await click('[data-page="settings"]');
+    if (!document.querySelector('.settings-summary-grid')) throw new Error('settings runtime summary did not render');
+    if (document.querySelectorAll('[data-page-panel="settings"] .settings-section').length < 5) throw new Error('settings grouped sections did not render');
+    await click('#elevateBtn');
+    document.querySelector('#mixedPortInput').value = '7891';
+    document.querySelector('#controllerPortInput').value = '19091';
+    document.querySelector('#tunStackSelect').value = 'gvisor';
+    document.querySelector('#logLevelSelect').value = 'warning';
+    await click('#savePortBtn');
     await click('#restartCoreBtn');
+    await click('#connectBtn');
+    const jobCenterText = document.querySelector('#jobRows')?.textContent || '';
+    if (!jobCenterText.includes('startCore') && !jobCenterText.includes('restartCore') && !jobCenterText.includes('updateSettings')) throw new Error('background job center did not render recent jobs');
+    const cancelJobButton = document.querySelector('#jobRows [data-job-cancel]');
+    if (!cancelJobButton) throw new Error('background job center did not render cancel action');
+    cancelJobButton.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
     const commands = window.__aegosCalls.map((item) => item.command);
-    const required = ['start_core', 'refresh_outbound_ip', 'update_profile', 'test_proxy_delays', 'set_system_proxy', 'update_setting', 'change_proxy', 'connections', 'close_connections', 'set_active_profile', 'diagnostics', 'restart_core'];
+    const advancedSettingsCall = window.__aegosCalls.find((item) => item.command === 'start_job' && item.args.kind === 'updateSettings');
+    const required = ['start_job', 'job_status', 'cancel_job', 'start_proxy_delay_test', 'speed_test_status', 'relaunch_as_admin', 'connections', 'close_connections', 'diagnostics'];
+    const jobKinds = window.__aegosCalls.filter((item) => item.command === 'start_job').map((item) => item.args.kind);
     return {
       commands,
       missing: required.filter((name) => !commands.includes(name)),
+      missingJobKinds: ['startCore', 'stopCore', 'restartCore', 'setMode', 'changeProxy', 'setActiveProfile', 'removeProfile', 'updateSetting', 'updateSettings', 'refreshOutboundIp', 'updateProfile', 'updateAllProfiles', 'recoverNetwork', 'addProfileUrl'].filter((name) => !jobKinds.includes(name)),
+      advancedSettings: advancedSettingsCall?.args?.payload?.updates || null,
+      jobCenterText,
       notice: document.querySelector('#protectionNotice')?.textContent || ''
     };
   })()`);
-  const ok = report.missing.length === 0;
+  const ok = report.missing.length === 0 && report.missingJobKinds.length === 0;
   console.log(JSON.stringify({ ok, ...report }, null, 2));
   if (!ok) process.exitCode = 2;
 } finally {
