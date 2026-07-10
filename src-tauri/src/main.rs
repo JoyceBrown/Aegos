@@ -5479,11 +5479,6 @@ fn window_close(window: Window, state: State<AppState>) -> Result<(), String> {
     window.close().map_err(|err| err.to_string())
 }
 
-#[tauri::command]
-fn window_start_dragging(window: Window) -> Result<(), String> {
-    window.start_dragging().map_err(|err| err.to_string())
-}
-
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -5528,8 +5523,7 @@ fn main() {
             clear_logs,
             window_minimize,
             window_toggle_maximize,
-            window_close,
-            window_start_dragging
+            window_close
         ])
         .on_window_event(|window, event| {
             if matches!(event, WindowEvent::CloseRequested { .. }) {

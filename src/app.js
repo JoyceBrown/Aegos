@@ -1801,14 +1801,6 @@ async function wireWindowControls() {
   $('#minBtn').onclick = () => invoke('window_minimize').catch(() => {});
   $('#maxBtn').onclick = () => invoke('window_toggle_maximize').catch(() => {});
   $('#closeBtn').onclick = () => invoke('window_close').catch(() => {});
-  $all('.drag-zone').forEach((zone) => {
-    zone.addEventListener('pointerdown', async (event) => {
-      if (event.button !== 0 || event.target.closest('button, input, select, textarea')) return;
-      try {
-        await invoke('window_start_dragging');
-      } catch {}
-    });
-  });
 }
 
 function tick() {

@@ -58,6 +58,7 @@ check('PowerShell commands are hidden on Windows', powershellCalls === 1 && /fn 
 const indexHtml = readText('src/index.html');
 const appJs = readText('src/app.js');
 const stylesCss = readText('src/styles.css');
+const capabilitiesJson = readText('src-tauri/capabilities/default.json');
 const interactionSmoke = readText('tools/interaction-smoke.js');
 const perfSmoke = readText('tools/perf-smoke.js');
 const uiText = `${indexHtml}\n${appJs}`;
@@ -79,7 +80,8 @@ check('home drag regions are declared', (indexHtml.match(/data-tauri-drag-region
 check('quick actions have eight direct-operation buttons', (indexHtml.match(/id="quick[A-Za-z]+Btn"/g) || []).length >= 8 && indexHtml.includes('id="quickUpdateSubBtn"') && indexHtml.includes('id="quickProxyBtn"') && indexHtml.includes('id="quickTunBtn"'), '8 quick actions');
 check('region filters live with home node table', indexHtml.includes('class="region-row"') && indexHtml.indexOf('class="region-row"') > indexHtml.indexOf('class="home-nodes'), 'region-row in home nodes');
 check('protocol UI does not display core name', indexHtml.includes('id="protocolState"') && indexHtml.includes('id="protocolMetric"') && !indexHtml.includes('>mihomo<'), 'protocolState/protocolMetric');
-check('Rust window controls are wired', ['window_minimize', 'window_toggle_maximize', 'window_close', 'window_start_dragging'].every((name) => mainRs.includes(name) && appJs.includes(name)), 'window commands');
+check('Rust window controls are wired', ['window_minimize', 'window_toggle_maximize', 'window_close'].every((name) => mainRs.includes(name) && appJs.includes(name)), 'window commands');
+check('native window drag ACL is explicit and non-duplicated', capabilitiesJson.includes('core:window:allow-start-dragging') && indexHtml.includes('data-tauri-drag-region') && !appJs.includes('window_start_dragging') && !mainRs.includes('fn window_start_dragging'), 'native drag-region permission');
 check('admin relaunch command is wired', mainRs.includes('fn relaunch_as_admin') && indexHtml.includes('id="elevateBtn"') && appJs.includes("invoke('relaunch_as_admin'"), 'relaunch_as_admin');
 check('advanced settings save uses one background batch job', mainRs.includes('fn update_settings') && mainRs.includes('updateSettings') && appJs.includes('updateSettingsJob') && interactionSmoke.includes("args.kind === 'updateSettings'"), 'updateSettings');
 check('speed tests use background progress commands', mainRs.includes('fn start_proxy_delay_test') && mainRs.includes('fn speed_test_status') && appJs.includes("invoke('start_proxy_delay_test'") && appJs.includes("invoke('speed_test_status'") && interactionSmoke.includes("command === 'start_proxy_delay_test'"), 'async speed test');
