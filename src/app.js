@@ -402,8 +402,6 @@ function renderHomeNodeSummary(rows = []) {
 
   const recommendedNameEl = $('#recommendedNodeName');
   if (recommendedNameEl) recommendedNameEl.textContent = recommendedRow ? recommendedName : '\u6d4b\u901f\u540e\u663e\u793a';
-  const recommendedRegionEl = $('#recommendedNodeRegion');
-  if (recommendedRegionEl) recommendedRegionEl.textContent = recommendedRow?.[0] || '--';
   const recommendedMetaEl = $('#recommendedNodeMeta');
   if (recommendedMetaEl) {
     recommendedMetaEl.textContent = recommendedRow
@@ -1170,15 +1168,12 @@ function renderStatus(status) {
   $('#proxyMetric').textContent = formatProxyPort(status.network?.proxyEndpoint);
   $('#outboundMetric').textContent = status.network?.outboundIp || '-';
   $('#systemProxyMetric').textContent = settings.systemProxy ? '已开启' : '未开启';
-  $('#tunMetric').textContent = settings.tunEnabled ? '已开启' : '未开启';
-  $('#adminMetric').textContent = status.permissions?.isAdmin ? '管理员' : '普通';
+  $('#systemProxyMetric').classList.toggle('is-danger', !settings.systemProxy);
 
   const up = formatRate(traffic.up);
   const down = formatRate(traffic.down);
   if ($('#upRate')) $('#upRate').textContent = up;
   if ($('#downRate')) $('#downRate').textContent = down;
-  $('#sideUpRate').textContent = `↑ ${up}`;
-  $('#sideDownRate').textContent = `↓ ${down}`;
   renderHomeNodeSummary();
   renderSettings(status);
   if (isPageActive('profiles')) renderProfiles();
@@ -2109,7 +2104,7 @@ $all('.nav button').forEach((button) => {
 });
 
 $('#connectBtn').onclick = toggleCore;
-$('#refreshStatusBtn').onclick = async () => { await refreshStatus(true); await refreshNodes(true); setNotice('已同步核心状态和节点列表。'); };
+$('#refreshStatusBtn').onclick = async () => { await refreshStatus(true); await refreshNodes(true); setNotice('已刷新核心状态和节点列表。'); };
 if ($('#refreshNodesBtn')) $('#refreshNodesBtn').onclick = refreshNodes;
 $('#modeBtn').onclick = toggleModeMenu;
 $('#quickModeBtn').onclick = toggleModeMenu;

@@ -204,8 +204,6 @@ dd {
   color: var(--green);
 }
 
-.traffic-card { align-self: stretch; }
-
 .job-card {
   flex: 0 0 auto;
 }
@@ -592,15 +590,22 @@ h1 {
   background: linear-gradient(90deg, rgba(212, 91, 91, .15), rgba(212, 91, 91, .04));
 }
 
-.recommend-inline {
-  min-width: 300px;
-  max-width: 390px;
-  min-height: 58px;
+.recommend-compact {
+  min-width: 0;
   display: grid;
-  grid-template-rows: auto 1fr;
-  gap: 3px;
-  padding: 9px 12px;
-  border-radius: 16px;
+  grid-template-columns: minmax(170px, 230px) auto;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.recommend-inline {
+  min-width: 0;
+  min-height: 50px;
+  display: grid;
+  grid-template-rows: auto auto;
+  gap: 2px;
+  padding: 7px 12px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, .84);
   box-shadow: inset 0 0 0 1px rgba(130, 154, 187, .12), 0 12px 28px rgba(65, 91, 125, .08);
   text-align: left;
@@ -609,31 +614,11 @@ h1 {
 .recommend-inline small {
   min-width: 0;
   overflow: hidden;
-  color: var(--ink);
-  font-size: 15px;
+  color: #64738c;
+  font-size: 12px;
   font-weight: 900;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.recommend-inline span {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: center;
-}
-
-.recommend-inline b {
-  width: 32px;
-  height: 32px;
-  display: grid;
-  place-items: center;
-  color: #fff;
-  border-radius: 11px;
-  background: linear-gradient(135deg, #55c2ff, #6968ff);
-  font-size: 13px;
-  font-weight: 950;
 }
 
 .recommend-inline strong,
@@ -646,14 +631,27 @@ h1 {
 
 .recommend-inline strong {
   color: var(--ink);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 900;
 }
 
 .recommend-inline em {
   color: #52617a;
+  font-size: 12px;
   font-style: normal;
   font-weight: 850;
+}
+
+.recommend-switch {
+  min-width: 104px;
+  min-height: 50px;
+  padding: 0 15px;
+  border-radius: 18px;
+  color: #fff;
+  background: linear-gradient(135deg, #7fd0ff, #5a9bff);
+  box-shadow: 0 12px 28px rgba(76, 150, 255, .24);
+  font-weight: 900;
+  white-space: nowrap;
 }
 
 .auto-group-notice {
@@ -727,6 +725,10 @@ h1 {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
+}
+
+.metric-grid strong.is-danger {
+  color: #d94343;
 }
 
 .metric-icon {
@@ -1588,7 +1590,6 @@ h1 {
   dl { gap: 3px; }
   dl div { gap: 6px; }
   dt, dd { font-size: 12px; }
-  .traffic-card { padding-top: 8px; padding-bottom: 8px; }
   .settings-grid { gap: 8px; }
   .switch-row { padding: 10px; }
 }
@@ -2401,10 +2402,10 @@ dd {
   }
 }
 
-/* 2.6.9 home density pass: recommendation lives in the header, quick actions own the quick panel. */
+/* 2.6.10 home density pass: recommendation lives in the header, quick actions own the quick panel. */
 .hero-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 390px) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(282px, 342px) auto;
   align-items: start;
 }
 
@@ -2423,18 +2424,19 @@ dd {
 
 @media (max-width: 1380px) {
   .hero-head {
-    grid-template-columns: minmax(0, 1fr) minmax(280px, 340px) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 316px) auto;
     gap: 10px;
   }
 
-  .recommend-inline {
-    min-width: 280px;
+  .recommend-compact {
+    grid-template-columns: minmax(154px, 1fr) auto;
   }
 }
 
 @media (max-height: 760px) {
-  .recommend-inline {
-    min-height: 50px;
+  .recommend-inline,
+  .recommend-switch {
+    min-height: 46px;
     padding-top: 7px;
     padding-bottom: 7px;
   }

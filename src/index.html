@@ -13,7 +13,7 @@
         <div class="brand-mark">A</div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v2.6.9</span>
+          <span id="appVersionLabel" class="brand-version">v2.6.10</span>
         </div>
       </section>
 
@@ -40,13 +40,6 @@
           <div><dt>代理端口</dt><dd id="proxyPortState">-</dd></div>
           <div><dt>落地 IP</dt><dd id="outboundIpState">-</dd></div>
         </dl>
-      </section>
-
-      <section class="side-card traffic-card">
-        <h3>实时流量</h3>
-        <p id="sideUpRate" class="rate up">↑ 0 B/s</p>
-        <p id="sideDownRate" class="rate down">↓ 0 B/s</p>
-        <div class="mini-chart" aria-hidden="true"><span></span></div>
       </section>
 
       <section class="side-card job-card">
@@ -76,7 +69,7 @@
               <small id="sessionClock">00:00:00</small>
             </div>
             <button id="connectBtn" class="primary">连接</button>
-            <button id="refreshStatusBtn" class="ghost">同步状态</button>
+            <button id="refreshStatusBtn" class="ghost">刷新状态</button>
             <label class="tun-home-toggle">
               <span>
                 <strong>TUN &#27169;&#24335;</strong>
@@ -96,14 +89,14 @@
                   <b id="nodeState">待连接</b>
                 </div>
               </div>
-              <button id="switchRecommendedBtn" class="recommend-inline">
-                <small>切换到推荐</small>
-                <span>
-                  <b id="recommendedNodeRegion">--</b>
+              <div class="recommend-compact">
+                <div class="recommend-inline">
+                  <small>推荐节点</small>
                   <strong id="recommendedNodeName">测速后显示</strong>
                   <em id="recommendedNodeMeta">-</em>
-                </span>
-              </button>
+                </div>
+                <button id="switchRecommendedBtn" class="recommend-switch">切换到推荐</button>
+              </div>
               <div class="mode-box">
                 <button id="modeBtn" class="mode-pill">当前模式 <strong id="modeLabel">智能分流</strong><span>›</span></button>
                 <div id="modeMenu" class="mode-menu hidden">
@@ -135,8 +128,8 @@
               <article><span class="metric-icon violet">IP</span><small>落地 IP</small><strong id="outboundMetric">-</strong></article>
               <article><span class="metric-icon teal">T</span><small>连接时长</small><strong id="metricClock">00:00:00</strong></article>
               <article><span class="metric-icon amber">PX</span><small>系统代理</small><strong id="systemProxyMetric">-</strong></article>
-              <article><span class="metric-icon cyan">TUN</span><small>TUN</small><strong id="tunMetric">-</strong></article>
-              <article><span class="metric-icon green">AD</span><small>权限</small><strong id="adminMetric">-</strong></article>
+              <article><span class="metric-icon up">↑</span><small>上传</small><strong id="upRate">0 B/s</strong></article>
+              <article><span class="metric-icon down">↓</span><small>下载</small><strong id="downRate">0 B/s</strong></article>
             </div>
           </div>
         </section>
@@ -144,7 +137,7 @@
         <section class="quick panel">
           <div class="quick-row action-row">
             <strong>快捷操作</strong>
-            <button id="quickTestBtn"><span>✓</span>一键测速</button>            <button id="smartRecoverBtn"><span>2.0</span>智能自愈</button>            <button id="quickUpdateSubBtn"><span>&#8635;</span>&#26356;&#26032;&#35746;&#38405;</button>            <button id="quickProxyBtn"><span>PX</span>&#31995;&#32479;&#20195;&#29702;</button>
+            <button id="quickTestBtn"><span>⚡</span>一键测速</button>            <button id="smartRecoverBtn"><span>2.0</span>智能自愈</button>            <button id="quickUpdateSubBtn"><span>&#8635;</span>&#26356;&#26032;&#35746;&#38405;</button>            <button id="quickProxyBtn"><span>PX</span>&#31995;&#32479;&#20195;&#29702;</button>
             <button id="quickIpBtn"><span>IP</span>刷新落地 IP</button>
             <button id="quickModeBtn"><span>⇄</span>切换模式</button>            <button id="quickTunBtn"><span>T</span>TUN &#27169;&#24335;</button>            <button id="quickCopyProxyBtn"><span>CP</span>&#22797;&#21046;&#20195;&#29702;</button>            <button id="quickRestartBtn"><span>R</span>&#37325;&#21551;&#20869;&#26680;</button>
           </div>

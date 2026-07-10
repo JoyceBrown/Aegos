@@ -351,7 +351,10 @@ try {
     if (document.querySelector('#autoGroupNotice')?.classList.contains('hidden')) throw new Error('automatic strategy group warning did not render');
     if (!document.querySelector('#recommendedNodeName')?.textContent.includes('HK 02')) throw new Error('recommended node summary did not render');
     if (document.querySelector('#bestNodeList') || document.querySelector('.best-node')) throw new Error('duplicate recommended node strip still renders');
-    if (!document.querySelector('#systemProxyMetric') || !document.querySelector('#tunMetric') || !document.querySelector('#adminMetric')) throw new Error('home runtime metrics did not replace low-value recommendation metrics');
+    if (!document.querySelector('#quickTestBtn')?.textContent.includes('⚡')) throw new Error('speed test quick action does not use lightning icon');
+    if (!document.querySelector('#systemProxyMetric')?.classList.contains('is-danger')) throw new Error('disabled system proxy metric is not highlighted');
+    if (!document.querySelector('#systemProxyMetric') || !document.querySelector('#upRate') || !document.querySelector('#downRate')) throw new Error('home runtime metrics did not show proxy and traffic state');
+    if (document.querySelector('#tunMetric') || document.querySelector('#adminMetric') || document.querySelector('.traffic-card')) throw new Error('low-value home/sidebar metrics still render');
     await click('#lockAutoGroupBtn');
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'changeProxy')) throw new Error('auto group lock did not use background proxy change job');
     await click('#smartRecoverBtn');
