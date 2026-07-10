@@ -105,10 +105,11 @@ try {
         ];
         const regions = ['HK', 'JP', 'SG', 'TW', 'US', 'GB'];
         const types = ['trojan', 'tuic', 'ss', 'vless'];
+        let speedPolls = 0;
         const groups = [{
           name: 'GLOBAL',
           now: 'HK 001',
-          items: Array.from({ length: 600 }, (_, index) => {
+          items: Array.from({ length: 8000 }, (_, index) => {
             const region = regions[index % regions.length];
             const id = String(index + 1).padStart(3, '0');
             return {
@@ -162,6 +163,20 @@ try {
             await new Promise((resolve) => setTimeout(resolve, 120));
             return { checks: [{ name: 'core', ok: true, detail: 'mock' }] };
           }
+          if (command === 'start_proxy_delay_test') {
+            speedPolls = 0;
+            return { running: true, total: groups[0].items.length, completed: 0, ok: 0, failed: 0 };
+          }
+          if (command === 'speed_test_status') {
+            speedPolls += 1;
+            return {
+              running: speedPolls < 20,
+              total: groups[0].items.length,
+              completed: Math.min(groups[0].items.length, speedPolls * 420),
+              ok: Math.min(groups[0].items.length, speedPolls * 400),
+              failed: speedPolls * 20
+            };
+          }
           if (command.startsWith('window_')) return true;
           return true;
         } } };
@@ -184,8 +199,11 @@ try {
     const navDurations = [];
     const activeFailures = [];
     const commandCount = (name) => window.__aegosCalls.filter((item) => item.command === name).length;
+    const nonSpeedCallCount = () => window.__aegosCalls.filter((item) => !['start_proxy_delay_test', 'speed_test_status', 'proxy_groups'].includes(item.command)).length;
     const connectionsBefore = commandCount('connections');
     const diagnosticsBefore = commandCount('diagnostics');
+    document.querySelector('#batchTestBtn')?.click();
+    await wait(30);
     let lastRapidPage = 'home';
     for (let i = 0; i < 420; i += 1) {
       const name = navPages[i % navPages.length];
@@ -212,7 +230,7 @@ try {
     await wait(760);
     const connectionsAfterSettle = commandCount('connections');
     const menuDurations = [];
-    const callsBeforeMenus = window.__aegosCalls.length;
+    const callsBeforeMenus = nonSpeedCallCount();
     for (let i = 0; i < 80; i += 1) {
       const button = document.querySelector(i % 2 === 0 ? '#modeBtn' : '#quickModeBtn');
       const start = performance.now();
@@ -222,7 +240,7 @@ try {
     }
     await wait(80);
     const filterDurations = [];
-    const callsBeforeFilters = window.__aegosCalls.length;
+    const callsBeforeFilters = nonSpeedCallCount();
     const filterButtons = ['[data-region="HK"]', '[data-region="JP"]', '[data-node-filter="all"]', '[data-node-filter="low"]', '[data-node-filter="asia"]'];
     document.querySelector('[data-page="nodes"]').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
     for (let i = 0; i < 100; i += 1) {
@@ -272,7 +290,7 @@ try {
         diagnosticsBeforeQuiet,
         connectionsAfterSettle,
         callsAddedByMenus: callsBeforeFilters - callsBeforeMenus,
-        callsAddedByFilters: window.__aegosCalls.length - callsBeforeFilters
+        callsAddedByFilters: nonSpeedCallCount() - callsBeforeFilters
       },
       finalRapidPage,
       lastRapidPage,

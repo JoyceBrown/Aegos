@@ -27,8 +27,10 @@ let nodeBusy = false;
 let lastStatusAt = 0;
 let homeRegionFilter = '';
 let nodePageFilter = 'all';
+let nodeSearchKeyword = '';
 let logFilter = 'all';
 let speedTestTimer = null;
+let lastSpeedNodeRefreshAt = 0;
 let recoveryBusy = false;
 let lastRecoveryAt = 0;
 let pageLoadTimer = null;
@@ -107,6 +109,7 @@ const defaultAppVersion = ($('#appVersionLabel')?.textContent || 'v0.0.0').repla
 const defaultMixedPort = 7891;
 const defaultControllerPort = 19091;
 const speedTestPollMs = 300;
+const speedTestNodeRefreshMs = 1200;
 const nodeRenderLimit = 36;
 const homeNodeRenderLimit = 8;
 const pageNavSettleMs = 550;
@@ -211,6 +214,61 @@ function filterRows(rows, filter) {
   if (filter === 'north-america') return rows.filter(([region]) => ['US'].includes(region));
   if (filter === 'favorite' || filter === 'recent') return rows.filter((row) => row[5]);
   return rows;
+}
+
+function isNodeSurfaceActive(page = uiStore.state.page) {
+  return page === 'home' || page === 'nodes';
+}
+
+function normalizeNodeItem(item = {}, index = 0) {
+  const delay = Number(item.delay ?? -1);
+  const healthStatus = item.healthStatus || (delay === 0 ? 'testing' : delay > 0 ? 'available' : 'unknown');
+  const score = Number(item.healthScore ?? (delay > 0 ? delay : 999999));
+  const name = item.name || `Node ${index + 1}`;
+  return [
+    inferRegion(name),
+    name,
+    item.server || name,
+    delay,
+    item.alive !== false || delay === 0,
+    name === selectedNode || name === latestGroup?.now,
+    item.type || item.protocol || 'unknown',
+    healthStatus,
+    Number(item.medianDelay ?? delay),
+    Number(item.jitter ?? 0),
+    score,
+    Boolean(item.recommended),
+    Number(item.failureStreak ?? 0)
+  ];
+}
+
+function rowMatchesNodeFilter(row, filter) {
+  if (filter === 'low') {
+    const delay = Number(row[3]);
+    return row[4] && row[7] !== 'cooldown' && delay > 0 && delay < 100;
+  }
+  if (filter === 'asia') return ['HK', 'JP', 'SG', 'TW'].includes(row[0]);
+  if (filter === 'europe') return row[0] === 'GB';
+  if (filter === 'north-america') return row[0] === 'US';
+  if (filter === 'favorite' || filter === 'recent') return row[5];
+  return true;
+}
+
+function itemMatchesNodeSearch(item = {}, keyword = nodeSearchKeyword) {
+  if (!keyword) return true;
+  return `${item.name || ''} ${item.server || ''}`.toLowerCase().includes(keyword);
+}
+
+function compareBestRows(a, b) {
+  return Number(b[11]) - Number(a[11]) || Number(a[10]) - Number(b[10]) || Number(a[3]) - Number(b[3]);
+}
+
+function rememberBestRow(bestRows, row) {
+  const delay = Number(row[3]);
+  if (!row[4] || row[7] === 'cooldown' || delay <= 0 || delay >= 100) return;
+  bestRows.push(row);
+  bestRows.sort(compareBestRows);
+  if (bestRows.length > 3) bestRows.length = 3;
 }
 
 function delayClass(value) {
@@ -628,6 +686,9 @@ function setPage(page) {
     uiStore.set({ page: next });
   }
   schedulePageLoad(next);
+  if (isNodeSurfaceActive(next) && pendingRowItems) {
+    scheduleRowsRender(pendingRowItems, { force: true, delay: 80 });
+  }
 }
 
 function schedulePageLoad(page) {
@@ -658,8 +719,9 @@ let rowRenderFrame = null;
 let pendingRowItems = null;
 const rowRenderSettleMs = 320;
 
-function scheduleRowsRender(items = latestGroup?.items || []) {
+function scheduleRowsRender(items = latestGroup?.items || [], options = {}) {
   pendingRowItems = items;
+  if (!options.force && !isNodeSurfaceActive()) return;
   if (rowRenderFrame) clearTimeout(rowRenderFrame);
   const run = () => {
     rowRenderFrame = null;
@@ -667,110 +729,62 @@ function scheduleRowsRender(items = latestGroup?.items || []) {
     pendingRowItems = null;
     renderRows(nextItems);
   };
-  rowRenderFrame = setTimeout(run, rowRenderSettleMs);
+  rowRenderFrame = setTimeout(run, options.delay ?? rowRenderSettleMs);
 }
 
 function renderRows(items = []) {
-  const rows = normalizeRows(items);
-  const recommended = rows
-    .filter(([, , , delay, alive, , , healthStatus]) => alive && healthStatus !== 'cooldown' && Number(delay) > 0 && Number(delay) < 100)
-    .sort((a, b) => Number(b[11]) - Number(a[11]) || Number(a[10]) - Number(b[10]) || Number(a[3]) - Number(b[3]))
-    .slice(0, 3);
-  const bestRows = recommended.length ? recommended : rows.slice(0, 3);
-  $('#bestNodeList').innerHTML = bestRows.map(([region, name, , delay]) => `
+  const sourceItems = items.length
+    ? items
+    : fallbackNodes.map(([region, name, server]) => ({ name, server, type: 'direct', region, delay: -1, alive: true }));
+  const bestRows = [];
+  const fallbackBestRows = [];
+  const nodeRows = [];
+  const homeRows = [];
+  let activeRow = null;
+  let matchingNodeCount = 0;
+
+  for (let index = 0; index < sourceItems.length; index += 1) {
+    const item = sourceItems[index];
+    if (!itemMatchesNodeSearch(item)) continue;
+    const row = normalizeNodeItem(item, index);
+    rememberBestRow(bestRows, row);
+    if (fallbackBestRows.length < 3) fallbackBestRows.push(row);
+    if (!activeRow && row[5]) activeRow = row;
+    if (rowMatchesNodeFilter(row, nodePageFilter)) {
+      matchingNodeCount += 1;
+      if (nodeRows.length < nodeRenderLimit) nodeRows.push(row);
+    }
+    if (
+      homeRows.length < homeNodeRenderLimit
+      && (!homeRegionFilter || row[0] === homeRegionFilter)
+    ) {
+      homeRows.push(row);
+    }
+  }
+
+  const visibleBestRows = bestRows.length ? bestRows : fallbackBestRows;
+  $('#bestNodeList').innerHTML = visibleBestRows.map(([region, name, , delay, , , protocol, healthStatus, , , , isRecommended]) => `
     <button class="best-chip" data-node="${escapeHtml(name)}">
       <span class="flag">${escapeHtml(region)}</span>
-      <b>${escapeHtml(regionLabel(region))}</b>
-      <small>${Number(delay) > 0 ? `${Math.round(delay)} ms` : Number(delay) === 0 ? '测速中' : '待测速'} · 稳定性高</small>
+      <b>${escapeHtml(regionLabel(region))}${isRecommended ? ' / \u63a8\u8350' : ''}</b>
+      <small>${Number(delay) > 0 ? `${Math.round(delay)} ms` : Number(delay) === 0 ? '\u6d4b\u901f\u4e2d' : '\u5f85\u6d4b\u901f'} / ${escapeHtml(protocolLabel(protocol))} / ${healthStatus === 'cooldown' ? '\u51b7\u5374' : '\u53ef\u5019\u9009'}</small>
     </button>
   `).join('');
 
-  const activeRow = rows.find((row) => row[5]) || bestRows[0];
+  activeRow = activeRow || visibleBestRows[0];
   currentProtocol = protocolLabel(activeRow?.[6] || 'direct');
   $('#protocolState').textContent = currentProtocol;
   $('#protocolMetric').textContent = currentProtocol;
   if (activeRow?.[1]) $('#nodeName').textContent = activeRow[1];
 
-  const nodeRows = filterRows(rows, nodePageFilter);
-  $('#nodeRows').innerHTML = nodeRows.map(renderNodeRow).join('') || '<p class="empty">暂无符合条件的节点。</p>';
-
-  const homeRows = homeRegionFilter ? rows.filter(([region]) => region === homeRegionFilter) : rows.slice(0, 6);
-  $('#homeNodeRows').innerHTML = (homeRows.length ? homeRows : rows.slice(0, 6))
+  const overflowNotice = matchingNodeCount > nodeRows.length
+    ? `<p class="empty">\u5df2\u663e\u793a\u524d ${nodeRows.length} \u4e2a\u8282\u70b9\uff0c\u8bf7\u641c\u7d22\u6216\u7b5b\u9009\u7f29\u5c0f\u8303\u56f4\u3002</p>`
+    : '';
+  $('#nodeRows').innerHTML = nodeRows.map(renderNodeRow).join('') + overflowNotice || '<p class="empty">\u6682\u65e0\u7b26\u5408\u6761\u4ef6\u7684\u8282\u70b9\u3002</p>';
+  $('#homeNodeRows').innerHTML = (homeRows.length ? homeRows : fallbackBestRows).slice(0, homeNodeRenderLimit)
     .map(renderHomeNodeRow)
     .join('');
 }
-
-renderRows = function renderRows(items = []) {
-  const rows = normalizeRows(items);
-  const recommended = rows
-    .filter(([, , , delay, alive, , , healthStatus]) => alive && healthStatus !== 'cooldown' && Number(delay) > 0 && Number(delay) < 100)
-    .sort((a, b) => Number(b[11]) - Number(a[11]) || Number(a[10]) - Number(b[10]) || Number(a[3]) - Number(b[3]))
-    .slice(0, 3);
-  const bestRows = recommended.length ? recommended : rows.slice(0, 3);
-  $('#bestNodeList').innerHTML = bestRows.map(([region, name, , delay]) => `
-    <button class="best-chip" data-node="${escapeHtml(name)}">
-      <span class="flag">${escapeHtml(region)}</span>
-      <b>${escapeHtml(regionLabel(region))}</b>
-      <small>${Number(delay) > 0 ? `${Math.round(delay)} ms` : Number(delay) === 0 ? '测速中' : '待测速'} · 稳定性高</small>
-    </button>
-  `).join('');
-
-  const activeRow = rows.find((row) => row[5]) || bestRows[0];
-  currentProtocol = protocolLabel(activeRow?.[6] || 'direct');
-  $('#protocolState').textContent = currentProtocol;
-  $('#protocolMetric').textContent = currentProtocol;
-  if (activeRow?.[1]) $('#nodeName').textContent = activeRow[1];
-
-  const nodeRows = filterRows(rows, nodePageFilter);
-  const visibleNodeRows = nodeRows.slice(0, nodeRenderLimit);
-  const overflowNotice = nodeRows.length > visibleNodeRows.length
-    ? `<p class="empty">已显示前 ${visibleNodeRows.length} 个节点，请搜索或筛选缩小范围。</p>`
-    : '';
-  $('#nodeRows').innerHTML = visibleNodeRows.map(renderNodeRow).join('') + overflowNotice || '<p class="empty">暂无符合条件的节点。</p>';
-
-  const homeRows = homeRegionFilter
-    ? rows.filter(([region]) => region === homeRegionFilter).slice(0, homeNodeRenderLimit)
-    : rows.slice(0, 6);
-  $('#homeNodeRows').innerHTML = (homeRows.length ? homeRows : rows.slice(0, 6))
-    .map(renderHomeNodeRow)
-    .join('');
-};
-
-renderRows = function renderRows(items = []) {
-  const rows = normalizeRows(items);
-  const recommended = rows
-    .filter(([, , , delay, alive, , , healthStatus]) => alive && healthStatus !== 'cooldown' && Number(delay) > 0 && Number(delay) < 100)
-    .sort((a, b) => Number(b[11]) - Number(a[11]) || Number(a[10]) - Number(b[10]) || Number(a[3]) - Number(b[3]))
-    .slice(0, 3);
-  const bestRows = recommended.length ? recommended : rows.slice(0, 3);
-  $('#bestNodeList').innerHTML = bestRows.map(([region, name, , delay, , , protocol, healthStatus, , , , isRecommended]) => `
-    <button class="best-chip" data-node="${escapeHtml(name)}">
-      <span class="flag">${escapeHtml(region)}</span>
-      <b>${escapeHtml(regionLabel(region))}${isRecommended ? ' / 推荐' : ''}</b>
-      <small>${Number(delay) > 0 ? `${Math.round(delay)} ms` : Number(delay) === 0 ? '测速中' : '待测速'} / ${escapeHtml(protocolLabel(protocol))} / ${healthStatus === 'cooldown' ? '冷却' : '可候选'}</small>
-    </button>
-  `).join('');
-
-  const activeRow = rows.find((row) => row[5]) || bestRows[0];
-  currentProtocol = protocolLabel(activeRow?.[6] || 'direct');
-  $('#protocolState').textContent = currentProtocol;
-  $('#protocolMetric').textContent = currentProtocol;
-  if (activeRow?.[1]) $('#nodeName').textContent = activeRow[1];
-
-  const nodeRows = filterRows(rows, nodePageFilter);
-  const visibleNodeRows = nodeRows.slice(0, nodeRenderLimit);
-  const overflowNotice = nodeRows.length > visibleNodeRows.length
-    ? `<p class="empty">已显示前 ${visibleNodeRows.length} 个节点，请搜索或筛选缩小范围。</p>`
-    : '';
-  $('#nodeRows').innerHTML = visibleNodeRows.map(renderNodeRow).join('') + overflowNotice || '<p class="empty">暂无符合条件的节点。</p>';
-
-  const homeRows = homeRegionFilter
-    ? rows.filter(([region]) => region === homeRegionFilter).slice(0, homeNodeRenderLimit)
-    : rows.slice(0, 6);
-  $('#homeNodeRows').innerHTML = (homeRows.length ? homeRows : rows.slice(0, 6))
-    .map(renderHomeNodeRow)
-    .join('');
-};
 
 function renderProfiles() {
   const profiles = latestStatus?.settings?.profiles || [];
@@ -1175,7 +1189,8 @@ async function refreshNodes(force = false) {
     scheduleRowsRender(latestGroup?.items || []);
   } catch {
     latestGroup = null;
-    renderRows();
+    if (isNodeSurfaceActive()) renderRows();
+    else pendingRowItems = [];
   } finally {
     nodeBusy = false;
   }
@@ -1189,7 +1204,11 @@ function stopSpeedTestPolling() {
 async function pollSpeedTest() {
   try {
     const status = await invoke('speed_test_status');
-    await refreshNodes(true);
+    const now = Date.now();
+    if (!status.running || now - lastSpeedNodeRefreshAt >= speedTestNodeRefreshMs) {
+      lastSpeedNodeRefreshAt = now;
+      await refreshNodes(true);
+    }
     if (status.running) {
       setNotice(`正在测速：${status.completed || 0}/${status.total || 0}，成功 ${status.ok || 0}，失败 ${status.failed || 0}`);
       return;
@@ -1206,6 +1225,7 @@ async function testNodes() {
   if (speedTestTimer) return;
   try {
     const status = await invoke('start_proxy_delay_test');
+    lastSpeedNodeRefreshAt = 0;
     await refreshNodes(true);
     setNotice(`测速已在后台开始：0/${status.total || 0}`);
     speedTestTimer = setInterval(pollSpeedTest, speedTestPollMs);
@@ -1762,9 +1782,8 @@ const batchTestBtn = $('#batchTestBtn');
 if (batchTestBtn) batchTestBtn.onclick = (event) => runButtonAction(event.currentTarget, '测速中...', testNodes);
 const nodeSearch = $('#nodeSearch');
 if (nodeSearch) nodeSearch.oninput = () => {
-  const keyword = nodeSearch.value.trim().toLowerCase();
-  const items = latestGroup?.items || [];
-  scheduleRowsRender(keyword ? items.filter((item) => `${item.name || ''} ${item.server || ''}`.toLowerCase().includes(keyword)) : items);
+  nodeSearchKeyword = nodeSearch.value.trim().toLowerCase();
+  scheduleRowsRender(latestGroup?.items || []);
 };
 $('#savePortBtn').onclick = (event) => runButtonAction(event.currentTarget, '保存中...', async () => {
   try {
