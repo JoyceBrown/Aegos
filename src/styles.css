@@ -590,84 +590,6 @@ h1 {
   background: linear-gradient(90deg, rgba(212, 91, 91, .15), rgba(212, 91, 91, .04));
 }
 
-.recommend-compact {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 58px minmax(132px, 184px);
-  gap: 6px;
-  align-items: stretch;
-}
-
-.recommend-inline {
-  min-width: 0;
-  min-height: 40px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-rows: 13px 18px;
-  column-gap: 7px;
-  row-gap: 1px;
-  align-content: center;
-  padding: 5px 9px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, .78);
-  box-shadow: inset 0 0 0 1px rgba(130, 154, 187, .16), 0 8px 18px rgba(65, 91, 125, .06);
-  text-align: left;
-}
-
-.recommend-inline small {
-  grid-column: 1 / -1;
-  min-width: 0;
-  overflow: hidden;
-  color: #64738c;
-  font-size: 11px;
-  font-weight: 900;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.recommend-inline strong,
-.recommend-inline em {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.recommend-inline strong {
-  grid-column: 1;
-  align-self: center;
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.recommend-inline em {
-  grid-column: 2;
-  align-self: center;
-  width: max-content;
-  max-width: 100%;
-  padding: 1px 6px;
-  border-radius: 999px;
-  color: #166534;
-  background: rgba(34, 197, 94, .12);
-  font-size: 11px;
-  font-style: normal;
-  font-weight: 900;
-}
-
-.recommend-switch {
-  min-width: 58px;
-  min-height: 40px;
-  padding: 0 8px;
-  border-radius: 12px;
-  color: #fff;
-  background: linear-gradient(135deg, #18b7e8, #0b8fd1);
-  box-shadow: 0 8px 18px rgba(20, 158, 220, .22);
-  font-size: 15px;
-  font-weight: 950;
-  white-space: nowrap;
-}
-
 .auto-group-notice {
   min-width: 0;
   min-height: 34px;
@@ -2469,10 +2391,10 @@ dd {
   }
 }
 
-/* 2.6.12 home density pass: recommendation lives in the header, quick actions own the quick panel. */
+/* 2.6.13 home density pass: home header keeps only current node and mode. */
 .hero-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(196px, 248px) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
 }
 
@@ -2491,23 +2413,12 @@ dd {
 
 @media (max-width: 1380px) {
   .hero-head {
-    grid-template-columns: minmax(0, 1fr) minmax(188px, 236px) auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     gap: 10px;
-  }
-
-  .recommend-compact {
-    grid-template-columns: 54px minmax(126px, 1fr);
   }
 }
 
 @media (max-height: 760px) {
-  .recommend-inline,
-  .recommend-switch {
-    min-height: 38px;
-    padding-top: 5px;
-    padding-bottom: 5px;
-  }
-
   .quick {
     min-height: 48px;
     padding-top: 6px;

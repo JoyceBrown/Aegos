@@ -26,7 +26,7 @@ let statusBusy = false;
 let nodeBusy = false;
 let lastStatusAt = 0;
 let homeRegionFilter = '';
-let homeNodeMode = 'frequent';
+let homeNodeMode = 'region';
 let nodePageFilter = 'all';
 let nodeSearchKeyword = '';
 let logFilter = 'all';
@@ -51,7 +51,7 @@ const recentInvokes = [];
 const uiStore = {
   state: {
     page: 'home',
-    homeNodeMode: 'frequent',
+    homeNodeMode: 'region',
     homeRegionFilter: '',
     nodePageFilter: 'all'
   },
@@ -377,28 +377,11 @@ function currentNodeRow(rows = []) {
   return findRowByName(currentName, rows) || rows.find((row) => row?.[5]) || null;
 }
 
-function recommendedNodeRow(rows = []) {
-  const recommended = latestStatus?.speedTest?.recommended || null;
-  const recommendedName = recommended?.proxy || recommended?.realProxyName || '';
-  return findRowByName(recommendedName, rows)
-    || rows.find((row) => row?.[11])
-    || rows[0]
-    || null;
-}
-
 function renderHomeNodeSummary(rows = []) {
   const sourceRows = rows.length
     ? rows
     : (latestGroup?.items?.length ? normalizeRows(latestGroup.items) : []);
   const currentRow = currentNodeRow(sourceRows);
-  const recommendedRow = recommendedNodeRow(sourceRows.filter((row) => {
-    const delay = Number(row?.[3]);
-    return row?.[4] && row?.[7] !== 'cooldown' && delay > 0 && delay < 100;
-  }));
-  const currentName = currentRow?.[1] || selectedNode || latestGroup?.now || latestStatus?.activeProfile?.name || '-';
-  const recommendedName = recommendedRow?.[1] || '-';
-  const recommendedDelay = delayText(recommendedRow?.[3]);
-  const sameNode = recommendedRow?.[1] && recommendedRow?.[1] === currentName;
   const currentDelay = delayText(currentRow?.[3]);
   const currentDelayClass = delayClass(currentRow?.[3]);
 
@@ -408,25 +391,9 @@ function renderHomeNodeSummary(rows = []) {
     delayMetric.className = currentDelayClass;
   }
 
-  const recommendedNameEl = $('#recommendedNodeName');
-  if (recommendedNameEl) recommendedNameEl.textContent = recommendedRow ? recommendedName : '\u6d4b\u901f\u540e\u663e\u793a';
-  const recommendedMetaEl = $('#recommendedNodeMeta');
-  if (recommendedMetaEl) {
-    recommendedMetaEl.textContent = recommendedRow
-      ? `${recommendedDelay}${sameNode ? ' / \u5df2\u662f\u5f53\u524d' : ''}`
-      : '\u5f85\u6d4b\u901f';
-  }
-
   const autoGroup = isAutoStrategyGroup(latestGroup);
   const notice = $('#autoGroupNotice');
   if (notice) notice.classList.toggle('hidden', !autoGroup);
-
-  const switchButton = $('#switchRecommendedBtn');
-  if (switchButton) {
-    switchButton.dataset.node = recommendedRow?.[1] || '';
-    switchButton.classList.toggle('is-muted', !recommendedRow);
-    switchButton.setAttribute('aria-disabled', recommendedRow ? 'false' : 'true');
-  }
 }
 
 /*
@@ -788,7 +755,7 @@ function restoreUiState(snapshot) {
   selectedNode = snapshot.selectedNode || '';
   uiStore.set(snapshot.uiState || {
     page: uiStore.state.page,
-    homeNodeMode: snapshot.homeNodeMode || 'frequent',
+    homeNodeMode: snapshot.homeNodeMode || 'region',
     homeRegionFilter: snapshot.homeRegionFilter || '',
     nodePageFilter: snapshot.nodePageFilter || 'all'
   });
@@ -849,7 +816,7 @@ function shouldRefreshPageCache(page) {
 }
 
 function renderUiState(state = uiStore.state) {
-  homeNodeMode = state.homeNodeMode || 'frequent';
+  homeNodeMode = state.homeNodeMode || 'region';
   homeRegionFilter = state.homeRegionFilter || '';
   nodePageFilter = state.nodePageFilter || 'all';
   const page = pageNames[state.page] ? state.page : 'home';
@@ -971,7 +938,7 @@ function renderRows(items = []) {
     : '';
   $('#nodeRows').innerHTML = nodeRows.map(renderNodeRow).join('') + overflowNotice || '<p class="empty">\u6682\u65e0\u7b26\u5408\u6761\u4ef6\u7684\u8282\u70b9\u3002</p>';
   const sortedHomeRows = homeRows.sort(compareHomeRows);
-  const homeFallbackRows = homeNodeMode === 'frequent' ? fallbackBestRows : [];
+  const homeFallbackRows = homeNodeMode === 'frequent' || homeNodeMode === 'region' ? fallbackBestRows : [];
   const homeEmptyText = homeNodeMode === 'favorite'
     ? '\u6682\u65e0\u6536\u85cf\u8282\u70b9\u3002'
     : homeNodeMode === 'fixed'
@@ -1883,22 +1850,6 @@ function toggleFavoriteNode(name) {
   renderRows(latestGroup?.items || []);
 }
 
-async function selectBestProxyJob() {
-  await runBackgroundJob('selectBestProxy', {}, {
-    pendingNotice: '正在切换推荐节点...',
-    onSuccess: async (result) => {
-      const candidate = result?.candidate || {};
-      if (candidate.proxy) applyOptimisticNode(candidate.proxy);
-      await refreshNodes(true);
-    },
-    successNotice: (result) => {
-      const candidate = result?.candidate || {};
-      return `已切换推荐节点：${candidate.proxy || '-'} / ${candidate.delay || '-'} ms`;
-    },
-    failureNotice: (err) => `切换推荐节点失败：${err.message || err}`
-  });
-}
-
 async function lockAutoGroupJob() {
   const group = latestGroup?.name || '';
   const proxy = latestGroup?.now || selectedNode || '';
@@ -2147,7 +2098,6 @@ $('#quickProfileBtn')?.addEventListener('click', (event) => {
   toggleProfileMenu();
 });
 $('#quickRestartBtn').onclick = (event) => runButtonAction(event.currentTarget, '重启中...', restartCoreJob);
-$('#switchRecommendedBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '切换中...', selectBestProxyJob));
 $('#lockAutoGroupBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '锁定中...', lockAutoGroupJob));
 $('#refreshConnectionsBtn').onclick = refreshConnections;
 $('#closeAllConnectionsBtn').onclick = (event) => runButtonAction(event.currentTarget, '关闭中...', () => runOptimisticAction({

@@ -343,13 +343,15 @@ try {
     await click('#connectBtn');
     await click('#quickIpBtn');
     await click('#quickUpdateSubBtn');
-    const switchCallsBeforeSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && ['changeProxy', 'selectBestProxy'].includes(item.args.kind))).length;
+    if (!document.querySelector('[data-home-mode="region"]')?.classList.contains('active')) throw new Error('home did not default to common regions');
+    if (document.querySelector('#homeRegionRow')?.classList.contains('hidden')) throw new Error('home common regions were hidden by default');
+    if (document.querySelector('[data-page-jump="nodes"]')) throw new Error('all nodes shortcut still renders on home');
+    const switchCallsBeforeSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     await click('#quickTestBtn');
-    const switchCallsAfterSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && ['changeProxy', 'selectBestProxy'].includes(item.args.kind))).length;
+    const switchCallsAfterSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     if (switchCallsAfterSpeed !== switchCallsBeforeSpeed) throw new Error('speed test triggered a proxy switch');
-    if (document.querySelector('#switchRecommendedBtn')?.textContent.trim() !== '切换') throw new Error('recommended switch button label is not compact');
+    if (document.querySelector('#switchRecommendedBtn') || document.querySelector('.recommend-compact')) throw new Error('recommended switch control still renders');
     if (document.querySelector('#autoGroupNotice')?.classList.contains('hidden')) throw new Error('automatic strategy group warning did not render');
-    if (!document.querySelector('#recommendedNodeName')?.textContent.includes('HK 02')) throw new Error('recommended node summary did not render');
     if (document.querySelector('#bestNodeList') || document.querySelector('.best-node')) throw new Error('duplicate recommended node strip still renders');
     if (!document.querySelector('#quickTestBtn')?.textContent.includes('⚡')) throw new Error('speed test quick action does not use lightning icon');
     if (!document.querySelector('#systemProxyMetric')?.classList.contains('is-danger')) throw new Error('disabled system proxy metric is not highlighted');
@@ -361,8 +363,6 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 420));
     if (!document.querySelector('#homeNodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('home node delays did not update after quick speed test');
     if (!document.querySelector('.delay-good') || !document.querySelector('.delay-bad')) throw new Error('delay color classes did not render green/red states');
-    await click('#switchRecommendedBtn');
-    if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'selectBestProxy')) throw new Error('best proxy button did not use selectBestProxy job');
     document.querySelector('#quickProxyBtn').click();
     await new Promise((resolve) => setTimeout(resolve, 20));
     if (document.querySelector('#quickProxyBtn')?.disabled) throw new Error('home proxy quick action became blocking while backend was pending');
@@ -520,7 +520,7 @@ try {
     return {
       commands,
       missing: required.filter((name) => !commands.includes(name)),
-      missingJobKinds: ['startCore', 'stopCore', 'restartCore', 'setMode', 'changeProxy', 'selectBestProxy', 'repairSystemProxy', 'setActiveProfile', 'removeProfile', 'updateSetting', 'updateSettings', 'refreshOutboundIp', 'updateProfile', 'updateAllProfiles', 'recoverNetwork', 'addProfileUrl'].filter((name) => !jobKinds.includes(name)),
+      missingJobKinds: ['startCore', 'stopCore', 'restartCore', 'setMode', 'changeProxy', 'repairSystemProxy', 'setActiveProfile', 'removeProfile', 'updateSetting', 'updateSettings', 'refreshOutboundIp', 'updateProfile', 'updateAllProfiles', 'recoverNetwork', 'addProfileUrl'].filter((name) => !jobKinds.includes(name)),
       advancedSettings: advancedSettingsCall?.args?.payload?.updates || null,
       jobCenterText,
       notice: document.querySelector('#protectionNotice')?.textContent || ''

@@ -13,7 +13,7 @@
         <div class="brand-mark">A</div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v2.6.12</span>
+          <span id="appVersionLabel" class="brand-version">v2.6.13</span>
         </div>
       </section>
 
@@ -88,14 +88,6 @@
                   <h1 id="nodeName">等待节点数据</h1>
                 </div>
               </div>
-              <div class="recommend-compact">
-                <button id="switchRecommendedBtn" class="recommend-switch">切换</button>
-                <div class="recommend-inline">
-                  <small>推荐节点</small>
-                  <strong id="recommendedNodeName">测速后显示</strong>
-                  <em id="recommendedNodeMeta">-</em>
-                </div>
-              </div>
               <div class="mode-box">
                 <button id="modeBtn" class="mode-pill">当前模式 <strong id="modeLabel">智能分流</strong><span>›</span></button>
                 <div id="modeMenu" class="mode-menu hidden">
@@ -146,17 +138,16 @@
         <section class="home-nodes panel">
           <header class="mini-head home-filter-head">
             <div class="home-filter-tabs">
-              <button class="active" data-home-mode="frequent">常用节点</button>
+              <button class="active" data-home-mode="region">常用地区</button>
               <button data-home-mode="favorite">收藏节点</button>
-              <button data-home-mode="region">常用地区</button>
+              <button data-home-mode="frequent">常用节点</button>
               <button data-home-mode="fixed">固定节点</button>
             </div>
             <div class="home-filter-actions">
               <button id="addFixedNodeBtn">添加固定节点</button>
-              <button data-page-jump="nodes">全部节点</button>
             </div>
           </header>
-          <div id="homeRegionRow" class="region-row hidden">
+          <div id="homeRegionRow" class="region-row">
             <strong>&#24120;&#29992;&#22320;&#21306;</strong>
             <button data-region="HK"><b>HK</b>&#39321;&#28207;</button>
             <button data-region="TW"><b>TW</b>&#21488;&#28286;</button>
