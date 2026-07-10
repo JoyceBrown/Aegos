@@ -113,6 +113,7 @@ const defaultMixedPort = 7891;
 const defaultControllerPort = 19091;
 const speedTestPollMs = 300;
 const speedTestNodeRefreshMs = 1200;
+const logRenderLimit = 80;
 const nodeRenderLimit = 36;
 const homeNodeRenderLimit = 8;
 const pageNavSettleMs = 550;
@@ -771,7 +772,10 @@ function schedulePageLoad(page) {
       if (token !== pageLoadToken || uiStore.state.page !== page) return;
       if (foregroundBusy > 0) return;
       if (page === 'connections' && shouldRefreshPageCache(page)) refreshConnections(token);
-      if (page === 'diagnostics' && shouldRefreshPageCache(page)) runDiagnostics(false, token);
+      if (page === 'diagnostics' && shouldRefreshPageCache(page)) {
+        renderCachedDiagnostics();
+        markPageCache(page);
+      }
       if (page === 'logs' && shouldRefreshPageCache(page)) {
         renderLogs();
         markPageCache(page);
@@ -989,7 +993,7 @@ function renderLogs() {
     ? allLogs
     : allLogs.filter((entry) => (entry.category || (entry.level === 'core' ? 'core' : 'runtime')) === logFilter);
   $all('[data-log-filter]').forEach((button) => button.classList.toggle('active', button.dataset.logFilter === logFilter));
-  $('#logRows').innerHTML = logs.slice(-160).reverse().map((entry) => `
+  $('#logRows').innerHTML = logs.slice(-logRenderLimit).reverse().map((entry) => `
     <div class="log-row"><span>${escapeHtml(entry.at)}</span><b>${escapeHtml(entry.level)}</b><em>${escapeHtml(logCategoryLabel(entry.category, entry.level))}</em><code>${escapeHtml(entry.line)}</code></div>
   `).join('') || '<p class="empty">\u6682\u65e0\u5339\u914d\u65e5\u5fd7\u3002</p>';
 }
@@ -1744,6 +1748,22 @@ function renderDiagnosticRows(checks) {
       <span class="${item.ok ? 'ok' : item.severity === 'error' ? 'bad' : 'warn'}">${diagnosticSeverityLabel(item)}</span>
     </article>
   `).join('') || '<p class="empty">暂无诊断结果。</p>';
+}
+
+function renderCachedDiagnostics() {
+  if (latestDiagnostics) {
+    const checks = (latestDiagnostics.checks || []).map(normalizeDiagnosticCheck);
+    renderDiagnosticSummary(latestDiagnostics, checks);
+    renderDiagnosticRows(checks);
+    return;
+  }
+  $('#diagSummary').innerHTML = `
+    <div class="diagnostic-status">
+      <b>\u7b49\u5f85\u8bca\u65ad</b>
+      <span>\u70b9\u51fb\u8fd0\u884c\u8bca\u65ad\u540e\u67e5\u770b\u5f53\u524d\u7ed3\u679c\u3002</span>
+    </div>
+  `;
+  $('#diagRows').innerHTML = '<p class="empty">\u5c1a\u672a\u8fd0\u884c\u8bca\u65ad\u3002</p>';
 }
 
 async function runDiagnostics(showNotice = true, token = null) {

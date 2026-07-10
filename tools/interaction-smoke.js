@@ -366,6 +366,10 @@ try {
     const diagnosticCallsAfterCancel = window.__aegosCalls.filter((item) => item.command === 'diagnostics').length;
     if (connectionCallsAfterCancel !== connectionCallsBeforeNav) throw new Error('stale navigation data load was not cancelled after leaving the page');
     if (diagnosticCallsAfterCancel !== diagnosticCallsBeforeNav) throw new Error('rapid cached navigation triggered diagnostics before the quiet period');
+    await navDown('[data-page="diagnostics"]');
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    const diagnosticCallsAfterSettle = window.__aegosCalls.filter((item) => item.command === 'diagnostics').length;
+    if (diagnosticCallsAfterSettle !== diagnosticCallsBeforeNav) throw new Error('diagnostics page navigation auto-ran heavy diagnostics');
     await navDown('[data-page="nodes"]');
     await click('[data-node-filter="low"]');
     if (!document.querySelector('[data-node-filter="low"]').classList.contains('active')) throw new Error('node filter tab did not become active');

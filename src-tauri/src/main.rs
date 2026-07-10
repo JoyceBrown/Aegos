@@ -2947,7 +2947,7 @@ impl CoreManager {
             "speedTest": self.speed_test_snapshot(),
             "settings": self.public_settings(),
             "protection": self.protection_status(),
-            "logs": self.logs.lock().unwrap().clone()
+            "logs": self.recent_logs(120)
         })
     }
 
