@@ -5339,7 +5339,7 @@ fn job_label(kind: &str) -> String {
         "updateSetting" => "保存设置",
         "setMode" => "切换模式",
         "changeProxy" => "切换节点",
-        "selectBestProxy" => "选择最佳节点",
+        "selectBestProxy" => "切换到推荐",
         _ => "后台任务",
     }
     .to_string()

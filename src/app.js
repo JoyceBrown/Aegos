@@ -352,6 +352,106 @@ function delayClass(value) {
   return 'delay-muted';
 }
 
+function delayText(value) {
+  const delay = Number(value);
+  if (delay > 0) return `${Math.round(delay)} ms`;
+  if (delay === 0) return '\u6d4b\u901f\u4e2d';
+  return '-';
+}
+
+function normalizedGroupType(value = '') {
+  return String(value || '').replace(/[\s_-]/g, '').toLowerCase();
+}
+
+function isAutoStrategyGroup(group = latestGroup) {
+  return ['urltest', 'fallback', 'loadbalance'].includes(normalizedGroupType(group?.type));
+}
+
+function groupTypeLabel(value = '') {
+  const type = normalizedGroupType(value);
+  if (type === 'urltest') return 'URL-Test';
+  if (type === 'fallback') return 'Fallback';
+  if (type === 'loadbalance') return 'Load-Balance';
+  if (type === 'relay') return 'Relay';
+  if (type === 'selector') return 'Select';
+  return value ? String(value) : '-';
+}
+
+function findRowByName(name, rows = []) {
+  if (!name) return null;
+  return rows.find((row) => row?.[1] === name) || null;
+}
+
+function currentNodeRow(rows = []) {
+  const currentName = selectedNode || latestGroup?.now || '';
+  return findRowByName(currentName, rows) || rows.find((row) => row?.[5]) || null;
+}
+
+function recommendedNodeRow(rows = []) {
+  const recommended = latestStatus?.speedTest?.recommended || null;
+  const recommendedName = recommended?.proxy || recommended?.realProxyName || '';
+  return findRowByName(recommendedName, rows)
+    || rows.find((row) => row?.[11])
+    || rows[0]
+    || null;
+}
+
+function renderHomeNodeSummary(rows = []) {
+  const sourceRows = rows.length
+    ? rows
+    : (latestGroup?.items?.length ? normalizeRows(latestGroup.items) : []);
+  const currentRow = currentNodeRow(sourceRows);
+  const recommendedRow = recommendedNodeRow(sourceRows.filter((row) => {
+    const delay = Number(row?.[3]);
+    return row?.[4] && row?.[7] !== 'cooldown' && delay > 0 && delay < 100;
+  }));
+  const currentName = currentRow?.[1] || selectedNode || latestGroup?.now || latestStatus?.activeProfile?.name || '-';
+  const currentDelay = delayText(currentRow?.[3]);
+  const currentProtocolText = protocolLabel(currentRow?.[6] || currentProtocol || 'direct');
+  const recommendedName = recommendedRow?.[1] || '-';
+  const recommendedDelay = delayText(recommendedRow?.[3]);
+  const recommendedProtocolText = recommendedRow?.[6] ? protocolLabel(recommendedRow[6]) : '-';
+  const sameNode = recommendedRow?.[1] && recommendedRow?.[1] === currentName;
+
+  const currentNameEl = $('#currentNodeName');
+  if (currentNameEl) currentNameEl.textContent = currentName;
+  const currentMetaEl = $('#currentNodeMeta');
+  if (currentMetaEl) currentMetaEl.textContent = `${currentDelay} / ${currentProtocolText}`;
+  const recommendedNameEl = $('#recommendedNodeName');
+  if (recommendedNameEl) recommendedNameEl.textContent = recommendedName;
+  const recommendedMetaEl = $('#recommendedNodeMeta');
+  if (recommendedMetaEl) {
+    recommendedMetaEl.textContent = recommendedRow
+      ? `${recommendedDelay} / ${recommendedProtocolText}${sameNode ? ' / 已是当前' : ''}`
+      : '\u6d4b\u901f\u540e\u663e\u793a';
+  }
+
+  const groupName = latestGroup?.name || '-';
+  const groupType = groupTypeLabel(latestGroup?.type);
+  const autoGroup = isAutoStrategyGroup(latestGroup);
+  const groupMetric = $('#groupMetric');
+  if (groupMetric) groupMetric.textContent = groupName;
+  const strategyMetric = $('#strategyMetric');
+  if (strategyMetric) strategyMetric.textContent = autoGroup ? '\u81ea\u52a8' : groupType;
+  const recommendMetric = $('#recommendMetric');
+  if (recommendMetric) recommendMetric.textContent = recommendedRow ? recommendedDelay : '-';
+  const notice = $('#autoGroupNotice');
+  if (notice) notice.classList.toggle('hidden', !autoGroup);
+
+  const switchButton = $('#switchRecommendedBtn');
+  if (switchButton) {
+    switchButton.dataset.node = recommendedRow?.[1] || '';
+    switchButton.classList.toggle('is-muted', !recommendedRow);
+    switchButton.setAttribute('aria-disabled', recommendedRow ? 'false' : 'true');
+  }
+  const setBestButton = $('#setBestBtn');
+  if (setBestButton) {
+    setBestButton.textContent = '\u5207\u6362\u5230\u63a8\u8350';
+    setBestButton.dataset.node = recommendedRow?.[1] || '';
+    setBestButton.setAttribute('aria-disabled', recommendedRow ? 'false' : 'true');
+  }
+}
+
 /*
 function renderNodeRow([region, name, host, delay, alive, active]) {
   const statusText = Number(delay) >= 0 ? '可用' : (alive ? '待测速' : '不可用');
@@ -913,6 +1013,7 @@ function renderRows(items = []) {
   $('#homeNodeRows').innerHTML = (sortedHomeRows.length ? sortedHomeRows : homeFallbackRows).slice(0, homeNodeRenderLimit)
     .map(renderHomeNodeRow)
     .join('') || `<p class="empty">${homeEmptyText}</p>`;
+  renderHomeNodeSummary();
 }
 
 function renderProfiles() {
@@ -1108,10 +1209,11 @@ function renderStatus(status) {
 
   const up = formatRate(traffic.up);
   const down = formatRate(traffic.down);
-  $('#upRate').textContent = up;
-  $('#downRate').textContent = down;
+  if ($('#upRate')) $('#upRate').textContent = up;
+  if ($('#downRate')) $('#downRate').textContent = down;
   $('#sideUpRate').textContent = `↑ ${up}`;
   $('#sideDownRate').textContent = `↓ ${down}`;
+  renderHomeNodeSummary();
   renderSettings(status);
   if (isPageActive('profiles')) renderProfiles();
   if (isPageActive('logs')) renderLogs();
@@ -1793,7 +1895,7 @@ function toggleFavoriteNode(name) {
 
 async function selectBestProxyJob() {
   await runBackgroundJob('selectBestProxy', {}, {
-    pendingNotice: '正在选择低延迟最佳节点...',
+    pendingNotice: '正在切换到推荐节点...',
     onSuccess: async (result) => {
       const candidate = result?.candidate || {};
       if (candidate.proxy) applyOptimisticNode(candidate.proxy);
@@ -1801,9 +1903,33 @@ async function selectBestProxyJob() {
     },
     successNotice: (result) => {
       const candidate = result?.candidate || {};
-      return `已切换最佳节点：${candidate.proxy || '-'} / ${candidate.delay || '-'} ms`;
+      return `已切换到推荐：${candidate.proxy || '-'} / ${candidate.delay || '-'} ms`;
     },
-    failureNotice: (err) => `选择最佳节点失败：${err.message || err}`
+    failureNotice: (err) => `切换到推荐失败：${err.message || err}`
+  });
+}
+
+async function lockAutoGroupJob() {
+  const group = latestGroup?.name || '';
+  const proxy = latestGroup?.now || selectedNode || '';
+  if (!group || !proxy) {
+    setNotice('暂无可锁定的当前节点。');
+    return;
+  }
+  if (!isAutoStrategyGroup(latestGroup)) {
+    setNotice('当前已是手动策略组或非自动组。');
+    return;
+  }
+  await runOptimisticAction({
+    apply: () => applyOptimisticNode(proxy),
+    commit: () => runBackgroundJob('changeProxy', { group, proxy }, {
+      pendingNotice: '正在锁定当前节点...',
+      failureNotice: (err) => `锁定当前节点失败：${err.message || err}`
+    }),
+    refresh: () => refreshNodes(true),
+    pendingNotice: '已请求锁定当前节点...',
+    successNotice: `已锁定当前节点：${proxy}`,
+    failureNotice: (err) => `锁定当前节点失败：${err.message || err}`
   });
 }
 
@@ -2029,7 +2155,9 @@ $('#quickProxyBtn').onclick = () => updateSetting('systemProxy', !latestStatus?.
 $('#quickTunBtn').onclick = () => updateSetting('tunEnabled', !latestStatus?.settings?.tunEnabled);
 $('#quickCopyProxyBtn').onclick = () => navigator.clipboard?.writeText(latestStatus?.network?.proxyEndpoint || `127.0.0.1:${defaultMixedPort}`);
 $('#quickRestartBtn').onclick = (event) => runButtonAction(event.currentTarget, '重启中...', restartCoreJob);
-$('#setBestBtn').onclick = (event) => runButtonAction(event.currentTarget, '选择中...', selectBestProxyJob);
+$('#setBestBtn').onclick = (event) => runButtonAction(event.currentTarget, '切换中...', selectBestProxyJob);
+$('#switchRecommendedBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '切换中...', selectBestProxyJob));
+$('#lockAutoGroupBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '锁定中...', lockAutoGroupJob));
 $('#refreshConnectionsBtn').onclick = refreshConnections;
 $('#closeAllConnectionsBtn').onclick = (event) => runButtonAction(event.currentTarget, '关闭中...', () => runOptimisticAction({
   apply: () => { $('#connectionRows').innerHTML = '<p class="empty">当前没有活动连接。</p>'; },
@@ -2226,7 +2354,7 @@ $('#homeNodeRows').addEventListener('click', (event) => {
 $('#bestNodeList').addEventListener('click', (event) => {
   const item = event.target.closest('[data-node]');
   if (!item) return;
-  selectNode(item.dataset.node);
+  setNotice(`推荐节点：${item.dataset.node}。点击“切换到推荐”才会连接。`);
 });
 
 $('#nodeRows').addEventListener('keydown', (event) => {

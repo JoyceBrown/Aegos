@@ -125,7 +125,7 @@ try {
         ];
         const groups = [{
           name: 'GLOBAL',
-          type: 'Selector',
+          type: 'URLTest',
           now: 'HK 01',
           items: [
             { name: 'HK 01', server: 'hk.example', type: 'tuic', alive: true, delay: -1, healthStatus: 'unknown', healthScore: 999999 },
@@ -343,7 +343,22 @@ try {
     await click('#connectBtn');
     await click('#quickIpBtn');
     await click('#quickUpdateSubBtn');
+    const switchCallsBeforeSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && ['changeProxy', 'selectBestProxy'].includes(item.args.kind))).length;
     await click('#quickTestBtn');
+    const switchCallsAfterSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && ['changeProxy', 'selectBestProxy'].includes(item.args.kind))).length;
+    if (switchCallsAfterSpeed !== switchCallsBeforeSpeed) throw new Error('speed test triggered a proxy switch');
+    if (document.querySelector('#setBestBtn')?.textContent.trim() !== '切换到推荐') throw new Error('recommended switch button label is not explicit');
+    if (document.querySelector('#autoGroupNotice')?.classList.contains('hidden')) throw new Error('automatic strategy group warning did not render');
+    if (!document.querySelector('#currentNodeName')?.textContent.trim()) throw new Error('current node summary did not render');
+    if (!document.querySelector('#recommendedNodeName')?.textContent.includes('HK 02')) throw new Error('recommended node summary did not render');
+    const bestChip = document.querySelector('#bestNodeList [data-node]');
+    const chipSwitchCallsBefore = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && ['changeProxy', 'selectBestProxy'].includes(item.args.kind))).length;
+    bestChip?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const chipSwitchCallsAfter = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && ['changeProxy', 'selectBestProxy'].includes(item.args.kind))).length;
+    if (chipSwitchCallsAfter !== chipSwitchCallsBefore) throw new Error('recommended node chip switched proxy directly');
+    await click('#lockAutoGroupBtn');
+    if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'changeProxy')) throw new Error('auto group lock did not use background proxy change job');
     await click('#smartRecoverBtn');
     await new Promise((resolve) => setTimeout(resolve, 420));
     if (!document.querySelector('#homeNodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('home node delays did not update after quick speed test');

@@ -43,6 +43,11 @@ button.is-pending {
   box-shadow: inset 0 0 0 1px rgba(35, 121, 255, .18), 0 0 0 3px rgba(35, 121, 255, .07);
 }
 
+button.is-muted,
+button[aria-disabled="true"] {
+  opacity: .62;
+}
+
 .hidden {
   display: none !important;
 }
@@ -587,6 +592,91 @@ h1 {
   background: linear-gradient(90deg, rgba(212, 91, 91, .15), rgba(212, 91, 91, .04));
 }
 
+.node-compare {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+.node-compare article {
+  min-width: 0;
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto;
+  align-items: center;
+  gap: 1px 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(130, 154, 187, .12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .78);
+  box-shadow: 0 10px 24px rgba(65, 91, 125, .05);
+}
+
+.node-compare small,
+.node-compare strong,
+.node-compare span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-compare small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.node-compare strong {
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.node-compare span {
+  color: #66758f;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.node-compare button {
+  grid-row: 1 / span 3;
+  grid-column: 2;
+  min-width: 96px;
+}
+
+.auto-group-notice {
+  min-width: 0;
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 12px;
+  color: #b7791f;
+  background: linear-gradient(90deg, rgba(235, 171, 52, .18), rgba(235, 171, 52, .06));
+  font-weight: 800;
+}
+
+.auto-group-notice span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auto-group-notice button {
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: #8b5d11;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(183, 121, 31, .18);
+  font-weight: 850;
+}
+
 .metric-grid {
   display: grid;
   min-width: 0;
@@ -602,7 +692,7 @@ h1 {
 }
 
 .metric-grid.bottom {
-  grid-template-columns: repeat(5, minmax(0, 1fr)) 118px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
 .metric-grid article {
@@ -1898,8 +1988,12 @@ dd {
     grid-template-columns: 126px minmax(0, 1fr);
   }
 
+  .node-compare {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .metric-grid.bottom {
-    grid-template-columns: repeat(5, minmax(0, 1fr)) 90px;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
   }
 
   .quick-row {
@@ -1981,7 +2075,7 @@ dd {
 }
 
 .metric-grid.bottom {
-  grid-template-columns: minmax(126px, 1fr) minmax(104px, .82fr) minmax(104px, .82fr) 96px 96px 58px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
 .quick {
@@ -2061,13 +2155,25 @@ dd {
   }
 
   .metric-grid.bottom {
-    grid-template-columns: minmax(118px, 1fr) minmax(90px, .76fr) minmax(94px, .76fr) 92px 92px 50px;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
   }
 }
 
 @media (max-height: 760px) {
   .connect-column {
     gap: 8px;
+  }
+
+  .node-compare article {
+    min-height: 48px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .auto-group-notice {
+    min-height: 30px;
+    padding-top: 4px;
+    padding-bottom: 4px;
   }
 
   .tun-home-toggle {
@@ -2137,7 +2243,7 @@ dd {
 }
 
 .metric-grid.bottom {
-  grid-template-columns: minmax(126px, 1fr) minmax(104px, .82fr) minmax(104px, .82fr) 96px 96px 58px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
 .quick {
@@ -2220,7 +2326,7 @@ dd {
 
 @media (max-width: 1380px) {
   .metric-grid.bottom {
-    grid-template-columns: minmax(118px, 1fr) minmax(90px, .76fr) minmax(94px, .76fr) 92px 92px 50px;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
   }
 
   .best-node-list {
@@ -2243,7 +2349,7 @@ dd {
 }
 
 .metric-grid.bottom {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, .9fr) 96px 96px 56px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
 .home-nodes {
@@ -2273,7 +2379,7 @@ dd {
 
 @media (max-width: 1380px) {
   .metric-grid.bottom {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, .85fr) 92px 92px 48px;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
   }
 
   .home-nodes {
