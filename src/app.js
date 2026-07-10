@@ -360,9 +360,9 @@ function renderNodeRow([region, name, host, delay, alive, active, protocol, heal
       <span>${Number(jitter) > 0 ? `${Math.round(Number(jitter))} ms` : '-'}</span>
       <span class="available">${escapeHtml(statusText)}</span>
       <span class="row-actions">
-        <button data-node="${escapeHtml(name)}" aria-label="connect">&#9655;</button>
-        <button aria-label="edit">&#9998;</button>
-        <button aria-label="more">&#8943;</button>
+        <button data-node-action="connect" data-node="${escapeHtml(name)}" aria-label="connect">&#9655;</button>
+        <button data-node-action="test" data-node="${escapeHtml(name)}" aria-label="test delay">&#9998;</button>
+        <button data-node-action="details" data-node="${escapeHtml(name)}" aria-label="node details">&#8943;</button>
       </span>
     </div>
   `;
@@ -1085,6 +1085,29 @@ function applyOptimisticNode(name) {
   renderRows(latestGroup?.items || []);
 }
 
+function findNodeItem(name) {
+  return (latestGroup?.items || []).find((item) => item.name === name || item.realProxyName === name) || null;
+}
+
+function applyOptimisticNodeDelay(name, delay) {
+  if (!latestGroup?.items) return;
+  latestGroup = {
+    ...latestGroup,
+    items: latestGroup.items.map((item) => {
+      if (item.name !== name && item.realProxyName !== name) return item;
+      const nextDelay = Number(delay);
+      return {
+        ...item,
+        delay: nextDelay,
+        medianDelay: nextDelay > 0 ? nextDelay : item.medianDelay,
+        alive: nextDelay >= 0 || item.alive !== false,
+        healthStatus: nextDelay === 0 ? 'testing' : nextDelay > 0 && nextDelay < 100 ? 'low' : nextDelay >= 100 ? 'available' : item.healthStatus
+      };
+    })
+  };
+  renderRows(latestGroup.items);
+}
+
 function applyOptimisticSetting(key, value) {
   if (!latestStatus?.settings) return;
   if (key === 'reliabilityAuto' || key === 'reliabilityProfileFailover') {
@@ -1596,6 +1619,33 @@ async function selectNode(name) {
   });
 }
 
+async function testSingleNode(name, button) {
+  if (!name) return;
+  applyOptimisticNodeDelay(name, 0);
+  await runButtonAction(button, '\u6d4b\u901f\u4e2d...', async () => {
+    const result = await invoke('test_single_proxy_delay', { name });
+    applyOptimisticNodeDelay(name, Number(result?.delay ?? -1));
+    await refreshNodes(true);
+    const delay = Number(result?.delay ?? -1);
+    if (delay > 0) {
+      setNotice(`\u8282\u70b9\u6d4b\u901f\u5b8c\u6210\uff1a${name} / ${Math.round(delay)} ms`);
+    } else {
+      setNotice(`\u8282\u70b9\u6d4b\u901f\u5931\u8d25\uff1a${name}`);
+    }
+  });
+}
+
+function showNodeDetails(name) {
+  const item = findNodeItem(name);
+  if (!item) {
+    setNotice(`\u8282\u70b9\u8be6\u60c5\uff1a${name}`);
+    return;
+  }
+  const delay = Number(item.delay ?? -1);
+  const delayText = delay > 0 ? `${Math.round(delay)} ms` : delay === 0 ? '\u6d4b\u901f\u4e2d' : '\u5f85\u6d4b\u901f';
+  setNotice(`\u8282\u70b9\u8be6\u60c5\uff1a${item.name} / ${protocolLabel(item.type || item.protocol)} / ${item.server || item.name} / ${delayText}`);
+}
+
 async function selectBestProxyJob() {
   await runBackgroundJob('selectBestProxy', {}, {
     pendingNotice: '正在选择低延迟最佳节点...',
@@ -1986,6 +2036,16 @@ $all('[data-page-jump]').forEach((button) => {
 });
 
 $('#nodeRows').addEventListener('click', (event) => {
+  const actionButton = event.target.closest('[data-node-action]');
+  if (actionButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    const name = actionButton.dataset.node;
+    if (actionButton.dataset.nodeAction === 'connect') selectNode(name);
+    if (actionButton.dataset.nodeAction === 'test') testSingleNode(name, actionButton);
+    if (actionButton.dataset.nodeAction === 'details') showNodeDetails(name);
+    return;
+  }
   const row = event.target.closest('.row[data-node]');
   if (!row) return;
   selectNode(row.dataset.node);

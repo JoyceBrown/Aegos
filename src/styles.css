@@ -1309,16 +1309,18 @@ h1 {
 .node-table {
   min-height: 0;
   overflow: auto;
+  padding-right: 8px;
+  scrollbar-gutter: stable;
 }
 
 .row {
   display: grid;
-  grid-template-columns: 24px 26px minmax(118px, 1.1fr) minmax(118px, 1fr) 54px 62px 74px 76px 58px 78px;
+  grid-template-columns: 24px 26px minmax(118px, 1.1fr) minmax(118px, 1fr) 54px 62px 74px 76px 58px 104px;
   gap: 8px;
   align-items: center;
   min-width: 0;
   min-height: 38px;
-  padding: 0 2px;
+  padding: 0 8px 0 2px;
 }
 
 .row > * {
@@ -1425,19 +1427,25 @@ h1 {
 
 .row-actions {
   display: flex;
+  width: 100%;
   justify-content: flex-end;
-  gap: 4px;
+  gap: 6px;
   overflow: visible;
 }
 
 .row-actions button {
   flex: 0 0 auto;
-  width: 23px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   color: #53627c;
   border-radius: 8px;
   background: #fff;
   box-shadow: 0 7px 16px rgba(65, 91, 125, .07);
+}
+
+.row-actions button:hover {
+  color: var(--blue);
+  box-shadow: 0 8px 18px rgba(54, 140, 255, .14);
 }
 
 @media (max-height: 760px) {

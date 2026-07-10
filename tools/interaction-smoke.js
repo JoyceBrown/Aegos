@@ -259,6 +259,18 @@ try {
             });
             return { running: false, total: groups[0].items.length, completed: groups[0].items.length, ok: groups[0].items.length, failed: 0, lowLatency: ['HK 01', 'HK 02', 'US 01'], recommended: { proxy: 'HK 02', delay: 48 } };
           }
+          if (command === 'test_single_proxy_delay') {
+            const item = groups[0].items.find((item) => item.name === args.name);
+            if (item) {
+              item.delay = 42;
+              item.alive = true;
+              item.healthStatus = 'low';
+              item.healthScore = 42;
+              item.medianDelay = 42;
+              item.jitter = 0;
+            }
+            return { ok: true, proxy: args.name, realProxyName: args.name, delay: 42, healthStatus: 'low' };
+          }
           if (command === 'speed_test_status') {
             return { running: false, total: groups[0].items.length, completed: groups[0].items.length, ok: groups[0].items.length, failed: 0 };
           }
@@ -382,7 +394,16 @@ try {
     if (document.querySelector('#nodeRows .delay-bad')) throw new Error('low latency filter rendered a red high-latency node');
     document.querySelector('#nodeSearch').value = 'HK';
     document.querySelector('#nodeSearch').dispatchEvent(new Event('input', { bubbles: true }));
-    await click('#nodeRows .row[data-node]');
+    const rowActionButtons = [...document.querySelectorAll('#nodeRows [data-node-action]')];
+    if (rowActionButtons.length < 3) throw new Error('node row action buttons did not render');
+    const rowActionBox = document.querySelector('#nodeRows .row-actions')?.getBoundingClientRect();
+    const tableBox = document.querySelector('.node-table')?.getBoundingClientRect();
+    if (!rowActionBox || !tableBox || rowActionBox.right > tableBox.right - 6) throw new Error('node row actions are too close to the table edge');
+    await click('#nodeRows [data-node-action="details"]');
+    if (!document.querySelector('#protectionNotice')?.textContent.includes('节点详情')) throw new Error('node details action did not show feedback');
+    await click('#nodeRows [data-node-action="test"]');
+    if (!window.__aegosCalls.some((item) => item.command === 'test_single_proxy_delay')) throw new Error('single node delay action did not call backend');
+    await click('#nodeRows [data-node-action="connect"]');
     await click('[data-page="connections"]');
     await click('#refreshConnectionsBtn');
     document.querySelector('#closeAllConnectionsBtn').click();

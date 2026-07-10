@@ -3828,6 +3828,70 @@ impl CoreManager {
         Ok(self.speed_test_snapshot())
     }
 
+    fn test_single_proxy_delay(&mut self, name: String) -> Result<JsonValue, String> {
+        if self.process.is_none() || self.controller("GET", "/version", None, 900).is_err() {
+            return Err("Core controller is not available; start the core before testing a node".to_string());
+        }
+        let groups = self.proxy_groups();
+        let targets = Self::collect_proxy_targets(&groups);
+        let target = targets
+            .iter()
+            .find(|target| target.name == name || target.select_name == name)
+            .cloned()
+            .ok_or_else(|| format!("Node not found: {name}"))?;
+        {
+            let mut speed = self.speed_test.lock().unwrap();
+            speed.delays.insert(target.name.clone(), 0);
+            speed.error = None;
+            speed.updated_at = now_secs();
+        }
+        let client = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(6500))
+            .build()
+            .map_err(|err| err.to_string())?;
+        let delay = test_proxy_delay_with_retry(
+            &client,
+            self.settings.controller_port,
+            &self.settings.secret,
+            &target.name,
+            &target.protocol,
+        );
+        let now = now_secs();
+        let health = {
+            let mut speed = self.speed_test.lock().unwrap();
+            let health = update_node_health(
+                speed.health.get(&target.name),
+                &target.name,
+                &target.protocol,
+                delay,
+                now,
+            );
+            speed.delays.insert(target.name.clone(), delay);
+            speed.health.insert(target.name.clone(), health.clone());
+            speed.low_latency = low_latency_names(&speed.health, now);
+            speed.recommended = speed_recommendation(&targets, &speed.health, now);
+            speed.updated_at = now;
+            health
+        };
+        self.add_log(
+            format!("Single node delay tested: {} = {} ms", target.name, delay),
+            if delay > 0 { "info" } else { "warn" },
+        );
+        Ok(json!({
+            "ok": delay > 0,
+            "group": target.group_name,
+            "proxy": target.select_name,
+            "realProxyName": target.name,
+            "protocol": target.protocol,
+            "delay": delay,
+            "medianDelay": health.median_delay,
+            "jitter": health.jitter,
+            "healthStatus": health.status,
+            "score": health.score
+        }))
+    }
+
     fn test_proxy_delays(&mut self) -> JsonValue {
         let _ = self.start_proxy_delay_test();
         let mut groups = self.proxy_groups();
@@ -5369,6 +5433,11 @@ fn start_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
 }
 
 #[tauri::command]
+fn test_single_proxy_delay(state: State<AppState>, name: String) -> Result<JsonValue, String> {
+    state.core.lock().unwrap().test_single_proxy_delay(name)
+}
+
+#[tauri::command]
 fn speed_test_status(state: State<AppState>) -> Result<JsonValue, String> {
     Ok(state.core.lock().unwrap().speed_test_snapshot())
 }
@@ -5505,6 +5574,7 @@ fn main() {
             set_mode,
             proxy_groups,
             start_proxy_delay_test,
+            test_single_proxy_delay,
             speed_test_status,
             cancel_proxy_delay_test,
             recover_network,
