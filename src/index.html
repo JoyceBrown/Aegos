@@ -13,7 +13,7 @@
         <div class="brand-mark">A</div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v2.6.0</span>
+          <span id="appVersionLabel" class="brand-version">v2.6.1</span>
         </div>
       </section>
 
@@ -241,6 +241,14 @@
             <div><h2>日志</h2><p>查看 Aegos 与 mihomo 运行日志。</p></div>
             <button id="clearLogsBtn" class="ghost">清空</button>
           </header>
+          <div class="tabs log-filter-row" role="tablist" aria-label="Log filters">
+            <button class="active" data-log-filter="all">&#20840;&#37096;</button>
+            <button data-log-filter="user">&#29992;&#25143;</button>
+            <button data-log-filter="runtime">&#36816;&#34892;</button>
+            <button data-log-filter="core">&#26680;&#24515;</button>
+            <button data-log-filter="diagnostic">&#35786;&#26029;</button>
+            <button data-log-filter="debug">&#35843;&#35797;</button>
+          </div>
           <div id="logRows" class="log-list"></div>
         </section>
       </section>

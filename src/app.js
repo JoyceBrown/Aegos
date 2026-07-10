@@ -27,6 +27,7 @@ let nodeBusy = false;
 let lastStatusAt = 0;
 let homeRegionFilter = '';
 let nodePageFilter = 'all';
+let logFilter = 'all';
 let speedTestTimer = null;
 let recoveryBusy = false;
 let lastRecoveryAt = 0;
@@ -117,6 +118,7 @@ const pageCacheTtlMs = {
 };
 const navButtons = new Map($all('.nav button').map((button) => [button.dataset.page, button]));
 const pagePanels = new Map($all('.page').map((panel) => [panel.dataset.pagePanel, panel]));
+const pageTitleEl = $('#pageTitle');
 let renderedPage = '';
 let renderedHomeRegionFilter = null;
 let renderedNodePageFilter = null;
@@ -608,7 +610,7 @@ function renderUiState(state = uiStore.state) {
     pagePanels.get(page)?.classList.add('active');
     renderedPage = page;
   }
-  $('#pageTitle').textContent = pageNames[page];
+  if (pageTitleEl) pageTitleEl.textContent = pageNames[page];
   if (renderedHomeRegionFilter !== homeRegionFilter) {
     $all('[data-region]').forEach((button) => button.classList.toggle('active', button.dataset.region === homeRegionFilter));
     renderedHomeRegionFilter = homeRegionFilter;
@@ -621,9 +623,10 @@ function renderUiState(state = uiStore.state) {
 
 function setPage(page) {
   const next = pageNames[page] ? page : 'home';
-  if (uiStore.state.page === next) return;
   lastNavAt = Date.now();
-  uiStore.set({ page: next });
+  if (uiStore.state.page !== next) {
+    uiStore.set({ page: next });
+  }
   schedulePageLoad(next);
 }
 
@@ -885,11 +888,27 @@ function renderSettings(status) {
   $('#reliabilityCandidateLimitInput').value = reliability.candidateLimit || 24;
 }
 
+function logCategoryLabel(category = '', level = '') {
+  const key = category || (level === 'core' ? 'core' : 'runtime');
+  const labels = {
+    user: '\u7528\u6237',
+    runtime: '\u8fd0\u884c',
+    core: '\u6838\u5fc3',
+    diagnostic: '\u8bca\u65ad',
+    debug: '\u8c03\u8bd5'
+  };
+  return labels[key] || labels.runtime;
+}
+
 function renderLogs() {
-  const logs = latestStatus?.logs || [];
+  const allLogs = latestStatus?.logs || [];
+  const logs = logFilter === 'all'
+    ? allLogs
+    : allLogs.filter((entry) => (entry.category || (entry.level === 'core' ? 'core' : 'runtime')) === logFilter);
+  $all('[data-log-filter]').forEach((button) => button.classList.toggle('active', button.dataset.logFilter === logFilter));
   $('#logRows').innerHTML = logs.slice(-160).reverse().map((entry) => `
-    <div class="log-row"><span>${escapeHtml(entry.at)}</span><b>${escapeHtml(entry.level)}</b><code>${escapeHtml(entry.line)}</code></div>
-  `).join('') || '<p class="empty">暂无日志。</p>';
+    <div class="log-row"><span>${escapeHtml(entry.at)}</span><b>${escapeHtml(entry.level)}</b><em>${escapeHtml(logCategoryLabel(entry.category, entry.level))}</em><code>${escapeHtml(entry.line)}</code></div>
+  `).join('') || '<p class="empty">\u6682\u65e0\u5339\u914d\u65e5\u5fd7\u3002</p>';
 }
 
 function warmStaticPageCaches() {
@@ -1845,6 +1864,13 @@ $all('[data-node-filter]').forEach((button) => {
   button.onclick = () => {
     uiStore.set({ nodePageFilter: button.dataset.nodeFilter || 'all' });
     scheduleRowsRender(latestGroup?.items || []);
+  };
+});
+
+$all('[data-log-filter]').forEach((button) => {
+  button.onclick = () => {
+    logFilter = button.dataset.logFilter || 'all';
+    renderLogs();
   };
 });
 

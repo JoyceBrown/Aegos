@@ -1056,12 +1056,21 @@ h1 {
 
 .log-row {
   display: grid;
-  grid-template-columns: 88px 56px minmax(0, 1fr);
+  grid-template-columns: 88px 54px 58px minmax(0, 1fr);
   gap: 10px;
   min-height: 30px;
   align-items: center;
   color: #52627b;
   border-bottom: 1px solid rgba(130, 154, 187, .10);
+}
+
+.log-row em {
+  min-width: 0;
+  overflow: hidden;
+  color: #71819b;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .log-row code {
@@ -1260,6 +1269,12 @@ h1 {
   color: var(--blue);
   background: #fff;
   box-shadow: 0 8px 20px rgba(65, 91, 125, .07);
+}
+
+.log-filter-row {
+  justify-content: flex-start;
+  margin-bottom: 4px;
+  overflow-x: auto;
 }
 
 .table-actions {

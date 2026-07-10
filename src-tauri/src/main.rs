@@ -121,6 +121,7 @@ struct Settings {
 struct LogEntry {
     at: String,
     level: String,
+    category: String,
     line: String,
 }
 
@@ -357,6 +358,8 @@ fn protocol_family(protocol: &str) -> &'static str {
         "tuic"
     } else if text.contains("hysteria") || text.contains("hy2") {
         "hysteria"
+    } else if text.contains("reality") {
+        "reality"
     } else if text.contains("wireguard") {
         "wireguard"
     } else if text.contains("vless") || text.contains("vmess") {
@@ -374,7 +377,7 @@ fn protocol_concurrency(protocol: &str) -> usize {
     match protocol_family(protocol) {
         "tuic" => 8,
         "hysteria" | "wireguard" => 10,
-        "vmess" | "trojan" | "ss" => 32,
+        "reality" | "vmess" | "trojan" | "ss" => 32,
         _ => 24,
     }
 }
@@ -383,8 +386,30 @@ fn protocol_primary_timeout_ms(protocol: &str) -> u64 {
     match protocol_family(protocol) {
         "tuic" => 2600,
         "hysteria" | "wireguard" => 3200,
-        "vmess" | "trojan" | "ss" => 3600,
+        "reality" | "vmess" | "trojan" | "ss" => 3600,
         _ => 4000,
+    }
+}
+
+fn log_category(level: &str, line: &str) -> &'static str {
+    let level = level.trim().to_ascii_lowercase();
+    let line = line.trim().to_ascii_lowercase();
+    if level == "core" || line.contains("mihomo") {
+        "core"
+    } else if level == "debug" {
+        "debug"
+    } else if line.contains("diagnostic") || line.contains("preflight") || line.contains("recovery")
+    {
+        "diagnostic"
+    } else if line.contains("profile")
+        || line.contains("subscription")
+        || line.contains("proxy")
+        || line.contains("mode")
+        || line.contains("setting")
+    {
+        "user"
+    } else {
+        "runtime"
     }
 }
 
@@ -496,7 +521,7 @@ fn speed_test_phases(
             .map(|item| item.cooldown_until > now)
             .unwrap_or(false);
         let family_rank = match protocol_family(&target.protocol) {
-            "ss" | "trojan" | "vmess" | "generic" => 0,
+            "ss" | "trojan" | "vmess" | "reality" | "generic" => 0,
             "hysteria" | "wireguard" => 1,
             "tuic" => 2,
             _ => 1,
@@ -1409,6 +1434,52 @@ rules:
     }
 
     #[test]
+    fn preflight_rejects_proxy_group_missing_node_reference() {
+        let config: YamlValue = serde_yaml::from_str(
+            r#"
+mixed-port: 7891
+external-controller: 127.0.0.1:19091
+secret: test
+proxies:
+  - name: Node A
+    type: ss
+    server: example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: Final
+    type: select
+    proxies:
+      - Missing Node
+rules:
+  - MATCH,Final
+"#,
+        )
+        .expect("yaml");
+        let mut settings = default_settings();
+        settings.secret = "test".to_string();
+        let profile = Profile {
+            id: "url-bad".to_string(),
+            name: "bad".to_string(),
+            profile_type: "url".to_string(),
+            path: "bad.yaml".to_string(),
+            source_url: None,
+            node_count: 1,
+            proxy_group_count: 1,
+            updated_at: "test".to_string(),
+            digest: "test".to_string(),
+        };
+
+        let err = preflight_runtime_config(&config, &profile, &settings)
+            .expect_err("missing node reference should fail preflight");
+        assert!(
+            err.contains("Missing Node"),
+            "preflight error should name the missing target: {err}"
+        );
+    }
+
+    #[test]
     fn resolves_proxy_group_references_to_leaf_proxy() {
         let groups = vec![
             json!({
@@ -1577,6 +1648,18 @@ rules:
     }
 
     #[test]
+    fn log_category_keeps_user_core_diagnostic_and_debug_streams_distinct() {
+        assert_eq!(log_category("core", "mihomo ready"), "core");
+        assert_eq!(
+            log_category("warn", "Profile preflight failed"),
+            "diagnostic"
+        );
+        assert_eq!(log_category("info", "Selected best proxy"), "user");
+        assert_eq!(log_category("debug", "raw controller payload"), "debug");
+        assert_eq!(log_category("info", "heartbeat"), "runtime");
+    }
+
+    #[test]
     fn speed_test_phases_prioritize_fast_non_tuic_targets() {
         let targets = vec![
             SpeedTestTarget {
@@ -1600,6 +1683,51 @@ rules:
             .0
             .iter()
             .any(|item| item.name == "TUIC"));
+    }
+
+    #[test]
+    fn protocol_scheduler_handles_reality_hysteria2_and_tuic_explicitly() {
+        assert_eq!(protocol_family("vless-reality"), "reality");
+        assert_eq!(protocol_family("hysteria2"), "hysteria");
+        assert_eq!(protocol_family("hy2"), "hysteria");
+        assert_eq!(protocol_concurrency("vless-reality"), 32);
+        assert_eq!(protocol_concurrency("hysteria2"), 10);
+        assert_eq!(protocol_concurrency("tuic"), 8);
+        assert_eq!(protocol_primary_timeout_ms("vless-reality"), 3600);
+        assert_eq!(protocol_primary_timeout_ms("hysteria2"), 3200);
+        assert_eq!(protocol_primary_timeout_ms("tuic"), 2600);
+
+        let targets = vec![
+            SpeedTestTarget {
+                name: "Hysteria2".to_string(),
+                select_name: "Hysteria2".to_string(),
+                group_name: "GLOBAL".to_string(),
+                protocol: "hysteria2".to_string(),
+            },
+            SpeedTestTarget {
+                name: "Reality".to_string(),
+                select_name: "Reality".to_string(),
+                group_name: "GLOBAL".to_string(),
+                protocol: "vless-reality".to_string(),
+            },
+            SpeedTestTarget {
+                name: "TUIC".to_string(),
+                select_name: "TUIC".to_string(),
+                group_name: "GLOBAL".to_string(),
+                protocol: "tuic".to_string(),
+            },
+        ];
+        let phases = speed_test_phases(targets, &HashMap::new(), 1);
+        assert_eq!(phases.first().unwrap().0[0].name, "Reality");
+        let slow_names = phases
+            .last()
+            .unwrap()
+            .0
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(slow_names.contains(&"Hysteria2"));
+        assert!(slow_names.contains(&"TUIC"));
     }
 
     #[test]
@@ -2095,6 +2223,7 @@ impl CoreManager {
         logs.push(LogEntry {
             at: now_iso(),
             level: level.to_string(),
+            category: log_category(level, line).to_string(),
             line: line.to_string(),
         });
         if logs.len() > 700 {
@@ -2609,6 +2738,7 @@ impl CoreManager {
                     logs.push(LogEntry {
                         at: now_iso(),
                         level: "core".to_string(),
+                        category: "core".to_string(),
                         line,
                     });
                     if logs.len() > 700 {
@@ -2625,6 +2755,7 @@ impl CoreManager {
                     logs.push(LogEntry {
                         at: now_iso(),
                         level: "warn".to_string(),
+                        category: "core".to_string(),
                         line,
                     });
                     if logs.len() > 700 {

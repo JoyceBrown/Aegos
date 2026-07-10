@@ -186,18 +186,25 @@ try {
     const commandCount = (name) => window.__aegosCalls.filter((item) => item.command === name).length;
     const connectionsBefore = commandCount('connections');
     const diagnosticsBefore = commandCount('diagnostics');
-    for (let i = 0; i < 140; i += 1) {
+    let lastRapidPage = 'home';
+    for (let i = 0; i < 420; i += 1) {
       const name = navPages[i % navPages.length];
       const button = document.querySelector('[data-page="' + name + '"]');
       const start = performance.now();
-      button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
+      if (i % 2 === 0) {
+        button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
+      } else {
+        button.click();
+      }
       const elapsed = performance.now() - start;
       navDurations.push(elapsed);
+      lastRapidPage = name;
       if (!button.classList.contains('active') || !document.querySelector('[data-page-panel="' + name + '"]')?.classList.contains('active')) {
         activeFailures.push(name);
       }
       if (i % 7 === 0) await nextFrame();
     }
+    const finalRapidPage = document.querySelector('.nav button.active')?.dataset.page || '';
     await wait(250);
     const connectionsBeforeQuiet = commandCount('connections');
     const diagnosticsBeforeQuiet = commandCount('diagnostics');
@@ -267,6 +274,8 @@ try {
         callsAddedByMenus: callsBeforeFilters - callsBeforeMenus,
         callsAddedByFilters: window.__aegosCalls.length - callsBeforeFilters
       },
+      finalRapidPage,
+      lastRapidPage,
       longTasks
     };
   })()`);
@@ -278,6 +287,7 @@ try {
   if (report.filters.p95Ms > 4 || report.filters.maxMs > 12) failures.push(`filters too slow: p95=${report.filters.p95Ms.toFixed(2)}ms max=${report.filters.maxMs.toFixed(2)}ms`);
   if (report.calls.connectionsBeforeQuiet !== report.calls.connectionsBefore) failures.push('rapid navigation triggered connections before quiet period');
   if (report.calls.diagnosticsBeforeQuiet !== report.calls.diagnosticsBefore) failures.push('rapid navigation triggered diagnostics before quiet period');
+  if (report.finalRapidPage !== report.lastRapidPage) failures.push(`rapid navigation settled on ${report.finalRapidPage}, expected ${report.lastRapidPage}`);
   if (report.calls.connectionsAfterSettle < report.calls.connectionsBeforeQuiet + 1) failures.push('settled connections page did not refresh after quiet period');
   if (report.calls.callsAddedByMenus !== 0) failures.push('menu toggles triggered backend calls');
   if (report.calls.callsAddedByFilters !== 0) failures.push('filter/search interactions triggered backend calls');

@@ -143,7 +143,12 @@ try {
           controller: state.running,
           mode: state.mode,
           traffic: { up: 128, down: 256 },
-          logs: [],
+          logs: [
+            { at: '10:00:00', level: 'info', category: 'runtime', line: 'Aegos started' },
+            { at: '10:00:01', level: 'core', category: 'core', line: 'mihomo ready' },
+            { at: '10:00:02', level: 'warn', category: 'diagnostic', line: 'Diagnostic warning' },
+            { at: '10:00:03', level: 'debug', category: 'debug', line: 'debug detail' }
+          ],
           activeProfile: profiles.find((item) => item.id === state.activeProfileId),
           network: { lanIp: '192.168.1.2', proxyEndpoint: '127.0.0.1:' + state.settings.mixedPort, outboundIp: '-' },
           permissions: { isAdmin: false, requiresAdminFor: ['TUN', 'Kill Switch'] },
@@ -407,6 +412,15 @@ try {
     if (!document.querySelector('#diagSummary .diagnostic-status')) throw new Error('diagnostic summary did not render');
     if (!document.querySelector('#diagRows .diagnostic-row.severity-warning')) throw new Error('diagnostic severity row did not render');
     if (!document.querySelector('#diagRows .diagnostic-hint')) throw new Error('diagnostic actionable hint did not render');
+    await click('[data-page="logs"]');
+    const callsBeforeLogFilter = window.__aegosCalls.length;
+    await click('[data-log-filter="core"]');
+    if (!document.querySelector('[data-log-filter="core"]')?.classList.contains('active')) throw new Error('core log filter did not activate');
+    if (!document.querySelector('#logRows')?.textContent.includes('mihomo ready')) throw new Error('core log filter did not show core log');
+    if (document.querySelector('#logRows')?.textContent.includes('Diagnostic warning')) throw new Error('core log filter leaked diagnostic log');
+    await click('[data-log-filter="all"]');
+    if (!document.querySelector('#logRows')?.textContent.includes('Diagnostic warning')) throw new Error('all log filter did not restore diagnostic log');
+    if (window.__aegosCalls.length !== callsBeforeLogFilter) throw new Error('log filters triggered backend calls');
     await click('[data-page="settings"]');
     if (!document.querySelector('.settings-summary-grid')) throw new Error('settings runtime summary did not render');
     if (document.querySelectorAll('[data-page-panel="settings"] .settings-section').length < 5) throw new Error('settings grouped sections did not render');
