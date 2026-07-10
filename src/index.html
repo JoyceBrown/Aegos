@@ -13,7 +13,7 @@
         <div class="brand-mark">A</div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v2.6.6</span>
+          <span id="appVersionLabel" class="brand-version">v2.6.7</span>
         </div>
       </section>
 
@@ -146,20 +146,28 @@
         </section>
 
         <section class="home-nodes panel">
-          <header class="mini-head">
-            <h2>常用节点</h2>
-            <button data-page-jump="nodes">全部节点</button>
+          <header class="mini-head home-filter-head">
+            <div class="home-filter-tabs">
+              <button class="active" data-home-mode="frequent">常用节点</button>
+              <button data-home-mode="favorite">收藏节点</button>
+              <button data-home-mode="region">常用地区</button>
+              <button data-home-mode="fixed">固定节点</button>
+            </div>
+            <div class="home-filter-actions">
+              <button id="addFixedNodeBtn">添加固定节点</button>
+              <button data-page-jump="nodes">全部节点</button>
+            </div>
           </header>
-          <div class="region-row">
+          <div id="homeRegionRow" class="region-row hidden">
             <strong>&#24120;&#29992;&#22320;&#21306;</strong>
             <button data-region="HK"><b>HK</b>&#39321;&#28207;</button>
-            <button data-region="JP"><b>JP</b>&#26085;&#26412;</button>
-            <button data-region="SG"><b>SG</b>&#26032;&#21152;&#22369;</button>
             <button data-region="TW"><b>TW</b>&#21488;&#28286;</button>
             <button data-region="US"><b>US</b>&#32654;&#22269;</button>
+            <button data-region="JP"><b>JP</b>&#26085;&#26412;</button>
+            <button data-region="SG"><b>SG</b>&#26032;&#21152;&#22369;</button>
             <button data-region="GB"><b>GB</b>&#33521;&#22269;</button>
           </div>
-          <div class="home-row-head"><span></span><span></span><span>节点名称</span><span>地址</span><span>延迟</span><span>丢包率</span><span>状态</span></div>
+          <div class="home-row-head"><span></span><span></span><span>节点名称</span><span>地址</span><span>延迟</span><span>丢包率</span></div>
           <div id="homeNodeRows" class="home-node-list"></div>
         </section>
       </section>
@@ -183,7 +191,7 @@
             </div>
           </header>
           <div class="node-table">
-            <div class="row head"><span></span><span></span><span>节点名称</span><span>地址</span><span>延迟</span><span>丢包率</span><span>负载</span><span>流量</span><span>状态</span><span>操作</span></div>
+            <div class="row head"><span></span><span></span><span>节点名称</span><span>地址</span><span>延迟</span><span>丢包率</span><span>负载</span><span>流量</span><span class="row-action-labels"><span>测速</span><span>编辑</span><span>收藏</span></span></div>
             <div id="nodeRows"></div>
           </div>
         </section>
@@ -222,7 +230,7 @@
       </section>
 
       <section class="page" data-page-panel="diagnostics">
-        <section class="panel fill page-card">
+        <section class="panel fill page-card diagnostic-card">
           <header class="section-head">
             <div><h2>诊断</h2><p>检查内核、端口、代理、TUN 与 Kill Switch 状态。</p></div>
             <div class="section-actions">
@@ -328,6 +336,34 @@
       </section>
     </section>
   </main>
+  <div id="nodeEditorOverlay" class="editor-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="nodeEditorTitle">
+    <form id="nodeEditorForm" class="editor-dialog">
+      <header>
+        <div>
+          <h3 id="nodeEditorTitle">编辑固定节点</h3>
+          <p>适合住宅、静态 IP 或自建节点；保存后会写入当前订阅配置。</p>
+        </div>
+        <button id="closeNodeEditorBtn" type="button" aria-label="关闭">×</button>
+      </header>
+      <input id="nodeOriginalNameInput" type="hidden">
+      <div class="editor-grid">
+        <label><span>名称</span><input id="nodeEditNameInput" required placeholder="Home Static JP"></label>
+        <label><span>协议</span><select id="nodeEditTypeSelect"><option value="ss">SS</option><option value="trojan">Trojan</option><option value="vmess">VMess</option><option value="vless">VLESS</option><option value="socks5">SOCKS5</option><option value="http">HTTP</option><option value="hysteria2">Hysteria2</option><option value="tuic">TUIC</option></select></label>
+        <label><span>地址</span><input id="nodeEditServerInput" required placeholder="example.com"></label>
+        <label><span>端口</span><input id="nodeEditPortInput" required type="number" min="1" max="65535" placeholder="443"></label>
+        <label><span>密码 / UUID</span><input id="nodeEditSecretInput" placeholder="password or uuid"></label>
+        <label><span>加密</span><input id="nodeEditCipherInput" placeholder="aes-128-gcm / auto"></label>
+      </div>
+      <div class="editor-options">
+        <label><input id="nodeEditTlsToggle" type="checkbox">TLS</label>
+        <label><input id="nodeEditUdpToggle" type="checkbox" checked>UDP</label>
+      </div>
+      <footer>
+        <button id="cancelNodeEditorBtn" type="button" class="ghost">取消</button>
+        <button id="saveNodeEditorBtn" type="submit" class="primary compact">保存节点</button>
+      </footer>
+    </form>
+  </div>
   <script src="./app.js"></script>
 </body>
 </html>

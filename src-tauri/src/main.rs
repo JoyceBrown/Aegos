@@ -114,6 +114,8 @@ struct Settings {
     reliability_candidate_limit: u64,
     #[serde(default)]
     selected_proxy_map: HashMap<String, String>,
+    #[serde(default)]
+    manual_nodes: HashMap<String, HashMap<String, JsonValue>>,
     profiles: Vec<Profile>,
 }
 
@@ -1015,7 +1017,11 @@ fn download_profile_source_url(url: &str) -> Result<ProfileSource, String> {
     Ok(source)
 }
 
-fn patch_config_with_settings(source: YamlValue, settings: &Settings) -> Result<YamlValue, String> {
+fn patch_config_with_settings(
+    source: YamlValue,
+    settings: &Settings,
+    profile_id: Option<&str>,
+) -> Result<YamlValue, String> {
     let mut config = match source {
         YamlValue::Mapping(map) => map,
         _ => Mapping::new(),
@@ -1097,6 +1103,10 @@ fn patch_config_with_settings(source: YamlValue, settings: &Settings) -> Result<
         set_yaml(get_mapping_mut(tun), "enable", YamlValue::Bool(false));
     }
 
+    if let Some(profile_id) = profile_id {
+        apply_manual_nodes(&mut config, settings, profile_id)?;
+    }
+
     let proxy_names: Vec<YamlValue> = config
         .get(yaml_key("proxies"))
         .and_then(|v| v.as_sequence())
@@ -1139,6 +1149,240 @@ fn patch_config_with_settings(source: YamlValue, settings: &Settings) -> Result<
         );
     }
     Ok(YamlValue::Mapping(config))
+}
+
+fn normalize_manual_node(input: &JsonValue) -> Result<JsonValue, String> {
+    let Some(map) = input.as_object() else {
+        return Err("手动节点必须是对象".to_string());
+    };
+    let name = map
+        .get("name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim();
+    let server = map
+        .get("server")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim();
+    let node_type = map
+        .get("type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("ss")
+        .trim()
+        .to_lowercase();
+    let port = map.get("port").and_then(|value| value.as_u64()).or_else(|| {
+        map.get("port")
+            .and_then(|value| value.as_str())
+            .and_then(|value| value.trim().parse::<u64>().ok())
+    });
+    let Some(port) = port else {
+        return Err("请输入固定节点端口".to_string());
+    };
+    if name.is_empty() {
+        return Err("请输入固定节点名称".to_string());
+    }
+    if server.is_empty() {
+        return Err("请输入固定节点地址".to_string());
+    }
+    if port == 0 || port > 65535 {
+        return Err("固定节点端口必须在 1-65535 之间".to_string());
+    }
+    if !matches!(
+        node_type.as_str(),
+        "ss" | "vmess" | "vless" | "trojan" | "socks5" | "http" | "hysteria2" | "tuic"
+    ) {
+        return Err(format!("暂不支持的固定节点协议：{node_type}"));
+    }
+
+    let mut node = serde_json::Map::new();
+    node.insert("name".to_string(), json!(name));
+    node.insert("type".to_string(), json!(node_type));
+    node.insert("server".to_string(), json!(server));
+    node.insert("port".to_string(), json!(port));
+
+    for key in [
+        "password",
+        "cipher",
+        "uuid",
+        "alterId",
+        "username",
+        "servername",
+        "sni",
+        "network",
+        "flow",
+        "skip-cert-verify",
+    ] {
+        if let Some(value) = map.get(key) {
+            if !value.as_str().map(|text| text.trim().is_empty()).unwrap_or(false) {
+                node.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    if let Some(value) = map.get("tls").and_then(|value| value.as_bool()) {
+        node.insert("tls".to_string(), json!(value));
+    }
+    node.insert(
+        "udp".to_string(),
+        json!(map.get("udp").and_then(|value| value.as_bool()).unwrap_or(true)),
+    );
+    node.insert("manual".to_string(), json!(true));
+    node.insert("fixed".to_string(), json!(true));
+    node.insert("static".to_string(), json!(true));
+    node.insert("source".to_string(), json!("manual"));
+    Ok(JsonValue::Object(node))
+}
+
+fn manual_node_yaml(node: &JsonValue) -> Result<YamlValue, String> {
+    let mut clean = serde_json::Map::new();
+    let Some(map) = node.as_object() else {
+        return Err("手动节点数据无效".to_string());
+    };
+    for (key, value) in map {
+        if matches!(
+            key.as_str(),
+            "manual" | "fixed" | "static" | "residential" | "source" | "profileType" | "originalName"
+        ) {
+            continue;
+        }
+        clean.insert(key.clone(), value.clone());
+    }
+    serde_yaml::to_value(JsonValue::Object(clean)).map_err(|err| err.to_string())
+}
+
+fn proxy_name(value: &YamlValue) -> Option<&str> {
+    value
+        .as_mapping()
+        .and_then(|map| map.get(yaml_key("name")))
+        .and_then(|value| value.as_str())
+}
+
+fn ensure_yaml_sequence<'a>(config: &'a mut Mapping, key: &str) -> &'a mut Vec<YamlValue> {
+    let value = config
+        .entry(yaml_key(key))
+        .or_insert_with(|| YamlValue::Sequence(Vec::new()));
+    if !matches!(value, YamlValue::Sequence(_)) {
+        *value = YamlValue::Sequence(Vec::new());
+    }
+    value.as_sequence_mut().expect("sequence")
+}
+
+fn insert_manual_node_into_config(
+    config: &mut Mapping,
+    node: &JsonValue,
+    original_name: Option<&str>,
+) -> Result<(), String> {
+    let name = node
+        .get("name")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "手动节点缺少名称".to_string())?;
+    let original = original_name.unwrap_or(name);
+    let proxy = manual_node_yaml(node)?;
+    {
+        let proxies = ensure_yaml_sequence(config, "proxies");
+        let existing_index = proxies
+            .iter()
+            .position(|item| proxy_name(item) == Some(original));
+        if proxies
+            .iter()
+            .enumerate()
+            .any(|(index, item)| proxy_name(item) == Some(name) && Some(index) != existing_index)
+        {
+            return Err(format!("固定节点名称已存在：{name}"));
+        }
+        if let Some(index) = existing_index {
+            proxies[index] = proxy;
+        } else {
+            proxies.push(proxy);
+        }
+    }
+
+    let groups = ensure_yaml_sequence(config, "proxy-groups");
+    if groups.is_empty() {
+        let mut group = Mapping::new();
+        set_yaml(&mut group, "name", yaml_str("GLOBAL"));
+        set_yaml(&mut group, "type", yaml_str("select"));
+        set_yaml(
+            &mut group,
+            "proxies",
+            YamlValue::Sequence(vec![yaml_str(name), yaml_str("DIRECT")]),
+        );
+        groups.push(YamlValue::Mapping(group));
+        return Ok(());
+    }
+
+    let mut target_index = 0usize;
+    for (index, group) in groups.iter().enumerate() {
+        let Some(map) = group.as_mapping() else {
+            continue;
+        };
+        let group_name = map
+            .get(yaml_key("name"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let group_type = map
+            .get(yaml_key("type"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if matches!(group_name, "GLOBAL" | "Proxies" | "Proxy")
+            || matches!(
+                group_type.as_str(),
+                "select" | "url-test" | "fallback" | "load-balance"
+            )
+        {
+            target_index = index;
+            break;
+        }
+    }
+
+    for group in groups.iter_mut() {
+        let Some(map) = group.as_mapping_mut() else {
+            continue;
+        };
+        let list = map
+            .entry(yaml_key("proxies"))
+            .or_insert_with(|| YamlValue::Sequence(Vec::new()));
+        if !matches!(list, YamlValue::Sequence(_)) {
+            *list = YamlValue::Sequence(Vec::new());
+        }
+        if let Some(list) = list.as_sequence_mut() {
+            for item in list.iter_mut() {
+                if item.as_str() == Some(original) {
+                    *item = yaml_str(name);
+                }
+            }
+        }
+    }
+
+    if let Some(map) = groups
+        .get_mut(target_index)
+        .and_then(|group| group.as_mapping_mut())
+    {
+        let list = map
+            .entry(yaml_key("proxies"))
+            .or_insert_with(|| YamlValue::Sequence(Vec::new()));
+        if let Some(list) = list.as_sequence_mut() {
+            if !list.iter().any(|item| item.as_str() == Some(name)) {
+                list.push(yaml_str(name));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_manual_nodes(
+    config: &mut Mapping,
+    settings: &Settings,
+    profile_id: &str,
+) -> Result<(), String> {
+    let Some(nodes) = settings.manual_nodes.get(profile_id) else {
+        return Ok(());
+    };
+    for node in nodes.values() {
+        insert_manual_node_into_config(config, node, None)?;
+    }
+    Ok(())
 }
 
 fn yaml_sequence<'a>(config: &'a YamlValue, key: &str) -> Option<&'a Vec<YamlValue>> {
@@ -1526,14 +1770,14 @@ rules:
         .expect("yaml");
         let mut settings = default_settings();
         settings.secret = "test".to_string();
-        let first = patch_config_with_settings(source.clone(), &settings).expect("first patch");
-        let second = patch_config_with_settings(source, &settings).expect("second patch");
+        let first = patch_config_with_settings(source.clone(), &settings, None).expect("first patch");
+        let second = patch_config_with_settings(source, &settings, None).expect("second patch");
         let first_yaml = serde_yaml::to_string(&first).expect("first yaml");
         let second_yaml = serde_yaml::to_string(&second).expect("second yaml");
         assert_eq!(sha256_text(&first_yaml), sha256_text(&second_yaml));
 
         settings.mode = "global".to_string();
-        let changed = patch_config_with_settings(first, &settings).expect("changed patch");
+        let changed = patch_config_with_settings(first, &settings, None).expect("changed patch");
         let changed_yaml = serde_yaml::to_string(&changed).expect("changed yaml");
         assert_ne!(sha256_text(&second_yaml), sha256_text(&changed_yaml));
     }
@@ -1790,6 +2034,7 @@ fn default_settings() -> Settings {
         reliability_max_delay_ms: default_reliability_max_delay_ms(),
         reliability_candidate_limit: default_reliability_candidate_limit(),
         selected_proxy_map: HashMap::new(),
+        manual_nodes: HashMap::new(),
         profiles: Vec::new(),
     }
 }
@@ -2262,7 +2507,11 @@ impl CoreManager {
 
     fn ensure_direct_profile(&mut self) -> Result<(), String> {
         let path = self.profile_dir.join("direct.yaml");
-        let config = self.patched_config(YamlValue::Mapping(Mapping::new()))?;
+        let config = patch_config_with_settings(
+            YamlValue::Mapping(Mapping::new()),
+            &self.settings,
+            Some("direct"),
+        )?;
         fs::write(
             &path,
             serde_yaml::to_string(&config).map_err(|err| err.to_string())?,
@@ -2440,8 +2689,8 @@ impl CoreManager {
             .or_else(|| self.settings.profiles.first().cloned())
     }
 
-    fn patched_config(&self, source: YamlValue) -> Result<YamlValue, String> {
-        patch_config_with_settings(source, &self.settings)
+    fn patched_config(&self, profile: &Profile, source: YamlValue) -> Result<YamlValue, String> {
+        patch_config_with_settings(source, &self.settings, Some(&profile.id))
     }
 
     fn preflight_profile_file(&self, profile: &Profile) -> Result<JsonValue, String> {
@@ -2455,7 +2704,7 @@ impl CoreManager {
             .map_err(|err| format!("profile config read failed {}: {err}", path.display()))?;
         let source: YamlValue = serde_yaml::from_str(&raw)
             .map_err(|err| format!("profile YAML parse failed {}: {err}", path.display()))?;
-        let patched = self.patched_config(source)?;
+        let patched = self.patched_config(profile, source)?;
         let report = preflight_runtime_config(&patched, profile, &self.settings)?;
         let yaml = serde_yaml::to_string(&patched).map_err(|err| err.to_string())?;
         let digest = sha256_text(&yaml);
@@ -2513,7 +2762,7 @@ impl CoreManager {
             .map_err(|err| format!("配置读取失败 {}: {err}", path.display()))?;
         let source: YamlValue = serde_yaml::from_str(&raw)
             .map_err(|err| format!("YAML 解析失败 {}: {err}", path.display()))?;
-        let patched = self.patched_config(source)?;
+        let patched = self.patched_config(profile, source)?;
         let report = preflight_runtime_config(&patched, profile, &self.settings)?;
         fs::write(
             &path,
@@ -3036,6 +3285,7 @@ impl CoreManager {
             "allowLan": self.settings.allow_lan,
             "logLevel": self.settings.log_level,
             "selectedProxyMap": &self.settings.selected_proxy_map,
+            "manualNodes": &self.settings.manual_nodes,
             "reliability": {
                 "auto": self.settings.reliability_auto,
                 "profileFailover": self.settings.reliability_profile_failover,
@@ -3345,7 +3595,43 @@ impl CoreManager {
         let mut groups = result.unwrap_or_else(|| self.profile_proxy_groups());
         self.apply_group_resolution(&mut groups);
         self.apply_speed_test_delays(&mut groups);
+        self.annotate_manual_groups(&mut groups);
         groups
+    }
+
+    fn active_manual_node_names(&self) -> HashSet<String> {
+        self.active_profile()
+            .and_then(|profile| self.settings.manual_nodes.get(&profile.id).cloned())
+            .map(|nodes| nodes.keys().cloned().collect::<HashSet<_>>())
+            .unwrap_or_default()
+    }
+
+    fn annotate_manual_groups(&self, groups: &mut JsonValue) {
+        let names = self.active_manual_node_names();
+        if names.is_empty() {
+            return;
+        }
+        let Some(groups) = groups.as_array_mut() else {
+            return;
+        };
+        for group in groups {
+            let Some(items) = group.get_mut("items").and_then(|items| items.as_array_mut()) else {
+                continue;
+            };
+            for item in items {
+                let Some(name) = item.get("name").and_then(|value| value.as_str()) else {
+                    continue;
+                };
+                if names.contains(name) {
+                    if let Some(map) = item.as_object_mut() {
+                        map.insert("manual".to_string(), json!(true));
+                        map.insert("fixed".to_string(), json!(true));
+                        map.insert("static".to_string(), json!(true));
+                        map.insert("source".to_string(), json!("manual"));
+                    }
+                }
+            }
+        }
     }
 
     fn profile_proxy_groups(&self) -> JsonValue {
@@ -4272,8 +4558,8 @@ impl CoreManager {
     fn add_profile_url(&mut self, url: &str) -> Result<Profile, String> {
         let parsed = reqwest::Url::parse(url).map_err(|err| err.to_string())?;
         let source = self.download_profile_source(url)?;
-        let patched = self.patched_config(source)?;
         let id = format!("url-{}", now_iso());
+        let patched = patch_config_with_settings(source, &self.settings, Some(&id))?;
         let path = self.profile_dir.join(format!("{id}.yaml"));
         fs::write(
             &path,
@@ -4314,7 +4600,7 @@ impl CoreManager {
             return Ok(profile);
         };
         let source = self.download_profile_source(&url)?;
-        let patched = self.patched_config(source)?;
+        let patched = self.patched_config(&profile, source)?;
         fs::write(
             &profile.path,
             serde_yaml::to_string(&patched).map_err(|err| err.to_string())?,
@@ -4432,6 +4718,56 @@ impl CoreManager {
         Ok(true)
     }
 
+    fn save_manual_node(&mut self, input: JsonValue) -> Result<JsonValue, String> {
+        let profile = self
+            .active_profile()
+            .ok_or_else(|| "请先导入或启用一个订阅，再添加固定节点".to_string())?;
+        let node = normalize_manual_node(&input)?;
+        let name = node
+            .get("name")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "固定节点缺少名称".to_string())?
+            .to_string();
+        let original_name = input
+            .get("originalName")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let previous_settings = self.settings.clone();
+        let profile_nodes = self
+            .settings
+            .manual_nodes
+            .entry(profile.id.clone())
+            .or_default();
+        if !original_name.is_empty() && original_name != name {
+            profile_nodes.remove(&original_name);
+        }
+        profile_nodes.insert(name.clone(), node.clone());
+        if let Err(err) = self.save_settings() {
+            self.settings = previous_settings;
+            return Err(format!("固定节点保存失败：{err}"));
+        }
+        if self.process.is_some() && self.settings.active_profile_id == profile.id {
+            if let Err(err) = self.hot_reload_profile(&profile) {
+                self.settings = previous_settings;
+                let _ = self.save_settings();
+                let message = format!("固定节点保存后热重载失败，已回滚：{err}");
+                self.add_log(&message, "error");
+                return Err(message);
+            }
+        }
+        self.add_log(
+            format!("Manual fixed node saved: {} / {}", profile.name, name),
+            "info",
+        );
+        Ok(json!({
+            "node": node,
+            "profileId": profile.id,
+            "settings": self.public_settings()
+        }))
+    }
+
     fn diagnostics(&mut self) -> JsonValue {
         let is_admin = is_process_elevated();
         let admin_required = self.settings.tun_enabled || self.settings.kill_switch_enabled;
@@ -4453,7 +4789,7 @@ impl CoreManager {
                     .map_err(|err| format!("配置读取失败 {}: {err}", path.display()))?;
                 let source: YamlValue = serde_yaml::from_str(&raw)
                     .map_err(|err| format!("YAML 解析失败 {}: {err}", path.display()))?;
-                let patched = self.patched_config(source)?;
+                let patched = self.patched_config(profile, source)?;
                 preflight_runtime_config(&patched, profile, &self.settings).map(|report| {
                     format!(
                         "{} proxies, {} groups, {} rules",
@@ -4710,8 +5046,8 @@ fn add_profile_url_detached(
     };
     let source = download_profile_source_url(url)?;
     let summary = source.summary.clone();
-    let patched = patch_config_with_settings(source.config, &settings)?;
     let id = format!("url-{}", now_iso());
+    let patched = patch_config_with_settings(source.config, &settings, Some(&id))?;
     let path = profile_dir.join(format!("{id}.yaml"));
     let mut profile = Profile {
         id: id.clone(),
@@ -4805,7 +5141,7 @@ fn update_profile_detached(
     };
     let source = download_profile_source_url(&url)?;
     let summary = source.summary.clone();
-    let patched = patch_config_with_settings(source.config, &settings)?;
+    let patched = patch_config_with_settings(source.config, &settings, Some(&profile.id))?;
     profile.node_count = summary.proxies;
     profile.proxy_group_count = summary.proxy_groups;
     preflight_runtime_config(&patched, &profile, &settings)?;
@@ -5517,6 +5853,12 @@ fn remove_profile(state: State<AppState>, id: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
+fn save_manual_node(state: State<AppState>, node: JsonValue) -> Result<JsonValue, String> {
+    let _operation = lock_operation_queue(&state.operations, "save_manual_node command")?;
+    state.core.lock().unwrap().save_manual_node(node)
+}
+
+#[tauri::command]
 fn diagnostics(state: State<AppState>) -> Result<JsonValue, String> {
     Ok(state.core.lock().unwrap().diagnostics())
 }
@@ -5589,6 +5931,7 @@ fn main() {
             update_profile,
             set_active_profile,
             remove_profile,
+            save_manual_node,
             diagnostics,
             clear_logs,
             window_minimize,

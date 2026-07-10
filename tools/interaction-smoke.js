@@ -271,6 +271,13 @@ try {
             }
             return { ok: true, proxy: args.name, realProxyName: args.name, delay: 42, healthStatus: 'low' };
           }
+          if (command === 'save_manual_node') {
+            const node = { ...args.node, alive: true, delay: -1, manual: true, fixed: true, static: true, source: 'manual' };
+            const index = groups[0].items.findIndex((item) => item.name === (args.node?.originalName || args.node?.name));
+            if (index >= 0) groups[0].items[index] = node;
+            else groups[0].items.push(node);
+            return { node, profileId: state.activeProfileId, settings: status().settings };
+          }
           if (command === 'speed_test_status') {
             return { running: false, total: groups[0].items.length, completed: groups[0].items.length, ok: groups[0].items.length, failed: 0 };
           }
@@ -382,6 +389,22 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 900));
     const diagnosticCallsAfterSettle = window.__aegosCalls.filter((item) => item.command === 'diagnostics').length;
     if (diagnosticCallsAfterSettle !== diagnosticCallsBeforeNav) throw new Error('diagnostics page navigation auto-ran heavy diagnostics');
+    if (document.querySelectorAll('[data-home-mode]').length !== 4) throw new Error('home node mode buttons did not render');
+    await navDown('[data-page="home"]');
+    await click('[data-home-mode="region"]');
+    if (document.querySelector('#homeRegionRow')?.classList.contains('hidden')) throw new Error('common region subpage buttons did not show');
+    await click('[data-region="HK"]');
+    if (!document.querySelector('[data-region="HK"]')?.classList.contains('active')) throw new Error('home region child filter did not become active');
+    await click('[data-home-mode="fixed"]');
+    if (!document.querySelector('[data-home-mode="fixed"]')?.classList.contains('active')) throw new Error('fixed node mode did not become active');
+    await click('#addFixedNodeBtn');
+    document.querySelector('#nodeEditNameInput').value = 'Fixed Smoke 01';
+    document.querySelector('#nodeEditTypeSelect').value = 'socks5';
+    document.querySelector('#nodeEditServerInput').value = '198.51.100.10';
+    document.querySelector('#nodeEditPortInput').value = '1080';
+    await click('#saveNodeEditorBtn');
+    if (!window.__aegosCalls.some((item) => item.command === 'save_manual_node')) throw new Error('fixed node editor did not save through backend command');
+    if (!document.querySelector('#homeNodeRows .row[data-node="Fixed Smoke 01"]')) throw new Error('fixed node filter did not show saved manual node');
     await navDown('[data-page="nodes"]');
     await click('[data-node-filter="low"]');
     if (!document.querySelector('[data-node-filter="low"]').classList.contains('active')) throw new Error('node filter tab did not become active');
@@ -399,11 +422,16 @@ try {
     const rowActionBox = document.querySelector('#nodeRows .row-actions')?.getBoundingClientRect();
     const tableBox = document.querySelector('.node-table')?.getBoundingClientRect();
     if (!rowActionBox || !tableBox || rowActionBox.right > tableBox.right - 6) throw new Error('node row actions are too close to the table edge');
-    await click('#nodeRows [data-node-action="details"]');
-    if (!document.querySelector('#protectionNotice')?.textContent.includes('节点详情')) throw new Error('node details action did not show feedback');
+    if (!document.querySelector('.row-action-labels')?.textContent.includes('测速')) throw new Error('node action labels did not render');
+    if (document.querySelector('#nodeRows .row[data-node]')?.children.length !== 9) throw new Error('node status column was not removed');
+    await click('#nodeRows [data-node-action="edit"]');
+    if (!document.querySelector('#protectionNotice')?.textContent.includes('编辑节点')) throw new Error('node edit action did not show feedback');
     await click('#nodeRows [data-node-action="test"]');
     if (!window.__aegosCalls.some((item) => item.command === 'test_single_proxy_delay')) throw new Error('single node delay action did not call backend');
-    await click('#nodeRows [data-node-action="connect"]');
+    await click('#nodeRows [data-node-action="favorite"]');
+    await click('[data-node-filter="favorite"]');
+    if (!document.querySelector('#nodeRows .row[data-node]')) throw new Error('favorite node filter did not show favorited node');
+    await click('#nodeRows .row[data-node]');
     await click('[data-page="connections"]');
     await click('#refreshConnectionsBtn');
     document.querySelector('#closeAllConnectionsBtn').click();

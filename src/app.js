@@ -26,6 +26,7 @@ let statusBusy = false;
 let nodeBusy = false;
 let lastStatusAt = 0;
 let homeRegionFilter = '';
+let homeNodeMode = 'frequent';
 let nodePageFilter = 'all';
 let nodeSearchKeyword = '';
 let logFilter = 'all';
@@ -50,6 +51,7 @@ const recentInvokes = [];
 const uiStore = {
   state: {
     page: 'home',
+    homeNodeMode: 'frequent',
     homeRegionFilter: '',
     nodePageFilter: 'all'
   },
@@ -131,6 +133,7 @@ const pagePanels = new Map($all('.page').map((panel) => [panel.dataset.pagePanel
 const pageTitleEl = $('#pageTitle');
 let renderedPage = '';
 let renderedHomeRegionFilter = null;
+let renderedHomeNodeMode = null;
 let renderedNodePageFilter = null;
 let lastNavAt = 0;
 const pageCacheState = {
@@ -139,6 +142,25 @@ const pageCacheState = {
   profiles: { loaded: false, loading: false, updatedAt: 0 },
   logs: { loaded: false, loading: false, updatedAt: 0 }
 };
+
+function readLocalJson(key, fallback) {
+  try {
+    return JSON.parse(localStorage.getItem(key) || '') ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+let favoriteNodes = new Set(readLocalJson('aegos.favoriteNodes', []));
+let nodeUsageCounts = new Map(Object.entries(readLocalJson('aegos.nodeUsageCounts', {})));
+
+function saveFavoriteNodes() {
+  localStorage.setItem('aegos.favoriteNodes', JSON.stringify([...favoriteNodes]));
+}
+
+function saveNodeUsageCounts() {
+  localStorage.setItem('aegos.nodeUsageCounts', JSON.stringify(Object.fromEntries(nodeUsageCounts)));
+}
 
 function invoke(command, args = {}) {
   const bridge = window.__TAURI__?.core?.invoke;
@@ -218,10 +240,13 @@ function normalizeRows(items = []) {
           Number(item.jitter ?? 0),
           score,
           Boolean(item.recommended),
-          Number(item.failureStreak ?? 0)
+          Number(item.failureStreak ?? 0),
+          favoriteNodes.has(item.name),
+          isFixedNodeItem(item),
+          Number(nodeUsageCounts.get(item.name) || 0)
         ];
       })
-    : fallbackNodes.map((row, index) => [...row, -1, true, index === 0, 'direct', 'unknown', -1, 0, 999999, false, 0]);
+    : fallbackNodes.map((row, index) => [...row, -1, true, index === 0, 'direct', 'unknown', -1, 0, 999999, false, 0, false, false, index === 0 ? 1 : 0]);
 }
 
 function filterRows(rows, filter) {
@@ -233,7 +258,8 @@ function filterRows(rows, filter) {
   if (filter === 'asia') return rows.filter(([region]) => ['HK', 'JP', 'SG', 'TW'].includes(region));
   if (filter === 'europe') return rows.filter(([region]) => ['GB'].includes(region));
   if (filter === 'north-america') return rows.filter(([region]) => ['US'].includes(region));
-  if (filter === 'favorite' || filter === 'recent') return rows.filter((row) => row[5]);
+  if (filter === 'favorite') return rows.filter((row) => row[13]);
+  if (filter === 'recent') return rows.filter((row) => row[15] > 0 || row[5]);
   return rows;
 }
 
@@ -259,8 +285,16 @@ function normalizeNodeItem(item = {}, index = 0) {
     Number(item.jitter ?? 0),
     score,
     Boolean(item.recommended),
-    Number(item.failureStreak ?? 0)
+    Number(item.failureStreak ?? 0),
+    favoriteNodes.has(name),
+    isFixedNodeItem(item),
+    Number(nodeUsageCounts.get(name) || 0)
   ];
+}
+
+function isFixedNodeItem(item = {}) {
+  const text = `${item.name || ''} ${item.server || ''} ${item.source || ''} ${item.profileType || ''} ${item.type || ''}`.toLowerCase();
+  return Boolean(item.manual || item.fixed || item.static || item.residential || /固定|住宅|静态|自建|manual|fixed|static|residential/.test(text));
 }
 
 function rowMatchesNodeFilter(row, filter) {
@@ -271,7 +305,15 @@ function rowMatchesNodeFilter(row, filter) {
   if (filter === 'asia') return ['HK', 'JP', 'SG', 'TW'].includes(row[0]);
   if (filter === 'europe') return row[0] === 'GB';
   if (filter === 'north-america') return row[0] === 'US';
-  if (filter === 'favorite' || filter === 'recent') return row[5];
+  if (filter === 'favorite') return row[13];
+  if (filter === 'recent') return row[15] > 0 || row[5];
+  return true;
+}
+
+function rowMatchesHomeFilter(row) {
+  if (homeNodeMode === 'favorite') return row[13];
+  if (homeNodeMode === 'fixed') return row[14];
+  if (homeNodeMode === 'region') return !homeRegionFilter || row[0] === homeRegionFilter;
   return true;
 }
 
@@ -282,6 +324,16 @@ function itemMatchesNodeSearch(item = {}, keyword = nodeSearchKeyword) {
 
 function compareBestRows(a, b) {
   return Number(b[11]) - Number(a[11]) || Number(a[10]) - Number(b[10]) || Number(a[3]) - Number(b[3]);
+}
+
+function compareHomeRows(a, b) {
+  const delayA = Number(a[3]) > 0 ? Number(a[3]) : 999999;
+  const delayB = Number(b[3]) > 0 ? Number(b[3]) : 999999;
+  return Number(b[15]) - Number(a[15])
+    || Number(b[5]) - Number(a[5])
+    || Number(b[11]) - Number(a[11])
+    || delayA - delayB
+    || Number(a[10]) - Number(b[10]);
 }
 
 function rememberBestRow(bestRows, row) {
@@ -340,51 +392,41 @@ function renderHomeNodeRow([region, name, host, delay, alive, active]) {
 
 */
 
-function renderNodeRow([region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak]) {
+function renderNodeRow([region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak, favorite]) {
   const delayValue = Number(delay);
   const delayText = delayValue > 0 ? `${Math.round(delayValue)} ms` : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : '-');
   const delayState = delayClass(delayValue);
-  const statusText = healthStatus === 'cooldown' ? '\u51b7\u5374\u4e2d'
-    : recommended ? '\u63a8\u8350'
-    : delayValue > 0 ? (failureStreak > 0 ? '\u4e0d\u7a33\u5b9a' : '\u53ef\u7528')
-    : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : (alive ? '\u5f85\u6d4b\u901f' : '\u4e0d\u53ef\u7528'));
   return `
     <div class="row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="select ${escapeHtml(name)}">
       <span class="radio"></span>
-      <span class="star">&#9734;</span>
+      <span class="star">${favorite ? '&#9733;' : '&#9734;'}</span>
       <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
       <span>${escapeHtml(protocolLabel(protocol))} / ${escapeHtml(host)}</span>
       <span class="${delayState}">${delayText}</span>
       <span>${Number(medianDelay) > 0 ? `${Math.round(Number(medianDelay))} ms` : '-'}</span>
       <span class="load"><span class="bar"></span>${Math.max(0, Math.min(99, Math.round(100 - Math.min(Number(score) || 99, 99))))}%</span>
       <span>${Number(jitter) > 0 ? `${Math.round(Number(jitter))} ms` : '-'}</span>
-      <span class="available">${escapeHtml(statusText)}</span>
       <span class="row-actions">
-        <button data-node-action="connect" data-node="${escapeHtml(name)}" aria-label="connect">&#9655;</button>
-        <button data-node-action="test" data-node="${escapeHtml(name)}" aria-label="test delay">&#9998;</button>
-        <button data-node-action="details" data-node="${escapeHtml(name)}" aria-label="node details">&#8943;</button>
+        <button data-node-action="test" data-node="${escapeHtml(name)}" aria-label="test delay">&#9889;</button>
+        <button data-node-action="edit" data-node="${escapeHtml(name)}" aria-label="edit node">&#9998;</button>
+        <button data-node-action="favorite" data-node="${escapeHtml(name)}" aria-label="favorite node">${favorite ? '&#9733;' : '&#9734;'}</button>
       </span>
     </div>
   `;
 }
 
-function renderHomeNodeRow([region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak]) {
+function renderHomeNodeRow([region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak, favorite]) {
   const delayValue = Number(delay);
   const delayText = delayValue > 0 ? `${Math.round(delayValue)} ms` : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : '-');
   const delayState = delayClass(delayValue);
-  const statusText = healthStatus === 'cooldown' ? '\u51b7\u5374'
-    : recommended ? '\u63a8\u8350'
-    : delayValue > 0 ? (failureStreak > 0 ? '\u4e0d\u7a33' : '\u53ef\u7528')
-    : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : (alive ? '\u5f85\u6d4b\u901f' : '\u4e0d\u53ef\u7528'));
   return `
     <div class="row home-row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="select ${escapeHtml(name)}">
       <span class="radio"></span>
-      <span class="star">&#9734;</span>
+      <span class="star">${favorite ? '&#9733;' : '&#9734;'}</span>
       <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
       <span>${escapeHtml(protocolLabel(protocol))} / ${escapeHtml(host)}</span>
       <span class="${delayState}">${delayText}</span>
       <span>0.0%</span>
-      <span class="available">${escapeHtml(statusText)}</span>
     </div>
   `;
 }
@@ -657,6 +699,7 @@ function snapshotUiState() {
     latestGroup: cloneUiValue(latestGroup),
     selectedNode,
     uiState: cloneUiValue(uiStore.state),
+    homeNodeMode,
     homeRegionFilter,
     nodePageFilter
   };
@@ -668,6 +711,7 @@ function restoreUiState(snapshot) {
   selectedNode = snapshot.selectedNode || '';
   uiStore.set(snapshot.uiState || {
     page: uiStore.state.page,
+    homeNodeMode: snapshot.homeNodeMode || 'frequent',
     homeRegionFilter: snapshot.homeRegionFilter || '',
     nodePageFilter: snapshot.nodePageFilter || 'all'
   });
@@ -728,6 +772,7 @@ function shouldRefreshPageCache(page) {
 }
 
 function renderUiState(state = uiStore.state) {
+  homeNodeMode = state.homeNodeMode || 'frequent';
   homeRegionFilter = state.homeRegionFilter || '';
   nodePageFilter = state.nodePageFilter || 'all';
   const page = pageNames[state.page] ? state.page : 'home';
@@ -742,6 +787,11 @@ function renderUiState(state = uiStore.state) {
   if (renderedHomeRegionFilter !== homeRegionFilter) {
     $all('[data-region]').forEach((button) => button.classList.toggle('active', button.dataset.region === homeRegionFilter));
     renderedHomeRegionFilter = homeRegionFilter;
+  }
+  if (renderedHomeNodeMode !== homeNodeMode) {
+    $all('[data-home-mode]').forEach((button) => button.classList.toggle('active', button.dataset.homeMode === homeNodeMode));
+    $('#homeRegionRow')?.classList.toggle('hidden', homeNodeMode !== 'region');
+    renderedHomeNodeMode = homeNodeMode;
   }
   if (renderedNodePageFilter !== nodePageFilter) {
     $all('[data-node-filter]').forEach((button) => button.classList.toggle('active', button.dataset.nodeFilter === nodePageFilter));
@@ -827,10 +877,7 @@ function renderRows(items = []) {
       matchingNodeCount += 1;
       if (nodeRows.length < nodeRenderLimit) nodeRows.push(row);
     }
-    if (
-      homeRows.length < homeNodeRenderLimit
-      && (!homeRegionFilter || row[0] === homeRegionFilter)
-    ) {
+    if (rowMatchesHomeFilter(row)) {
       homeRows.push(row);
     }
   }
@@ -854,9 +901,18 @@ function renderRows(items = []) {
     ? `<p class="empty">\u5df2\u663e\u793a\u524d ${nodeRows.length} \u4e2a\u8282\u70b9\uff0c\u8bf7\u641c\u7d22\u6216\u7b5b\u9009\u7f29\u5c0f\u8303\u56f4\u3002</p>`
     : '';
   $('#nodeRows').innerHTML = nodeRows.map(renderNodeRow).join('') + overflowNotice || '<p class="empty">\u6682\u65e0\u7b26\u5408\u6761\u4ef6\u7684\u8282\u70b9\u3002</p>';
-  $('#homeNodeRows').innerHTML = (homeRows.length ? homeRows : fallbackBestRows).slice(0, homeNodeRenderLimit)
+  const sortedHomeRows = homeRows.sort(compareHomeRows);
+  const homeFallbackRows = homeNodeMode === 'frequent' ? fallbackBestRows : [];
+  const homeEmptyText = homeNodeMode === 'favorite'
+    ? '\u6682\u65e0\u6536\u85cf\u8282\u70b9\u3002'
+    : homeNodeMode === 'fixed'
+      ? '\u6682\u65e0\u56fa\u5b9a\u8282\u70b9\uff0c\u53ef\u70b9\u51fb\u201c\u6dfb\u52a0\u56fa\u5b9a\u8282\u70b9\u201d\u3002'
+      : homeNodeMode === 'region'
+        ? '\u6682\u65e0\u7b26\u5408\u8be5\u5730\u533a\u7684\u8282\u70b9\u3002'
+        : '\u6682\u65e0\u5e38\u7528\u8282\u70b9\u3002';
+  $('#homeNodeRows').innerHTML = (sortedHomeRows.length ? sortedHomeRows : homeFallbackRows).slice(0, homeNodeRenderLimit)
     .map(renderHomeNodeRow)
-    .join('');
+    .join('') || `<p class="empty">${homeEmptyText}</p>`;
 }
 
 function renderProfiles() {
@@ -1081,6 +1137,10 @@ function applyOptimisticProfile(profileId) {
 
 function applyOptimisticNode(name) {
   selectedNode = name;
+  if (name) {
+    nodeUsageCounts.set(name, Number(nodeUsageCounts.get(name) || 0) + 1);
+    saveNodeUsageCounts();
+  }
   if (latestGroup) latestGroup = { ...latestGroup, now: name };
   renderRows(latestGroup?.items || []);
 }
@@ -1622,28 +1682,113 @@ async function selectNode(name) {
 async function testSingleNode(name, button) {
   if (!name) return;
   applyOptimisticNodeDelay(name, 0);
-  await runButtonAction(button, '\u6d4b\u901f\u4e2d...', async () => {
-    const result = await invoke('test_single_proxy_delay', { name });
-    applyOptimisticNodeDelay(name, Number(result?.delay ?? -1));
-    await refreshNodes(true);
-    const delay = Number(result?.delay ?? -1);
-    if (delay > 0) {
-      setNotice(`\u8282\u70b9\u6d4b\u901f\u5b8c\u6210\uff1a${name} / ${Math.round(delay)} ms`);
-    } else {
-      setNotice(`\u8282\u70b9\u6d4b\u901f\u5931\u8d25\uff1a${name}`);
+  try {
+    await runButtonAction(button, '\u6d4b\u901f\u4e2d...', async () => {
+      const result = await invoke('test_single_proxy_delay', { name });
+      applyOptimisticNodeDelay(name, Number(result?.delay ?? -1));
+      await refreshNodes(true);
+      const delay = Number(result?.delay ?? -1);
+      if (delay > 0) {
+        setNotice(`\u8282\u70b9\u6d4b\u901f\u5b8c\u6210\uff1a${name} / ${Math.round(delay)} ms`);
+      } else {
+        setNotice(`\u8282\u70b9\u6d4b\u901f\u5931\u8d25\uff1a${name}`);
+      }
+    });
+  } catch (err) {
+    applyOptimisticNodeDelay(name, -1);
+    setNotice(`\u8282\u70b9\u6d4b\u901f\u5931\u8d25\uff1a${name} / ${err.message || err}`);
+  }
+}
+
+function setEditorValue(selector, value) {
+  const el = $(selector);
+  if (el) el.value = value ?? '';
+}
+
+function closeNodeEditor() {
+  $('#nodeEditorOverlay')?.classList.add('hidden');
+}
+
+function openNodeEditor(name = '') {
+  const item = name ? findNodeItem(name) : null;
+  const protocol = (item?.type || item?.protocol || 'ss').toLowerCase();
+  setEditorValue('#nodeOriginalNameInput', item?.name || '');
+  setEditorValue('#nodeEditNameInput', item?.name || '');
+  setEditorValue('#nodeEditTypeSelect', ['ss', 'trojan', 'vmess', 'vless', 'socks5', 'http', 'hysteria2', 'tuic'].includes(protocol) ? protocol : 'ss');
+  setEditorValue('#nodeEditServerInput', item?.server || '');
+  setEditorValue('#nodeEditPortInput', item?.port || '');
+  setEditorValue('#nodeEditSecretInput', item?.password || item?.uuid || '');
+  setEditorValue('#nodeEditCipherInput', item?.cipher || (protocol === 'vmess' ? 'auto' : ''));
+  const tls = $('#nodeEditTlsToggle');
+  if (tls) tls.checked = Boolean(item?.tls);
+  const udp = $('#nodeEditUdpToggle');
+  if (udp) udp.checked = item?.udp !== false;
+  $('#nodeEditorOverlay')?.classList.remove('hidden');
+  $('#nodeEditNameInput')?.focus();
+  setNotice(item ? `\u7f16\u8f91\u8282\u70b9\uff1a${item.name}` : '\u6dfb\u52a0\u56fa\u5b9a\u8282\u70b9');
+}
+
+function collectNodeEditorPayload() {
+  const type = $('#nodeEditTypeSelect')?.value || 'ss';
+  const secret = $('#nodeEditSecretInput')?.value.trim() || '';
+  const cipher = $('#nodeEditCipherInput')?.value.trim() || '';
+  const payload = {
+    originalName: $('#nodeOriginalNameInput')?.value.trim() || '',
+    name: $('#nodeEditNameInput')?.value.trim() || '',
+    type,
+    server: $('#nodeEditServerInput')?.value.trim() || '',
+    port: Number($('#nodeEditPortInput')?.value || 0),
+    tls: Boolean($('#nodeEditTlsToggle')?.checked),
+    udp: $('#nodeEditUdpToggle')?.checked !== false,
+    manual: true,
+    fixed: true,
+    static: true
+  };
+  if (type === 'vmess' || type === 'vless' || type === 'tuic') payload.uuid = secret;
+  else if (secret) payload.password = secret;
+  if (cipher) payload.cipher = cipher;
+  return payload;
+}
+
+async function saveNodeEditor(event) {
+  event.preventDefault();
+  const button = $('#saveNodeEditorBtn');
+  await runButtonAction(button, '\u4fdd\u5b58\u4e2d...', async () => {
+    const payload = collectNodeEditorPayload();
+    const result = await invoke('save_manual_node', { node: payload });
+    if (result?.settings && latestStatus?.settings) {
+      latestStatus = { ...latestStatus, settings: result.settings };
     }
+    const savedNode = { ...payload, ...(result?.node || {}), alive: true, delay: -1, manual: true, fixed: true, static: true, source: 'manual' };
+    if (latestGroup) {
+      const originalName = payload.originalName || savedNode.name;
+      const items = latestGroup.items || [];
+      const replaced = items.some((item) => item.name === originalName || item.name === savedNode.name);
+      latestGroup = {
+        ...latestGroup,
+        items: replaced
+          ? items.map((item) => (item.name === originalName || item.name === savedNode.name ? { ...item, ...savedNode } : item))
+          : [...items, savedNode]
+      };
+      renderRows(latestGroup.items);
+    }
+    closeNodeEditor();
+    await refreshNodes(true);
+    setNotice(`\u56fa\u5b9a\u8282\u70b9\u5df2\u4fdd\u5b58\uff1a${payload.name}`);
   });
 }
 
-function showNodeDetails(name) {
-  const item = findNodeItem(name);
-  if (!item) {
-    setNotice(`\u8282\u70b9\u8be6\u60c5\uff1a${name}`);
-    return;
+function toggleFavoriteNode(name) {
+  if (!name) return;
+  if (favoriteNodes.has(name)) {
+    favoriteNodes.delete(name);
+    setNotice(`\u5df2\u53d6\u6d88\u6536\u85cf\uff1a${name}`);
+  } else {
+    favoriteNodes.add(name);
+    setNotice(`\u5df2\u6536\u85cf\u8282\u70b9\uff1a${name}`);
   }
-  const delay = Number(item.delay ?? -1);
-  const delayText = delay > 0 ? `${Math.round(delay)} ms` : delay === 0 ? '\u6d4b\u901f\u4e2d' : '\u5f85\u6d4b\u901f';
-  setNotice(`\u8282\u70b9\u8be6\u60c5\uff1a${item.name} / ${protocolLabel(item.type || item.protocol)} / ${item.server || item.name} / ${delayText}`);
+  saveFavoriteNodes();
+  renderRows(latestGroup?.items || []);
 }
 
 async function selectBestProxyJob() {
@@ -2007,9 +2152,17 @@ if (updateAllProfilesBtn) updateAllProfilesBtn.onclick = (event) => runButtonAct
 $all('[data-region]').forEach((button) => {
   button.onclick = () => {
     const nextRegion = uiStore.state.homeRegionFilter === button.dataset.region ? '' : button.dataset.region;
-    uiStore.set({ homeRegionFilter: nextRegion });
+    uiStore.set({ homeNodeMode: 'region', homeRegionFilter: nextRegion });
     scheduleRowsRender(latestGroup?.items || []);
     setNotice(nextRegion ? `已在首页筛选地区：${button.textContent.trim()}` : '已取消地区筛选。');
+  };
+});
+
+$all('[data-home-mode]').forEach((button) => {
+  button.onclick = () => {
+    const mode = button.dataset.homeMode || 'frequent';
+    uiStore.set({ homeNodeMode: mode, homeRegionFilter: mode === 'region' ? uiStore.state.homeRegionFilter : '' });
+    scheduleRowsRender(latestGroup?.items || []);
   };
 });
 
@@ -2035,15 +2188,28 @@ $all('[data-page-jump]').forEach((button) => {
   button.onclick = () => setPage(button.dataset.pageJump);
 });
 
+$('#addFixedNodeBtn')?.addEventListener('click', () => openNodeEditor(''));
+$('#nodeEditorForm')?.addEventListener('submit', saveNodeEditor);
+$('#cancelNodeEditorBtn')?.addEventListener('click', closeNodeEditor);
+$('#closeNodeEditorBtn')?.addEventListener('click', closeNodeEditor);
+$('#nodeEditorOverlay')?.addEventListener('click', (event) => {
+  if (event.target.id === 'nodeEditorOverlay') closeNodeEditor();
+});
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !$('#nodeEditorOverlay')?.classList.contains('hidden')) {
+    closeNodeEditor();
+  }
+});
+
 $('#nodeRows').addEventListener('click', (event) => {
   const actionButton = event.target.closest('[data-node-action]');
   if (actionButton) {
     event.preventDefault();
     event.stopPropagation();
     const name = actionButton.dataset.node;
-    if (actionButton.dataset.nodeAction === 'connect') selectNode(name);
     if (actionButton.dataset.nodeAction === 'test') testSingleNode(name, actionButton);
-    if (actionButton.dataset.nodeAction === 'details') showNodeDetails(name);
+    if (actionButton.dataset.nodeAction === 'edit') openNodeEditor(name);
+    if (actionButton.dataset.nodeAction === 'favorite') toggleFavoriteNode(name);
     return;
   }
   const row = event.target.closest('.row[data-node]');
