@@ -23,5 +23,6 @@
 
 ## Artifact
 
-- Source-only small patch release. No installer is produced for 2.6.1.
-- SHA-256: Source-only
+- Installer: `src-tauri/target/release/bundle/nsis/Aegos_2.6.1_x64-setup.exe`
+- Size: `15,283,714 bytes`
+- SHA-256: `57ad6a881555db4c6d09b10b7de79c9e9df6ad3e5011efeae9dfbc6e34c8e47a`
