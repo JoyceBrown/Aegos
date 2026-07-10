@@ -593,8 +593,8 @@ h1 {
 .recommend-compact {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(170px, 230px) auto;
-  gap: 8px;
+  grid-template-columns: 92px minmax(170px, 230px);
+  gap: 0;
   align-items: stretch;
 }
 
@@ -605,7 +605,7 @@ h1 {
   grid-template-rows: auto auto;
   gap: 2px;
   padding: 7px 12px;
-  border-radius: 14px;
+  border-radius: 0 16px 16px 0;
   background: rgba(255, 255, 255, .84);
   box-shadow: inset 0 0 0 1px rgba(130, 154, 187, .12), 0 12px 28px rgba(65, 91, 125, .08);
   text-align: left;
@@ -643,14 +643,15 @@ h1 {
 }
 
 .recommend-switch {
-  min-width: 104px;
+  min-width: 92px;
   min-height: 50px;
-  padding: 0 15px;
-  border-radius: 18px;
+  padding: 0 16px;
+  border-radius: 16px 0 0 16px;
   color: #fff;
-  background: linear-gradient(135deg, #7fd0ff, #5a9bff);
-  box-shadow: 0 12px 28px rgba(76, 150, 255, .24);
-  font-weight: 900;
+  background: linear-gradient(135deg, #11b8ed, #0b9edc);
+  box-shadow: 0 12px 28px rgba(20, 158, 220, .24);
+  font-size: 22px;
+  font-weight: 950;
   white-space: nowrap;
 }
 
@@ -797,6 +798,7 @@ h1 {
 }
 
 .quick-row {
+  position: relative;
   display: grid;
   grid-template-columns: 64px repeat(6, minmax(84px, 1fr));
   gap: 6px;
@@ -837,6 +839,58 @@ h1 {
   background: linear-gradient(135deg, #6fd4df, #7d95ff);
   font-size: 10px;
   font-weight: 900;
+}
+
+.quick-profile-menu {
+  position: absolute;
+  z-index: 24;
+  right: 108px;
+  top: calc(100% + 8px);
+  width: 260px;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(130, 154, 187, .16);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .97);
+  box-shadow: 0 16px 34px rgba(65, 91, 125, .16);
+}
+
+.quick-profile-menu button {
+  min-width: 0;
+  min-height: 42px;
+  display: grid;
+  gap: 2px;
+  justify-content: stretch;
+  padding: 8px 10px;
+  text-align: left;
+  border-radius: 9px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.quick-profile-menu button:hover,
+.quick-profile-menu button.active {
+  background: #f3f8ff;
+}
+
+.quick-profile-menu b,
+.quick-profile-menu small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-profile-menu b {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.quick-profile-menu small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
 }
 
 .nodes {
@@ -2402,7 +2456,7 @@ dd {
   }
 }
 
-/* 2.6.10 home density pass: recommendation lives in the header, quick actions own the quick panel. */
+/* 2.6.11 home density pass: recommendation lives in the header, quick actions own the quick panel. */
 .hero-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(282px, 342px) auto;
@@ -2418,7 +2472,7 @@ dd {
 }
 
 .quick .action-row {
-  grid-template-columns: 72px repeat(5, minmax(0, 1fr));
+  grid-template-columns: 72px repeat(4, minmax(0, 1fr));
   grid-template-rows: repeat(2, 30px);
 }
 
@@ -2429,7 +2483,7 @@ dd {
   }
 
   .recommend-compact {
-    grid-template-columns: minmax(154px, 1fr) auto;
+    grid-template-columns: 82px minmax(154px, 1fr);
   }
 }
 

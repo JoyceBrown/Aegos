@@ -13,7 +13,7 @@
         <div class="brand-mark">A</div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v2.6.10</span>
+          <span id="appVersionLabel" class="brand-version">v2.6.11</span>
         </div>
       </section>
 
@@ -86,16 +86,15 @@
                 <div class="node-title">
                   <span class="flag">HK</span>
                   <h1 id="nodeName">等待节点数据</h1>
-                  <b id="nodeState">待连接</b>
                 </div>
               </div>
               <div class="recommend-compact">
+                <button id="switchRecommendedBtn" class="recommend-switch">切换</button>
                 <div class="recommend-inline">
                   <small>推荐节点</small>
                   <strong id="recommendedNodeName">测速后显示</strong>
                   <em id="recommendedNodeMeta">-</em>
                 </div>
-                <button id="switchRecommendedBtn" class="recommend-switch">切换到推荐</button>
               </div>
               <div class="mode-box">
                 <button id="modeBtn" class="mode-pill">当前模式 <strong id="modeLabel">智能分流</strong><span>›</span></button>
@@ -116,7 +115,7 @@
             </div>
 
             <div class="metric-grid top">
-              <article><span class="metric-icon purple">ms</span><small>延迟</small><strong>-</strong></article>
+              <article><span class="metric-icon purple">ms</span><small>延迟</small><strong id="delayMetric">-</strong></article>
               <article><span class="metric-icon blue">%</span><small>丢包率</small><strong>0.0%</strong></article>
               <article><span class="metric-icon amber">L</span><small>负载</small><strong>38%</strong></article>
               <article><span class="metric-icon cyan">M</span><small>&#21327;&#35758;</small><strong id="protocolMetric">DIRECT</strong></article>
@@ -139,7 +138,8 @@
             <strong>快捷操作</strong>
             <button id="quickTestBtn"><span>⚡</span>一键测速</button>            <button id="smartRecoverBtn"><span>2.0</span>智能自愈</button>            <button id="quickUpdateSubBtn"><span>&#8635;</span>&#26356;&#26032;&#35746;&#38405;</button>            <button id="quickProxyBtn"><span>PX</span>&#31995;&#32479;&#20195;&#29702;</button>
             <button id="quickIpBtn"><span>IP</span>刷新落地 IP</button>
-            <button id="quickModeBtn"><span>⇄</span>切换模式</button>            <button id="quickTunBtn"><span>T</span>TUN &#27169;&#24335;</button>            <button id="quickCopyProxyBtn"><span>CP</span>&#22797;&#21046;&#20195;&#29702;</button>            <button id="quickRestartBtn"><span>R</span>&#37325;&#21551;&#20869;&#26680;</button>
+            <button id="quickModeBtn"><span>⇄</span>切换模式</button>            <button id="quickProfileBtn"><span>SUB</span>切换订阅</button>            <button id="quickRestartBtn"><span>R</span>&#37325;&#21551;&#20869;&#26680;</button>
+            <div id="profileMenu" class="quick-profile-menu hidden"></div>
           </div>
         </section>
 

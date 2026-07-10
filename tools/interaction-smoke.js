@@ -347,7 +347,7 @@ try {
     await click('#quickTestBtn');
     const switchCallsAfterSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && ['changeProxy', 'selectBestProxy'].includes(item.args.kind))).length;
     if (switchCallsAfterSpeed !== switchCallsBeforeSpeed) throw new Error('speed test triggered a proxy switch');
-    if (!document.querySelector('#switchRecommendedBtn')?.textContent.includes('切换到推荐')) throw new Error('recommended switch button label is not explicit');
+    if (document.querySelector('#switchRecommendedBtn')?.textContent.trim() !== '切换') throw new Error('recommended switch button label is not compact');
     if (document.querySelector('#autoGroupNotice')?.classList.contains('hidden')) throw new Error('automatic strategy group warning did not render');
     if (!document.querySelector('#recommendedNodeName')?.textContent.includes('HK 02')) throw new Error('recommended node summary did not render');
     if (document.querySelector('#bestNodeList') || document.querySelector('.best-node')) throw new Error('duplicate recommended node strip still renders');
@@ -368,7 +368,13 @@ try {
     if (document.querySelector('#quickProxyBtn')?.disabled) throw new Error('home proxy quick action became blocking while backend was pending');
     if (!document.querySelector('#systemProxyToggle')?.checked) throw new Error('system proxy toggle did not update optimistically');
     await new Promise((resolve) => setTimeout(resolve, 420));
-    await click('#quickTunBtn');
+    if (document.querySelector('#quickTunBtn') || document.querySelector('#quickCopyProxyBtn')) throw new Error('removed quick actions still render');
+    await click('#quickProfileBtn');
+    if (document.querySelector('[data-page-panel="profiles"]')?.classList.contains('active')) throw new Error('quick subscription switch navigated to profiles page');
+    if (document.querySelector('#profileMenu')?.classList.contains('hidden')) throw new Error('quick subscription menu did not open');
+    document.querySelector('#profileMenu [data-profile-switch="url-test"]')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'setActiveProfile')) throw new Error('quick subscription menu did not switch through background job');
     document.querySelector('[data-region="HK"]').click();
     await new Promise((resolve) => setTimeout(resolve, 20));
     if (!document.querySelector('[data-region="HK"]')?.classList.contains('active')) throw new Error('home region menu did not update through store immediately');

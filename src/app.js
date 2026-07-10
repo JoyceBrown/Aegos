@@ -399,6 +399,14 @@ function renderHomeNodeSummary(rows = []) {
   const recommendedName = recommendedRow?.[1] || '-';
   const recommendedDelay = delayText(recommendedRow?.[3]);
   const sameNode = recommendedRow?.[1] && recommendedRow?.[1] === currentName;
+  const currentDelay = delayText(currentRow?.[3]);
+  const currentDelayClass = delayClass(currentRow?.[3]);
+
+  const delayMetric = $('#delayMetric');
+  if (delayMetric) {
+    delayMetric.textContent = currentDelay;
+    delayMetric.className = currentDelayClass;
+  }
 
   const recommendedNameEl = $('#recommendedNodeName');
   if (recommendedNameEl) recommendedNameEl.textContent = recommendedRow ? recommendedName : '\u6d4b\u901f\u540e\u663e\u793a';
@@ -1048,6 +1056,22 @@ renderProfiles = function renderProfiles() {
   }).join('') || '<p class="empty">\u6682\u65e0\u8ba2\u9605\u3002</p>';
 };
 
+function renderQuickProfileMenu() {
+  const menu = $('#profileMenu');
+  if (!menu) return;
+  const profiles = latestStatus?.settings?.profiles || [];
+  const activeId = latestStatus?.settings?.activeProfileId || '';
+  menu.innerHTML = profiles.map((profile) => {
+    const active = profile.id === activeId;
+    return `
+      <button class="${active ? 'active' : ''}" data-profile-switch="${escapeHtml(profile.id)}">
+        <b>${escapeHtml(profile.name || profile.id)}</b>
+        <small>${escapeHtml(profileSummaryText(profile))}</small>
+      </button>
+    `;
+  }).join('') || '<p class="empty">暂无订阅</p>';
+}
+
 function renderSettings(status) {
   const settings = status.settings || {};
   const reliability = settings.reliability || {};
@@ -1147,7 +1171,6 @@ function renderStatus(status) {
   $('#nodeName').textContent = selectedNode || latestGroup?.now || activeProfile.name || '等待节点数据';
   const nodeHost = $('#nodeHost');
   if (nodeHost) nodeHost.textContent = status.network?.proxyEndpoint || '-';
-  $('#nodeState').textContent = running ? '可用' : '待连接';
   $('#connectBtn').textContent = running ? '断开连接' : '连接';
   $('#modeLabel').textContent = modeText;
   setNotice(`${protection.label || '未接管'}：${running ? '内核正在运行，按当前接管策略处理流量。' : '内核未运行，当前没有流量接管。'}`);
@@ -1178,6 +1201,7 @@ function renderStatus(status) {
   renderSettings(status);
   if (isPageActive('profiles')) renderProfiles();
   if (isPageActive('logs')) renderLogs();
+  renderQuickProfileMenu();
   warmStaticPageCaches();
 }
 
@@ -1699,6 +1723,11 @@ function toggleModeMenu() {
   $('#modeMenu').classList.toggle('hidden');
 }
 
+function toggleProfileMenu() {
+  renderQuickProfileMenu();
+  $('#profileMenu')?.classList.toggle('hidden');
+}
+
 async function restartCoreJob() {
   return corePowerJob('restartCore', {
     pendingNotice: '正在后台重启核心...',
@@ -1856,7 +1885,7 @@ function toggleFavoriteNode(name) {
 
 async function selectBestProxyJob() {
   await runBackgroundJob('selectBestProxy', {}, {
-    pendingNotice: '正在切换到推荐节点...',
+    pendingNotice: '正在切换推荐节点...',
     onSuccess: async (result) => {
       const candidate = result?.candidate || {};
       if (candidate.proxy) applyOptimisticNode(candidate.proxy);
@@ -1864,9 +1893,9 @@ async function selectBestProxyJob() {
     },
     successNotice: (result) => {
       const candidate = result?.candidate || {};
-      return `已切换到推荐：${candidate.proxy || '-'} / ${candidate.delay || '-'} ms`;
+      return `已切换推荐节点：${candidate.proxy || '-'} / ${candidate.delay || '-'} ms`;
     },
-    failureNotice: (err) => `切换到推荐失败：${err.message || err}`
+    failureNotice: (err) => `切换推荐节点失败：${err.message || err}`
   });
 }
 
@@ -2113,8 +2142,10 @@ $('#quickTestBtn').onclick = (event) => runButtonAction(event.currentTarget, '�
 $('#smartRecoverBtn').onclick = (event) => runButtonAction(event.currentTarget, '自愈中...', () => recoverNetworkJob(true, true));
 $('#quickUpdateSubBtn').onclick = (event) => runButtonAction(event.currentTarget, '更新中...', updateActiveProfile);
 $('#quickProxyBtn').onclick = () => updateSetting('systemProxy', !latestStatus?.settings?.systemProxy);
-$('#quickTunBtn').onclick = () => updateSetting('tunEnabled', !latestStatus?.settings?.tunEnabled);
-$('#quickCopyProxyBtn').onclick = () => navigator.clipboard?.writeText(latestStatus?.network?.proxyEndpoint || `127.0.0.1:${defaultMixedPort}`);
+$('#quickProfileBtn')?.addEventListener('click', (event) => {
+  event.stopPropagation();
+  toggleProfileMenu();
+});
 $('#quickRestartBtn').onclick = (event) => runButtonAction(event.currentTarget, '重启中...', restartCoreJob);
 $('#switchRecommendedBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '切换中...', selectBestProxyJob));
 $('#lockAutoGroupBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '锁定中...', lockAutoGroupJob));
@@ -2324,6 +2355,9 @@ document.body.addEventListener('click', async (event) => {
     if (!event.target.closest('.mode-box')) {
       $('#modeMenu')?.classList.add('hidden');
     }
+    if (!event.target.closest('#profileMenu') && !event.target.closest('#quickProfileBtn')) {
+      $('#profileMenu')?.classList.add('hidden');
+    }
     const cancelJobId = event.target.closest('[data-job-cancel]')?.dataset.jobCancel;
     if (cancelJobId) {
       await requestJobCancel(cancelJobId);
@@ -2352,6 +2386,7 @@ document.body.addEventListener('click', async (event) => {
     const profileRow = event.target.closest('[data-profile-row]')?.dataset.profileRow;
     const profileTarget = profileSwitch || (event.target.closest('.card-actions') ? '' : profileRow);
     if (profileTarget) {
+      $('#profileMenu')?.classList.add('hidden');
       await runOptimisticAction({
         apply: () => applyOptimisticProfile(profileTarget),
         commit: () => setActiveProfileJob(profileTarget),
