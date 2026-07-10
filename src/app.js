@@ -177,24 +177,32 @@ function normalizeRows(items = []) {
   return items.length
     ? items.map((item) => {
         const delay = Number(item.delay ?? -1);
+        const healthStatus = item.healthStatus || (delay === 0 ? 'testing' : delay > 0 ? 'available' : 'unknown');
+        const score = Number(item.healthScore ?? (delay > 0 ? delay : 999999));
         return [
           inferRegion(item.name),
           item.name,
           item.server || item.name,
           delay,
-          item.alive !== false || delay <= 0,
+          item.alive !== false || delay === 0,
           item.name === selectedNode || item.name === latestGroup?.now,
-          item.type || item.protocol || 'unknown'
+          item.type || item.protocol || 'unknown',
+          healthStatus,
+          Number(item.medianDelay ?? delay),
+          Number(item.jitter ?? 0),
+          score,
+          Boolean(item.recommended),
+          Number(item.failureStreak ?? 0)
         ];
       })
-    : fallbackNodes.map((row, index) => [...row, -1, true, index === 0, 'direct']);
+    : fallbackNodes.map((row, index) => [...row, -1, true, index === 0, 'direct', 'unknown', -1, 0, 999999, false, 0]);
 }
 
 function filterRows(rows, filter) {
   if (filter === 'low') {
     return [...rows]
-      .filter(([, , , delay, alive]) => alive && Number(delay) > 0 && Number(delay) < 100)
-      .sort((a, b) => Number(a[3]) - Number(b[3]));
+      .filter(([, , , delay, alive, , , healthStatus]) => alive && healthStatus !== 'cooldown' && Number(delay) > 0 && Number(delay) < 100)
+      .sort((a, b) => Number(a[10]) - Number(b[10]) || Number(a[3]) - Number(b[3]));
   }
   if (filter === 'asia') return rows.filter(([region]) => ['HK', 'JP', 'SG', 'TW'].includes(region));
   if (filter === 'europe') return rows.filter(([region]) => ['GB'].includes(region));
@@ -251,21 +259,24 @@ function renderHomeNodeRow([region, name, host, delay, alive, active]) {
 
 */
 
-function renderNodeRow([region, name, host, delay, alive, active]) {
+function renderNodeRow([region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak]) {
   const delayValue = Number(delay);
   const delayText = delayValue > 0 ? `${Math.round(delayValue)} ms` : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : '-');
   const delayState = delayClass(delayValue);
-  const statusText = delayValue > 0 ? '\u53ef\u7528' : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : (alive ? '\u5f85\u6d4b\u901f' : '\u4e0d\u53ef\u7528'));
+  const statusText = healthStatus === 'cooldown' ? '\u51b7\u5374\u4e2d'
+    : recommended ? '\u63a8\u8350'
+    : delayValue > 0 ? (failureStreak > 0 ? '\u4e0d\u7a33\u5b9a' : '\u53ef\u7528')
+    : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : (alive ? '\u5f85\u6d4b\u901f' : '\u4e0d\u53ef\u7528'));
   return `
     <div class="row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="select ${escapeHtml(name)}">
       <span class="radio"></span>
       <span class="star">&#9734;</span>
       <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
-      <span>${escapeHtml(host)}</span>
+      <span>${escapeHtml(protocolLabel(protocol))} / ${escapeHtml(host)}</span>
       <span class="${delayState}">${delayText}</span>
-      <span>0.0%</span>
-      <span class="load"><span class="bar"></span>38%</span>
-      <span>-</span>
+      <span>${Number(medianDelay) > 0 ? `${Math.round(Number(medianDelay))} ms` : '-'}</span>
+      <span class="load"><span class="bar"></span>${Math.max(0, Math.min(99, Math.round(100 - Math.min(Number(score) || 99, 99))))}%</span>
+      <span>${Number(jitter) > 0 ? `${Math.round(Number(jitter))} ms` : '-'}</span>
       <span class="available">${escapeHtml(statusText)}</span>
       <span class="row-actions">
         <button data-node="${escapeHtml(name)}" aria-label="connect">&#9655;</button>
@@ -276,17 +287,20 @@ function renderNodeRow([region, name, host, delay, alive, active]) {
   `;
 }
 
-function renderHomeNodeRow([region, name, host, delay, alive, active]) {
+function renderHomeNodeRow([region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak]) {
   const delayValue = Number(delay);
   const delayText = delayValue > 0 ? `${Math.round(delayValue)} ms` : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : '-');
   const delayState = delayClass(delayValue);
-  const statusText = delayValue > 0 ? '\u53ef\u7528' : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : (alive ? '\u5f85\u6d4b\u901f' : '\u4e0d\u53ef\u7528'));
+  const statusText = healthStatus === 'cooldown' ? '\u51b7\u5374'
+    : recommended ? '\u63a8\u8350'
+    : delayValue > 0 ? (failureStreak > 0 ? '\u4e0d\u7a33' : '\u53ef\u7528')
+    : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : (alive ? '\u5f85\u6d4b\u901f' : '\u4e0d\u53ef\u7528'));
   return `
     <div class="row home-row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="select ${escapeHtml(name)}">
       <span class="radio"></span>
       <span class="star">&#9734;</span>
       <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
-      <span>${escapeHtml(host)}</span>
+      <span>${escapeHtml(protocolLabel(protocol))} / ${escapeHtml(host)}</span>
       <span class="${delayState}">${delayText}</span>
       <span>0.0%</span>
       <span class="available">${escapeHtml(statusText)}</span>
@@ -656,8 +670,8 @@ function scheduleRowsRender(items = latestGroup?.items || []) {
 function renderRows(items = []) {
   const rows = normalizeRows(items);
   const recommended = rows
-    .filter(([, , , delay, alive]) => alive && Number(delay) > 0)
-    .sort((a, b) => Number(a[3]) - Number(b[3]))
+    .filter(([, , , delay, alive, , , healthStatus]) => alive && healthStatus !== 'cooldown' && Number(delay) > 0 && Number(delay) < 100)
+    .sort((a, b) => Number(b[11]) - Number(a[11]) || Number(a[10]) - Number(b[10]) || Number(a[3]) - Number(b[3]))
     .slice(0, 3);
   const bestRows = recommended.length ? recommended : rows.slice(0, 3);
   $('#bestNodeList').innerHTML = bestRows.map(([region, name, , delay]) => `
@@ -686,8 +700,8 @@ function renderRows(items = []) {
 renderRows = function renderRows(items = []) {
   const rows = normalizeRows(items);
   const recommended = rows
-    .filter(([, , , delay, alive]) => alive && Number(delay) > 0)
-    .sort((a, b) => Number(a[3]) - Number(b[3]))
+    .filter(([, , , delay, alive, , , healthStatus]) => alive && healthStatus !== 'cooldown' && Number(delay) > 0 && Number(delay) < 100)
+    .sort((a, b) => Number(b[11]) - Number(a[11]) || Number(a[10]) - Number(b[10]) || Number(a[3]) - Number(b[3]))
     .slice(0, 3);
   const bestRows = recommended.length ? recommended : rows.slice(0, 3);
   $('#bestNodeList').innerHTML = bestRows.map(([region, name, , delay]) => `
@@ -695,6 +709,42 @@ renderRows = function renderRows(items = []) {
       <span class="flag">${escapeHtml(region)}</span>
       <b>${escapeHtml(regionLabel(region))}</b>
       <small>${Number(delay) > 0 ? `${Math.round(delay)} ms` : Number(delay) === 0 ? '测速中' : '待测速'} · 稳定性高</small>
+    </button>
+  `).join('');
+
+  const activeRow = rows.find((row) => row[5]) || bestRows[0];
+  currentProtocol = protocolLabel(activeRow?.[6] || 'direct');
+  $('#protocolState').textContent = currentProtocol;
+  $('#protocolMetric').textContent = currentProtocol;
+  if (activeRow?.[1]) $('#nodeName').textContent = activeRow[1];
+
+  const nodeRows = filterRows(rows, nodePageFilter);
+  const visibleNodeRows = nodeRows.slice(0, nodeRenderLimit);
+  const overflowNotice = nodeRows.length > visibleNodeRows.length
+    ? `<p class="empty">已显示前 ${visibleNodeRows.length} 个节点，请搜索或筛选缩小范围。</p>`
+    : '';
+  $('#nodeRows').innerHTML = visibleNodeRows.map(renderNodeRow).join('') + overflowNotice || '<p class="empty">暂无符合条件的节点。</p>';
+
+  const homeRows = homeRegionFilter
+    ? rows.filter(([region]) => region === homeRegionFilter).slice(0, homeNodeRenderLimit)
+    : rows.slice(0, 6);
+  $('#homeNodeRows').innerHTML = (homeRows.length ? homeRows : rows.slice(0, 6))
+    .map(renderHomeNodeRow)
+    .join('');
+};
+
+renderRows = function renderRows(items = []) {
+  const rows = normalizeRows(items);
+  const recommended = rows
+    .filter(([, , , delay, alive, , , healthStatus]) => alive && healthStatus !== 'cooldown' && Number(delay) > 0 && Number(delay) < 100)
+    .sort((a, b) => Number(b[11]) - Number(a[11]) || Number(a[10]) - Number(b[10]) || Number(a[3]) - Number(b[3]))
+    .slice(0, 3);
+  const bestRows = recommended.length ? recommended : rows.slice(0, 3);
+  $('#bestNodeList').innerHTML = bestRows.map(([region, name, , delay, , , protocol, healthStatus, , , , isRecommended]) => `
+    <button class="best-chip" data-node="${escapeHtml(name)}">
+      <span class="flag">${escapeHtml(region)}</span>
+      <b>${escapeHtml(regionLabel(region))}${isRecommended ? ' / 推荐' : ''}</b>
+      <small>${Number(delay) > 0 ? `${Math.round(delay)} ms` : Number(delay) === 0 ? '测速中' : '待测速'} / ${escapeHtml(protocolLabel(protocol))} / ${healthStatus === 'cooldown' ? '冷却' : '可候选'}</small>
     </button>
   `).join('');
 
@@ -1393,6 +1443,22 @@ async function selectNode(name) {
   });
 }
 
+async function selectBestProxyJob() {
+  await runBackgroundJob('selectBestProxy', {}, {
+    pendingNotice: '正在选择低延迟最佳节点...',
+    onSuccess: async (result) => {
+      const candidate = result?.candidate || {};
+      if (candidate.proxy) applyOptimisticNode(candidate.proxy);
+      await refreshNodes(true);
+    },
+    successNotice: (result) => {
+      const candidate = result?.candidate || {};
+      return `已切换最佳节点：${candidate.proxy || '-'} / ${candidate.delay || '-'} ms`;
+    },
+    failureNotice: (err) => `选择最佳节点失败：${err.message || err}`
+  });
+}
+
 async function updateSetting(key, value) {
   if (value && ['tunEnabled', 'killSwitchEnabled'].includes(key) && !latestStatus?.permissions?.isAdmin) {
     await refreshStatus(true);
@@ -1607,7 +1673,7 @@ $('#quickProxyBtn').onclick = () => updateSetting('systemProxy', !latestStatus?.
 $('#quickTunBtn').onclick = () => updateSetting('tunEnabled', !latestStatus?.settings?.tunEnabled);
 $('#quickCopyProxyBtn').onclick = () => navigator.clipboard?.writeText(latestStatus?.network?.proxyEndpoint || `127.0.0.1:${defaultMixedPort}`);
 $('#quickRestartBtn').onclick = (event) => runButtonAction(event.currentTarget, '重启中...', restartCoreJob);
-$('#setBestBtn').onclick = () => setNotice(selectedNode ? `已设为常用优先：${selectedNode}` : '请先选择一个节点');
+$('#setBestBtn').onclick = (event) => runButtonAction(event.currentTarget, '选择中...', selectBestProxyJob);
 $('#refreshConnectionsBtn').onclick = refreshConnections;
 $('#closeAllConnectionsBtn').onclick = (event) => runButtonAction(event.currentTarget, '关闭中...', () => runOptimisticAction({
   apply: () => { $('#connectionRows').innerHTML = '<p class="empty">当前没有活动连接。</p>'; },

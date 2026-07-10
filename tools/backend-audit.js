@@ -32,8 +32,11 @@ check(
 );
 check(
   'TUIC delay path has lower concurrency',
-  mainRs.includes('(tuic_targets, 12usize)') && mainRs.includes('(normal_targets, 50usize)'),
-  'tuic concurrency'
+  mainRs.includes('fn protocol_concurrency') &&
+    mainRs.includes('"tuic" => 8') &&
+    mainRs.includes('speed_test_phases') &&
+    mainRs.includes('protocol_primary_timeout_ms'),
+  'protocol-aware concurrency'
 );
 check(
   'long operations expose background job API',
@@ -203,6 +206,27 @@ check(
     mainRs.includes('Profile switch preflight failed for') &&
     mainRs.includes('running_switch_preflight_accepts_two_local_profiles'),
   'profile switch diagnostics and local integration test'
+);
+
+check(
+  'speed engine tracks node health and low-latency recommendations',
+  mainRs.includes('struct NodeHealth') &&
+    mainRs.includes('fn update_node_health') &&
+    mainRs.includes('failure_streak') &&
+    mainRs.includes('cooldown_until') &&
+    mainRs.includes('lowLatency') &&
+    mainRs.includes('recommended') &&
+    mainRs.includes('recommendation_requires_sub_100ms_available_node'),
+  'node health, cooldown, and recommendation model'
+);
+
+check(
+  'best proxy selection is routed through background jobs',
+  mainRs.includes('fn select_best_proxy') &&
+    mainRs.includes('"selectBestProxy"') &&
+    mainRs.includes('latency<100ms') &&
+    mainRs.includes('lock_operation_queue(&operations, "selectBestProxy")'),
+  'best proxy operation queue'
 );
 
 check(

@@ -134,12 +134,34 @@ struct SpeedTestState {
     ok: usize,
     failed: usize,
     delays: HashMap<String, i64>,
+    health: HashMap<String, NodeHealth>,
+    low_latency: Vec<String>,
+    recommended: Option<JsonValue>,
     error: Option<String>,
+}
+
+#[derive(Clone, Default, Serialize)]
+struct NodeHealth {
+    name: String,
+    protocol: String,
+    last_delay: i64,
+    median_delay: i64,
+    jitter: i64,
+    success_count: u64,
+    failure_count: u64,
+    failure_streak: u64,
+    last_success_at: u64,
+    last_tested_at: u64,
+    cooldown_until: u64,
+    status: String,
+    score: i64,
 }
 
 #[derive(Clone)]
 struct SpeedTestTarget {
     name: String,
+    select_name: String,
+    group_name: String,
     protocol: String,
 }
 
@@ -320,6 +342,228 @@ fn is_tuic_protocol(protocol: &str) -> bool {
     protocol.trim().eq_ignore_ascii_case("tuic")
 }
 
+fn protocol_family(protocol: &str) -> &'static str {
+    let text = protocol.trim().to_ascii_lowercase();
+    if text.contains("tuic") {
+        "tuic"
+    } else if text.contains("hysteria") || text.contains("hy2") {
+        "hysteria"
+    } else if text.contains("wireguard") {
+        "wireguard"
+    } else if text.contains("vless") || text.contains("vmess") {
+        "vmess"
+    } else if text.contains("trojan") {
+        "trojan"
+    } else if text == "ss" || text.contains("shadowsocks") {
+        "ss"
+    } else {
+        "generic"
+    }
+}
+
+fn protocol_concurrency(protocol: &str) -> usize {
+    match protocol_family(protocol) {
+        "tuic" => 8,
+        "hysteria" | "wireguard" => 10,
+        "vmess" | "trojan" | "ss" => 32,
+        _ => 24,
+    }
+}
+
+fn protocol_primary_timeout_ms(protocol: &str) -> u64 {
+    match protocol_family(protocol) {
+        "tuic" => 2600,
+        "hysteria" | "wireguard" => 3200,
+        "vmess" | "trojan" | "ss" => 3600,
+        _ => 4000,
+    }
+}
+
+fn health_status(delay: i64, failure_streak: u64, cooldown_until: u64, now: u64) -> String {
+    if cooldown_until > now {
+        "cooldown".to_string()
+    } else if delay == 0 {
+        "testing".to_string()
+    } else if delay > 0 && delay < 100 && failure_streak == 0 {
+        "low".to_string()
+    } else if delay > 0 {
+        "available".to_string()
+    } else if failure_streak > 0 {
+        "unstable".to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+fn health_score(delay: i64, jitter: i64, failure_streak: u64, protocol: &str) -> i64 {
+    if delay <= 0 {
+        return i64::MAX / 4;
+    }
+    let protocol_penalty = match protocol_family(protocol) {
+        "tuic" | "hysteria" => 18,
+        "wireguard" => 12,
+        _ => 0,
+    };
+    delay
+        .saturating_add(jitter.saturating_mul(2))
+        .saturating_add((failure_streak as i64).saturating_mul(120))
+        .saturating_add(protocol_penalty)
+}
+
+fn update_node_health(
+    previous: Option<&NodeHealth>,
+    name: &str,
+    protocol: &str,
+    delay: i64,
+    now: u64,
+) -> NodeHealth {
+    let mut health = previous.cloned().unwrap_or_else(|| NodeHealth {
+        name: name.to_string(),
+        protocol: protocol.to_string(),
+        last_delay: -1,
+        median_delay: -1,
+        jitter: 0,
+        success_count: 0,
+        failure_count: 0,
+        failure_streak: 0,
+        last_success_at: 0,
+        last_tested_at: 0,
+        cooldown_until: 0,
+        status: "unknown".to_string(),
+        score: i64::MAX / 4,
+    });
+    let previous_delay = health.last_delay;
+    health.name = name.to_string();
+    health.protocol = protocol.to_string();
+    health.last_tested_at = now;
+    health.last_delay = delay;
+    if delay > 0 {
+        health.success_count = health.success_count.saturating_add(1);
+        health.failure_streak = 0;
+        health.last_success_at = now;
+        health.cooldown_until = 0;
+        health.median_delay = if health.median_delay > 0 {
+            (health.median_delay + delay) / 2
+        } else {
+            delay
+        };
+        health.jitter = if previous_delay > 0 {
+            (delay - previous_delay).abs()
+        } else {
+            0
+        };
+    } else {
+        health.failure_count = health.failure_count.saturating_add(1);
+        health.failure_streak = health.failure_streak.saturating_add(1);
+        health.cooldown_until = if health.failure_streak >= 2 {
+            now.saturating_add(180)
+        } else {
+            0
+        };
+    }
+    health.status = health_status(delay, health.failure_streak, health.cooldown_until, now);
+    health.score = health_score(
+        if health.median_delay > 0 {
+            health.median_delay
+        } else {
+            delay
+        },
+        health.jitter,
+        health.failure_streak,
+        protocol,
+    );
+    health
+}
+
+fn speed_test_phases(
+    targets: Vec<SpeedTestTarget>,
+    health: &HashMap<String, NodeHealth>,
+    now: u64,
+) -> Vec<(Vec<SpeedTestTarget>, usize)> {
+    let mut ordered = targets;
+    ordered.sort_by_key(|target| {
+        let current = health.get(&target.name);
+        let cooldown = current
+            .map(|item| item.cooldown_until > now)
+            .unwrap_or(false);
+        let family_rank = match protocol_family(&target.protocol) {
+            "ss" | "trojan" | "vmess" | "generic" => 0,
+            "hysteria" | "wireguard" => 1,
+            "tuic" => 2,
+            _ => 1,
+        };
+        let score = current.map(|item| item.score).unwrap_or(800);
+        (cooldown, family_rank, score)
+    });
+    let (slow, fast): (Vec<_>, Vec<_>) = ordered.into_iter().partition(|target| {
+        let family = protocol_family(&target.protocol);
+        let cooldown = health
+            .get(&target.name)
+            .map(|item| item.cooldown_until > now)
+            .unwrap_or(false);
+        cooldown || matches!(family, "tuic" | "hysteria" | "wireguard")
+    });
+    let first_count = fast.len().min(16);
+    let first = fast.iter().take(first_count).cloned().collect::<Vec<_>>();
+    let rest = fast.into_iter().skip(first_count).collect::<Vec<_>>();
+    let mut phases = Vec::new();
+    if !first.is_empty() {
+        phases.push((first, 16usize));
+    }
+    if !rest.is_empty() {
+        phases.push((rest, 32usize));
+    }
+    if !slow.is_empty() {
+        let chunk_size = slow
+            .iter()
+            .map(|target| protocol_concurrency(&target.protocol))
+            .min()
+            .unwrap_or(8);
+        phases.push((slow, chunk_size));
+    }
+    phases
+}
+
+fn speed_recommendation(
+    targets: &[SpeedTestTarget],
+    health: &HashMap<String, NodeHealth>,
+    now: u64,
+) -> Option<JsonValue> {
+    targets
+        .iter()
+        .filter_map(|target| {
+            let item = health.get(&target.name)?;
+            if item.last_delay <= 0 || item.last_delay >= 100 || item.cooldown_until > now {
+                return None;
+            }
+            Some((target, item))
+        })
+        .min_by_key(|(_, item)| (item.score, item.last_delay))
+        .map(|(target, item)| {
+            json!({
+                "group": target.group_name,
+                "proxy": target.select_name,
+                "realProxyName": target.name,
+                "delay": item.last_delay,
+                "medianDelay": item.median_delay,
+                "jitter": item.jitter,
+                "score": item.score,
+                "protocol": item.protocol,
+                "reason": "latency<100ms, available, lowest health score"
+            })
+        })
+}
+
+fn low_latency_names(health: &HashMap<String, NodeHealth>, now: u64) -> Vec<String> {
+    let mut items = health
+        .values()
+        .filter(|item| item.last_delay > 0 && item.last_delay < 100 && item.cooldown_until <= now)
+        .cloned()
+        .collect::<Vec<_>>();
+    items.sort_by_key(|item| (item.score, item.last_delay));
+    items.into_iter().map(|item| item.name).collect()
+}
+
 fn test_proxy_delay_with_retry(
     client: &Client,
     controller_port: u16,
@@ -334,13 +578,19 @@ fn test_proxy_delay_with_retry(
             secret,
             name,
             "https://www.gstatic.com/generate_204",
-            2800,
+            protocol_primary_timeout_ms(protocol),
         );
     }
     [
-        ("http://www.gstatic.com/generate_204", 4500),
-        ("https://www.gstatic.com/generate_204", 4500),
-        ("http://cp.cloudflare.com/generate_204", 4500),
+        (
+            "http://www.gstatic.com/generate_204",
+            protocol_primary_timeout_ms(protocol),
+        ),
+        (
+            "https://www.gstatic.com/generate_204",
+            protocol_primary_timeout_ms(protocol),
+        ),
+        ("http://cp.cloudflare.com/generate_204", 4200),
     ]
     .iter()
     .map(|(url, timeout_ms)| {
@@ -1298,6 +1548,79 @@ rules:
             .expect("profile a should preflight");
         preflight_runtime_config(&yaml_b, &profile_b, &settings)
             .expect("profile b should preflight with group reference");
+    }
+
+    #[test]
+    fn node_health_tracks_success_failure_and_cooldown() {
+        let first = update_node_health(None, "HK 02", "trojan", 48, 100);
+        assert_eq!(first.status, "low");
+        assert_eq!(first.failure_streak, 0);
+        assert!(first.score < 100);
+
+        let failed_once = update_node_health(Some(&first), "HK 02", "trojan", -1, 110);
+        assert_eq!(failed_once.failure_streak, 1);
+        assert_eq!(failed_once.status, "unstable");
+
+        let failed_twice = update_node_health(Some(&failed_once), "HK 02", "trojan", -1, 120);
+        assert_eq!(failed_twice.failure_streak, 2);
+        assert!(failed_twice.cooldown_until > 120);
+        assert_eq!(failed_twice.status, "cooldown");
+    }
+
+    #[test]
+    fn speed_test_phases_prioritize_fast_non_tuic_targets() {
+        let targets = vec![
+            SpeedTestTarget {
+                name: "TUIC".to_string(),
+                select_name: "TUIC".to_string(),
+                group_name: "GLOBAL".to_string(),
+                protocol: "tuic".to_string(),
+            },
+            SpeedTestTarget {
+                name: "Trojan".to_string(),
+                select_name: "Trojan".to_string(),
+                group_name: "GLOBAL".to_string(),
+                protocol: "trojan".to_string(),
+            },
+        ];
+        let phases = speed_test_phases(targets, &HashMap::new(), 1);
+        assert_eq!(phases.first().unwrap().0[0].name, "Trojan");
+        assert!(phases
+            .last()
+            .unwrap()
+            .0
+            .iter()
+            .any(|item| item.name == "TUIC"));
+    }
+
+    #[test]
+    fn recommendation_requires_sub_100ms_available_node() {
+        let targets = vec![
+            SpeedTestTarget {
+                name: "Fast".to_string(),
+                select_name: "Fast".to_string(),
+                group_name: "GLOBAL".to_string(),
+                protocol: "trojan".to_string(),
+            },
+            SpeedTestTarget {
+                name: "Slow".to_string(),
+                select_name: "Slow".to_string(),
+                group_name: "GLOBAL".to_string(),
+                protocol: "ss".to_string(),
+            },
+        ];
+        let mut health = HashMap::new();
+        health.insert(
+            "Fast".to_string(),
+            update_node_health(None, "Fast", "trojan", 48, 100),
+        );
+        health.insert(
+            "Slow".to_string(),
+            update_node_health(None, "Slow", "ss", 120, 100),
+        );
+        let best = speed_recommendation(&targets, &health, 100).expect("best candidate");
+        assert_eq!(best.get("proxy").and_then(JsonValue::as_str), Some("Fast"));
+        assert_eq!(low_latency_names(&health, 100), vec!["Fast".to_string()]);
     }
 }
 
@@ -2863,28 +3186,40 @@ impl CoreManager {
                 let mut seen = HashSet::new();
                 groups
                     .iter()
-                    .filter_map(|group| group.get("items").and_then(|items| items.as_array()))
-                    .flatten()
-                    .filter_map(|item| {
-                        let name = item
-                            .get("realProxyName")
-                            .or_else(|| item.get("name"))
-                            .and_then(|value| value.as_str())?;
-                        if matches!(name, "DIRECT" | "REJECT") {
-                            return None;
-                        }
-                        if seen.insert(name.to_string()) {
+                    .filter_map(|group| {
+                        let group_name = group.get("name").and_then(|value| value.as_str())?;
+                        let items = group.get("items").and_then(|items| items.as_array())?;
+                        Some((group_name.to_string(), items))
+                    })
+                    .flat_map(|(group_name, items)| {
+                        items.iter().filter_map(move |item| {
+                            let select_name = item.get("name").and_then(|value| value.as_str())?;
+                            let name = item
+                                .get("realProxyName")
+                                .or_else(|| item.get("name"))
+                                .and_then(|value| value.as_str())?;
+                            if matches!(name, "DIRECT" | "REJECT" | "PASS" | "COMPATIBLE") {
+                                return None;
+                            }
+                            let protocol = item
+                                .get("type")
+                                .or_else(|| item.get("protocol"))
+                                .and_then(|value| value.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
                             Some(SpeedTestTarget {
                                 name: name.to_string(),
-                                protocol: item
-                                    .get("type")
-                                    .or_else(|| item.get("protocol"))
-                                    .and_then(|value| value.as_str())
-                                    .unwrap_or("unknown")
-                                    .to_string(),
+                                select_name: select_name.to_string(),
+                                group_name: group_name.clone(),
+                                protocol,
                             })
+                        })
+                    })
+                    .filter(|target| {
+                        if seen.insert(target.name.clone()) {
+                            true
                         } else {
-                            None
+                            false
                         }
                     })
                     .collect()
@@ -2950,9 +3285,15 @@ impl CoreManager {
 
     fn apply_speed_test_delays(&self, groups: &mut JsonValue) {
         let speed = self.speed_test.lock().unwrap().clone();
-        if speed.delays.is_empty() {
+        if speed.delays.is_empty() && speed.health.is_empty() {
             return;
         }
+        let recommended_name = speed
+            .recommended
+            .as_ref()
+            .and_then(|value| value.get("realProxyName"))
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string());
         if let Some(group_items) = groups.as_array_mut() {
             for group in group_items {
                 if let Some(items) = group
@@ -2964,11 +3305,39 @@ impl CoreManager {
                             .get("realProxyName")
                             .or_else(|| item.get("name"))
                             .and_then(|value| value.as_str())
+                            .map(|value| value.to_string())
                         {
-                            if let Some(delay) = speed.delays.get(name).copied() {
+                            if let Some(delay) = speed.delays.get(&name).copied() {
                                 if let Some(map) = item.as_object_mut() {
                                     map.insert("delay".to_string(), json!(delay));
                                     map.insert("alive".to_string(), json!(delay >= 0));
+                                }
+                            }
+                            if let Some(health) = speed.health.get(&name) {
+                                if let Some(map) = item.as_object_mut() {
+                                    map.insert("healthStatus".to_string(), json!(health.status));
+                                    map.insert(
+                                        "medianDelay".to_string(),
+                                        json!(health.median_delay),
+                                    );
+                                    map.insert("jitter".to_string(), json!(health.jitter));
+                                    map.insert(
+                                        "failureStreak".to_string(),
+                                        json!(health.failure_streak),
+                                    );
+                                    map.insert("healthScore".to_string(), json!(health.score));
+                                    map.insert(
+                                        "cooldownUntil".to_string(),
+                                        json!(health.cooldown_until),
+                                    );
+                                    map.insert(
+                                        "recommended".to_string(),
+                                        json!(
+                                            recommended_name.as_deref() == Some(name.as_str())
+                                                && health.last_delay > 0
+                                                && health.last_delay < 100
+                                        ),
+                                    );
                                 }
                             }
                         }
@@ -2989,8 +3358,55 @@ impl CoreManager {
             "ok": speed.ok,
             "failed": speed.failed,
             "error": speed.error,
-            "delays": speed.delays
+            "delays": speed.delays,
+            "health": speed.health,
+            "lowLatency": speed.low_latency,
+            "recommended": speed.recommended
         })
+    }
+
+    fn best_proxy_candidate(&self) -> Option<JsonValue> {
+        let groups = self.proxy_groups();
+        let targets = Self::collect_proxy_targets(&groups);
+        let speed = self.speed_test.lock().unwrap().clone();
+        speed_recommendation(&targets, &speed.health, now_secs())
+    }
+
+    fn select_best_proxy(&mut self) -> Result<JsonValue, String> {
+        let candidate = self.best_proxy_candidate().ok_or_else(|| {
+            "No low-latency candidate below 100 ms is available; run speed test first".to_string()
+        })?;
+        let group = candidate
+            .get("group")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "Best candidate is missing proxy group".to_string())?
+            .to_string();
+        let proxy = candidate
+            .get("proxy")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "Best candidate is missing proxy name".to_string())?
+            .to_string();
+        self.change_proxy(&group, &proxy)?;
+        self.add_log(
+            format!(
+                "Selected best proxy: {} -> {} ({} ms, score {})",
+                group,
+                proxy,
+                candidate
+                    .get("delay")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(-1),
+                candidate
+                    .get("score")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(-1)
+            ),
+            "info",
+        );
+        Ok(json!({
+            "ok": true,
+            "candidate": candidate
+        }))
     }
 
     fn start_proxy_delay_test(&mut self) -> Result<JsonValue, String> {
@@ -3017,6 +3433,8 @@ impl CoreManager {
         let controller_port = self.settings.controller_port;
         let secret = self.settings.secret.clone();
         let speed_test = self.speed_test.clone();
+        let previous_health = speed_test.lock().unwrap().health.clone();
+        let phases = speed_test_phases(targets.clone(), &previous_health, now_secs());
         {
             let mut speed = speed_test.lock().unwrap();
             if speed.running {
@@ -3036,6 +3454,9 @@ impl CoreManager {
                     .iter()
                     .map(|target| (target.name.clone(), 0))
                     .collect(),
+                health: previous_health,
+                low_latency: Vec::new(),
+                recommended: None,
                 error: None,
             };
         }
@@ -3056,11 +3477,7 @@ impl CoreManager {
                     return;
                 }
             };
-            let (tuic_targets, normal_targets): (Vec<_>, Vec<_>) = targets
-                .into_iter()
-                .partition(|target| is_tuic_protocol(&target.protocol));
-            for (phase_targets, chunk_size) in [(normal_targets, 50usize), (tuic_targets, 12usize)]
-            {
+            for (phase_targets, chunk_size) in phases {
                 for chunk in phase_targets.chunks(chunk_size) {
                     if !speed_test.lock().unwrap().running {
                         return;
@@ -3079,11 +3496,11 @@ impl CoreManager {
                                 &target.name,
                                 &target.protocol,
                             );
-                            let _ = tx.send((target.name, delay));
+                            let _ = tx.send((target, delay));
                         }));
                     }
                     drop(tx);
-                    for (name, delay) in rx {
+                    for (target, delay) in rx {
                         let mut speed = speed_test.lock().unwrap();
                         if !speed.running {
                             return;
@@ -3094,8 +3511,19 @@ impl CoreManager {
                         } else {
                             speed.failed += 1;
                         }
-                        speed.delays.insert(name, delay);
-                        speed.updated_at = now_secs();
+                        speed.delays.insert(target.name.clone(), delay);
+                        let now = now_secs();
+                        let health = update_node_health(
+                            speed.health.get(&target.name),
+                            &target.name,
+                            &target.protocol,
+                            delay,
+                            now,
+                        );
+                        speed.health.insert(target.name.clone(), health);
+                        speed.low_latency = low_latency_names(&speed.health, now);
+                        speed.recommended = speed_recommendation(&targets, &speed.health, now);
+                        speed.updated_at = now;
                     }
                     for handle in handles {
                         let _ = handle.join();
@@ -4175,6 +4603,7 @@ fn job_label(kind: &str) -> String {
         "updateSetting" => "保存设置",
         "setMode" => "切换模式",
         "changeProxy" => "切换节点",
+        "selectBestProxy" => "选择最佳节点",
         _ => "后台任务",
     }
     .to_string()
@@ -4264,6 +4693,7 @@ fn start_job(
             | "updateSetting"
             | "setMode"
             | "changeProxy"
+            | "selectBestProxy"
     ) {
         return Err(format!("Unsupported job kind: {kind}"));
     }
@@ -4456,6 +4886,11 @@ fn start_job(
                 core.lock().unwrap().change_proxy(group, proxy)?;
                 Ok(json!({ "group": group, "proxy": proxy }))
             })(),
+            "selectBestProxy" => (|| -> Result<JsonValue, String> {
+                set_job_state(&jobs, &id, "running", 1, 2, "selecting best proxy");
+                let _operation = lock_operation_queue(&operations, "selectBestProxy")?;
+                core.lock().unwrap().select_best_proxy()
+            })(),
             _ => Err("Unsupported job kind".to_string()),
         };
         finish_job(&jobs, &id, result);
@@ -4621,6 +5056,12 @@ fn change_proxy(state: State<AppState>, group: String, proxy: String) -> Result<
 }
 
 #[tauri::command]
+fn select_best_proxy(state: State<AppState>) -> Result<JsonValue, String> {
+    let _operation = lock_operation_queue(&state.operations, "select_best_proxy command")?;
+    state.core.lock().unwrap().select_best_proxy()
+}
+
+#[tauri::command]
 fn connections(state: State<AppState>) -> Result<JsonValue, String> {
     Ok(state.core.lock().unwrap().connections())
 }
@@ -4725,6 +5166,7 @@ fn main() {
             test_proxy_delays,
             refresh_outbound_ip,
             change_proxy,
+            select_best_proxy,
             connections,
             close_connection,
             close_connections,

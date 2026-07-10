@@ -128,11 +128,11 @@ try {
           type: 'Selector',
           now: 'HK 01',
           items: [
-            { name: 'HK 01', server: 'hk.example', type: 'tuic', alive: true, delay: -1 },
-            { name: 'HK 02', server: 'hk2.example', type: 'trojan', alive: true, delay: -1 },
-            { name: 'JP 01', server: 'jp.example', type: 'trojan', alive: true, delay: -1 },
-            { name: 'SG 01', server: 'sg.example', type: 'ss', alive: true, delay: -1 },
-            { name: 'US 01', server: 'us.example', type: 'vless', alive: true, delay: -1 }
+            { name: 'HK 01', server: 'hk.example', type: 'tuic', alive: true, delay: -1, healthStatus: 'unknown', healthScore: 999999 },
+            { name: 'HK 02', server: 'hk2.example', type: 'trojan', alive: true, delay: -1, healthStatus: 'unknown', healthScore: 999999 },
+            { name: 'JP 01', server: 'jp.example', type: 'trojan', alive: true, delay: -1, healthStatus: 'unknown', healthScore: 999999 },
+            { name: 'SG 01', server: 'sg.example', type: 'ss', alive: true, delay: -1, healthStatus: 'unknown', healthScore: 999999 },
+            { name: 'US 01', server: 'us.example', type: 'vless', alive: true, delay: -1, healthStatus: 'unknown', healthScore: 999999 }
           ]
         }];
         const jobs = new Map();
@@ -205,6 +205,10 @@ try {
               groups[0].now = args.payload?.proxy;
               result = { group: args.payload?.group, proxy: args.payload?.proxy };
             }
+            if (args.kind === 'selectBestProxy') {
+              groups[0].now = 'HK 02';
+              result = { ok: true, candidate: { group: 'GLOBAL', proxy: 'HK 02', realProxyName: 'HK 02', delay: 48, score: 48, reason: 'latency<100ms' } };
+            }
             if (args.kind === 'recoverNetwork') {
               state.running = true;
               groups[0].now = 'HK 02';
@@ -229,8 +233,16 @@ try {
             return job;
           }
           if (command === 'start_proxy_delay_test') {
-            groups[0].items.forEach((item, index) => { item.delay = [31, 48, 116, 132, 99][index]; item.alive = true; });
-            return { running: false, total: groups[0].items.length, completed: groups[0].items.length, ok: groups[0].items.length, failed: 0 };
+            groups[0].items.forEach((item, index) => {
+              item.delay = [31, 48, 116, 132, 99][index];
+              item.alive = true;
+              item.healthStatus = item.delay < 100 ? 'low' : 'available';
+              item.healthScore = item.delay + (item.type === 'tuic' ? 18 : 0);
+              item.medianDelay = item.delay;
+              item.jitter = index;
+              item.recommended = item.name === 'HK 02';
+            });
+            return { running: false, total: groups[0].items.length, completed: groups[0].items.length, ok: groups[0].items.length, failed: 0, lowLatency: ['HK 01', 'HK 02', 'US 01'], recommended: { proxy: 'HK 02', delay: 48 } };
           }
           if (command === 'speed_test_status') {
             return { running: false, total: groups[0].items.length, completed: groups[0].items.length, ok: groups[0].items.length, failed: 0 };
@@ -302,6 +314,8 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 420));
     if (!document.querySelector('#homeNodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('home node delays did not update after quick speed test');
     if (!document.querySelector('.delay-good') || !document.querySelector('.delay-bad')) throw new Error('delay color classes did not render green/red states');
+    await click('#setBestBtn');
+    if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'selectBestProxy')) throw new Error('best proxy button did not use selectBestProxy job');
     document.querySelector('#quickProxyBtn').click();
     await new Promise((resolve) => setTimeout(resolve, 20));
     if (document.querySelector('#quickProxyBtn')?.disabled) throw new Error('home proxy quick action became blocking while backend was pending');
@@ -407,7 +421,7 @@ try {
     return {
       commands,
       missing: required.filter((name) => !commands.includes(name)),
-      missingJobKinds: ['startCore', 'stopCore', 'restartCore', 'setMode', 'changeProxy', 'setActiveProfile', 'removeProfile', 'updateSetting', 'updateSettings', 'refreshOutboundIp', 'updateProfile', 'updateAllProfiles', 'recoverNetwork', 'addProfileUrl'].filter((name) => !jobKinds.includes(name)),
+      missingJobKinds: ['startCore', 'stopCore', 'restartCore', 'setMode', 'changeProxy', 'selectBestProxy', 'setActiveProfile', 'removeProfile', 'updateSetting', 'updateSettings', 'refreshOutboundIp', 'updateProfile', 'updateAllProfiles', 'recoverNetwork', 'addProfileUrl'].filter((name) => !jobKinds.includes(name)),
       advancedSettings: advancedSettingsCall?.args?.payload?.updates || null,
       jobCenterText,
       notice: document.querySelector('#protectionNotice')?.textContent || ''
