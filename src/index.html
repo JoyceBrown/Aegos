@@ -13,7 +13,7 @@
         <div class="brand-mark">A</div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v2.6.13</span>
+          <span id="appVersionLabel" class="brand-version">v2.6.14</span>
         </div>
       </section>
 
@@ -33,7 +33,7 @@
           <div><dt>保护模式</dt><dd id="protectMode">未接管</dd></div>
           <div><dt>DNS 防泄漏</dt><dd id="dnsState" class="ok">已开启</dd></div>
           <div><dt>TUN 模式</dt><dd id="tunState">未开启</dd></div>
-          <div><dt>Kill Switch</dt><dd id="killState">未开启</dd></div>
+          <div><dt>断网保护</dt><dd id="killState">未开启</dd></div>
           <div id="proxyStateRow"><dt>&#31995;&#32479;&#20195;&#29702;</dt><dd id="proxyState">&#26410;&#24320;&#21551;</dd></div>
           <div><dt>内网 IP</dt><dd id="lanIpState" class="ok">-</dd></div>
           <div><dt>&#24403;&#21069;&#21327;&#35758;</dt><dd id="protocolState" class="ok">DIRECT</dd></div>
@@ -129,7 +129,7 @@
           <div class="quick-row action-row">
             <strong>快捷操作</strong>
             <button id="quickTestBtn"><span>⚡</span>一键测速</button>            <button id="smartRecoverBtn"><span>2.0</span>智能自愈</button>            <button id="quickUpdateSubBtn"><span>&#8635;</span>&#26356;&#26032;&#35746;&#38405;</button>            <button id="quickProxyBtn"><span>PX</span>&#31995;&#32479;&#20195;&#29702;</button>
-            <button id="quickIpBtn"><span>IP</span>刷新落地 IP</button>
+            <button id="quickKillBtn"><span>盾</span>断网保护</button>
             <button id="quickModeBtn"><span>⇄</span>切换模式</button>            <button id="quickProfileBtn"><span>SUB</span>切换订阅</button>            <button id="quickRestartBtn"><span>R</span>&#37325;&#21551;&#20869;&#26680;</button>
             <div id="profileMenu" class="quick-profile-menu hidden"></div>
           </div>
@@ -148,8 +148,7 @@
             </div>
           </header>
           <div id="homeRegionRow" class="region-row">
-            <strong>&#24120;&#29992;&#22320;&#21306;</strong>
-            <button data-region="HK"><b>HK</b>&#39321;&#28207;</button>
+            <button class="active" data-region="HK"><b>HK</b>&#39321;&#28207;</button>
             <button data-region="TW"><b>TW</b>&#21488;&#28286;</button>
             <button data-region="US"><b>US</b>&#32654;&#22269;</button>
             <button data-region="JP"><b>JP</b>&#26085;&#26412;</button>
@@ -221,7 +220,7 @@
       <section class="page" data-page-panel="diagnostics">
         <section class="panel fill page-card diagnostic-card">
           <header class="section-head">
-            <div><h2>诊断</h2><p>检查内核、端口、代理、TUN 与 Kill Switch 状态。</p></div>
+            <div><h2>诊断</h2><p>检查内核、端口、代理、TUN 与断网保护状态。</p></div>
             <div class="section-actions">
               <button id="copyDiagBtn" class="ghost compact">复制报告</button>
               <button id="runDiagBtn" class="primary compact">运行诊断</button>
@@ -281,12 +280,12 @@
             <section class="settings-section">
               <header class="settings-section-head">
                 <h3>安全与网络</h3>
-                <span>TUN / DNS / Kill Switch</span>
+                <span>TUN / DNS / 断网保护</span>
               </header>
               <div class="settings-grid compact-grid">
                 <label class="switch-row"><span><b>TUN 模式</b><small>接管应用流量</small></span><input id="tunToggle" type="checkbox"></label>
                 <label class="switch-row"><span><b>DNS 防泄漏</b><small>DNS hijack: any:53</small></span><input id="dnsToggle" type="checkbox"></label>
-                <label class="switch-row"><span><b>Kill Switch</b><small>阻断非代理出站</small></span><input id="killToggle" type="checkbox"></label>
+                <label class="switch-row"><span><b>断网保护</b><small>代理异常时阻止直连流量</small></span><input id="killToggle" type="checkbox"></label>
                 <label class="input-row"><span><b>TUN Stack</b><small>内核栈选择</small></span><select id="tunStackSelect"><option value="mixed">mixed</option><option value="gvisor">gvisor</option><option value="system">system</option></select></label>
               </div>
             </section>

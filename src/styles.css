@@ -763,6 +763,12 @@ h1 {
   white-space: nowrap;
 }
 
+.quick-row button.active {
+  color: #0f6b42;
+  background: rgba(222, 247, 233, .92);
+  box-shadow: inset 0 0 0 1px rgba(34, 197, 94, .22), 0 8px 18px rgba(34, 197, 94, .10);
+}
+
 .quick-row b, .quick-row span {
   flex: 0 0 auto;
   min-width: 18px;
@@ -2105,13 +2111,12 @@ dd {
 
 .region-row {
   display: grid;
-  grid-template-columns: 72px repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 6px;
   align-items: center;
   min-width: 0;
 }
 
-.region-row strong,
 .region-row button {
   min-width: 0;
   overflow: hidden;
@@ -2391,7 +2396,7 @@ dd {
   }
 }
 
-/* 2.6.13 home density pass: home header keeps only current node and mode. */
+/* 2.6.14 home density pass: home header keeps only current node and mode. */
 .hero-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

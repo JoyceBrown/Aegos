@@ -152,6 +152,7 @@ async function auditViewport(page, width, height) {
     }).map((el) => el.textContent.trim());
     const metricIcons = all('.metric-icon').map((el) => el.getBoundingClientRect().width);
     const homeRows = all('#homeNodeRows .row').filter(visible).length;
+    const activeHomeRegion = document.querySelector('[data-region].active')?.dataset.region || '';
     const regionBox = box('.region-row');
     const homeHeadBox = box('.home-row-head');
     const firstHomeRowBox = box('#homeNodeRows .row');
@@ -206,6 +207,7 @@ async function auditViewport(page, width, height) {
       ringWidth: box('.ring')?.width || 0,
       tunHomeVisible,
       homeRows,
+      activeHomeRegion,
       homeNodeLayout,
       sidebarWrappedRows,
       sidebarOverlap,
@@ -264,7 +266,8 @@ try {
     if (!report.diagnosticsActive) failures.push(`${report.width}x${report.height}: diagnostics page did not activate`);
     if (!report.tunToggleVisible) failures.push(`${report.width}x${report.height}: TUN toggle is not visible`);
     if (!report.tunHomeVisible) failures.push(`${report.width}x${report.height}: home TUN toggle is not visible`);
-    if (report.homeRows < 5) failures.push(`${report.width}x${report.height}: only ${report.homeRows} home node rows visible`);
+    const minHomeRows = report.activeHomeRegion ? 1 : 5;
+    if (report.homeRows < minHomeRows) failures.push(`${report.width}x${report.height}: only ${report.homeRows} home node rows visible`);
     if (!report.homeNodeLayout) failures.push(`${report.width}x${report.height}: home node layout metrics missing`);
     if (report.homeNodeLayout?.regionToHeadGap < -1) failures.push(`${report.width}x${report.height}: home region row overlaps table head by ${Math.abs(report.homeNodeLayout.regionToHeadGap)}px`);
     if (report.homeNodeLayout?.headToFirstRowGap < -1) failures.push(`${report.width}x${report.height}: home table head overlaps first row by ${Math.abs(report.homeNodeLayout.headToFirstRowGap)}px`);

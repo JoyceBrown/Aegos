@@ -2366,7 +2366,7 @@ fn build_kill_switch_script(enable: bool, user_data: &Path, core_path: &Path) ->
             r#"
 $ErrorActionPreference = 'Stop'
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{ throw 'Kill Switch 需要管理员权限' }}
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{ throw '断网保护需要管理员权限' }}
 $snapshotPath = '{}'
 New-Item -ItemType Directory -Path (Split-Path -Parent $snapshotPath) -Force | Out-Null
 if (-not (Test-Path -LiteralPath $snapshotPath)) {{
@@ -2385,7 +2385,7 @@ Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Blo
             r#"
 $ErrorActionPreference = 'Stop'
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{ throw '关闭 Kill Switch 需要管理员权限' }}
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{ throw '关闭断网保护需要管理员权限' }}
 $snapshotPath = '{}'
 if (Test-Path -LiteralPath $snapshotPath) {{
   $profiles = Get-Content -LiteralPath $snapshotPath -Raw | ConvertFrom-Json
@@ -3191,7 +3191,7 @@ impl CoreManager {
             },
             "permissions": {
                 "isAdmin": is_process_elevated(),
-                "requiresAdminFor": ["TUN", "Kill Switch"]
+                "requiresAdminFor": ["TUN", "断网保护"]
             },
             "speedTest": self.speed_test_snapshot(),
             "settings": self.public_settings(),
@@ -3363,7 +3363,7 @@ impl CoreManager {
     fn set_kill_switch(&mut self, enable: bool) -> Result<bool, String> {
         if enable && !is_process_elevated() {
             return Err(
-                "Kill Switch 需要管理员权限，请在设置中以管理员身份重启 Aegos。".to_string(),
+                "断网保护需要管理员权限，请在设置中以管理员身份重启 Aegos。".to_string(),
             );
         }
         run_powershell(&build_kill_switch_script(
@@ -4901,13 +4901,13 @@ impl CoreManager {
                 if is_admin {
                     "elevated".to_string()
                 } else if admin_required {
-                    "not elevated; TUN and Kill Switch require admin restart".to_string()
+                    "not elevated; TUN and 断网保护 require admin restart".to_string()
                 } else {
-                    "not elevated; only required when TUN or Kill Switch is enabled".to_string()
+                    "not elevated; only required when TUN or 断网保护 is enabled".to_string()
                 },
                 "warning",
                 "permission",
-                "TUN 或 Kill Switch 已启用时，需要在设置页以管理员身份重启 Aegos。",
+                "TUN 或断网保护已启用时，需要在设置页以管理员身份重启 Aegos。",
             ),
             check(
                 "FlClash/Codex port isolation",
@@ -4966,12 +4966,12 @@ impl CoreManager {
                 "TUN 已启用但当前不是管理员权限，请在设置页以管理员身份重启。",
             ),
             check(
-                "Kill Switch",
+                "断网保护",
                 !self.settings.kill_switch_enabled || is_admin,
                 if self.settings.kill_switch_enabled { "enabled" } else { "disabled" }.to_string(),
                 "warning",
                 "permission",
-                "Kill Switch 已启用但当前不是管理员权限，请在设置页以管理员身份重启。",
+                "断网保护已启用但当前不是管理员权限，请在设置页以管理员身份重启。",
             ),
             check(
                 "Recent core logs",

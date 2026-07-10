@@ -131,7 +131,7 @@ try {
           logs: [],
           activeProfile: profiles[1],
           network: { lanIp: '192.168.1.2', proxyEndpoint: '127.0.0.1:7891', outboundIp: '-' },
-          permissions: { isAdmin: false, requiresAdminFor: ['TUN', 'Kill Switch'] },
+          permissions: { isAdmin: false, requiresAdminFor: ['TUN', '断网保护'] },
           protection: { label: 'Core running' },
           settings: {
             activeProfileId: 'url-test',

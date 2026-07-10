@@ -25,7 +25,7 @@ let startedAt = Date.now();
 let statusBusy = false;
 let nodeBusy = false;
 let lastStatusAt = 0;
-let homeRegionFilter = '';
+let homeRegionFilter = 'HK';
 let homeNodeMode = 'region';
 let nodePageFilter = 'all';
 let nodeSearchKeyword = '';
@@ -52,7 +52,7 @@ const uiStore = {
   state: {
     page: 'home',
     homeNodeMode: 'region',
-    homeRegionFilter: '',
+    homeRegionFilter: 'HK',
     nodePageFilter: 'all'
   },
   listeners: new Set(),
@@ -756,7 +756,7 @@ function restoreUiState(snapshot) {
   uiStore.set(snapshot.uiState || {
     page: uiStore.state.page,
     homeNodeMode: snapshot.homeNodeMode || 'region',
-    homeRegionFilter: snapshot.homeRegionFilter || '',
+    homeRegionFilter: snapshot.homeRegionFilter || 'HK',
     nodePageFilter: snapshot.nodePageFilter || 'all'
   });
   if (latestStatus) renderStatus(latestStatus);
@@ -1146,6 +1146,7 @@ function renderStatus(status) {
   $('#dnsState').textContent = settings.dnsHijackEnabled === false ? '未开启' : '已开启';
   $('#tunState').textContent = settings.tunEnabled ? '已开启' : '未开启';
   $('#killState').textContent = settings.killSwitchEnabled ? '已开启' : '未开启';
+  $('#quickKillBtn')?.classList.toggle('active', Boolean(settings.killSwitchEnabled));
   $('#proxyState').textContent = settings.systemProxy ? '已开启' : '未开启';
   $('#proxyStateRow').classList.toggle('hidden', !settings.systemProxy);
   $('#protocolState').textContent = currentProtocol;
@@ -1358,7 +1359,7 @@ async function refreshStatus(force = false) {
       traffic: { up: 0, down: 0 },
       logs: [],
       network: { lanIp: '-', proxyEndpoint: `127.0.0.1:${defaultMixedPort}`, outboundIp: '-' },
-      permissions: { isAdmin: false, requiresAdminFor: ['TUN', 'Kill Switch'] },
+      permissions: { isAdmin: false, requiresAdminFor: ['TUN', '\u65ad\u7f51\u4fdd\u62a4'] },
       settings: {
         activeProfileId: 'direct',
         profiles: [],
@@ -1452,12 +1453,26 @@ async function refreshOutboundIpJob() {
     pendingNotice: '正在后台查询落地 IP...',
     onSuccess: async (result) => {
       const ip = result?.ip || '-';
+      await refreshStatus(true);
       $('#outboundIpState').textContent = ip;
       $('#outboundMetric').textContent = ip;
-      await refreshStatus(true);
     },
     successNotice: (result) => `落地 IP 已刷新：${result?.ip || '-'}`,
     failureNotice: (err) => `刷新落地 IP 失败：${err.message || err}`
+  });
+}
+
+async function refreshOutboundIpAfterNodeChange() {
+  $('#outboundIpState').textContent = '\u67e5\u8be2\u4e2d';
+  $('#outboundMetric').textContent = '\u67e5\u8be2\u4e2d';
+  await runBackgroundJob('refreshOutboundIp', {}, {
+    onSuccess: async (result) => {
+      const ip = result?.ip || '-';
+      await refreshStatus(true);
+      $('#outboundIpState').textContent = ip;
+      $('#outboundMetric').textContent = ip;
+    },
+    failureNotice: (err) => `\u843d\u5730 IP \u81ea\u52a8\u5237\u65b0\u5931\u8d25\uff1a${err.message || err}`
   });
 }
 
@@ -1465,9 +1480,9 @@ async function refreshOutboundIp() {
   try {
     setNotice('正在通过当前代理查询落地 IP...');
     const ip = await invoke('refresh_outbound_ip');
+    await refreshStatus(true);
     $('#outboundIpState').textContent = ip || '-';
     $('#outboundMetric').textContent = ip || '-';
-    await refreshStatus(true);
     setNotice(`落地 IP 已刷新：${ip || '-'}`);
   } catch (err) {
     await refreshStatus(true);
@@ -1731,9 +1746,12 @@ async function selectNode(name) {
       pendingNotice: '正在后台切换节点...',
       failureNotice: (err) => `切换节点失败：${err.message || err}`
     }),
-    refresh: () => refreshNodes(true),
+    refresh: async (result) => {
+      await refreshNodes(true);
+      if (result) await refreshOutboundIpAfterNodeChange();
+    },
     pendingNotice: '正在后台切换节点...',
-    successNotice: `已切换节点：${name}`,
+    successNotice: (result) => result ? `已切换节点：${name}` : '',
     failureNotice: (err) => `切换节点失败：${err.message || err}`
   });
 }
@@ -1867,9 +1885,12 @@ async function lockAutoGroupJob() {
       pendingNotice: '正在锁定当前节点...',
       failureNotice: (err) => `锁定当前节点失败：${err.message || err}`
     }),
-    refresh: () => refreshNodes(true),
+    refresh: async (result) => {
+      await refreshNodes(true);
+      if (result) await refreshOutboundIpAfterNodeChange();
+    },
     pendingNotice: '已请求锁定当前节点...',
-    successNotice: `已锁定当前节点：${proxy}`,
+    successNotice: (result) => result ? `已锁定当前节点：${proxy}` : '',
     failureNotice: (err) => `锁定当前节点失败：${err.message || err}`
   });
 }
@@ -1877,7 +1898,7 @@ async function lockAutoGroupJob() {
 async function updateSetting(key, value) {
   if (value && ['tunEnabled', 'killSwitchEnabled'].includes(key) && !latestStatus?.permissions?.isAdmin) {
     await refreshStatus(true);
-    setNotice('TUN 和 Kill Switch 需要管理员权限，请先在设置中以管理员身份重启 Aegos。');
+    setNotice('TUN 和断网保护需要管理员权限，请先在设置中以管理员身份重启 Aegos。');
     return;
   }
   await runOptimisticAction({
@@ -2088,7 +2109,7 @@ $('#refreshStatusBtn').onclick = async () => { await refreshStatus(true); await 
 if ($('#refreshNodesBtn')) $('#refreshNodesBtn').onclick = refreshNodes;
 $('#modeBtn').onclick = toggleModeMenu;
 $('#quickModeBtn').onclick = toggleModeMenu;
-$('#quickIpBtn').onclick = (event) => runButtonAction(event.currentTarget, '刷新中...', refreshOutboundIpJob);
+$('#quickKillBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '切换中...', () => updateSetting('killSwitchEnabled', !latestStatus?.settings?.killSwitchEnabled)));
 $('#quickTestBtn').onclick = (event) => runButtonAction(event.currentTarget, '测速中...', testNodes);
 $('#smartRecoverBtn').onclick = (event) => runButtonAction(event.currentTarget, '自愈中...', () => recoverNetworkJob(true, true));
 $('#quickUpdateSubBtn').onclick = (event) => runButtonAction(event.currentTarget, '更新中...', updateActiveProfile);
@@ -2230,7 +2251,7 @@ $all('[data-region]').forEach((button) => {
 $all('[data-home-mode]').forEach((button) => {
   button.onclick = () => {
     const mode = button.dataset.homeMode || 'frequent';
-    uiStore.set({ homeNodeMode: mode, homeRegionFilter: mode === 'region' ? uiStore.state.homeRegionFilter : '' });
+    uiStore.set({ homeNodeMode: mode, homeRegionFilter: mode === 'region' ? (uiStore.state.homeRegionFilter || 'HK') : '' });
     scheduleRowsRender(latestGroup?.items || []);
   };
 });

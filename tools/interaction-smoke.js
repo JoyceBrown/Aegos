@@ -105,6 +105,7 @@ try {
           activeProfileId: 'url-test',
           systemProxy: false,
           tunEnabled: false,
+          killSwitchEnabled: false,
           settings: {
             mixedPort: 7891,
             controllerPort: 19091,
@@ -151,7 +152,7 @@ try {
           ],
           activeProfile: profiles.find((item) => item.id === state.activeProfileId),
           network: { lanIp: '192.168.1.2', proxyEndpoint: '127.0.0.1:' + state.settings.mixedPort, outboundIp: '-' },
-          permissions: { isAdmin: false, requiresAdminFor: ['TUN', 'Kill Switch'] },
+          permissions: { isAdmin: true, requiresAdminFor: ['TUN', '断网保护'] },
           protection: { label: state.running ? 'Core running' : 'Idle' },
           settings: {
             activeProfileId: state.activeProfileId,
@@ -162,7 +163,7 @@ try {
             tunEnabled: state.tunEnabled,
             startWithSystemProxy: true,
             dnsHijackEnabled: true,
-            killSwitchEnabled: false,
+            killSwitchEnabled: state.killSwitchEnabled,
             ipv6Enabled: false,
             allowLan: false,
             tunStack: state.settings.tunStack,
@@ -206,7 +207,8 @@ try {
             }
             if (args.kind === 'updateSetting') {
               if (args.payload?.key === 'systemProxy') state.systemProxy = Boolean(args.payload.value);
-              if (args.payload?.key === 'tunEnabled') state.tunEnabled = Boolean(args.payload.value);
+              else if (args.payload?.key === 'tunEnabled') state.tunEnabled = Boolean(args.payload.value);
+              else if (args.payload?.key === 'killSwitchEnabled') state.killSwitchEnabled = Boolean(args.payload.value);
               else state.settings[args.payload?.key] = args.payload?.value;
               result = { settings: status().settings };
             }
@@ -341,9 +343,13 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 20));
     };
     await click('#connectBtn');
-    await click('#quickIpBtn');
+    if (document.querySelector('#quickIpBtn')) throw new Error('manual outbound IP quick action still renders');
+    await click('#quickKillBtn');
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    if (!document.querySelector('#killToggle')?.checked) throw new Error('quick kill protection did not update setting');
     await click('#quickUpdateSubBtn');
     if (!document.querySelector('[data-home-mode="region"]')?.classList.contains('active')) throw new Error('home did not default to common regions');
+    if (!document.querySelector('[data-region="HK"]')?.classList.contains('active')) throw new Error('home did not default to Hong Kong region');
     if (document.querySelector('#homeRegionRow')?.classList.contains('hidden')) throw new Error('home common regions were hidden by default');
     if (document.querySelector('[data-page-jump="nodes"]')) throw new Error('all nodes shortcut still renders on home');
     const switchCallsBeforeSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
@@ -359,6 +365,9 @@ try {
     if (document.querySelector('#tunMetric') || document.querySelector('#adminMetric') || document.querySelector('.traffic-card')) throw new Error('low-value home/sidebar metrics still render');
     await click('#lockAutoGroupBtn');
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'changeProxy')) throw new Error('auto group lock did not use background proxy change job');
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'refreshOutboundIp')) throw new Error('node switch did not auto refresh outbound IP');
+    if (!document.querySelector('#outboundMetric')?.textContent.includes('203.0.113.8')) throw new Error('auto refreshed outbound IP did not render');
     await click('#smartRecoverBtn');
     await new Promise((resolve) => setTimeout(resolve, 420));
     if (!document.querySelector('#homeNodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('home node delays did not update after quick speed test');
@@ -375,9 +384,6 @@ try {
     document.querySelector('#profileMenu [data-profile-switch="url-test"]')?.click();
     await new Promise((resolve) => setTimeout(resolve, 420));
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'setActiveProfile')) throw new Error('quick subscription menu did not switch through background job');
-    document.querySelector('[data-region="HK"]').click();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    if (!document.querySelector('[data-region="HK"]')?.classList.contains('active')) throw new Error('home region menu did not update through store immediately');
     await new Promise((resolve) => setTimeout(resolve, 420));
     const hkRows = [...document.querySelectorAll('#homeNodeRows .row[data-node]')].map((row) => row.dataset.node);
     if (!hkRows.length || hkRows.some((name) => !name.includes('HK'))) throw new Error('home region filter did not stay on home page');
@@ -412,6 +418,7 @@ try {
     await navDown('[data-page="home"]');
     await click('[data-home-mode="region"]');
     if (document.querySelector('#homeRegionRow')?.classList.contains('hidden')) throw new Error('common region subpage buttons did not show');
+    await click('[data-region="TW"]');
     await click('[data-region="HK"]');
     if (!document.querySelector('[data-region="HK"]')?.classList.contains('active')) throw new Error('home region child filter did not become active');
     await click('[data-home-mode="fixed"]');
