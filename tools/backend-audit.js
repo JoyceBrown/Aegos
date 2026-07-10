@@ -88,6 +88,27 @@ check(
 );
 
 check(
+  'system proxy takeover snapshots and restores previous Windows proxy',
+  mainRs.includes('struct SystemProxySnapshot') &&
+    mainRs.includes('fn read_windows_proxy_snapshot') &&
+    mainRs.includes('fn write_windows_proxy_snapshot') &&
+    mainRs.includes('fn capture_proxy_snapshot_before_takeover') &&
+    mainRs.includes('fn shutdown_for_exit') &&
+    mainRs.includes('repair_system_proxy_takeover') &&
+    mainRs.includes('"Windows System Proxy takeover"'),
+  'proxy snapshot/restore'
+);
+
+check(
+  'port conflict diagnostics include owner lookup',
+  mainRs.includes('fn port_owner_detail') &&
+    mainRs.includes('Get-NetTCPConnection') &&
+    mainRs.includes('"Mixed port availability"') &&
+    mainRs.includes('"Controller port availability"'),
+  'port owner diagnostics'
+);
+
+check(
   'runtime config preflight validates real launch config',
   mainRs.includes('fn preflight_runtime_config') &&
     mainRs.includes('订阅没有可用 proxies 节点') &&

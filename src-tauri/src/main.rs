@@ -18,7 +18,7 @@ use std::{
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Manager, State, Window};
+use tauri::{AppHandle, Manager, State, Window, WindowEvent};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -157,6 +157,14 @@ struct NodeHealth {
     score: i64,
 }
 
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct SystemProxySnapshot {
+    proxy_enable: bool,
+    proxy_server: String,
+    proxy_override: String,
+    captured_at: String,
+}
+
 #[derive(Clone)]
 struct SpeedTestTarget {
     name: String,
@@ -171,6 +179,7 @@ struct CoreManager {
     profile_dir: PathBuf,
     core_path: PathBuf,
     settings_path: PathBuf,
+    proxy_snapshot_path: PathBuf,
     settings: Settings,
     process: Option<Child>,
     runtime_profile_id: Option<String>,
@@ -1676,6 +1685,35 @@ fn is_port_free(port: u16) -> bool {
     TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
+fn port_owner_detail(port: u16) -> String {
+    run_powershell(&format!(
+        r#"
+$items = Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue |
+  Select-Object -First 3 LocalAddress,LocalPort,State,OwningProcess
+if (-not $items) {{ 'free'; exit 0 }}
+$items | ForEach-Object {{
+  $name = try {{ (Get-Process -Id $_.OwningProcess -ErrorAction Stop).ProcessName }} catch {{ 'unknown' }}
+  "$($_.LocalAddress):$($_.LocalPort) $($_.State) pid=$($_.OwningProcess) process=$name"
+}} | Out-String
+"#
+    ))
+    .map(|output| {
+        let text = output.trim();
+        if text.is_empty() {
+            "occupied".to_string()
+        } else {
+            text.to_string()
+        }
+    })
+    .unwrap_or_else(|_| {
+        if is_port_free(port) {
+            "free".to_string()
+        } else {
+            "occupied; owner lookup unavailable".to_string()
+        }
+    })
+}
+
 fn find_free_port(current: u16, fallback: u16, reserved: &[u16]) -> Result<u16, String> {
     if !reserved.contains(&current) && is_port_free(current) {
         return Ok(current);
@@ -1853,6 +1891,56 @@ fn primary_lan_ip() -> String {
         .unwrap_or_else(|_| "-".to_string())
 }
 
+fn read_windows_proxy_snapshot() -> Result<SystemProxySnapshot, String> {
+    let output = run_powershell(
+        r#"
+$path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+$item = Get-ItemProperty -Path $path
+[pscustomobject]@{
+  proxy_enable = [bool]$item.ProxyEnable
+  proxy_server = [string]$item.ProxyServer
+  proxy_override = [string]$item.ProxyOverride
+  captured_at = (Get-Date).ToString('o')
+} | ConvertTo-Json -Compress
+"#,
+    )?;
+    serde_json::from_str(&output)
+        .map_err(|err| format!("Windows proxy snapshot parse failed: {err}"))
+}
+
+fn write_windows_proxy_snapshot(snapshot: &SystemProxySnapshot) -> Result<(), String> {
+    let enable = if snapshot.proxy_enable { 1 } else { 0 };
+    let server = ps_escape(&snapshot.proxy_server);
+    let override_value = ps_escape(&snapshot.proxy_override);
+    run_powershell(&format!(
+        r#"
+$path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+Set-ItemProperty -Path $path -Name ProxyEnable -Type DWord -Value {enable}
+Set-ItemProperty -Path $path -Name ProxyServer -Type String -Value '{server}'
+Set-ItemProperty -Path $path -Name ProxyOverride -Type String -Value '{override_value}'
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class WinInet {{
+  [DllImport("wininet.dll", SetLastError=true)]
+  public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
+}}
+'@
+[WinInet]::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null
+[WinInet]::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0) | Out-Null
+"#
+    ))?;
+    Ok(())
+}
+
+fn proxy_points_to_aegos(snapshot: &SystemProxySnapshot, mixed_port: u16) -> bool {
+    snapshot.proxy_enable
+        && snapshot.proxy_server.split(';').any(|item| {
+            item.trim()
+                .eq_ignore_ascii_case(&format!("127.0.0.1:{mixed_port}"))
+        })
+}
+
 fn build_proxy_script(enable: bool, mixed_port: u16) -> String {
     let server = format!("127.0.0.1:{mixed_port}");
     let flag = if enable { 1 } else { 0 };
@@ -1968,6 +2056,7 @@ impl CoreManager {
         let home_dir = app_data.join("core-home");
         let profile_dir = app_data.join("profiles");
         let settings_path = app_data.join("settings.json");
+        let proxy_snapshot_path = app_data.join("system-proxy-snapshot.json");
         ensure_dir(&home_dir)?;
         ensure_dir(&profile_dir)?;
         let settings = load_settings(&settings_path);
@@ -1977,6 +2066,7 @@ impl CoreManager {
             profile_dir,
             core_path,
             settings_path,
+            proxy_snapshot_path,
             settings,
             process: None,
             runtime_profile_id: None,
@@ -2014,6 +2104,31 @@ impl CoreManager {
 
     fn save_settings(&self) -> Result<(), String> {
         save_json(&self.settings_path, &self.settings)
+    }
+
+    fn save_system_proxy_snapshot(&self, snapshot: &SystemProxySnapshot) -> Result<(), String> {
+        save_json(&self.proxy_snapshot_path, snapshot)
+    }
+
+    fn load_system_proxy_snapshot(&self) -> Option<SystemProxySnapshot> {
+        fs::read_to_string(&self.proxy_snapshot_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+    }
+
+    fn clear_system_proxy_snapshot(&self) {
+        let _ = fs::remove_file(&self.proxy_snapshot_path);
+    }
+
+    fn capture_proxy_snapshot_before_takeover(&self) -> Result<(), String> {
+        if self.proxy_snapshot_path.exists() {
+            return Ok(());
+        }
+        let snapshot = read_windows_proxy_snapshot()?;
+        if !proxy_points_to_aegos(&snapshot, self.settings.mixed_port) {
+            self.save_system_proxy_snapshot(&snapshot)?;
+        }
+        Ok(())
     }
 
     fn ensure_direct_profile(&mut self) -> Result<(), String> {
@@ -2573,6 +2688,18 @@ impl CoreManager {
         Ok(json!({ "ok": true }))
     }
 
+    fn shutdown_for_exit(&mut self) {
+        if self.settings.system_proxy || self.proxy_snapshot_path.exists() {
+            if let Err(err) = self.set_system_proxy(false) {
+                self.add_log(
+                    format!("System proxy restore failed during exit: {err}"),
+                    "warn",
+                );
+            }
+        }
+        self.terminate_core_process("Stopping mihomo for app exit");
+    }
+
     fn wait_for_controller(&mut self) -> Result<(), String> {
         for _ in 0..24 {
             if let Some(reason) = self.reap_exited_core() {
@@ -2790,6 +2917,11 @@ impl CoreManager {
             "reservedPorts": {
                 "mixed": RESERVED_MIXED_PORTS,
                 "reason": "7890 is reserved for FlClash/Codex traffic"
+            },
+            "proxyTakeover": {
+                "endpoint": format!("127.0.0.1:{}", self.settings.mixed_port),
+                "snapshotCaptured": self.proxy_snapshot_path.exists(),
+                "restoresPreviousProxy": true
             }
         })
     }
@@ -2825,14 +2957,22 @@ impl CoreManager {
     }
 
     fn set_system_proxy(&mut self, enable: bool) -> Result<bool, String> {
-        run_powershell(&build_proxy_script(enable, self.settings.mixed_port))?;
+        if enable {
+            self.capture_proxy_snapshot_before_takeover()?;
+            run_powershell(&build_proxy_script(true, self.settings.mixed_port))?;
+        } else if let Some(snapshot) = self.load_system_proxy_snapshot() {
+            write_windows_proxy_snapshot(&snapshot)?;
+            self.clear_system_proxy_snapshot();
+        } else {
+            run_powershell(&build_proxy_script(false, self.settings.mixed_port))?;
+        }
         self.settings.system_proxy = enable;
         self.save_settings()?;
         self.add_log(
             if enable {
-                "系统代理已开启"
+                "System proxy takeover enabled"
             } else {
-                "系统代理已关闭"
+                "System proxy restored"
             },
             "info",
         );
@@ -2853,6 +2993,26 @@ impl CoreManager {
         self.settings.kill_switch_enabled = enable;
         self.save_settings()?;
         Ok(enable)
+    }
+
+    fn repair_system_proxy_takeover(&mut self) -> Result<JsonValue, String> {
+        if self.process.is_none() {
+            self.start()?;
+        }
+        self.set_system_proxy(true)?;
+        let current = read_windows_proxy_snapshot()?;
+        let ok = proxy_points_to_aegos(&current, self.settings.mixed_port);
+        if !ok {
+            return Err(format!(
+                "Windows system proxy still points to '{}', expected 127.0.0.1:{}",
+                current.proxy_server, self.settings.mixed_port
+            ));
+        }
+        Ok(json!({
+            "ok": true,
+            "endpoint": format!("127.0.0.1:{}", self.settings.mixed_port),
+            "current": current
+        }))
     }
 
     fn apply_setting_value(&mut self, key: &str, value: &JsonValue) -> Result<bool, String> {
@@ -4134,6 +4294,27 @@ impl CoreManager {
                 .join(" | ")
         };
         let recent_logs_ok = recent_error.is_none();
+        let running = self.process.is_some();
+        let current_proxy = read_windows_proxy_snapshot();
+        let expected_proxy_endpoint = format!("127.0.0.1:{}", self.settings.mixed_port);
+        let current_proxy_ok = current_proxy
+            .as_ref()
+            .map(|snapshot| {
+                !self.settings.system_proxy
+                    || proxy_points_to_aegos(snapshot, self.settings.mixed_port)
+            })
+            .unwrap_or(false);
+        let current_proxy_detail = current_proxy
+            .as_ref()
+            .map(|snapshot| {
+                format!(
+                    "enabled={}, server={}, expected={}",
+                    snapshot.proxy_enable, snapshot.proxy_server, expected_proxy_endpoint
+                )
+            })
+            .unwrap_or_else(|err| format!("read failed: {err}"));
+        let mixed_port_free = is_port_free(self.settings.mixed_port);
+        let controller_port_free = is_port_free(self.settings.controller_port);
         let check =
             |name: &str, ok: bool, detail: String, severity: &str, category: &str, hint: &str| {
                 json!({
@@ -4220,6 +4401,30 @@ impl CoreManager {
                 "warning",
                 "network",
                 "",
+            ),
+            check(
+                "Mixed port availability",
+                running || mixed_port_free,
+                port_owner_detail(self.settings.mixed_port),
+                "error",
+                "network",
+                "Aegos core is not running, but the mixed proxy port is already occupied. Change Aegos mixed port or close the conflicting proxy app.",
+            ),
+            check(
+                "Controller port availability",
+                running || controller_port_free,
+                port_owner_detail(self.settings.controller_port),
+                "error",
+                "network",
+                "Aegos core is not running, but the controller port is already occupied. Change Aegos controller port or close the conflicting app.",
+            ),
+            check(
+                "Windows System Proxy takeover",
+                current_proxy_ok,
+                current_proxy_detail,
+                "warning",
+                "network",
+                "Aegos system proxy is enabled in settings, but Windows is not pointing at the Aegos endpoint. Toggle system proxy off/on or use repair takeover.",
             ),
             check(
                 "TUN",
@@ -4694,6 +4899,7 @@ fn start_job(
             | "setMode"
             | "changeProxy"
             | "selectBestProxy"
+            | "repairSystemProxy"
     ) {
         return Err(format!("Unsupported job kind: {kind}"));
     }
@@ -4890,6 +5096,18 @@ fn start_job(
                 set_job_state(&jobs, &id, "running", 1, 2, "selecting best proxy");
                 let _operation = lock_operation_queue(&operations, "selectBestProxy")?;
                 core.lock().unwrap().select_best_proxy()
+            })(),
+            "repairSystemProxy" => (|| -> Result<JsonValue, String> {
+                set_job_state(
+                    &jobs,
+                    &id,
+                    "running",
+                    1,
+                    3,
+                    "repairing system proxy takeover",
+                );
+                let _operation = lock_operation_queue(&operations, "repairSystemProxy")?;
+                core.lock().unwrap().repair_system_proxy_takeover()
             })(),
             _ => Err("Unsupported job kind".to_string()),
         };
@@ -5125,7 +5343,8 @@ fn window_toggle_maximize(window: Window) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn window_close(window: Window) -> Result<(), String> {
+fn window_close(window: Window, state: State<AppState>) -> Result<(), String> {
+    state.core.lock().unwrap().shutdown_for_exit();
     window.close().map_err(|err| err.to_string())
 }
 
@@ -5181,6 +5400,12 @@ fn main() {
             window_close,
             window_start_dragging
         ])
+        .on_window_event(|window, event| {
+            if matches!(event, WindowEvent::CloseRequested { .. }) {
+                let state = window.state::<AppState>();
+                state.core.lock().unwrap().shutdown_for_exit();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("failed to run Aegos");
 }

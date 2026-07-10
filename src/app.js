@@ -106,7 +106,7 @@ const defaultAppVersion = ($('#appVersionLabel')?.textContent || 'v0.0.0').repla
 const defaultMixedPort = 7891;
 const defaultControllerPort = 19091;
 const speedTestPollMs = 300;
-const nodeRenderLimit = 60;
+const nodeRenderLimit = 36;
 const homeNodeRenderLimit = 8;
 const pageNavSettleMs = 550;
 const pageCacheTtlMs = {
@@ -804,6 +804,23 @@ function profileSummaryText(profile) {
   return groups > 0 ? `${nodes} nodes / ${groups} groups${suffix}` : `${nodes} nodes${suffix}`;
 }
 
+function ensureTakeoverControls() {
+  const summaryGrid = document.querySelector('.settings-summary-grid');
+  if (summaryGrid && !$('#settingsTakeoverSummary')) {
+    const item = document.createElement('article');
+    item.innerHTML = '<span>恢复策略</span><b id="settingsTakeoverSummary">接管时记录</b>';
+    summaryGrid.appendChild(item);
+  }
+  const proxySection = $('#systemProxyToggle')?.closest('.settings-section');
+  if (proxySection && !$('#repairProxyBtn')) {
+    const actions = document.createElement('div');
+    actions.className = 'settings-actions';
+    actions.innerHTML = '<button id="repairProxyBtn" class="ghost">修复接管</button>';
+    proxySection.appendChild(actions);
+    $('#repairProxyBtn').onclick = (event) => runButtonAction(event.currentTarget, '修复中...', repairSystemProxyJob);
+  }
+}
+
 renderProfiles = function renderProfiles() {
   const profiles = latestStatus?.settings?.profiles || [];
   $('#profileRows').innerHTML = profiles.map((profile) => {
@@ -827,6 +844,7 @@ function renderSettings(status) {
   const settings = status.settings || {};
   const reliability = settings.reliability || {};
   const permissions = status.permissions || {};
+  ensureTakeoverControls();
   const adminState = $('#adminState');
   if (adminState) {
     adminState.textContent = permissions.isAdmin ? '管理员运行中' : '普通权限';
@@ -837,6 +855,12 @@ function renderSettings(status) {
   const controllerPort = settings.controllerPort || defaultControllerPort;
   $('#settingsPortSummary').textContent = String(mixedPort);
   $('#settingsControllerSummary').textContent = String(controllerPort);
+  const takeover = settings.proxyTakeover || {};
+  const takeoverSummary = $('#settingsTakeoverSummary');
+  if (takeoverSummary) {
+    takeoverSummary.textContent = takeover.snapshotCaptured ? '可恢复原代理' : '接管时记录';
+    takeoverSummary.classList.toggle('ok', Boolean(takeover.snapshotCaptured));
+  }
   $('#settingsRuntimeSummary').textContent = latestStatus?.running
     ? (settings.tunEnabled ? 'TUN 接管中' : settings.systemProxy ? '系统代理接管' : '核心运行中')
     : '未接管';
@@ -1320,6 +1344,20 @@ async function updateSettingsJob(updates) {
     successNotice: '设置已保存。',
     failureNotice: (err) => `保存设置失败：${err.message || err}`
   });
+}
+
+async function repairSystemProxyJob() {
+  const result = await runBackgroundJob('repairSystemProxy', {}, {
+    pendingNotice: '正在后台修复系统代理接管...',
+    successNotice: '系统代理已指向 Aegos。',
+    failureNotice: (err) => `修复系统代理失败：${err.message || err}`,
+    onSuccess: async () => {
+      await refreshStatus(true);
+      if (isPageActive('diagnostics')) await runDiagnostics(false).catch(() => {});
+    }
+  });
+  if (!result) await refreshStatus(true).catch(() => {});
+  return result;
 }
 
 async function corePowerJob(kind, options = {}) {

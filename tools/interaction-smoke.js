@@ -162,7 +162,12 @@ try {
             allowLan: false,
             tunStack: state.settings.tunStack,
             logLevel: state.settings.logLevel,
-            reliability: state.settings.reliability
+            reliability: state.settings.reliability,
+            proxyTakeover: {
+              endpoint: '127.0.0.1:' + state.settings.mixedPort,
+              snapshotCaptured: state.systemProxy,
+              restoresPreviousProxy: true
+            }
           }
         });
         window.__aegosCalls = calls;
@@ -208,6 +213,11 @@ try {
             if (args.kind === 'selectBestProxy') {
               groups[0].now = 'HK 02';
               result = { ok: true, candidate: { group: 'GLOBAL', proxy: 'HK 02', realProxyName: 'HK 02', delay: 48, score: 48, reason: 'latency<100ms' } };
+            }
+            if (args.kind === 'repairSystemProxy') {
+              state.running = true;
+              state.systemProxy = true;
+              result = { ok: true, endpoint: '127.0.0.1:' + state.settings.mixedPort };
             }
             if (args.kind === 'recoverNetwork') {
               state.running = true;
@@ -400,6 +410,9 @@ try {
     await click('[data-page="settings"]');
     if (!document.querySelector('.settings-summary-grid')) throw new Error('settings runtime summary did not render');
     if (document.querySelectorAll('[data-page-panel="settings"] .settings-section').length < 5) throw new Error('settings grouped sections did not render');
+    if (!document.querySelector('#settingsTakeoverSummary')) throw new Error('settings takeover summary did not render');
+    await click('#repairProxyBtn');
+    if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'repairSystemProxy')) throw new Error('repair proxy button did not use repairSystemProxy job');
     await click('#elevateBtn');
     document.querySelector('#mixedPortInput').value = '7891';
     document.querySelector('#controllerPortInput').value = '19091';
@@ -421,7 +434,7 @@ try {
     return {
       commands,
       missing: required.filter((name) => !commands.includes(name)),
-      missingJobKinds: ['startCore', 'stopCore', 'restartCore', 'setMode', 'changeProxy', 'selectBestProxy', 'setActiveProfile', 'removeProfile', 'updateSetting', 'updateSettings', 'refreshOutboundIp', 'updateProfile', 'updateAllProfiles', 'recoverNetwork', 'addProfileUrl'].filter((name) => !jobKinds.includes(name)),
+      missingJobKinds: ['startCore', 'stopCore', 'restartCore', 'setMode', 'changeProxy', 'selectBestProxy', 'repairSystemProxy', 'setActiveProfile', 'removeProfile', 'updateSetting', 'updateSettings', 'refreshOutboundIp', 'updateProfile', 'updateAllProfiles', 'recoverNetwork', 'addProfileUrl'].filter((name) => !jobKinds.includes(name)),
       advancedSettings: advancedSettingsCall?.args?.payload?.updates || null,
       jobCenterText,
       notice: document.querySelector('#protectionNotice')?.textContent || ''
