@@ -38,11 +38,14 @@ let pageLoadToken = 0;
 let foregroundBusy = 0;
 let backgroundJobBusy = 0;
 let lastBackgroundJobError = '';
+let lastUserInputAt = 0;
+let lastUiHeartbeatAt = performance.now();
 let latestDiagnostics = null;
 let jobCenterSyncBusy = false;
 let jobCenterLastSyncAt = 0;
 const jobRecords = new Map();
 const terminalJobStates = new Set(['succeeded', 'failed', 'cancelled']);
+const recentInvokes = [];
 
 const uiStore = {
   state: {
@@ -113,6 +116,9 @@ const speedTestNodeRefreshMs = 1200;
 const nodeRenderLimit = 36;
 const homeNodeRenderLimit = 8;
 const pageNavSettleMs = 550;
+const foregroundQuietMs = 1800;
+const freezeWarnMs = 500;
+const freezeBadMs = 1500;
 const pageCacheTtlMs = {
   connections: 15000,
   diagnostics: 30000,
@@ -136,7 +142,21 @@ const pageCacheState = {
 function invoke(command, args = {}) {
   const bridge = window.__TAURI__?.core?.invoke;
   if (!bridge) return Promise.reject(new Error('Tauri bridge unavailable'));
-  return bridge(command, args);
+  const startedAt = performance.now();
+  const record = { command, startedAt, state: 'pending', duration: 0 };
+  recentInvokes.push(record);
+  if (recentInvokes.length > 16) recentInvokes.shift();
+  return bridge(command, args)
+    .then((result) => {
+      record.state = 'ok';
+      record.duration = Math.round(performance.now() - startedAt);
+      return result;
+    })
+    .catch((err) => {
+      record.state = 'error';
+      record.duration = Math.round(performance.now() - startedAt);
+      throw err;
+    });
 }
 
 function escapeHtml(value = '') {
@@ -385,12 +405,60 @@ function setNotice(message) {
   notice.classList.toggle('is-info', level === 'info');
 }
 
+function recordUserInteraction() {
+  lastUserInputAt = Date.now();
+}
+
+function isForegroundHot() {
+  return Date.now() - Math.max(lastUserInputAt, lastNavAt) < foregroundQuietMs;
+}
+
+function appendLocalLog(level, category, line) {
+  const entry = {
+    at: new Date().toISOString(),
+    level,
+    category,
+    line
+  };
+  if (latestStatus) {
+    latestStatus = {
+      ...latestStatus,
+      logs: [...(latestStatus.logs || []), entry].slice(-700)
+    };
+    if (isPageActive('logs')) renderLogs();
+  }
+  console[level === 'error' ? 'error' : 'warn'](`[Aegos ${category}] ${line}`);
+}
+
+function startUiFreezeWatchdog() {
+  setInterval(() => {
+    const now = performance.now();
+    const lag = now - lastUiHeartbeatAt;
+    lastUiHeartbeatAt = now;
+    if (lag < freezeWarnMs) return;
+    const pending = recentInvokes
+      .filter((item) => item.state === 'pending')
+      .map((item) => `${item.command}:${Math.round(now - item.startedAt)}ms`)
+      .join(', ') || '-';
+    const recent = recentInvokes
+      .slice(-5)
+      .map((item) => `${item.command}:${item.state}:${item.duration || Math.round(now - item.startedAt)}ms`)
+      .join(', ') || '-';
+    const line = `UI freeze ${Math.round(lag)}ms; page=${uiStore.state.page}; nodeItems=${latestGroup?.items?.length || 0}; speedPolling=${Boolean(speedTestTimer)}; fgBusy=${foregroundBusy}; bgBusy=${backgroundJobBusy}; pending=[${pending}]; recent=[${recent}]`;
+    appendLocalLog(lag >= freezeBadMs ? 'error' : 'warn', 'debug', line);
+  }, 250);
+}
+
 window.addEventListener('unhandledrejection', (event) => {
   setNotice(`操作异常：${event.reason?.message || event.reason || '未知错误'}`);
 });
 
 window.addEventListener('error', (event) => {
   setNotice(`界面异常：${event.message || '未知错误'}`);
+});
+
+['pointerdown', 'click', 'keydown', 'input'].forEach((eventName) => {
+  window.addEventListener(eventName, recordUserInteraction, { capture: true, passive: true });
 });
 
 function setButtonBusy(button, busy, label) {
@@ -501,6 +569,7 @@ function renderJobCenter() {
 async function syncJobCenter(force = false) {
   const hasActive = [...jobRecords.values()].some((job) => !terminalJobStates.has(job.state));
   if (!force && !hasActive) return;
+  if (!force && isForegroundHot()) return;
   if (!force && Date.now() - jobCenterLastSyncAt < 1800) return;
   if (jobCenterSyncBusy) return;
   jobCenterSyncBusy = true;
@@ -1132,6 +1201,7 @@ function applyOptimisticProfileImport(url) {
 
 async function refreshStatus(force = false) {
   if (statusBusy) return;
+  if (!force && isForegroundHot()) return;
   if (!force && (foregroundBusy > 0 || backgroundJobBusy > 0)) return;
   const now = Date.now();
   if (!force && now - lastStatusAt < 1800) return;
@@ -1180,6 +1250,7 @@ async function refreshStatus(force = false) {
 
 async function refreshNodes(force = false) {
   if (nodeBusy) return;
+  if (!force && isForegroundHot()) return;
   if (!force && (foregroundBusy > 0 || backgroundJobBusy > 0)) return;
   nodeBusy = true;
   try {
@@ -1205,7 +1276,7 @@ async function pollSpeedTest() {
   try {
     const status = await invoke('speed_test_status');
     const now = Date.now();
-    if (!status.running || now - lastSpeedNodeRefreshAt >= speedTestNodeRefreshMs) {
+    if (!isForegroundHot() && (!status.running || now - lastSpeedNodeRefreshAt >= speedTestNodeRefreshMs)) {
       lastSpeedNodeRefreshAt = now;
       await refreshNodes(true);
     }
@@ -1429,6 +1500,7 @@ async function corePowerJob(kind, options = {}) {
 
 async function maybeAutoRecover() {
   const reliability = latestStatus?.settings?.reliability || {};
+  if (isForegroundHot()) return;
   if (foregroundBusy > 0 || backgroundJobBusy > 0) return;
   if (reliability.auto === false || !latestStatus?.running || recoveryBusy) return;
   if (Date.now() - lastRecoveryAt < 60000) return;
@@ -2019,6 +2091,7 @@ renderUiState();
 renderJobCenter();
 renderRows();
 wireWindowControls();
+startUiFreezeWatchdog();
 refreshStatus(true);
 refreshNodes();
 tick();

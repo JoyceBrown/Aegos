@@ -371,23 +371,22 @@ dd {
   left: 12px;
   min-height: 0;
   min-width: 0;
-  display: grid;
+  display: none;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 8px;
   overflow: hidden;
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
-  content-visibility: hidden;
   contain: layout paint;
 }
 
 .page.active {
+  display: grid;
   z-index: 1;
   visibility: visible;
   opacity: 1;
   pointer-events: auto;
-  content-visibility: visible;
 }
 
 .page[data-page-panel="home"] {
