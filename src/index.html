@@ -13,7 +13,7 @@
         <div class="brand-mark">A</div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v2.6.8</span>
+          <span id="appVersionLabel" class="brand-version">v2.6.9</span>
         </div>
       </section>
 
@@ -96,6 +96,14 @@
                   <b id="nodeState">待连接</b>
                 </div>
               </div>
+              <button id="switchRecommendedBtn" class="recommend-inline">
+                <small>切换到推荐</small>
+                <span>
+                  <b id="recommendedNodeRegion">--</b>
+                  <strong id="recommendedNodeName">测速后显示</strong>
+                  <em id="recommendedNodeMeta">-</em>
+                </span>
+              </button>
               <div class="mode-box">
                 <button id="modeBtn" class="mode-pill">当前模式 <strong id="modeLabel">智能分流</strong><span>›</span></button>
                 <div id="modeMenu" class="mode-menu hidden">
@@ -107,20 +115,6 @@
             </div>
 
             <div id="protectionNotice" class="notice">未接管：内核未运行，当前没有流量接管。</div>
-
-            <div class="node-compare">
-              <article class="current-node-card">
-                <small>当前节点</small>
-                <strong id="currentNodeName">-</strong>
-                <span id="currentNodeMeta">-</span>
-              </article>
-              <article class="recommended-node-card">
-                <small>推荐节点</small>
-                <strong id="recommendedNodeName">-</strong>
-                <span id="recommendedNodeMeta">测速后显示</span>
-                <button id="switchRecommendedBtn" class="soft-blue">切换到推荐</button>
-              </article>
-            </div>
 
             <div id="autoGroupNotice" class="auto-group-notice hidden">
               <b>自动策略组</b>
@@ -140,23 +134,14 @@
               <article><span class="metric-icon purple">P</span><small>代理端口</small><strong id="proxyMetric">-</strong></article>
               <article><span class="metric-icon violet">IP</span><small>落地 IP</small><strong id="outboundMetric">-</strong></article>
               <article><span class="metric-icon teal">T</span><small>连接时长</small><strong id="metricClock">00:00:00</strong></article>
-              <article><span class="metric-icon amber">G</span><small>策略组</small><strong id="groupMetric">-</strong></article>
-              <article><span class="metric-icon cyan">A</span><small>策略</small><strong id="strategyMetric">-</strong></article>
-              <article><span class="metric-icon green">R</span><small>推荐</small><strong id="recommendMetric">-</strong></article>
+              <article><span class="metric-icon amber">PX</span><small>系统代理</small><strong id="systemProxyMetric">-</strong></article>
+              <article><span class="metric-icon cyan">TUN</span><small>TUN</small><strong id="tunMetric">-</strong></article>
+              <article><span class="metric-icon green">AD</span><small>权限</small><strong id="adminMetric">-</strong></article>
             </div>
           </div>
         </section>
 
         <section class="quick panel">
-          <div class="best-node">
-            <strong class="section-label">推荐节点</strong>
-            <div id="bestNodeList" class="best-node-list"></div>
-            <div class="quick-actions">
-              <button id="refreshNodesBtn" class="icon-button" aria-label="刷新节点">↻</button>
-              <button id="setBestBtn" class="soft-blue">切换到推荐</button>
-            </div>
-          </div>
-
           <div class="quick-row action-row">
             <strong>快捷操作</strong>
             <button id="quickTestBtn"><span>✓</span>一键测速</button>            <button id="smartRecoverBtn"><span>2.0</span>智能自愈</button>            <button id="quickUpdateSubBtn"><span>&#8635;</span>&#26356;&#26032;&#35746;&#38405;</button>            <button id="quickProxyBtn"><span>PX</span>&#31995;&#32479;&#20195;&#29702;</button>
