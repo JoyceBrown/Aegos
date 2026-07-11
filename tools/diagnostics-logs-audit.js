@@ -108,11 +108,25 @@ check(
   mainRs.includes('fn diagnostics(state: State<AppState>) -> Result<JsonValue, String>') &&
     mainRs.includes('fn export_logs(state: State<AppState>) -> Result<JsonValue, String>') &&
     diagnosticsJobBody.includes('set_job_state(&jobs, &id, "running"') &&
-    diagnosticsJobBody.includes('core.lock().unwrap().diagnostics()') &&
+    diagnosticsJobBody.includes('diagnostics_detached(core.clone())') &&
+    mainRs.includes('fn diagnostics_detached(core: Arc<Mutex<CoreManager>>) -> JsonValue') &&
     backendAudit.includes('diagnostics include severity summary and actionable hints') &&
     releaseAudit.includes('diagnostics page shows severity summary and copyable report') &&
     releaseAudit.includes('logs are categorized, filterable, and exportable'),
   'backend and broader audits keep diagnostics/logs wired'
+);
+
+check(
+  'diagnostics does expensive work outside the CoreManager lock',
+  mainRs.includes('struct DiagnosticsSnapshot') &&
+    mainRs.includes('fn take_diagnostics_snapshot(core: Arc<Mutex<CoreManager>>) -> DiagnosticsSnapshot') &&
+    mainRs.includes('fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue') &&
+    mainRs.includes('patch_config_with_settings(source, &snapshot.settings') &&
+    mainRs.includes('read_windows_proxy_snapshot()') &&
+    mainRs.includes('port_owner_detail(snapshot.settings.mixed_port)') &&
+    diagnosticsJobBody.includes('diagnostics_detached(core.clone())') &&
+    !diagnosticsJobBody.includes('core.lock().unwrap().diagnostics()'),
+  'diagnostics must not hold the core mutex while reading files, Windows proxy, or ports'
 );
 
 const result = { ok: fail.length === 0, failed: fail, passed: pass, generatedAt: new Date().toISOString() };

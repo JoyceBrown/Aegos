@@ -213,6 +213,23 @@ struct AppState {
     operations: Arc<Mutex<()>>,
 }
 
+#[derive(Clone)]
+struct DiagnosticsSnapshot {
+    settings: Settings,
+    active_profile: Option<Profile>,
+    core_path: PathBuf,
+    proxy_snapshot_path: PathBuf,
+    running: bool,
+    traffic_takeover: bool,
+    last_traffic: JsonValue,
+    speed_test: SpeedTestState,
+    lan_ip_cache: String,
+    outbound_ip_cache: String,
+    reliability_failures: u64,
+    recent_logs: Vec<LogEntry>,
+    status_logs: Vec<LogEntry>,
+}
+
 #[derive(Clone, Serialize)]
 struct JobRecord {
     id: String,
@@ -5604,6 +5621,7 @@ impl CoreManager {
         }))
     }
 
+    #[allow(dead_code)]
     fn diagnostics(&mut self) -> JsonValue {
         let is_admin = is_process_elevated();
         let admin_required = self.settings.tun_enabled || self.settings.kill_switch_enabled;
@@ -5868,6 +5886,435 @@ impl CoreManager {
             "checks": checks
         })
     }
+}
+
+fn take_diagnostics_snapshot(core: Arc<Mutex<CoreManager>>) -> DiagnosticsSnapshot {
+    let mut core = core.lock().unwrap();
+    if let Some(reason) = core.reap_exited_core() {
+        core.add_log(reason, "warn");
+    }
+    let speed_test = core.speed_test.lock().unwrap().clone();
+    DiagnosticsSnapshot {
+        settings: core.settings.clone(),
+        active_profile: core.active_profile(),
+        core_path: core.core_path.clone(),
+        proxy_snapshot_path: core.proxy_snapshot_path.clone(),
+        running: core.process.is_some(),
+        traffic_takeover: core.traffic_takeover,
+        last_traffic: core.last_traffic.clone(),
+        speed_test,
+        lan_ip_cache: core.lan_ip_cache.clone(),
+        outbound_ip_cache: core.cached_outbound_ip(),
+        reliability_failures: core.reliability_failures,
+        recent_logs: core.recent_logs(8),
+        status_logs: core.recent_logs(120),
+    }
+}
+
+fn diagnostics_speed_snapshot(speed: &SpeedTestState) -> JsonValue {
+    json!({
+        "running": speed.running,
+        "startedAt": speed.started_at,
+        "updatedAt": speed.updated_at,
+        "total": speed.total,
+        "completed": speed.completed,
+        "ok": speed.ok,
+        "failed": speed.failed,
+        "error": speed.error,
+        "delays": speed.delays,
+        "health": speed.health,
+        "lowLatency": speed.low_latency,
+        "recommended": speed.recommended
+    })
+}
+
+fn diagnostics_protection_status(snapshot: &DiagnosticsSnapshot) -> JsonValue {
+    let level = if !snapshot.running {
+        "idle"
+    } else if !snapshot.traffic_takeover {
+        "standby"
+    } else if snapshot.settings.kill_switch_enabled && snapshot.settings.tun_enabled {
+        "strict"
+    } else if snapshot.settings.kill_switch_enabled {
+        "guarded"
+    } else if snapshot.settings.tun_enabled {
+        "tunnel"
+    } else if snapshot.settings.system_proxy {
+        "proxy"
+    } else {
+        "partial"
+    };
+    let label = match level {
+        "strict" => "强保护",
+        "guarded" => "断网保护",
+        "tunnel" => "全局接管",
+        "proxy" => "系统代理",
+        "standby" => "核心待命",
+        "partial" => "仅内核运行",
+        _ => "未接管",
+    };
+    json!({ "level": level, "label": label })
+}
+
+fn diagnostics_public_settings(snapshot: &DiagnosticsSnapshot) -> JsonValue {
+    json!({
+        "activeProfileId": snapshot.settings.active_profile_id,
+        "mixedPort": snapshot.settings.mixed_port,
+        "controllerPort": snapshot.settings.controller_port,
+        "profiles": snapshot.settings.profiles.iter().map(public_profile).collect::<Vec<_>>(),
+        "startWithSystemProxy": snapshot.settings.start_with_system_proxy,
+        "systemProxy": snapshot.settings.system_proxy,
+        "killSwitchEnabled": snapshot.settings.kill_switch_enabled,
+        "tunEnabled": snapshot.settings.tun_enabled,
+        "tunStack": snapshot.settings.tun_stack,
+        "dnsHijackEnabled": snapshot.settings.dns_hijack_enabled,
+        "ipv6Enabled": snapshot.settings.ipv6_enabled,
+        "allowLan": snapshot.settings.allow_lan,
+        "logLevel": snapshot.settings.log_level,
+        "selectedProxyMap": &snapshot.settings.selected_proxy_map,
+        "manualNodes": &snapshot.settings.manual_nodes,
+        "reliability": {
+            "auto": snapshot.settings.reliability_auto,
+            "profileFailover": snapshot.settings.reliability_profile_failover,
+            "failureThreshold": snapshot.settings.reliability_failure_threshold,
+            "maxDelayMs": snapshot.settings.reliability_max_delay_ms,
+            "candidateLimit": snapshot.settings.reliability_candidate_limit,
+            "failures": snapshot.reliability_failures
+        },
+        "runtimes": { "mihomo": snapshot.core_path.exists() },
+        "reservedPorts": {
+            "mixed": RESERVED_MIXED_PORTS,
+            "reason": "7890 is reserved for FlClash/Codex traffic"
+        },
+        "proxyTakeover": {
+            "endpoint": format!("127.0.0.1:{}", snapshot.settings.mixed_port),
+            "active": snapshot.traffic_takeover,
+            "standby": snapshot.running && !snapshot.traffic_takeover,
+            "snapshotCaptured": snapshot.proxy_snapshot_path.exists(),
+            "restoresPreviousProxy": true
+        }
+    })
+}
+
+fn diagnostics_status_from_snapshot(snapshot: &DiagnosticsSnapshot, is_admin: bool) -> JsonValue {
+    let lan_ip = if snapshot.lan_ip_cache.trim().is_empty() {
+        "-".to_string()
+    } else {
+        snapshot.lan_ip_cache.clone()
+    };
+    let traffic = if snapshot.running {
+        snapshot.last_traffic.clone()
+    } else {
+        json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 })
+    };
+    json!({
+        "product": "Aegos",
+        "appVersion": env!("CARGO_PKG_VERSION"),
+        "runtime": "mihomo",
+        "shell": "tauri",
+        "running": snapshot.running,
+        "coreReady": snapshot.running,
+        "trafficTakeover": snapshot.traffic_takeover,
+        "standby": snapshot.running && !snapshot.traffic_takeover,
+        "controller": snapshot.running,
+        "version": JsonValue::Null,
+        "traffic": traffic,
+        "mode": snapshot.settings.mode,
+        "systemProxy": snapshot.settings.system_proxy,
+        "activeProfile": snapshot.active_profile,
+        "network": {
+            "lanIp": lan_ip,
+            "proxyEndpoint": format!("127.0.0.1:{}", snapshot.settings.mixed_port),
+            "outboundIp": snapshot.outbound_ip_cache
+        },
+        "permissions": {
+            "isAdmin": is_admin,
+            "requiresAdminFor": ["TUN", "断网保护"]
+        },
+        "speedTest": diagnostics_speed_snapshot(&snapshot.speed_test),
+        "settings": diagnostics_public_settings(snapshot),
+        "protection": diagnostics_protection_status(snapshot),
+        "logs": snapshot.status_logs
+    })
+}
+
+fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
+    let is_admin = is_process_elevated();
+    let admin_required = snapshot.settings.tun_enabled || snapshot.settings.kill_switch_enabled;
+    let admin_ok = is_admin || !admin_required;
+    let active_profile_path = snapshot
+        .active_profile
+        .as_ref()
+        .map(|profile| PathBuf::from(&profile.path));
+    let active_profile_exists = active_profile_path
+        .as_ref()
+        .map(|path| path.exists())
+        .unwrap_or(false);
+    let profile_preflight = snapshot
+        .active_profile
+        .as_ref()
+        .ok_or_else(|| "no active profile".to_string())
+        .and_then(|profile| {
+            let path = PathBuf::from(&profile.path);
+            let raw = fs::read_to_string(&path)
+                .map_err(|err| format!("配置读取失败 {}: {err}", path.display()))?;
+            let source: YamlValue = serde_yaml::from_str(&raw)
+                .map_err(|err| format!("YAML 解析失败 {}: {err}", path.display()))?;
+            let patched = patch_config_with_settings(source, &snapshot.settings, Some(&profile.id))?;
+            preflight_runtime_config(&patched, profile, &snapshot.settings).map(|report| {
+                format!(
+                    "{} proxies, {} groups, {} rules",
+                    report
+                        .get("proxies")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0),
+                    report
+                        .get("proxyGroups")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0),
+                    report
+                        .get("rules")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0)
+                )
+            })
+        });
+    let profile_preflight_ok = profile_preflight.is_ok();
+    let profile_preflight_detail = profile_preflight.unwrap_or_else(|err| err);
+    let recent_error = snapshot.recent_logs.iter().rev().find(|entry| {
+        matches!(entry.level.as_str(), "error" | "warn")
+            || entry.line.to_ascii_lowercase().contains("error")
+    });
+    let recent_log_detail = if snapshot.recent_logs.is_empty() {
+        "no recent core logs".to_string()
+    } else {
+        snapshot
+            .recent_logs
+            .iter()
+            .map(|entry| format!("[{}] {}", entry.level, entry.line))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+    let recent_logs_ok = recent_error.is_none();
+    let current_proxy = read_windows_proxy_snapshot();
+    let expected_proxy_endpoint = format!("127.0.0.1:{}", snapshot.settings.mixed_port);
+    let current_proxy_ok = current_proxy
+        .as_ref()
+        .map(|proxy| {
+            !snapshot.settings.system_proxy
+                || proxy_points_to_aegos(proxy, snapshot.settings.mixed_port)
+        })
+        .unwrap_or(false);
+    let current_proxy_detail = current_proxy
+        .as_ref()
+        .map(|proxy| {
+            format!(
+                "enabled={}, server={}, expected={}",
+                proxy.proxy_enable, proxy.proxy_server, expected_proxy_endpoint
+            )
+        })
+        .unwrap_or_else(|err| format!("read failed: {err}"));
+    let mixed_port_free = is_port_free(snapshot.settings.mixed_port);
+    let controller_port_free = is_port_free(snapshot.settings.controller_port);
+    let check =
+        |name: &str, ok: bool, detail: String, severity: &str, category: &str, hint: &str| {
+            json!({
+                "name": name,
+                "ok": ok,
+                "detail": detail,
+                "severity": if ok { "ok" } else { severity },
+                "category": category,
+                "hint": if ok { "" } else { hint },
+                "actionable": !ok && !hint.is_empty()
+            })
+        };
+    let checks = vec![
+        check(
+            "mihomo core",
+            snapshot.core_path.exists(),
+            snapshot.core_path.to_string_lossy().to_string(),
+            "error",
+            "runtime",
+            "核心文件缺失或路径不可用，请重新放置 resources/core/mihomo.exe 后再启动。",
+        ),
+        check(
+            "Active profile config",
+            active_profile_exists,
+            active_profile_path
+                .clone()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_else(|| "no active profile".to_string()),
+            "error",
+            "profile",
+            "当前订阅配置文件不存在，请切换到可用订阅或重新导入订阅。",
+        ),
+        check(
+            "Profile preflight",
+            profile_preflight_ok,
+            profile_preflight_detail,
+            "error",
+            "profile",
+            "订阅预检失败，请优先检查订阅内容、代理组引用和端口配置。",
+        ),
+        check("Tauri shell", true, "Aegos".to_string(), "warning", "app", ""),
+        check(
+            "Administrator",
+            admin_ok,
+            if is_admin {
+                "elevated".to_string()
+            } else if admin_required {
+                "not elevated; TUN and 断网保护 require admin restart".to_string()
+            } else {
+                "not elevated; only required when TUN or 断网保护 is enabled".to_string()
+            },
+            "warning",
+            "permission",
+            "TUN 或断网保护已启用时，需要在设置页以管理员身份重启 Aegos。",
+        ),
+        check(
+            "FlClash/Codex port isolation",
+            snapshot.settings.mixed_port != 7890,
+            format!(
+                "Aegos mixed port: {}, reserved: 7890",
+                snapshot.settings.mixed_port
+            ),
+            "error",
+            "network",
+            "Aegos 不能占用 7890，建议保持 mixed port 为 7891，避免和 FlClash/Codex 代理冲突。",
+        ),
+        check(
+            "Controller port",
+            snapshot.settings.controller_port != snapshot.settings.mixed_port,
+            format!("127.0.0.1:{}", snapshot.settings.controller_port),
+            "error",
+            "network",
+            "控制端口不能和代理端口相同，请在设置页改成 19091 或其他未占用端口。",
+        ),
+        check(
+            "System Proxy",
+            true,
+            if snapshot.settings.system_proxy {
+                "enabled"
+            } else {
+                "disabled"
+            }
+            .to_string(),
+            "warning",
+            "network",
+            "",
+        ),
+        check(
+            "Mixed port availability",
+            snapshot.running || mixed_port_free,
+            port_owner_detail(snapshot.settings.mixed_port),
+            "error",
+            "network",
+            "Aegos core is not running, but the mixed proxy port is already occupied. Change Aegos mixed port or close the conflicting proxy app.",
+        ),
+        check(
+            "Controller port availability",
+            snapshot.running || controller_port_free,
+            port_owner_detail(snapshot.settings.controller_port),
+            "error",
+            "network",
+            "Aegos core is not running, but the controller port is already occupied. Change Aegos controller port or close the conflicting app.",
+        ),
+        check(
+            "Windows System Proxy takeover",
+            current_proxy_ok,
+            current_proxy_detail,
+            "warning",
+            "network",
+            "Aegos system proxy is enabled in settings, but Windows is not pointing at the Aegos endpoint. Toggle system proxy off/on or use repair takeover.",
+        ),
+        check(
+            "TUN",
+            !snapshot.settings.tun_enabled || is_admin,
+            if snapshot.settings.tun_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+            .to_string(),
+            "warning",
+            "permission",
+            "TUN 已启用但当前不是管理员权限，请在设置页以管理员身份重启。",
+        ),
+        check(
+            "断网保护",
+            !snapshot.settings.kill_switch_enabled || is_admin,
+            if snapshot.settings.kill_switch_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+            .to_string(),
+            "warning",
+            "permission",
+            "断网保护已启用但当前不是管理员权限，请在设置页以管理员身份重启。",
+        ),
+        check(
+            "Recent core logs",
+            recent_logs_ok,
+            recent_log_detail,
+            "warning",
+            "logs",
+            "最近核心日志出现 warning/error，请打开日志页查看启动失败或代理连接失败的上下文。",
+        ),
+    ];
+    let failed_count = checks
+        .iter()
+        .filter(|item| {
+            !item
+                .get("ok")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+        })
+        .count();
+    let error_count = checks
+        .iter()
+        .filter(|item| item.get("severity").and_then(|value| value.as_str()) == Some("error"))
+        .count();
+    let warning_count = checks
+        .iter()
+        .filter(|item| item.get("severity").and_then(|value| value.as_str()) == Some("warning"))
+        .count();
+    let next_actions = checks
+        .iter()
+        .filter(|item| {
+            !item
+                .get("ok")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+                && item
+                    .get("actionable")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false)
+        })
+        .filter_map(|item| {
+            item.get("hint")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+        .take(3)
+        .collect::<Vec<_>>();
+    json!({
+        "generatedAt": now_iso(),
+        "appVersion": env!("CARGO_PKG_VERSION"),
+        "status": diagnostics_status_from_snapshot(&snapshot, is_admin),
+        "summary": {
+            "total": checks.len(),
+            "failed": failed_count,
+            "errors": error_count,
+            "warnings": warning_count,
+            "nextActions": next_actions
+        },
+        "checks": checks
+    })
+}
+
+fn diagnostics_detached(core: Arc<Mutex<CoreManager>>) -> JsonValue {
+    diagnostics_from_snapshot(take_diagnostics_snapshot(core))
 }
 
 fn add_profile_url_detached(
@@ -6369,7 +6816,7 @@ fn start_job(
             }
             "diagnostics" => {
                 set_job_state(&jobs, &id, "running", 1, 2, "diagnostics running");
-                Ok(core.lock().unwrap().diagnostics())
+                Ok(diagnostics_detached(core.clone()))
             }
             "recoverNetwork" => {
                 let force = payload
@@ -6734,7 +7181,7 @@ fn save_manual_node(state: State<AppState>, node: JsonValue) -> Result<JsonValue
 
 #[tauri::command]
 fn diagnostics(state: State<AppState>) -> Result<JsonValue, String> {
-    Ok(state.core.lock().unwrap().diagnostics())
+    Ok(diagnostics_detached(state.core.clone()))
 }
 
 #[tauri::command]
