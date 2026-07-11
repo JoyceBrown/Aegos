@@ -177,7 +177,17 @@ try {
             if (speedPolls > 3) speedRunning = false;
             return { running: speedRunning, total: nodes.length, completed: speedRunning ? speedPolls * 12 : nodes.length, ok: speedRunning ? speedPolls * 11 : nodes.length, failed: 0 };
           }
-          if (command === 'test_single_proxy_delay') return { name: args.name, delay: 42, alive: true };
+          if (command === 'test_single_proxy_delay') return { name: args.name, delay: -1, alive: false, healthStatus: 'unstable' };
+          if (command === 'node_diagnostics') {
+            return {
+              node: { group: 'GLOBAL', proxy: args.name, realProxyName: args.name, protocol: 'trojan', region: 'HK' },
+              health: { status: 'unstable', confidence: 'failed', lastDelay: -1 },
+              logs: [{ at: '1', level: 'warn', category: 'core', line: 'dial ' + args.name + ' error: i/o timeout' }],
+              lastFailure: { level: 'warn', category: 'core', line: 'dial ' + args.name + ' error: i/o timeout', classification: 'timeout' },
+              suggestions: [{ proxy: 'HK Soak 02', delay: 46, confidence: 'high', requiresConfirmation: true }],
+              generatedAt: 1
+            };
+          }
           if (command === 'start_job') {
             const id = 'job-' + (++jobSeq);
             const result = finishJob(args.kind, args.payload || {});
@@ -228,6 +238,16 @@ try {
       if (document.querySelector('.nav button.active')?.dataset.page !== 'home') failures.push('home nav not active after cycle ' + cycle);
       if (document.querySelector('#connectBtn')?.disabled) failures.push('connect button disabled after cycle ' + cycle);
     }
+    click('[data-page="nodes"]');
+    await wait(220);
+    const testButton = document.querySelector('[data-node-action="test"]');
+    if (!testButton) {
+      failures.push('missing node test button during soak');
+    } else {
+      testButton.click();
+      await wait(360);
+    }
+    click('[data-page="home"]');
     await wait(500);
     const commands = window.__aegosCalls.map((item) => item.command);
     const jobKinds = window.__aegosCalls.filter((item) => item.command === 'start_job').map((item) => item.args.kind);
@@ -251,12 +271,14 @@ try {
   if (!report.commands.includes('start_proxy_delay_test')) failures.push('missing batch speed test command');
   if (!report.commands.includes('speed_test_status')) failures.push('missing speed polling command');
   if (!report.commands.includes('app_status')) failures.push('missing status refresh command');
+  if (!report.commands.includes('test_single_proxy_delay')) failures.push('missing single node speed command');
+  if (!report.commands.includes('node_diagnostics')) failures.push('failed single node test did not capture node diagnostics');
   if (report.finalPage !== 'home') failures.push(`final page ${report.finalPage}, expected home`);
   if (report.stuckTesting) failures.push('UI left visible testing text after soak');
   if (!report.profileMenuHidden) failures.push('profile menu left open after soak');
   if (report.versionText !== `v${pkg.version}`) failures.push(`version label ${report.versionText}, expected v${pkg.version}`);
 
-  const result = { ok: failures.length === 0, failures, ...report };
+  const result = { ...report, ok: failures.length === 0, failures };
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) process.exitCode = 2;
 } finally {

@@ -49,6 +49,7 @@ check('Aegos installer exists or release is source-only', exists(installer) || s
 check('Aegis installer name is not reused', !exists(`src-tauri/target/release/bundle/nsis/Aegis-Setup-${pkg.version}.exe`), 'no Aegis installer artifact');
 check('UI smoke script exists', exists('tools/ui-smoke.js'), 'tools/ui-smoke.js');
 check('performance smoke script exists', exists('tools/perf-smoke.js') && pkg.scripts?.['smoke:perf'] === 'node tools/perf-smoke.js', 'tools/perf-smoke.js');
+check('soak smoke script exists', exists('tools/soak-smoke.js') && pkg.scripts?.['smoke:soak'] === 'node tools/soak-smoke.js', 'tools/soak-smoke.js');
 check('backend audit script exists', exists('tools/backend-audit.js') && pkg.scripts?.['audit:backend'] === 'node tools/backend-audit.js', 'tools/backend-audit.js');
 
 const mainRs = readText('src-tauri/src/main.rs');
@@ -61,6 +62,7 @@ const stylesCss = readText('src/styles.css');
 const capabilitiesJson = readText('src-tauri/capabilities/default.json');
 const interactionSmoke = readText('tools/interaction-smoke.js');
 const perfSmoke = readText('tools/perf-smoke.js');
+const soakSmoke = readText('tools/soak-smoke.js');
 const uiText = `${indexHtml}\n${appJs}`;
 const pageStyleBlock = stylesCss.match(/\.page\s*\{([\s\S]*?)\n\}/)?.[1] || '';
 const statusBody = mainRs.match(/fn status\(&mut self\) -> JsonValue \{([\s\S]*?)\n    \}/)?.[1] || '';
@@ -110,6 +112,7 @@ check('home low-value recommendation metrics are replaced', indexHtml.includes('
 check('automatic strategy group warning is wired', indexHtml.includes('id="autoGroupNotice"') && indexHtml.includes('id="lockAutoGroupBtn"') && appJs.includes('function isAutoStrategyGroup') && appJs.includes('function lockAutoGroupJob') && interactionSmoke.includes('automatic strategy group warning did not render'), 'auto strategy warning/lock');
 check('node row actions are wired and spaced', mainRs.includes('fn test_single_proxy_delay') && appJs.includes("data-node-action=\"test\"") && appJs.includes("data-node-action=\"edit\"") && appJs.includes("data-node-action=\"favorite\"") && appJs.includes("invoke('test_single_proxy_delay'") && stylesCss.includes('scrollbar-gutter: stable') && stylesCss.includes('116px') && indexHtml.includes('row-action-labels') && interactionSmoke.includes('node status column was not removed'), 'row action buttons');
 check('node-level diagnostics are linked from failed node tests', mainRs.includes('fn node_diagnostics') && mainRs.includes('fn recent_node_logs') && mainRs.includes('"lastFailure"') && appJs.includes('async function captureNodeDiagnostics') && appJs.includes("invoke('node_diagnostics'") && appJs.includes('Node diagnostics:') && interactionSmoke.includes("command === 'node_diagnostics'"), 'node diagnostics link');
+check('soak smoke covers failed node diagnostics', soakSmoke.includes("command === 'node_diagnostics'") && soakSmoke.includes('failed single node test did not capture node diagnostics') && soakSmoke.includes("command === 'test_single_proxy_delay'"), 'soak node diagnostics coverage');
 check('speed tests stream completed nodes quickly', mainRs.includes('mpsc::channel') && mainRs.includes('speed_test_phases') && mainRs.includes('Arc::new(client)') && mainRs.includes('speed.recommended = speed_recommendation') && appJs.includes('const speedTestPollMs = 300'), 'incremental speed test results');
 check('speed test polling renders node tables only on visible node surfaces', appJs.includes('async function refreshVisibleNodesForSpeed') && appJs.includes('if (!isNodeSurfaceActive()) return') && appJs.includes('await refreshNodes(true, { target })') && appJs.includes('await refreshVisibleNodesForSpeed(true)'), 'visible-surface speed refresh');
 check('speed tests use protocol-aware adaptive scheduling', mainRs.includes('fn protocol_concurrency') && mainRs.includes('fn speed_test_phases') && mainRs.includes('protocol_primary_timeout_ms') && mainRs.includes('"tuic" => 8') && mainRs.includes('collect_proxy_targets'), 'protocol-aware speed path');
