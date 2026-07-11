@@ -313,6 +313,7 @@ try {
             return { running: true, total: groups[0].items.length, completed: 0, ok: 0, failed: 0 };
           }
           if (command === 'test_single_proxy_delay') {
+            await new Promise((resolve) => setTimeout(resolve, 320));
             const item = groups[0].items.find((item) => item.name === args.name);
             if (item) {
               item.delay = 42;
@@ -443,7 +444,14 @@ try {
     if (!document.querySelector('#outboundMetric')?.textContent.includes('203.0.113.8')) throw new Error('auto refreshed outbound IP did not render');
     if (!document.querySelector('#homeNodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('home node delays did not update after quick speed test');
     const switchCallsBeforeCurrentNodeTest = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
-    await click('#currentNodeTestBtn');
+    const currentNodeButton = document.querySelector('#currentNodeTestBtn');
+    const currentNodeButtonWidth = currentNodeButton?.getBoundingClientRect().width || 0;
+    currentNodeButton?.click();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    if (/测速中|測速中/.test(currentNodeButton?.textContent || '')) throw new Error('current node icon refresh button rendered busy text');
+    if (!currentNodeButton?.classList.contains('is-pending')) throw new Error('current node icon refresh button did not show pending state');
+    if (Math.abs((currentNodeButton?.getBoundingClientRect().width || 0) - currentNodeButtonWidth) > 1) throw new Error('current node icon refresh button changed width while pending');
+    await new Promise((resolve) => setTimeout(resolve, 520));
     const switchCallsAfterCurrentNodeTest = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     if (!window.__aegosCalls.some((item) => item.command === 'test_single_proxy_delay')) throw new Error('current node delay refresh did not call single-node speed test');
     if (switchCallsAfterCurrentNodeTest !== switchCallsBeforeCurrentNodeTest) throw new Error('current node delay refresh triggered a proxy switch');
@@ -563,7 +571,14 @@ try {
     if (document.querySelector('#nodeRows .row[data-node]')?.children.length !== 7) throw new Error('node load/traffic columns were not removed');
     await click('#nodeRows [data-node-action="edit"]');
     if (!document.querySelector('#protectionNotice')?.textContent.includes('编辑节点')) throw new Error('node edit action did not show feedback');
-    await click('#nodeRows [data-node-action="test"]');
+    const rowTestButton = document.querySelector('#nodeRows [data-node-action="test"]');
+    const rowTestButtonWidth = rowTestButton?.getBoundingClientRect().width || 0;
+    rowTestButton?.click();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    if (/测速中|測速中/.test(rowTestButton?.textContent || '')) throw new Error('node row icon test button rendered busy text');
+    if (!rowTestButton?.classList.contains('is-pending')) throw new Error('node row icon test button did not show pending state');
+    if (Math.abs((rowTestButton?.getBoundingClientRect().width || 0) - rowTestButtonWidth) > 1) throw new Error('node row icon test button changed width while pending');
+    await new Promise((resolve) => setTimeout(resolve, 520));
     if (!window.__aegosCalls.some((item) => item.command === 'test_single_proxy_delay')) throw new Error('single node delay action did not call backend');
     await click('#nodeRows [data-node-action="favorite"]');
     await click('[data-node-filter="favorite"]');

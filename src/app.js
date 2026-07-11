@@ -714,14 +714,21 @@ window.addEventListener('error', (event) => {
   window.addEventListener(eventName, recordUserInteraction, { capture: true, passive: true });
 });
 
+function isIconOnlyBusyButton(button) {
+  if (!button) return false;
+  if (button.matches('.metric-refresh, .row-actions button')) return true;
+  return Boolean(button.querySelector('.aegos-icon')) && !button.textContent.trim();
+}
+
 function setButtonBusy(button, busy, label, options = {}) {
   if (!button) return;
   if (!button.dataset.idleText) button.dataset.idleText = button.textContent;
+  const preserveContent = Boolean(options.preserveContent || isIconOnlyBusyButton(button));
   button.classList.toggle('busy', busy);
   button.classList.toggle('is-pending', busy);
   button.setAttribute('aria-busy', busy ? 'true' : 'false');
   button.dataset.busy = busy ? 'true' : '';
-  if (options.preserveContent) {
+  if (preserveContent) {
     button.dataset.busyLabel = busy ? label : '';
   } else {
     button.textContent = busy ? label : button.dataset.idleText;
@@ -1457,6 +1464,24 @@ function findNodeItem(name) {
   return (latestGroup?.items || []).find((item) => item.name === name || item.realProxyName === name) || null;
 }
 
+function updateNodeDelayDom(name, delay) {
+  const value = Number(delay);
+  $all('.row[data-node]').forEach((row) => {
+    if (row.dataset.node !== name) return;
+    const delayCell = row.children?.[4];
+    if (delayCell) {
+      delayCell.className = delayClass(value);
+      delayCell.textContent = delayText(value);
+    }
+    const stabilityCell = row.children?.[5];
+    if (stabilityCell) {
+      stabilityCell.className = value === 0 ? 'confidence-pill confidence-muted' : stabilityCell.className;
+      if (value === 0) stabilityCell.textContent = '\u6d4b\u901f\u4e2d';
+    }
+  });
+  renderHomeNodeSummary(latestGroup?.items?.length ? normalizeRows(latestGroup.items) : []);
+}
+
 function applyOptimisticNodeDelay(name, delay) {
   if (!latestGroup?.items) return;
   latestGroup = {
@@ -1473,7 +1498,7 @@ function applyOptimisticNodeDelay(name, delay) {
       };
     })
   };
-  renderRows(latestGroup.items);
+  updateNodeDelayDom(name, delay);
 }
 
 function applyOptimisticSetting(key, value) {
