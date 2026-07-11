@@ -4347,7 +4347,8 @@ impl CoreManager {
                     "ok": true,
                     "message": "Core already running",
                     "standby": !enable_takeover,
-                    "trafficTakeover": self.traffic_takeover
+                    "trafficTakeover": self.traffic_takeover,
+                    "connection": self.connection_closure()
                 }));
             }
             let restore_system_proxy = self.settings.system_proxy;
@@ -4437,7 +4438,8 @@ impl CoreManager {
         Ok(json!({
             "ok": true,
             "standby": !enable_takeover,
-            "trafficTakeover": self.traffic_takeover
+            "trafficTakeover": self.traffic_takeover,
+            "connection": self.connection_closure()
         }))
     }
 
@@ -4636,6 +4638,27 @@ impl CoreManager {
         } else {
             self.outbound_ip_cache.clone()
         }
+    }
+
+    fn connection_closure(&self) -> JsonValue {
+        let groups = self.proxy_groups();
+        let current_node = self
+            .current_outbound_ip_proxy_name(&groups)
+            .unwrap_or_else(|| "-".to_string());
+        let outbound_ip = self.cached_outbound_ip();
+        json!({
+            "coreRunning": self.process.is_some(),
+            "trafficTakeover": self.traffic_takeover,
+            "systemProxyWanted": self.settings.system_proxy,
+            "systemProxyApplied": self.traffic_takeover && self.settings.system_proxy,
+            "tunEnabled": self.settings.tun_enabled,
+            "mode": self.settings.mode,
+            "activeProfileId": self.settings.active_profile_id,
+            "currentNode": current_node,
+            "outboundIp": outbound_ip,
+            "outboundIpKnown": outbound_ip != "-",
+            "checkedAt": now_secs()
+        })
     }
 
     #[allow(dead_code)]
@@ -7728,8 +7751,10 @@ fn start_job(
                     .ok_or_else(|| "Missing proxy name".to_string())?;
                 set_job_state(&jobs, &id, "running", 1, 2, "正在切换节点");
                 let _operation = lock_operation_queue(&operations, "changeProxy")?;
-                core.lock().unwrap().change_proxy(group, proxy)?;
-                Ok(json!({ "group": group, "proxy": proxy }))
+                let mut core = core.lock().unwrap();
+                core.change_proxy(group, proxy)?;
+                let connection = core.connection_closure();
+                Ok(json!({ "group": group, "proxy": proxy, "connection": connection }))
             })(),
             "selectBestProxy" => (|| -> Result<JsonValue, String> {
                 set_job_state(&jobs, &id, "running", 1, 2, "selecting best proxy");

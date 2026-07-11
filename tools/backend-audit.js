@@ -347,6 +347,19 @@ check(
 );
 
 check(
+  'connection closure is returned by connect and node switch jobs',
+  mainRs.includes('fn connection_closure(&self) -> JsonValue') &&
+    mainRs.includes('"coreRunning"') &&
+    mainRs.includes('"systemProxyApplied"') &&
+    mainRs.includes('"currentNode"') &&
+    mainRs.includes('"outboundIpKnown"') &&
+    mainRs.includes('"connection": self.connection_closure()') &&
+    mainRs.includes('let connection = core.connection_closure();') &&
+    mainRs.includes('json!({ "group": group, "proxy": proxy, "connection": connection })'),
+  'core running, takeover, system proxy, node, and outbound IP closure'
+);
+
+check(
   'speed engine tracks node health and low-latency recommendations',
   mainRs.includes('struct NodeHealth') &&
     mainRs.includes('fn update_node_health') &&
