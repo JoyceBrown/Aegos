@@ -2631,6 +2631,38 @@ rules:
     }
 
     #[test]
+    fn sanitized_subscription_fixtures_parse_without_real_tokens() {
+        let clash = include_str!("../fixtures/subscriptions/clash-basic.yaml");
+        let mixed = include_str!("../fixtures/subscriptions/mixed-uri.txt");
+        let mixed_b64 = general_purpose::STANDARD.encode(mixed);
+
+        let clash_source =
+            parse_profile_source_text_diagnostic(clash).expect("sanitized Clash fixture");
+        let mixed_source =
+            parse_profile_source_text_diagnostic(mixed).expect("sanitized mixed URI fixture");
+        let mixed_b64_source = parse_profile_source_text_diagnostic(&mixed_b64)
+            .expect("sanitized base64 mixed URI fixture");
+
+        assert_eq!(clash_source.summary.format, "clash-yaml");
+        assert_eq!(clash_source.summary.proxies, 2);
+        assert_eq!(mixed_source.summary.format, "uri");
+        assert_eq!(mixed_source.summary.proxies, 4);
+        assert_eq!(mixed_source.summary.unsupported_lines, 0);
+        assert_eq!(mixed_b64_source.summary.proxies, mixed_source.summary.proxies);
+    }
+
+    #[test]
+    fn sanitized_subscription_fixture_reports_unsupported_protocols() {
+        let unsupported = include_str!("../fixtures/subscriptions/unsupported-protocol.txt");
+        let err = parse_profile_source_text_diagnostic(unsupported)
+            .expect_err("unsupported sanitized fixture should fail clearly");
+
+        assert!(err.contains("Subscription diagnostics [unsupported-protocol]"));
+        assert!(err.contains("ssr"));
+        assert!(err.contains("shadowtls"));
+    }
+
+    #[test]
     fn resolves_proxy_group_references_to_leaf_proxy() {
         let groups = vec![
             json!({

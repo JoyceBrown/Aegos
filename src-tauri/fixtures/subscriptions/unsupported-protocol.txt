@@ -1,0 +1,3 @@
+# sanitized unsupported fixture
+ssr://fixture.example.com:443:auth_aes128_md5:aes-128-gcm:plain:ZmFrZQ
+shadowtls://fixture-password@example.com:443#Fixture%20ShadowTLS

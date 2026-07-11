@@ -322,6 +322,16 @@ check(
 );
 
 check(
+  'sanitized subscription fixture regression exists',
+  mainRs.includes('sanitized_subscription_fixtures_parse_without_real_tokens') &&
+    mainRs.includes('sanitized_subscription_fixture_reports_unsupported_protocols') &&
+    mainRs.includes('include_str!("../fixtures/subscriptions/clash-basic.yaml")') &&
+    mainRs.includes('include_str!("../fixtures/subscriptions/mixed-uri.txt")') &&
+    mainRs.includes('include_str!("../fixtures/subscriptions/unsupported-protocol.txt")'),
+  'real-use parser regression without real airport tokens'
+);
+
+check(
   'speed engine tracks node health and low-latency recommendations',
   mainRs.includes('struct NodeHealth') &&
     mainRs.includes('fn update_node_health') &&

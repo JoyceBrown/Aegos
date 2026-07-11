@@ -1,0 +1,6 @@
+# sanitized airport fixture
+subscription-userinfo: upload=1; download=2; total=3; expire=4102444800
+trojan://fixture-password@example.com:443?sni=example.com#Fixture%20Trojan
+vless://00000000-0000-4000-8000-000000000000@example.net:443?security=reality&type=grpc&sni=www.microsoft.com&fp=chrome&pbk=fixture-public-key&sid=abcd&serviceName=edge#Fixture%20VLESS
+hysteria2://fixture-secret@example.org:8443?sni=example.org&insecure=1#Fixture%20HY2
+anytls://fixture-password@example.edu:443?sni=example.edu&alpn=h2,h3#Fixture%20AnyTLS

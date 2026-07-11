@@ -1,0 +1,23 @@
+proxies:
+  - name: Fixture SS
+    type: ss
+    server: example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: fixture-password
+  - name: Fixture VLESS
+    type: vless
+    server: edge.example.com
+    port: 8443
+    uuid: 00000000-0000-4000-8000-000000000000
+    network: ws
+    tls: true
+proxy-groups:
+  - name: Fixture
+    type: select
+    proxies:
+      - Fixture SS
+      - Fixture VLESS
+      - DIRECT
+rules:
+  - MATCH,Fixture
