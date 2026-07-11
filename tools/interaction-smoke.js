@@ -403,6 +403,8 @@ try {
     };
     await click('#connectBtn');
     if (document.querySelector('#pageTitle')) throw new Error('duplicate top-left page title still renders');
+    if (![...document.querySelectorAll('.status-card dt')].some((item) => item.textContent.trim() === '局域网 IP')) throw new Error('network status did not rename LAN IP label');
+    if (document.querySelector('#lanIpState')?.textContent.trim() !== '192.168.1.2') throw new Error('network status did not render real LAN IP value');
     if (document.querySelector('#connectBtn')?.textContent.trim() !== '断开连接') throw new Error('connect button did not optimistically show disconnect');
     await new Promise((resolve) => setTimeout(resolve, 1000));
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'refreshOutboundIp')) throw new Error('first connect did not auto refresh outbound IP');

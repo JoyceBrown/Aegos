@@ -215,11 +215,7 @@ fn classified_error(context: &str, reason: impl AsRef<str>) -> String {
 
 fn is_ignorable_subscription_line(line: &str) -> bool {
     let line = line.trim().trim_start_matches('\u{feff}');
-    if line.is_empty()
-        || line.starts_with('#')
-        || line.starts_with("//")
-        || line.starts_with(';')
-    {
+    if line.is_empty() || line.starts_with('#') || line.starts_with("//") || line.starts_with(';') {
         return true;
     }
     let lower = line.to_ascii_lowercase();
@@ -1108,13 +1104,28 @@ fn infer_node_region(name: &str) -> &'static str {
         "HK"
     } else if text.contains("jp") || name.contains("\u{65e5}\u{672c}") || text.contains("japan") {
         "JP"
-    } else if text.contains("sg") || name.contains("\u{65b0}\u{52a0}\u{5761}") || text.contains("singapore") {
+    } else if text.contains("sg")
+        || name.contains("\u{65b0}\u{52a0}\u{5761}")
+        || text.contains("singapore")
+    {
         "SG"
-    } else if text.contains("tw") || name.contains("\u{53f0}\u{6e7e}") || name.contains("\u{81fa}\u{7063}") || text.contains("taiwan") {
+    } else if text.contains("tw")
+        || name.contains("\u{53f0}\u{6e7e}")
+        || name.contains("\u{81fa}\u{7063}")
+        || text.contains("taiwan")
+    {
         "TW"
-    } else if text.contains("us") || name.contains("\u{7f8e}\u{56fd}") || name.contains("\u{7f8e}\u{570b}") || text.contains("united states") {
+    } else if text.contains("us")
+        || name.contains("\u{7f8e}\u{56fd}")
+        || name.contains("\u{7f8e}\u{570b}")
+        || text.contains("united states")
+    {
         "US"
-    } else if text.contains("uk") || text.contains("gb") || name.contains("\u{82f1}\u{56fd}") || name.contains("\u{82f1}\u{570b}") {
+    } else if text.contains("uk")
+        || text.contains("gb")
+        || name.contains("\u{82f1}\u{56fd}")
+        || name.contains("\u{82f1}\u{570b}")
+    {
         "GB"
     } else {
         "GL"
@@ -1346,10 +1357,16 @@ fn parse_vless_uri(uri: &str, index: usize) -> Option<YamlValue> {
     let (main, query) = before_name.split_once('?').unwrap_or((before_name, ""));
     let (uuid, host_port) = main.split_once('@')?;
     let (server, port) = host_port.rsplit_once(':')?;
-    let security = query_value(query, "security").unwrap_or_default().to_ascii_lowercase();
+    let security = query_value(query, "security")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let network = query_value_any(query, &["type", "network"]).unwrap_or_else(|| "tcp".to_string());
     let mut map = Mapping::new();
-    set_yaml(&mut map, "name", yaml_str(uri_name(name_part, format!("VLESS {index}"))));
+    set_yaml(
+        &mut map,
+        "name",
+        yaml_str(uri_name(name_part, format!("VLESS {index}"))),
+    );
     set_yaml(&mut map, "type", yaml_str("vless"));
     set_yaml(&mut map, "server", yaml_str(percent_decode(server)));
     set_yaml(&mut map, "port", yaml_num(port.parse().ok()?));
@@ -1357,9 +1374,24 @@ fn parse_vless_uri(uri: &str, index: usize) -> Option<YamlValue> {
     set_yaml(&mut map, "network", yaml_str(network.clone()));
     set_yaml(&mut map, "udp", YamlValue::Bool(true));
     set_string_query(&mut map, "flow", query, &["flow"]);
-    set_string_query(&mut map, "servername", query, &["sni", "servername", "peer"]);
-    set_string_query(&mut map, "client-fingerprint", query, &["fp", "fingerprint"]);
-    set_bool_query(&mut map, "skip-cert-verify", query, &["allowInsecure", "insecure", "skip-cert-verify"]);
+    set_string_query(
+        &mut map,
+        "servername",
+        query,
+        &["sni", "servername", "peer"],
+    );
+    set_string_query(
+        &mut map,
+        "client-fingerprint",
+        query,
+        &["fp", "fingerprint"],
+    );
+    set_bool_query(
+        &mut map,
+        "skip-cert-verify",
+        query,
+        &["allowInsecure", "insecure", "skip-cert-verify"],
+    );
     if matches!(security.as_str(), "tls" | "reality") {
         set_yaml(&mut map, "tls", YamlValue::Bool(true));
     }
@@ -1417,15 +1449,29 @@ fn parse_hysteria2_uri(uri: &str, index: usize) -> Option<YamlValue> {
     let (password, host_port) = main.split_once('@')?;
     let (server, port) = host_port.rsplit_once(':')?;
     let mut map = Mapping::new();
-    set_yaml(&mut map, "name", yaml_str(uri_name(name_part, format!("Hysteria2 {index}"))));
+    set_yaml(
+        &mut map,
+        "name",
+        yaml_str(uri_name(name_part, format!("Hysteria2 {index}"))),
+    );
     set_yaml(&mut map, "type", yaml_str("hysteria2"));
     set_yaml(&mut map, "server", yaml_str(percent_decode(server)));
     set_yaml(&mut map, "port", yaml_num(port.parse().ok()?));
     set_yaml(&mut map, "password", yaml_str(percent_decode(password)));
     set_string_query(&mut map, "sni", query, &["sni", "peer"]);
-    set_bool_query(&mut map, "skip-cert-verify", query, &["insecure", "allowInsecure", "skip-cert-verify"]);
+    set_bool_query(
+        &mut map,
+        "skip-cert-verify",
+        query,
+        &["insecure", "allowInsecure", "skip-cert-verify"],
+    );
     set_string_query(&mut map, "obfs", query, &["obfs"]);
-    set_string_query(&mut map, "obfs-password", query, &["obfs-password", "obfs_password", "obfsPassword"]);
+    set_string_query(
+        &mut map,
+        "obfs-password",
+        query,
+        &["obfs-password", "obfs_password", "obfsPassword"],
+    );
     set_alpn_query(&mut map, query);
     Some(YamlValue::Mapping(map))
 }
@@ -1437,14 +1483,28 @@ fn parse_anytls_uri(uri: &str, index: usize) -> Option<YamlValue> {
     let (password, host_port) = main.split_once('@')?;
     let (server, port) = host_port.rsplit_once(':')?;
     let mut map = Mapping::new();
-    set_yaml(&mut map, "name", yaml_str(uri_name(name_part, format!("AnyTLS {index}"))));
+    set_yaml(
+        &mut map,
+        "name",
+        yaml_str(uri_name(name_part, format!("AnyTLS {index}"))),
+    );
     set_yaml(&mut map, "type", yaml_str("anytls"));
     set_yaml(&mut map, "server", yaml_str(percent_decode(server)));
     set_yaml(&mut map, "port", yaml_num(port.parse().ok()?));
     set_yaml(&mut map, "password", yaml_str(percent_decode(password)));
     set_string_query(&mut map, "sni", query, &["sni", "servername", "peer"]);
-    set_string_query(&mut map, "client-fingerprint", query, &["fp", "fingerprint"]);
-    set_bool_query(&mut map, "skip-cert-verify", query, &["insecure", "allowInsecure", "skip-cert-verify"]);
+    set_string_query(
+        &mut map,
+        "client-fingerprint",
+        query,
+        &["fp", "fingerprint"],
+    );
+    set_bool_query(
+        &mut map,
+        "skip-cert-verify",
+        query,
+        &["insecure", "allowInsecure", "skip-cert-verify"],
+    );
     set_alpn_query(&mut map, query);
     Some(YamlValue::Mapping(map))
 }
@@ -1999,8 +2059,7 @@ fn normalize_manual_node(input: &JsonValue) -> Result<JsonValue, String> {
     }
     if !matches!(
         node_type.as_str(),
-        "ss"
-            | "ssr"
+        "ss" | "ssr"
             | "vmess"
             | "vless"
             | "trojan"
@@ -2508,6 +2567,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn lan_ip_filter_accepts_private_addresses_only() {
+        assert_eq!(
+            parse_usable_lan_ip("192.168.1.25").as_deref(),
+            Some("192.168.1.25")
+        );
+        assert_eq!(parse_usable_lan_ip("10.7.0.4").as_deref(), Some("10.7.0.4"));
+        assert_eq!(
+            parse_usable_lan_ip("172.20.4.8").as_deref(),
+            Some("172.20.4.8")
+        );
+
+        assert!(parse_usable_lan_ip("127.0.0.1").is_none());
+        assert!(parse_usable_lan_ip("0.0.0.0").is_none());
+        assert!(parse_usable_lan_ip("8.8.8.8").is_none());
+        assert!(parse_usable_lan_ip("172.32.0.1").is_none());
+    }
+
+    #[test]
     fn parses_base64_tuic_subscription() {
         let uri = "tuic://00000000-0000-4000-8000-000000000000:secret@example.com:443?sni=example.com&alpn=h3&congestion_control=bbr&udp_relay_mode=native&reduce_rtt=true#HK%20TUIC";
         let encoded = general_purpose::STANDARD.encode(uri);
@@ -2603,10 +2680,9 @@ mod tests {
 
     #[test]
     fn subscription_diagnostics_classify_unsupported_protocols() {
-        let err = parse_uri_subscription_source_diagnostic(
-            "ssr://example-one\nwireguard://example-two",
-        )
-        .expect_err("unsupported protocols should be classified");
+        let err =
+            parse_uri_subscription_source_diagnostic("ssr://example-one\nwireguard://example-two")
+                .expect_err("unsupported protocols should be classified");
 
         assert!(err.contains("Subscription diagnostics [unsupported-protocol]"));
         assert!(err.contains("ssr"));
@@ -2668,8 +2744,8 @@ hysteria2://secret@example.net:8443?sni=example.net&insecure=1#SG%20HY2
     #[test]
     fn subscription_parser_accepts_bom_prefixed_clash_yaml() {
         let raw = "\u{feff}proxies:\n  - name: Node A\n    type: ss\n    server: example.com\n    port: 443\n    cipher: aes-128-gcm\n    password: secret\nproxy-groups:\n  - name: Proxy\n    type: select\n    proxies:\n      - Node A\nrules:\n  - MATCH,Proxy\n";
-        let source =
-            parse_profile_source_text_diagnostic(raw).expect("BOM-prefixed Clash YAML should parse");
+        let source = parse_profile_source_text_diagnostic(raw)
+            .expect("BOM-prefixed Clash YAML should parse");
 
         assert_eq!(source.summary.format, "clash-yaml");
         assert_eq!(source.summary.proxies, 1);
@@ -2828,7 +2904,10 @@ rules:
         }))
         .expect("hy2 manual node should be accepted");
 
-        assert_eq!(node.get("type").and_then(JsonValue::as_str), Some("hysteria2"));
+        assert_eq!(
+            node.get("type").and_then(JsonValue::as_str),
+            Some("hysteria2")
+        );
         assert!(mihomo_supports_proxy_type("anytls"));
         assert!(protocol_capability_summary().contains("Aegos URI parser"));
     }
@@ -2851,7 +2930,10 @@ rules:
         assert_eq!(mixed_source.summary.format, "uri");
         assert_eq!(mixed_source.summary.proxies, 4);
         assert_eq!(mixed_source.summary.unsupported_lines, 0);
-        assert_eq!(mixed_b64_source.summary.proxies, mixed_source.summary.proxies);
+        assert_eq!(
+            mixed_b64_source.summary.proxies,
+            mixed_source.summary.proxies
+        );
     }
 
     #[test]
@@ -2904,11 +2986,17 @@ rules:
 
         let ok = validate_proxy_selection_from_groups(&groups, "GLOBAL", "Node A")
             .expect("existing node should pass");
-        assert_eq!(ok.get("realProxyName").and_then(JsonValue::as_str), Some("Node A"));
+        assert_eq!(
+            ok.get("realProxyName").and_then(JsonValue::as_str),
+            Some("Node A")
+        );
 
         let by_real = validate_proxy_selection_from_groups(&groups, "GLOBAL", "Node B")
             .expect("real proxy alias should pass");
-        assert_eq!(by_real.get("realProxyName").and_then(JsonValue::as_str), Some("Node B"));
+        assert_eq!(
+            by_real.get("realProxyName").and_then(JsonValue::as_str),
+            Some("Node B")
+        );
 
         let missing_group = validate_proxy_selection_from_groups(&groups, "Missing", "Node A")
             .expect_err("missing group should fail");
@@ -3139,18 +3227,9 @@ rules:
 
     #[test]
     fn speed_result_confidence_tracks_fresh_stale_and_failed_results() {
-        assert_eq!(
-            speed_result_confidence(42, 0, 100, 100, 0, 120),
-            "high"
-        );
-        assert_eq!(
-            speed_result_confidence(42, 0, 100, 100, 0, 900),
-            "medium"
-        );
-        assert_eq!(
-            speed_result_confidence(42, 0, 100, 100, 0, 2000),
-            "stale"
-        );
+        assert_eq!(speed_result_confidence(42, 0, 100, 100, 0, 120), "high");
+        assert_eq!(speed_result_confidence(42, 0, 100, 100, 0, 900), "medium");
+        assert_eq!(speed_result_confidence(42, 0, 100, 100, 0, 2000), "stale");
         assert_eq!(speed_result_confidence(-1, 1, 0, 200, 0, 201), "failed");
         assert_eq!(
             speed_result_confidence(-1, 2, 100, 220, 400, 230),
@@ -3504,9 +3583,9 @@ fn validate_proxy_selection_from_groups(
     if proxy.is_empty() {
         return Err("Node switch preflight failed: missing proxy name".to_string());
     }
-    let groups = groups
-        .as_array()
-        .ok_or_else(|| "Node switch preflight failed: proxy group list is unavailable".to_string())?;
+    let groups = groups.as_array().ok_or_else(|| {
+        "Node switch preflight failed: proxy group list is unavailable".to_string()
+    })?;
     let Some(target_group) = groups
         .iter()
         .find(|item| item.get("name").and_then(JsonValue::as_str) == Some(group))
@@ -3640,14 +3719,70 @@ if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
     .unwrap_or(false)
 }
 
-fn primary_lan_ip() -> String {
+fn is_private_lan_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(value) => {
+            let [first, second, _, _] = value.octets();
+            first == 10
+                || (first == 172 && (16..=31).contains(&second))
+                || (first == 192 && second == 168)
+        }
+        IpAddr::V6(value) => (value.segments()[0] & 0xfe00) == 0xfc00,
+    }
+}
+
+fn is_usable_lan_ip(ip: IpAddr) -> bool {
+    !(ip.is_loopback() || ip.is_unspecified() || ip.is_multicast()) && is_private_lan_ip(ip)
+}
+
+fn parse_usable_lan_ip(value: &str) -> Option<String> {
+    let ip = value.trim().parse::<IpAddr>().ok()?;
+    if is_usable_lan_ip(ip) {
+        Some(ip.to_string())
+    } else {
+        None
+    }
+}
+
+fn route_lan_ip() -> Option<String> {
     UdpSocket::bind("0.0.0.0:0")
         .and_then(|socket| {
             let _ = socket.connect("8.8.8.8:80");
             socket.local_addr()
         })
-        .map(|addr| addr.ip().to_string())
-        .unwrap_or_else(|_| "-".to_string())
+        .ok()
+        .and_then(|addr| parse_usable_lan_ip(&addr.ip().to_string()))
+}
+
+#[cfg(windows)]
+fn windows_active_lan_ip() -> Option<String> {
+    let output = run_powershell(
+        r#"
+$privatePattern = '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)'
+Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+  Where-Object {
+    $_.IPAddress -match $privatePattern -and
+    $_.IPAddress -ne '127.0.0.1' -and
+    $_.AddressState -eq 'Preferred' -and
+    -not $_.SkipAsSource
+  } |
+  Sort-Object -Property InterfaceIndex |
+  Select-Object -First 1 -ExpandProperty IPAddress
+"#,
+    )
+    .ok()?;
+    output.lines().find_map(parse_usable_lan_ip)
+}
+
+#[cfg(not(windows))]
+fn windows_active_lan_ip() -> Option<String> {
+    None
+}
+
+fn primary_lan_ip() -> String {
+    route_lan_ip()
+        .or_else(windows_active_lan_ip)
+        .unwrap_or_else(|| "-".to_string())
 }
 
 fn read_windows_proxy_snapshot() -> Result<SystemProxySnapshot, String> {
@@ -5670,10 +5805,7 @@ impl CoreManager {
                                         now,
                                     );
                                     map.insert("healthStatus".to_string(), json!(health.status));
-                                    map.insert(
-                                        "healthConfidence".to_string(),
-                                        json!(confidence),
-                                    );
+                                    map.insert("healthConfidence".to_string(), json!(confidence));
                                     map.insert(
                                         "lastTestedAt".to_string(),
                                         json!(health.last_tested_at),
@@ -6534,8 +6666,14 @@ impl CoreManager {
         self.add_log(
             format!(
                 "Node switch preflight passed: {} -> {} ({})",
-                preflight.get("group").and_then(JsonValue::as_str).unwrap_or(group),
-                preflight.get("proxy").and_then(JsonValue::as_str).unwrap_or(proxy),
+                preflight
+                    .get("group")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or(group),
+                preflight
+                    .get("proxy")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or(proxy),
                 preflight
                     .get("groupType")
                     .and_then(JsonValue::as_str)
@@ -6585,7 +6723,11 @@ impl CoreManager {
         let count = if self.process.is_some() {
             self.controller("GET", "/connections", None, 350)
                 .ok()
-                .and_then(|data| data.get("connections").and_then(|value| value.as_array()).map(|items| items.len()))
+                .and_then(|data| {
+                    data.get("connections")
+                        .and_then(|value| value.as_array())
+                        .map(|items| items.len())
+                })
                 .unwrap_or(0)
         } else {
             0
@@ -7322,7 +7464,8 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
                 .map_err(|err| format!("配置读取失败 {}: {err}", path.display()))?;
             let source: YamlValue = serde_yaml::from_str(&raw)
                 .map_err(|err| format!("YAML 解析失败 {}: {err}", path.display()))?;
-            let patched = patch_config_with_settings(source, &snapshot.settings, Some(&profile.id))?;
+            let patched =
+                patch_config_with_settings(source, &snapshot.settings, Some(&profile.id))?;
             preflight_runtime_config(&patched, profile, &snapshot.settings).map(|report| {
                 format!(
                     "{} proxies, {} groups, {} rules",
