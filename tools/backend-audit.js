@@ -382,6 +382,18 @@ check(
 );
 
 check(
+  'speed results expose confidence and freshness',
+  mainRs.includes('SPEED_RESULT_HIGH_CONFIDENCE_SECS') &&
+    mainRs.includes('fn speed_result_confidence') &&
+    mainRs.includes('fn speed_confidence_summary') &&
+    mainRs.includes('"healthConfidence"') &&
+    mainRs.includes('"resultAgeSecs"') &&
+    mainRs.includes('"recommendedFresh"') &&
+    mainRs.includes('speed_result_confidence_tracks_fresh_stale_and_failed_results'),
+  'fresh/stale/failed confidence metadata'
+);
+
+check(
   'best proxy selection is routed through background jobs',
   mainRs.includes('fn select_best_proxy') &&
     mainRs.includes('"selectBestProxy"') &&

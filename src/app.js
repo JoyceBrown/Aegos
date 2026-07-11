@@ -233,6 +233,7 @@ function normalizeRows(items = []) {
     ? items.map((item) => {
         const delay = Number(item.delay ?? -1);
         const healthStatus = item.healthStatus || (delay === 0 ? 'testing' : delay > 0 ? 'available' : 'unknown');
+        const healthConfidence = item.healthConfidence || item.confidence || (delay === 0 ? 'testing' : delay > 0 ? 'stale' : 'unknown');
         const score = Number(item.healthScore ?? (delay > 0 ? delay : 999999));
         return [
           inferRegion(item.name),
@@ -250,10 +251,11 @@ function normalizeRows(items = []) {
           Number(item.failureStreak ?? 0),
           favoriteNodes.has(item.name),
           isFixedNodeItem(item),
-          Number(nodeUsageCounts.get(item.name) || 0)
+          Number(nodeUsageCounts.get(item.name) || 0),
+          healthConfidence
         ];
       })
-    : fallbackNodes.map((row, index) => [...row, -1, true, index === 0, 'direct', 'unknown', -1, 0, 999999, false, 0, false, false, index === 0 ? 1 : 0]);
+    : fallbackNodes.map((row, index) => [...row, -1, true, index === 0, 'direct', 'unknown', -1, 0, 999999, false, 0, false, false, index === 0 ? 1 : 0, 'unknown']);
 }
 
 function filterRows(rows, filter) {
@@ -303,6 +305,7 @@ function isSpeedTestActive() {
 function normalizeNodeItem(item = {}, index = 0) {
   const delay = Number(item.delay ?? -1);
   const healthStatus = item.healthStatus || (delay === 0 ? 'testing' : delay > 0 ? 'available' : 'unknown');
+  const healthConfidence = item.healthConfidence || item.confidence || (delay === 0 ? 'testing' : delay > 0 ? 'stale' : 'unknown');
   const score = Number(item.healthScore ?? (delay > 0 ? delay : 999999));
   const name = item.name || `Node ${index + 1}`;
   return [
@@ -321,7 +324,8 @@ function normalizeNodeItem(item = {}, index = 0) {
     Number(item.failureStreak ?? 0),
     favoriteNodes.has(name),
     isFixedNodeItem(item),
-    Number(nodeUsageCounts.get(name) || 0)
+    Number(nodeUsageCounts.get(name) || 0),
+    healthConfidence
   ];
 }
 
@@ -344,6 +348,7 @@ function normalizeNodeItemCached(item = {}, index = 0) {
   }
   const delay = Number(item.delay ?? -1);
   const healthStatus = item.healthStatus || (delay === 0 ? 'testing' : delay > 0 ? 'available' : 'unknown');
+  const healthConfidence = item.healthConfidence || item.confidence || (delay === 0 ? 'testing' : delay > 0 ? 'stale' : 'unknown');
   const score = Number(item.healthScore ?? (delay > 0 ? delay : 999999));
   return [
     cached.region,
@@ -361,7 +366,8 @@ function normalizeNodeItemCached(item = {}, index = 0) {
     Number(item.failureStreak ?? 0),
     favoriteNodes.has(cached.name),
     cached.fixed,
-    Number(nodeUsageCounts.get(cached.name) || 0)
+    Number(nodeUsageCounts.get(cached.name) || 0),
+    healthConfidence
   ];
 }
 
@@ -434,6 +440,28 @@ function delayText(value) {
   if (delay > 0) return `${Math.round(delay)} ms`;
   if (delay === 0) return '\u6d4b\u901f\u4e2d';
   return '-';
+}
+
+function confidenceLabel(value) {
+  const labels = {
+    high: '\u9ad8',
+    medium: '\u4e2d',
+    low: '\u4f4e',
+    stale: '\u8fc7\u671f',
+    failed: '\u5931\u8d25',
+    cooldown: '\u51b7\u5374',
+    testing: '\u6d4b\u901f\u4e2d',
+    unknown: '-'
+  };
+  return labels[String(value || 'unknown')] || labels.unknown;
+}
+
+function confidenceClass(value) {
+  const key = String(value || 'unknown');
+  if (key === 'high' || key === 'medium') return 'confidence-good';
+  if (key === 'low' || key === 'stale' || key === 'cooldown') return 'confidence-warn';
+  if (key === 'failed') return 'confidence-bad';
+  return 'confidence-muted';
 }
 
 function normalizedGroupType(value = '') {
@@ -513,10 +541,12 @@ function renderHomeNodeRow([region, name, host, delay, alive, active]) {
 
 */
 
-function renderNodeRow([region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak, favorite]) {
+function renderNodeRow([region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak, favorite, fixed, usageCount, healthConfidence]) {
   const delayValue = Number(delay);
   const delayText = delayValue > 0 ? `${Math.round(delayValue)} ms` : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : '-');
   const delayState = delayClass(delayValue);
+  const confidenceText = confidenceLabel(healthConfidence);
+  const confidenceState = confidenceClass(healthConfidence);
   return `
     <div class="row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="select ${escapeHtml(name)}">
       <span class="radio"></span>
@@ -525,7 +555,7 @@ function renderNodeRow([region, name, host, delay, alive, active, protocol, heal
       <span>${escapeHtml(protocolLabel(protocol))} / ${escapeHtml(host)}</span>
       <span class="${delayState}">${delayText}</span>
       <span>${Number(medianDelay) > 0 ? `${Math.round(Number(medianDelay))} ms` : '-'}</span>
-      <span class="load"><span class="bar"></span>${Math.max(0, Math.min(99, Math.round(100 - Math.min(Number(score) || 99, 99))))}%</span>
+      <span class="confidence-pill ${confidenceState}">${confidenceText}</span>
       <span>${Number(jitter) > 0 ? `${Math.round(Number(jitter))} ms` : '-'}</span>
       <span class="row-actions">
         <button data-node-action="test" data-node="${escapeHtml(name)}" aria-label="test delay"><span class="aegos-icon icon-speed" aria-hidden="true"></span></button>
@@ -536,10 +566,12 @@ function renderNodeRow([region, name, host, delay, alive, active, protocol, heal
   `;
 }
 
-function renderHomeNodeRow([region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak, favorite]) {
+function renderHomeNodeRow([region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak, favorite, fixed, usageCount, healthConfidence]) {
   const delayValue = Number(delay);
   const delayText = delayValue > 0 ? `${Math.round(delayValue)} ms` : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : '-');
   const delayState = delayClass(delayValue);
+  const confidenceText = confidenceLabel(healthConfidence);
+  const confidenceState = confidenceClass(healthConfidence);
   return `
     <div class="row home-row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="select ${escapeHtml(name)}">
       <span class="radio"></span>
@@ -547,7 +579,7 @@ function renderHomeNodeRow([region, name, host, delay, alive, active, protocol, 
       <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
       <span>${escapeHtml(protocolLabel(protocol))} / ${escapeHtml(host)}</span>
       <span class="${delayState}">${delayText}</span>
-      <span>0.0%</span>
+      <span class="confidence-pill ${confidenceState}">${confidenceText}</span>
     </div>
   `;
 }

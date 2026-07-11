@@ -29,6 +29,8 @@ const AEGOS_DEFAULT_MIXED_PORT: u16 = 7891;
 const AEGOS_DEFAULT_CONTROLLER_PORT: u16 = 19091;
 const RESERVED_MIXED_PORTS: &[u16] = &[7890];
 const AEGOS_OUTBOUND_IP_GROUP: &str = "Aegos Landing IP";
+const SPEED_RESULT_HIGH_CONFIDENCE_SECS: u64 = 600;
+const SPEED_RESULT_MEDIUM_CONFIDENCE_SECS: u64 = 1800;
 const OUTBOUND_IP_RULE_DOMAINS: &[&str] = &[
     "api.ipify.org",
     "api64.ipify.org",
@@ -345,6 +347,7 @@ struct NodeHealth {
     last_tested_at: u64,
     cooldown_until: u64,
     status: String,
+    confidence: String,
     score: i64,
 }
 
@@ -821,6 +824,38 @@ fn health_status(delay: i64, failure_streak: u64, cooldown_until: u64, now: u64)
     }
 }
 
+fn speed_result_confidence(
+    delay: i64,
+    failure_streak: u64,
+    last_success_at: u64,
+    last_tested_at: u64,
+    cooldown_until: u64,
+    now: u64,
+) -> String {
+    if cooldown_until > now {
+        return "cooldown".to_string();
+    }
+    if delay == 0 {
+        return "testing".to_string();
+    }
+    if delay > 0 && failure_streak == 0 && last_success_at > 0 {
+        let age = now.saturating_sub(last_success_at);
+        if age <= SPEED_RESULT_HIGH_CONFIDENCE_SECS {
+            "high".to_string()
+        } else if age <= SPEED_RESULT_MEDIUM_CONFIDENCE_SECS {
+            "medium".to_string()
+        } else {
+            "stale".to_string()
+        }
+    } else if failure_streak > 0 && last_success_at > 0 {
+        "low".to_string()
+    } else if failure_streak > 0 || last_tested_at > 0 {
+        "failed".to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
 fn health_score(delay: i64, jitter: i64, failure_streak: u64, protocol: &str) -> i64 {
     if delay <= 0 {
         return i64::MAX / 4;
@@ -856,6 +891,7 @@ fn update_node_health(
         last_tested_at: 0,
         cooldown_until: 0,
         status: "unknown".to_string(),
+        confidence: "unknown".to_string(),
         score: i64::MAX / 4,
     });
     let previous_delay = health.last_delay;
@@ -888,6 +924,14 @@ fn update_node_health(
         };
     }
     health.status = health_status(delay, health.failure_streak, health.cooldown_until, now);
+    health.confidence = speed_result_confidence(
+        delay,
+        health.failure_streak,
+        health.last_success_at,
+        health.last_tested_at,
+        health.cooldown_until,
+        now,
+    );
     health.score = health_score(
         if health.median_delay > 0 {
             health.median_delay
@@ -966,6 +1010,14 @@ fn speed_recommendation(
         })
         .min_by_key(|(_, item)| (item.score, item.last_delay))
         .map(|(target, item)| {
+            let confidence = speed_result_confidence(
+                item.last_delay,
+                item.failure_streak,
+                item.last_success_at,
+                item.last_tested_at,
+                item.cooldown_until,
+                now,
+            );
             json!({
                 "group": target.group_name,
                 "proxy": target.select_name,
@@ -975,6 +1027,9 @@ fn speed_recommendation(
                 "jitter": item.jitter,
                 "score": item.score,
                 "protocol": item.protocol,
+                "confidence": confidence,
+                "lastSuccessAt": item.last_success_at,
+                "resultAgeSecs": now.saturating_sub(item.last_success_at),
                 "reason": "latency<100ms, available, lowest health score"
             })
         })
@@ -988,6 +1043,55 @@ fn low_latency_names(health: &HashMap<String, NodeHealth>, now: u64) -> Vec<Stri
         .collect::<Vec<_>>();
     items.sort_by_key(|item| (item.score, item.last_delay));
     items.into_iter().map(|item| item.name).collect()
+}
+
+fn speed_confidence_summary(speed: &SpeedTestState, now: u64) -> JsonValue {
+    let mut high = 0usize;
+    let mut medium = 0usize;
+    let mut stale = 0usize;
+    let mut low = 0usize;
+    let mut failed = 0usize;
+    let mut cooldown = 0usize;
+    let mut testing = 0usize;
+    let mut unknown = 0usize;
+    let mut newest_success_at = 0u64;
+
+    for item in speed.health.values() {
+        let confidence = speed_result_confidence(
+            item.last_delay,
+            item.failure_streak,
+            item.last_success_at,
+            item.last_tested_at,
+            item.cooldown_until,
+            now,
+        );
+        match confidence.as_str() {
+            "high" => high += 1,
+            "medium" => medium += 1,
+            "stale" => stale += 1,
+            "low" => low += 1,
+            "failed" => failed += 1,
+            "cooldown" => cooldown += 1,
+            "testing" => testing += 1,
+            _ => unknown += 1,
+        }
+        newest_success_at = newest_success_at.max(item.last_success_at);
+    }
+
+    let fresh = high + medium;
+    json!({
+        "fresh": fresh,
+        "high": high,
+        "medium": medium,
+        "stale": stale,
+        "low": low,
+        "failed": failed,
+        "cooldown": cooldown,
+        "testing": testing,
+        "unknown": unknown,
+        "newestSuccessAgeSecs": if newest_success_at > 0 { json!(now.saturating_sub(newest_success_at)) } else { JsonValue::Null },
+        "recommendedFresh": speed.recommended.as_ref().and_then(|value| value.get("confidence")).and_then(|value| value.as_str()).map(|value| value == "high" || value == "medium").unwrap_or(false)
+    })
 }
 
 fn test_proxy_delay_with_retry(
@@ -2978,17 +3082,41 @@ rules:
     fn node_health_tracks_success_failure_and_cooldown() {
         let first = update_node_health(None, "HK 02", "trojan", 48, 100);
         assert_eq!(first.status, "low");
+        assert_eq!(first.confidence, "high");
         assert_eq!(first.failure_streak, 0);
         assert!(first.score < 100);
 
         let failed_once = update_node_health(Some(&first), "HK 02", "trojan", -1, 110);
         assert_eq!(failed_once.failure_streak, 1);
         assert_eq!(failed_once.status, "unstable");
+        assert_eq!(failed_once.confidence, "low");
 
         let failed_twice = update_node_health(Some(&failed_once), "HK 02", "trojan", -1, 120);
         assert_eq!(failed_twice.failure_streak, 2);
         assert!(failed_twice.cooldown_until > 120);
         assert_eq!(failed_twice.status, "cooldown");
+        assert_eq!(failed_twice.confidence, "cooldown");
+    }
+
+    #[test]
+    fn speed_result_confidence_tracks_fresh_stale_and_failed_results() {
+        assert_eq!(
+            speed_result_confidence(42, 0, 100, 100, 0, 120),
+            "high"
+        );
+        assert_eq!(
+            speed_result_confidence(42, 0, 100, 100, 0, 900),
+            "medium"
+        );
+        assert_eq!(
+            speed_result_confidence(42, 0, 100, 100, 0, 2000),
+            "stale"
+        );
+        assert_eq!(speed_result_confidence(-1, 1, 0, 200, 0, 201), "failed");
+        assert_eq!(
+            speed_result_confidence(-1, 2, 100, 220, 400, 230),
+            "cooldown"
+        );
     }
 
     #[test]
@@ -5425,6 +5553,7 @@ impl CoreManager {
         if speed.delays.is_empty() && speed.health.is_empty() {
             return;
         }
+        let now = now_secs();
         let recommended_name = speed
             .recommended
             .as_ref()
@@ -5452,7 +5581,37 @@ impl CoreManager {
                             }
                             if let Some(health) = speed.health.get(&name) {
                                 if let Some(map) = item.as_object_mut() {
+                                    let confidence = speed_result_confidence(
+                                        health.last_delay,
+                                        health.failure_streak,
+                                        health.last_success_at,
+                                        health.last_tested_at,
+                                        health.cooldown_until,
+                                        now,
+                                    );
                                     map.insert("healthStatus".to_string(), json!(health.status));
+                                    map.insert(
+                                        "healthConfidence".to_string(),
+                                        json!(confidence),
+                                    );
+                                    map.insert(
+                                        "lastTestedAt".to_string(),
+                                        json!(health.last_tested_at),
+                                    );
+                                    map.insert(
+                                        "lastSuccessAt".to_string(),
+                                        json!(health.last_success_at),
+                                    );
+                                    map.insert(
+                                        "resultAgeSecs".to_string(),
+                                        json!(if health.last_success_at > 0 {
+                                            now.saturating_sub(health.last_success_at)
+                                        } else if health.last_tested_at > 0 {
+                                            now.saturating_sub(health.last_tested_at)
+                                        } else {
+                                            0
+                                        }),
+                                    );
                                     map.insert(
                                         "medianDelay".to_string(),
                                         json!(health.median_delay),
@@ -5539,6 +5698,7 @@ impl CoreManager {
 
     fn speed_test_snapshot(&self) -> JsonValue {
         let speed = self.speed_test.lock().unwrap().clone();
+        let now = now_secs();
         json!({
             "running": speed.running,
             "startedAt": speed.started_at,
@@ -5550,6 +5710,7 @@ impl CoreManager {
             "error": speed.error,
             "delays": speed.delays,
             "health": speed.health,
+            "confidence": speed_confidence_summary(&speed, now),
             "lowLatency": speed.low_latency,
             "recommended": speed.recommended
         })
@@ -5850,6 +6011,10 @@ impl CoreManager {
             "medianDelay": health.median_delay,
             "jitter": health.jitter,
             "healthStatus": health.status,
+            "healthConfidence": health.confidence,
+            "lastTestedAt": health.last_tested_at,
+            "lastSuccessAt": health.last_success_at,
+            "resultAgeSecs": if health.last_success_at > 0 { now.saturating_sub(health.last_success_at) } else { 0 },
             "score": health.score
         }))
     }

@@ -1577,6 +1577,40 @@ h1 {
   gap: 8px;
 }
 
+.confidence-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 850;
+  background: rgba(137, 150, 171, 0.12);
+  color: #718098;
+}
+
+.confidence-good {
+  background: rgba(44, 190, 124, 0.14);
+  color: #1f9f68;
+}
+
+.confidence-warn {
+  background: rgba(238, 172, 73, 0.16);
+  color: #b16f17;
+}
+
+.confidence-bad {
+  background: rgba(212, 91, 91, 0.15);
+  color: #c64e4e;
+}
+
+.confidence-muted {
+  background: rgba(137, 150, 171, 0.11);
+  color: #7b8798;
+}
+
 .bar {
   width: 50px;
   height: 8px;
