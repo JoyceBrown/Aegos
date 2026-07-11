@@ -168,6 +168,7 @@ async function auditViewport(page, width, height) {
     const navBox = box('.nav');
     const statusBox = box('.status-card');
     const sidebarOverlap = navBox && statusBox ? navBox.bottom > statusBox.top + 1 : false;
+    const bottomMetricWidths = all('.metric-grid.bottom article').map((el) => Math.round(el.getBoundingClientRect().width));
     document.querySelector('[data-page="nodes"]').click();
     const nodeBase = collectBase();
     const table = document.querySelector('.node-table')?.getBoundingClientRect();
@@ -213,6 +214,7 @@ async function auditViewport(page, width, height) {
       sidebarOverlap,
       hero: box('.hero'),
       quick: box('.quick'),
+      bottomMetricWidths,
       nodes: box('.nodes'),
       settings: settingsBox,
       settingsActive,
@@ -274,6 +276,16 @@ try {
     if (report.homeNodeLayout?.headToFirstRowGap > 16) failures.push(`${report.width}x${report.height}: home table head is separated from first row by ${report.homeNodeLayout.headToFirstRowGap}px`);
     if (report.homeNodeLayout?.headHeight > 42) failures.push(`${report.width}x${report.height}: home table head stretched to ${report.homeNodeLayout.headHeight}px`);
     if (report.maxMetricIcon > 24) failures.push(`${report.width}x${report.height}: metric icon width ${report.maxMetricIcon}px`);
+    if (!report.hero || report.hero.height > 276) failures.push(`${report.width}x${report.height}: home hero row too tall ${report.hero?.height || 0}px`);
+    if (!report.quick || Math.abs(report.quick.height - 72) > 1) failures.push(`${report.width}x${report.height}: quick row height changed to ${report.quick?.height || 0}px`);
+    if (report.bottomMetricWidths?.length === 6) {
+      const outboundWidth = report.bottomMetricWidths[1];
+      const upWidth = report.bottomMetricWidths[4];
+      const downWidth = report.bottomMetricWidths[5];
+      if (outboundWidth <= upWidth || outboundWidth <= downWidth) failures.push(`${report.width}x${report.height}: outbound IP metric is not wider than traffic metrics`);
+    } else {
+      failures.push(`${report.width}x${report.height}: bottom metric widths missing`);
+    }
     if (report.sidebarOverlap) failures.push(`${report.width}x${report.height}: sidebar navigation overlaps status card`);
     if (report.sidebarWrappedRows.length) failures.push(`${report.width}x${report.height}: sidebar status rows wrap: ${report.sidebarWrappedRows.join(', ')}`);
     if (report.quickEscapes.length) failures.push(`${report.width}x${report.height}: quick buttons escape container: ${report.quickEscapes.join(', ')}`);

@@ -673,7 +673,13 @@ h1 {
 }
 
 .metric-grid.bottom {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns:
+    minmax(88px, .9fr)
+    minmax(142px, 1.45fr)
+    minmax(102px, .95fr)
+    minmax(108px, 1fr)
+    minmax(72px, .58fr)
+    minmax(72px, .58fr);
 }
 
 .metric-grid article {
@@ -2535,6 +2541,26 @@ body::before {
     repeating-linear-gradient(0deg, rgba(255, 255, 255, .10) 0 1px, transparent 1px 72px);
 }
 
+#outboundMetric {
+  font-size: 12px;
+}
+
+.metric-grid.bottom article:nth-last-child(-n + 2) {
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 1px 5px;
+  padding-inline: 6px;
+}
+
+.metric-grid.bottom article:nth-last-child(-n + 2) .metric-icon {
+  width: 20px;
+  height: 20px;
+}
+
+#upRate,
+#downRate {
+  font-size: 11px;
+}
+
 button {
   transition: background-color .16s ease, box-shadow .16s ease, color .16s ease, transform .16s ease;
 }
@@ -3006,7 +3032,7 @@ select {
 
 /* 2.7.1 layout stabilization: only the node list grows with window height. */
 :root {
-  --home-hero-row: 310px;
+  --home-hero-row: 270px;
   --home-quick-row: 72px;
 }
 
@@ -3032,14 +3058,14 @@ select {
 
 @media (min-height: 900px) {
   :root {
-    --home-hero-row: 330px;
+    --home-hero-row: 270px;
     --home-quick-row: 76px;
   }
 }
 
 @media (max-height: 760px) {
   :root {
-    --home-hero-row: 264px;
+    --home-hero-row: 252px;
     --home-quick-row: 56px;
   }
 }
@@ -3063,8 +3089,8 @@ select {
 
 .connect-column {
   align-content: start;
-  justify-content: center;
-  padding-top: 24px;
+  justify-content: start;
+  padding-top: 10px;
 }
 
 .page[data-page-panel="home"].active > .quick {
@@ -3081,4 +3107,19 @@ select {
 .quick-row button {
   min-height: 36px;
   height: 36px;
+}
+
+/* 2.7.6: final home metric proportions; keep IP readable at minimum width. */
+.metric-grid.bottom {
+  grid-template-columns:
+    minmax(88px, .9fr)
+    minmax(142px, 1.45fr)
+    minmax(102px, .95fr)
+    minmax(108px, 1fr)
+    minmax(72px, .58fr)
+    minmax(72px, .58fr);
+}
+
+#outboundMetric {
+  font-size: 12px;
 }

@@ -46,6 +46,15 @@ check(
   'delay test may prepare a standby controller but remains measurement-only'
 );
 check(
+  'disconnect protection allows speed tests without disabling protection',
+  mainRs.includes('fn refresh_kill_switch_rules_if_enabled') &&
+    mainRs.includes('Disconnect protection allow rules refreshed for {reason}') &&
+    mainRs.includes('service=Dnscache protocol=UDP remoteport=53') &&
+    mainRs.includes('service=Dnscache protocol=TCP remoteport=53') &&
+    /fn ensure_core_for_delay_test[\s\S]*refresh_kill_switch_rules_if_enabled\("speed test"\)/.test(mainRs),
+  'speed-test preparation refreshes Aegos, mihomo, and DNS firewall allow rules'
+);
+check(
   'TUIC delay path has lower concurrency',
   mainRs.includes('fn protocol_concurrency') &&
     mainRs.includes('"tuic" => 8') &&

@@ -2388,6 +2388,7 @@ $snapshotPath = '{}'
 $group = '{}'
 $rulePrefix = "$group Allow"
 $programs = {}
+$dnsServiceHost = Join-Path $env:SystemRoot 'System32\svchost.exe'
 function Invoke-AegosNetsh {{
   $output = & netsh @args 2>&1
   if ($LASTEXITCODE -ne 0) {{
@@ -2409,6 +2410,10 @@ try {{
     if (-not (Test-Path -LiteralPath $program)) {{ throw "Firewall allow target missing: $program" }}
     Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix $index" dir=out action=allow "program=$program" enable=yes profile=any | Out-Null
     $index += 1
+  }}
+  if (Test-Path -LiteralPath $dnsServiceHost) {{
+    Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix DNS UDP" dir=out action=allow "program=$dnsServiceHost" service=Dnscache protocol=UDP remoteport=53 enable=yes profile=any | Out-Null
+    Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix DNS TCP" dir=out action=allow "program=$dnsServiceHost" service=Dnscache protocol=TCP remoteport=53 enable=yes profile=any | Out-Null
   }}
   Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Block
   $rules = @(Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Where-Object {{ $_.Direction -eq 'Outbound' -and $_.Action -eq 'Allow' -and $_.Enabled -eq 'True' }})
@@ -3591,6 +3596,25 @@ impl CoreManager {
         Ok(enable)
     }
 
+    fn refresh_kill_switch_rules_if_enabled(&mut self, reason: &str) -> Result<(), String> {
+        if !self.settings.kill_switch_enabled {
+            return Ok(());
+        }
+        if !is_process_elevated() {
+            return Err("断网保护已开启，测速需要管理员权限刷新防火墙放行规则。".to_string());
+        }
+        run_powershell(&build_kill_switch_script(
+            true,
+            &self.app_data,
+            &self.core_path,
+        ))?;
+        self.add_log(
+            format!("Disconnect protection allow rules refreshed for {reason}"),
+            "info",
+        );
+        Ok(())
+    }
+
     fn repair_system_proxy_takeover(&mut self) -> Result<JsonValue, String> {
         if self.process.is_none() {
             self.start()?;
@@ -4203,6 +4227,7 @@ impl CoreManager {
 
     fn ensure_core_for_delay_test(&mut self) -> Result<(), String> {
         if self.process.is_some() && self.controller("GET", "/version", None, 900).is_ok() {
+            self.refresh_kill_switch_rules_if_enabled("speed test")?;
             return Ok(());
         }
         if self.traffic_takeover {
@@ -4218,6 +4243,7 @@ impl CoreManager {
             );
             self.start_standby()?;
         }
+        self.refresh_kill_switch_rules_if_enabled("speed test")?;
         Ok(())
     }
 
