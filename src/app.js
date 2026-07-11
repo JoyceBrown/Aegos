@@ -276,6 +276,28 @@ function activeNodeRenderTarget(page = uiStore.state.page) {
   return page === 'nodes' ? 'nodes' : 'home';
 }
 
+function queueNodeRefresh(target = activeNodeRenderTarget(), delay = 0) {
+  const run = () => refreshNodes(true, { target }).catch(() => {});
+  if (delay > 0) setTimeout(run, delay);
+  else run();
+}
+
+async function refreshVisibleNodesForSpeed(finalRefresh = false) {
+  if (!isNodeSurfaceActive()) return;
+  const now = Date.now();
+  if (!finalRefresh && now - lastSpeedNodeRefreshAt < speedTestNodeRefreshMs) return;
+  lastSpeedNodeRefreshAt = now;
+  const target = activeNodeRenderTarget();
+  try {
+    if (!nodeBusy) await refreshNodes(true, { target });
+  } catch {}
+  if (finalRefresh) queueNodeRefresh(target, 180);
+}
+
+function isSpeedTestActive() {
+  return Boolean(speedTestTimer || speedTestStarting);
+}
+
 function normalizeNodeItem(item = {}, index = 0) {
   const delay = Number(item.delay ?? -1);
   const healthStatus = item.healthStatus || (delay === 0 ? 'testing' : delay > 0 ? 'available' : 'unknown');
@@ -1547,15 +1569,12 @@ function stopSpeedTestPolling() {
 async function pollSpeedTest() {
   try {
     const status = await invoke('speed_test_status');
-    const now = Date.now();
-    if (isNodeSurfaceActive() && !isForegroundHot() && (!status.running || now - lastSpeedNodeRefreshAt >= speedTestNodeRefreshMs)) {
-      lastSpeedNodeRefreshAt = now;
-      await refreshNodes(true, { target: activeNodeRenderTarget() });
-    }
     if (status.running) {
+      await refreshVisibleNodesForSpeed(false);
       setNotice(`正在测速：${status.completed || 0}/${status.total || 0}，成功 ${status.ok || 0}，失败 ${status.failed || 0}`);
       return;
     }
+    await refreshVisibleNodesForSpeed(true);
     stopSpeedTestPolling();
     setNotice(`节点测速已完成：成功 ${status.ok || 0}，失败 ${status.failed || 0}，共 ${status.total || 0} 个。`);
   } catch (err) {
@@ -2287,7 +2306,7 @@ $('#closeAllConnectionsBtn').onclick = (event) => runButtonAction(event.currentT
   successNotice: '连接已关闭。',
   failureNotice: (err) => `关闭连接失败：${err.message || err}`
 }));
-$('#runDiagBtn').onclick = () => runDiagnostics();
+$('#runDiagBtn').onclick = (event) => runButtonAction(event.currentTarget, '诊断中...', () => runDiagnostics());
 const copyDiagBtn = $('#copyDiagBtn');
 if (copyDiagBtn) copyDiagBtn.onclick = (event) => runButtonAction(event.currentTarget, '复制中...', async () => {
   if (!latestDiagnostics) await runDiagnostics(false);
@@ -2403,6 +2422,7 @@ $all('[data-region]').forEach((button) => {
     const nextRegion = uiStore.state.homeRegionFilter === button.dataset.region ? '' : button.dataset.region;
     uiStore.set({ homeNodeMode: 'region', homeRegionFilter: nextRegion });
     scheduleRowsRender(latestGroup?.items || [], { force: true, target: 'home', delay: 0 });
+    if (isSpeedTestActive()) queueNodeRefresh('home', speedTestPollMs);
     setNotice(nextRegion ? `已在首页筛选地区：${button.textContent.trim()}` : '已取消地区筛选。');
   };
 });
@@ -2412,6 +2432,7 @@ $all('[data-home-mode]').forEach((button) => {
     const mode = button.dataset.homeMode || 'frequent';
     uiStore.set({ homeNodeMode: mode, homeRegionFilter: mode === 'region' ? (uiStore.state.homeRegionFilter || 'HK') : '' });
     scheduleRowsRender(latestGroup?.items || [], { force: true, target: 'home', delay: 0 });
+    if (isSpeedTestActive()) queueNodeRefresh('home', speedTestPollMs);
   };
 });
 

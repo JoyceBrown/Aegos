@@ -81,8 +81,11 @@ check(
     mainRs.includes('update_profile_detached') &&
     mainRs.includes('refresh_outbound_ip_detached') &&
     mainRs.includes('download_profile_source_url(url)?') &&
-    mainRs.includes('query_outbound_ip(mixed_port)'),
-  'network waits happen outside the CoreManager mutex'
+    mainRs.includes('query_outbound_ip(mixed_port)') &&
+    mainRs.includes('normalize_outbound_ip_response') &&
+    mainRs.includes('checkip.amazonaws.com') &&
+    mainRs.includes('keeping cached value'),
+  'network waits happen outside the CoreManager mutex; outbound IP uses validated multi-provider fallback'
 );
 
 check(

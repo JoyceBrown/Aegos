@@ -137,6 +137,18 @@ try {
             { name: 'US 01', server: 'us.example', type: 'vless', alive: true, delay: -1, healthStatus: 'unknown', healthScore: 999999 }
           ]
         }];
+        let speedTestPollsRemaining = 0;
+        const applyDelayResults = () => {
+          groups[0].items.forEach((item, index) => {
+            item.delay = [31, 48, 116, 132, 99][index];
+            item.alive = true;
+            item.healthStatus = item.delay < 100 ? 'low' : 'available';
+            item.healthScore = item.delay + (item.type === 'tuic' ? 18 : 0);
+            item.medianDelay = item.delay;
+            item.jitter = index;
+            item.recommended = item.name === 'HK 02';
+          });
+        };
         const jobs = new Map();
         const status = () => ({
           product: 'Aegos',
@@ -268,15 +280,16 @@ try {
           if (command === 'start_proxy_delay_test') {
             state.running = true;
             groups[0].items.forEach((item, index) => {
-              item.delay = [31, 48, 116, 132, 99][index];
+              item.delay = 0;
               item.alive = true;
-              item.healthStatus = item.delay < 100 ? 'low' : 'available';
-              item.healthScore = item.delay + (item.type === 'tuic' ? 18 : 0);
-              item.medianDelay = item.delay;
+              item.healthStatus = 'testing';
+              item.healthScore = 999999;
+              item.medianDelay = -1;
               item.jitter = index;
-              item.recommended = item.name === 'HK 02';
+              item.recommended = false;
             });
-            return { running: false, total: groups[0].items.length, completed: groups[0].items.length, ok: groups[0].items.length, failed: 0, lowLatency: ['HK 01', 'HK 02', 'US 01'], recommended: { proxy: 'HK 02', delay: 48 } };
+            speedTestPollsRemaining = 2;
+            return { running: true, total: groups[0].items.length, completed: 0, ok: 0, failed: 0 };
           }
           if (command === 'test_single_proxy_delay') {
             const item = groups[0].items.find((item) => item.name === args.name);
@@ -298,6 +311,11 @@ try {
             return { node, profileId: state.activeProfileId, settings: status().settings };
           }
           if (command === 'speed_test_status') {
+            if (speedTestPollsRemaining > 0) {
+              speedTestPollsRemaining -= 1;
+              if (speedTestPollsRemaining > 0) return { running: true, total: groups[0].items.length, completed: 2, ok: 1, failed: 0 };
+              applyDelayResults();
+            }
             return { running: false, total: groups[0].items.length, completed: groups[0].items.length, ok: groups[0].items.length, failed: 0 };
           }
           if (command === 'test_proxy_delays') {
@@ -322,7 +340,9 @@ try {
           if (command === 'connections') return [{ id: '1', metadata: { host: 'example.com' }, rule: 'MATCH', chains: ['GLOBAL', 'HK 01'], upload: 1, download: 2 }];
           if (command === 'export_logs') return { path: 'C:\\Users\\JIE\\AppData\\Roaming\\Aegos\\diagnostics\\aegos-logs-smoke.txt', count: status().logs.length };
           if (command === 'close_connection' || command === 'close_connections' || command === 'clear_logs') { await new Promise((resolve) => setTimeout(resolve, 350)); return true; }
-          if (command === 'diagnostics') return {
+          if (command === 'diagnostics') {
+            await new Promise((resolve) => setTimeout(resolve, 350));
+            return {
             generatedAt: new Date().toISOString(),
             appVersion: '${pkg.version}',
             status: status(),
@@ -337,7 +357,8 @@ try {
               { name: 'mihomo core', ok: true, detail: 'mock', severity: 'ok', category: 'runtime', hint: '' },
               { name: 'Recent core logs', ok: false, detail: '[warn] mock warning', severity: 'warning', category: 'logs', hint: 'Open logs and inspect the latest core warning.', actionable: true }
             ]
-          };
+            };
+          }
           if (command === 'relaunch_as_admin') return true;
           if (command.startsWith('window_')) return true;
           return true;
@@ -378,6 +399,12 @@ try {
     if (document.querySelector('[data-page-jump="nodes"]')) throw new Error('all nodes shortcut still renders on home');
     const switchCallsBeforeSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     await click('#quickTestBtn');
+    await click('[data-home-mode="favorite"]');
+    await click('[data-home-mode="region"]');
+    await click('[data-region="JP"]');
+    await click('[data-region="HK"]');
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    if (document.querySelector('#homeNodeRows')?.textContent.includes('测速中')) throw new Error('home filter switch left rows stuck in testing state after speed test');
     const switchCallsAfterSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     if (switchCallsAfterSpeed !== switchCallsBeforeSpeed) throw new Error('speed test triggered a proxy switch');
     if (document.querySelector('#switchRecommendedBtn') || document.querySelector('.recommend-compact')) throw new Error('recommended switch control still renders');
@@ -478,6 +505,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 420));
     const switchCallsBeforeBatchSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     await click('#batchTestBtn');
+    await new Promise((resolve) => setTimeout(resolve, 750));
     const switchCallsAfterBatchSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     if (switchCallsAfterBatchSpeed !== switchCallsBeforeBatchSpeed) throw new Error('batch speed test triggered a proxy switch');
     if (!document.querySelector('#nodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('node page delays did not update after batch speed test');
@@ -537,6 +565,8 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 420));
     await click('[data-page="diagnostics"]');
     await click('#runDiagBtn');
+    if (!document.querySelector('#runDiagBtn')?.textContent.includes('诊断中')) throw new Error('diagnostics button did not show running feedback');
+    await new Promise((resolve) => setTimeout(resolve, 300));
     if (!document.querySelector('#diagSummary .diagnostic-status')) throw new Error('diagnostic summary did not render');
     if (!document.querySelector('#diagRows .diagnostic-row.severity-warning')) throw new Error('diagnostic severity row did not render');
     if (!document.querySelector('#diagRows .diagnostic-hint')) throw new Error('diagnostic actionable hint did not render');

@@ -11,7 +11,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     io::{BufRead, BufReader},
-    net::{TcpListener, UdpSocket},
+    net::{IpAddr, TcpListener, UdpSocket},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{mpsc, Arc, Mutex},
@@ -1590,18 +1590,41 @@ fn preflight_runtime_config(
     }))
 }
 
+fn normalize_outbound_ip_response(text: &str) -> Option<String> {
+    let candidate = text
+        .trim()
+        .trim_matches('"')
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_end_matches(',')
+        .to_string();
+    if candidate.parse::<IpAddr>().is_ok() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
 fn query_outbound_ip(mixed_port: u16) -> Result<String, String> {
     let proxy_url = format!("http://127.0.0.1:{mixed_port}");
     let proxy = reqwest::Proxy::all(&proxy_url).map_err(|err| err.to_string())?;
     let client = Client::builder()
         .proxy(proxy)
+        .user_agent("Aegos/2 outbound-ip-check")
         .timeout(Duration::from_millis(2800))
         .build()
         .map_err(|err| err.to_string())?;
     let services = [
         "https://api.ipify.org",
+        "https://api64.ipify.org",
+        "https://checkip.amazonaws.com",
+        "https://ident.me",
         "https://ifconfig.me/ip",
         "https://icanhazip.com",
+        "http://api.ipify.org",
+        "http://ifconfig.me/ip",
     ];
     let mut last_error = String::new();
     for url in services {
@@ -1612,10 +1635,10 @@ fn query_outbound_ip(mixed_port: u16) -> Result<String, String> {
         {
             Ok(res) => match res.text() {
                 Ok(text) => {
-                    let ip = text.trim().trim_matches('"').to_string();
-                    if !ip.is_empty() && ip.len() <= 64 {
+                    if let Some(ip) = normalize_outbound_ip_response(&text) {
                         return Ok(ip);
                     }
+                    last_error = format!("{url} returned an invalid IP response");
                 }
                 Err(err) => last_error = err.to_string(),
             },
@@ -5766,8 +5789,19 @@ fn refresh_outbound_ip_detached(core: Arc<Mutex<CoreManager>>) -> Result<String,
             Ok(ip)
         }
         Err(reason) => {
-            core.add_log(&reason, "warn");
-            Err(reason)
+            let fallback = core.outbound_ip_cache.trim().to_string();
+            if !fallback.is_empty() && fallback != "-" {
+                core.add_log(
+                    format!(
+                        "Outbound IP refresh failed; keeping cached value {fallback}: {reason}"
+                    ),
+                    "warn",
+                );
+                Ok(fallback)
+            } else {
+                core.add_log(&reason, "warn");
+                Err(reason)
+            }
         }
     }
 }
