@@ -28,6 +28,14 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const AEGOS_DEFAULT_MIXED_PORT: u16 = 7891;
 const AEGOS_DEFAULT_CONTROLLER_PORT: u16 = 19091;
 const RESERVED_MIXED_PORTS: &[u16] = &[7890];
+const OUTBOUND_IP_RULE_DOMAINS: &[&str] = &[
+    "api.ipify.org",
+    "api64.ipify.org",
+    "checkip.amazonaws.com",
+    "ident.me",
+    "ifconfig.me",
+    "icanhazip.com",
+];
 
 fn default_reliability_auto() -> bool {
     true
@@ -264,6 +272,65 @@ fn yaml_str(value: impl Into<String>) -> YamlValue {
 
 fn yaml_num(value: u64) -> YamlValue {
     YamlValue::Number(value.into())
+}
+
+fn proxy_group_names(config: &Mapping) -> Vec<String> {
+    config
+        .get(yaml_key("proxy-groups"))
+        .and_then(|value| value.as_sequence())
+        .map(|groups| {
+            groups
+                .iter()
+                .filter_map(|group| {
+                    group
+                        .get(yaml_key("name"))
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn outbound_ip_rule_target(config: &Mapping, settings: &Settings) -> String {
+    let groups = proxy_group_names(config);
+    for preferred in ["GLOBAL", "Final", "Proxy", "Proxies"] {
+        if groups.iter().any(|name| name == preferred) {
+            return preferred.to_string();
+        }
+    }
+    for selected_group in settings.selected_proxy_map.keys() {
+        if groups.iter().any(|name| name == selected_group) {
+            return selected_group.clone();
+        }
+    }
+    groups
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "DIRECT".to_string())
+}
+
+fn insert_outbound_ip_rules(config: &mut Mapping, settings: &Settings) {
+    let target = outbound_ip_rule_target(config, settings);
+    let mut rules = config
+        .get(yaml_key("rules"))
+        .and_then(|value| value.as_sequence())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|rule| {
+            let text = rule.as_str().unwrap_or("");
+            !OUTBOUND_IP_RULE_DOMAINS
+                .iter()
+                .any(|domain| text.contains(domain))
+        })
+        .collect::<Vec<_>>();
+    let mut internal_rules = OUTBOUND_IP_RULE_DOMAINS
+        .iter()
+        .map(|domain| YamlValue::String(format!("DOMAIN,{domain},{target}")))
+        .collect::<Vec<_>>();
+    internal_rules.append(&mut rules);
+    set_yaml(config, "rules", YamlValue::Sequence(internal_rules));
 }
 
 fn port_from_value(value: &JsonValue, fallback: u16, label: &str) -> Result<u16, String> {
@@ -1149,6 +1216,7 @@ fn patch_config_with_settings(
             YamlValue::Sequence(vec![YamlValue::String(format!("MATCH,{target}"))]),
         );
     }
+    insert_outbound_ip_rules(&mut config, settings);
     Ok(YamlValue::Mapping(config))
 }
 
@@ -1846,6 +1914,42 @@ rules:
         let changed = patch_config_with_settings(first, &settings, None).expect("changed patch");
         let changed_yaml = serde_yaml::to_string(&changed).expect("changed yaml");
         assert_ne!(sha256_text(&second_yaml), sha256_text(&changed_yaml));
+    }
+
+    #[test]
+    fn outbound_ip_lookup_rules_follow_primary_proxy_group() {
+        let settings = default_settings();
+        let source: YamlValue = serde_yaml::from_str(
+            r#"
+proxies:
+  - name: Node A
+    type: ss
+    server: a.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: Final
+    type: select
+    proxies:
+      - Node A
+      - DIRECT
+rules:
+  - DOMAIN,example.com,DIRECT
+  - MATCH,Final
+"#,
+        )
+        .expect("source yaml");
+        let patched = patch_config_with_settings(source, &settings, Some("test")).expect("patch");
+        let rules = yaml_sequence(&patched, "rules").expect("rules");
+        assert_eq!(rules[0].as_str(), Some("DOMAIN,api.ipify.org,Final"));
+        assert!(
+            rules
+                .iter()
+                .position(|rule| rule.as_str() == Some("MATCH,Final"))
+                .unwrap()
+                > OUTBOUND_IP_RULE_DOMAINS.len()
+        );
     }
 
     #[test]

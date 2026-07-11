@@ -399,6 +399,9 @@ try {
     if (document.querySelector('[data-page-jump="nodes"]')) throw new Error('all nodes shortcut still renders on home');
     const switchCallsBeforeSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     await click('#quickTestBtn');
+    await navDown('[data-page="settings"]');
+    if (!document.querySelector('[data-page-panel="settings"]')?.classList.contains('active')) throw new Error('speed test blocked sidebar page switching');
+    await navDown('[data-page="home"]');
     await click('[data-home-mode="favorite"]');
     await click('[data-home-mode="region"]');
     await click('[data-region="JP"]');
@@ -570,6 +573,9 @@ try {
     await click('[data-page="diagnostics"]');
     await click('#runDiagBtn');
     if (!document.querySelector('#runDiagBtn')?.textContent.includes('诊断中')) throw new Error('diagnostics button did not show running feedback');
+    await navDown('[data-page="logs"]');
+    if (!document.querySelector('[data-page-panel="logs"]')?.classList.contains('active')) throw new Error('running diagnostics blocked sidebar page switching');
+    await navDown('[data-page="diagnostics"]');
     await new Promise((resolve) => setTimeout(resolve, 300));
     if (!document.querySelector('#diagSummary .diagnostic-status')) throw new Error('diagnostic summary did not render');
     if (!document.querySelector('#diagRows .diagnostic-row.severity-warning')) throw new Error('diagnostic severity row did not render');

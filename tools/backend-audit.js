@@ -90,6 +90,15 @@ check(
 );
 
 check(
+  'smart-mode outbound IP lookup follows the primary selected proxy group',
+  mainRs.includes('OUTBOUND_IP_RULE_DOMAINS') &&
+    mainRs.includes('fn insert_outbound_ip_rules') &&
+    mainRs.includes('DOMAIN,{domain},{target}') &&
+    mainRs.includes('outbound_ip_lookup_rules_follow_primary_proxy_group'),
+  'internal IP lookup domains are routed to the primary proxy group before general rules'
+);
+
+check(
   'core startup failures include actionable diagnostics',
   mainRs.includes('fn start_failure_message') &&
     mainRs.includes('recent_log_summary') &&
