@@ -267,6 +267,10 @@ function isNodeSurfaceActive(page = uiStore.state.page) {
   return page === 'home' || page === 'nodes';
 }
 
+function activeNodeRenderTarget(page = uiStore.state.page) {
+  return page === 'nodes' ? 'nodes' : 'home';
+}
+
 function normalizeNodeItem(item = {}, index = 0) {
   const delay = Number(item.delay ?? -1);
   const healthStatus = item.healthStatus || (delay === 0 ? 'testing' : delay > 0 ? 'available' : 'unknown');
@@ -931,22 +935,30 @@ function schedulePageLoad(page) {
 
 let rowRenderFrame = null;
 let pendingRowItems = null;
+let pendingRowTarget = null;
 const rowRenderSettleMs = 320;
 
 function scheduleRowsRender(items = latestGroup?.items || [], options = {}) {
   pendingRowItems = items;
+  const nextTarget = options.target || 'all';
+  pendingRowTarget = pendingRowTarget && pendingRowTarget !== nextTarget ? 'all' : nextTarget;
   if (!options.force && !isNodeSurfaceActive()) return;
   if (rowRenderFrame) clearTimeout(rowRenderFrame);
   const run = () => {
     rowRenderFrame = null;
     const nextItems = pendingRowItems || [];
+    const target = pendingRowTarget || 'all';
     pendingRowItems = null;
-    renderRows(nextItems);
+    pendingRowTarget = null;
+    renderRows(nextItems, { target });
   };
   rowRenderFrame = setTimeout(run, options.delay ?? rowRenderSettleMs);
 }
 
-function renderRows(items = []) {
+function renderRows(items = [], options = {}) {
+  const target = options.target || 'all';
+  const shouldRenderNodeRows = target !== 'home';
+  const shouldRenderHomeRows = target !== 'nodes';
   const sourceItems = items.length
     ? items
     : fallbackNodes.map(([region, name, server]) => ({ name, server, type: 'direct', region, delay: -1, alive: true }));
@@ -956,20 +968,27 @@ function renderRows(items = []) {
   const homeRows = [];
   let activeRow = null;
   let matchingNodeCount = 0;
+  const largeList = sourceItems.length > 1500;
 
   for (let index = 0; index < sourceItems.length; index += 1) {
     const item = sourceItems[index];
-    if (!itemMatchesNodeSearch(item)) continue;
     const row = normalizeNodeItemCached(item, index);
     rememberBestRow(bestRows, row);
     if (fallbackBestRows.length < 3) fallbackBestRows.push(row);
     if (!activeRow && row[5]) activeRow = row;
-    if (rowMatchesNodeFilter(row, nodePageFilter)) {
+    if (shouldRenderNodeRows && itemMatchesNodeSearch(item) && rowMatchesNodeFilter(row, nodePageFilter)) {
       matchingNodeCount += 1;
       if (nodeRows.length < nodeRenderLimit) nodeRows.push(row);
     }
-    if (rowMatchesHomeFilter(row)) {
+    if (shouldRenderHomeRows && rowMatchesHomeFilter(row)) {
       rememberRankedRow(homeRows, row, compareHomeRows, homeNodeRenderLimit);
+    }
+    if (largeList && shouldRenderHomeRows && !shouldRenderNodeRows && homeRows.length >= homeNodeRenderLimit && index > 420) {
+      break;
+    }
+    if (largeList && shouldRenderNodeRows && nodeRows.length >= nodeRenderLimit && (!shouldRenderHomeRows || homeRows.length >= homeNodeRenderLimit) && index > 420) {
+      matchingNodeCount = Math.max(matchingNodeCount, nodeRows.length + 1);
+      break;
     }
   }
 
@@ -980,10 +999,12 @@ function renderRows(items = []) {
   $('#protocolMetric').textContent = currentProtocol;
   if (activeRow?.[1]) $('#nodeName').textContent = activeRow[1];
 
-  const overflowNotice = matchingNodeCount > nodeRows.length
-    ? `<p class="empty">\u5df2\u663e\u793a\u524d ${nodeRows.length} \u4e2a\u8282\u70b9\uff0c\u8bf7\u641c\u7d22\u6216\u7b5b\u9009\u7f29\u5c0f\u8303\u56f4\u3002</p>`
-    : '';
-  $('#nodeRows').innerHTML = nodeRows.map(renderNodeRow).join('') + overflowNotice || '<p class="empty">\u6682\u65e0\u7b26\u5408\u6761\u4ef6\u7684\u8282\u70b9\u3002</p>';
+  if (shouldRenderNodeRows) {
+    const overflowNotice = matchingNodeCount > nodeRows.length
+      ? `<p class="empty">\u5df2\u663e\u793a\u524d ${nodeRows.length} \u4e2a\u8282\u70b9\uff0c\u8bf7\u641c\u7d22\u6216\u7b5b\u9009\u7f29\u5c0f\u8303\u56f4\u3002</p>`
+      : '';
+    $('#nodeRows').innerHTML = nodeRows.map(renderNodeRow).join('') + overflowNotice || '<p class="empty">\u6682\u65e0\u7b26\u5408\u6761\u4ef6\u7684\u8282\u70b9\u3002</p>';
+  }
   const sortedHomeRows = homeRows;
   const homeFallbackRows = homeNodeMode === 'frequent' || homeNodeMode === 'region' ? fallbackBestRows : [];
   const homeEmptyText = homeNodeMode === 'favorite'
@@ -993,10 +1014,20 @@ function renderRows(items = []) {
       : homeNodeMode === 'region'
         ? '\u6682\u65e0\u7b26\u5408\u8be5\u5730\u533a\u7684\u8282\u70b9\u3002'
         : '\u6682\u65e0\u5e38\u7528\u8282\u70b9\u3002';
-  $('#homeNodeRows').innerHTML = (sortedHomeRows.length ? sortedHomeRows : homeFallbackRows).slice(0, homeNodeRenderLimit)
-    .map(renderHomeNodeRow)
-    .join('') || `<p class="empty">${homeEmptyText}</p>`;
+  if (shouldRenderHomeRows) {
+    $('#homeNodeRows').innerHTML = (sortedHomeRows.length ? sortedHomeRows : homeFallbackRows).slice(0, homeNodeRenderLimit)
+      .map(renderHomeNodeRow)
+      .join('') || `<p class="empty">${homeEmptyText}</p>`;
+  }
   renderHomeNodeSummary();
+}
+
+function updateSelectedNodeDom(name) {
+  const selected = String(name || '');
+  $all('#nodeRows .row[data-node], #homeNodeRows .row[data-node]').forEach((row) => {
+    row.classList.toggle('selected', row.dataset.node === selected);
+  });
+  if (selected) $('#nodeName').textContent = selected;
 }
 
 function renderProfiles() {
@@ -1245,7 +1276,7 @@ function applyOptimisticNode(name) {
     saveNodeUsageCounts();
   }
   if (latestGroup) latestGroup = { ...latestGroup, now: name };
-  renderRows(latestGroup?.items || []);
+  updateSelectedNodeDom(name);
 }
 
 function findNodeItem(name) {
@@ -1449,7 +1480,7 @@ async function refreshStatus(force = false) {
   }
 }
 
-async function refreshNodes(force = false) {
+async function refreshNodes(force = false, options = {}) {
   if (nodeBusy) return;
   if (!force && isForegroundHot()) return;
   if (!force && (foregroundBusy > 0 || backgroundJobBusy > 0)) return;
@@ -1458,7 +1489,7 @@ async function refreshNodes(force = false) {
     const groups = await invoke('proxy_groups');
     latestGroup = Array.isArray(groups) ? (groups.find((group) => group.name === 'GLOBAL') || groups[0]) : null;
     selectedNode = latestGroup?.now || selectedNode;
-    scheduleRowsRender(latestGroup?.items || []);
+    scheduleRowsRender(latestGroup?.items || [], { force, target: options.target || 'all' });
   } catch {
     latestGroup = null;
     if (isNodeSurfaceActive()) renderRows();
@@ -1479,7 +1510,7 @@ async function pollSpeedTest() {
     const now = Date.now();
     if (!isForegroundHot() && (!status.running || now - lastSpeedNodeRefreshAt >= speedTestNodeRefreshMs)) {
       lastSpeedNodeRefreshAt = now;
-      await refreshNodes(true);
+      await refreshNodes(true, { target: activeNodeRenderTarget() });
     }
     if (status.running) {
       setNotice(`正在测速：${status.completed || 0}/${status.total || 0}，成功 ${status.ok || 0}，失败 ${status.failed || 0}`);
@@ -1498,7 +1529,7 @@ async function testNodes() {
   try {
     const status = await invoke('start_proxy_delay_test');
     lastSpeedNodeRefreshAt = 0;
-    await refreshNodes(true);
+    await refreshNodes(true, { target: activeNodeRenderTarget() });
     setNotice(`测速已在后台开始：0/${status.total || 0}`);
     speedTestTimer = setInterval(pollSpeedTest, speedTestPollMs);
     await pollSpeedTest();
@@ -1826,7 +1857,7 @@ async function selectNode(name) {
       failureNotice: (err) => `切换节点失败：${err.message || err}`
     }),
     refresh: async (result) => {
-      await refreshNodes(true);
+      await refreshNodes(true, { target: 'nodes' });
       if (result) await refreshOutboundIpAfterNodeChange();
     },
     pendingNotice: '正在后台切换节点...',
@@ -2231,7 +2262,7 @@ if (batchTestBtn) batchTestBtn.onclick = (event) => runButtonAction(event.curren
 const nodeSearch = $('#nodeSearch');
 if (nodeSearch) nodeSearch.oninput = () => {
   nodeSearchKeyword = nodeSearch.value.trim().toLowerCase();
-  scheduleRowsRender(latestGroup?.items || []);
+  scheduleRowsRender(latestGroup?.items || [], { force: true, target: 'nodes' });
 };
 $('#savePortBtn').onclick = (event) => runButtonAction(event.currentTarget, '保存中...', async () => {
   try {
@@ -2322,7 +2353,7 @@ $all('[data-region]').forEach((button) => {
   button.onclick = () => {
     const nextRegion = uiStore.state.homeRegionFilter === button.dataset.region ? '' : button.dataset.region;
     uiStore.set({ homeNodeMode: 'region', homeRegionFilter: nextRegion });
-    scheduleRowsRender(latestGroup?.items || []);
+    scheduleRowsRender(latestGroup?.items || [], { force: true, target: 'home', delay: 0 });
     setNotice(nextRegion ? `已在首页筛选地区：${button.textContent.trim()}` : '已取消地区筛选。');
   };
 });
@@ -2331,14 +2362,14 @@ $all('[data-home-mode]').forEach((button) => {
   button.onclick = () => {
     const mode = button.dataset.homeMode || 'frequent';
     uiStore.set({ homeNodeMode: mode, homeRegionFilter: mode === 'region' ? (uiStore.state.homeRegionFilter || 'HK') : '' });
-    scheduleRowsRender(latestGroup?.items || []);
+    scheduleRowsRender(latestGroup?.items || [], { force: true, target: 'home', delay: 0 });
   };
 });
 
 $all('[data-node-filter]').forEach((button) => {
   button.onclick = () => {
     uiStore.set({ nodePageFilter: button.dataset.nodeFilter || 'all' });
-    scheduleRowsRender(latestGroup?.items || []);
+    scheduleRowsRender(latestGroup?.items || [], { force: true, target: 'nodes', delay: 0 });
   };
 });
 
