@@ -464,6 +464,12 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 420));
     const hkRows = [...document.querySelectorAll('#homeNodeRows .row[data-node]')].map((row) => row.dataset.node);
     if (!hkRows.length || hkRows.some((name) => !name.includes('HK'))) throw new Error('home region filter did not stay on home page');
+    if (hkRows.length >= 2) {
+      document.querySelectorAll('#homeNodeRows .row[data-node]')[1].click();
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const hkRowsAfterSelect = [...document.querySelectorAll('#homeNodeRows .row[data-node]')].map((row) => row.dataset.node);
+      if (hkRowsAfterSelect.join('\\n') !== hkRows.join('\\n')) throw new Error('home node row order changed after selection');
+    }
     await click('[data-region="HK"]');
     await click('#modeBtn');
     document.querySelector('[data-mode-option="global"]').click();

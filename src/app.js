@@ -401,10 +401,10 @@ function compareHomeRows(a, b) {
   const delayA = Number(a[3]) > 0 ? Number(a[3]) : 999999;
   const delayB = Number(b[3]) > 0 ? Number(b[3]) : 999999;
   return Number(b[15]) - Number(a[15])
-    || Number(b[5]) - Number(a[5])
     || Number(b[11]) - Number(a[11])
     || delayA - delayB
-    || Number(a[10]) - Number(b[10]);
+    || Number(a[10]) - Number(b[10])
+    || String(a[1] || '').localeCompare(String(b[1] || ''));
 }
 
 function rememberRankedRow(rows, row, compare, limit) {
