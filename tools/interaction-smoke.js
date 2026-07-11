@@ -195,6 +195,22 @@ try {
           }
         });
         window.__aegosCalls = calls;
+        const diagnosticsResult = () => ({
+          generatedAt: new Date().toISOString(),
+          appVersion: '${pkg.version}',
+          status: status(),
+          summary: {
+            total: 2,
+            failed: 1,
+            errors: 0,
+            warnings: 1,
+            nextActions: ['Open logs and inspect the latest core warning.']
+          },
+          checks: [
+            { name: 'mihomo core', ok: true, detail: 'mock', severity: 'ok', category: 'runtime', hint: '' },
+            { name: 'Recent core logs', ok: false, detail: '[warn] mock warning', severity: 'warning', category: 'logs', hint: 'Open logs and inspect the latest core warning.', actionable: true }
+          ]
+        });
         window.__TAURI__ = { core: { invoke: async (command, args = {}) => {
           calls.push({ command, args });
           if (command === 'app_status') return status();
@@ -206,6 +222,7 @@ try {
             const id = 'job-' + (jobs.size + 1);
             let result = {};
             if (args.kind === 'refreshOutboundIp') result = { ip: '203.0.113.8' };
+            if (args.kind === 'diagnostics') result = diagnosticsResult();
             if (args.kind === 'startCore') { state.running = true; state.trafficTakeover = true; result = { ok: true, trafficTakeover: true }; }
             if (args.kind === 'stopCore') { state.running = false; state.trafficTakeover = false; result = { ok: true, trafficTakeover: false }; }
             if (args.kind === 'restartCore') { state.running = true; state.trafficTakeover = true; result = { ok: true, trafficTakeover: true }; }
@@ -342,22 +359,7 @@ try {
           if (command === 'close_connection' || command === 'close_connections' || command === 'clear_logs') { await new Promise((resolve) => setTimeout(resolve, 350)); return true; }
           if (command === 'diagnostics') {
             await new Promise((resolve) => setTimeout(resolve, 350));
-            return {
-            generatedAt: new Date().toISOString(),
-            appVersion: '${pkg.version}',
-            status: status(),
-            summary: {
-              total: 2,
-              failed: 1,
-              errors: 0,
-              warnings: 1,
-              nextActions: ['Open logs and inspect the latest core warning.']
-            },
-            checks: [
-              { name: 'mihomo core', ok: true, detail: 'mock', severity: 'ok', category: 'runtime', hint: '' },
-              { name: 'Recent core logs', ok: false, detail: '[warn] mock warning', severity: 'warning', category: 'logs', hint: 'Open logs and inspect the latest core warning.', actionable: true }
-            ]
-            };
+            return diagnosticsResult();
           }
           if (command === 'relaunch_as_admin') return true;
           if (command.startsWith('window_')) return true;
@@ -469,7 +471,7 @@ try {
     if (document.querySelector('#modeLabel')?.textContent.trim() !== '全局代理') throw new Error('mode label did not update optimistically');
     await new Promise((resolve) => setTimeout(resolve, 420));
     const connectionCallsBeforeNav = window.__aegosCalls.filter((item) => item.command === 'connections').length;
-    const diagnosticCallsBeforeNav = window.__aegosCalls.filter((item) => item.command === 'diagnostics').length;
+    const diagnosticCallsBeforeNav = window.__aegosCalls.filter((item) => item.command === 'diagnostics' || (item.command === 'start_job' && item.args.kind === 'diagnostics')).length;
     await navDown('[data-page="connections"]');
     if (!document.querySelector('[data-page="connections"]')?.classList.contains('active')) throw new Error('sidebar navigation did not activate on pointerdown');
     if (!document.querySelector('[data-page-panel="connections"]')?.classList.contains('active')) throw new Error('connections page panel did not activate immediately');
@@ -482,12 +484,12 @@ try {
     await navDown('[data-page="settings"]');
     await new Promise((resolve) => setTimeout(resolve, 140));
     const connectionCallsAfterCancel = window.__aegosCalls.filter((item) => item.command === 'connections').length;
-    const diagnosticCallsAfterCancel = window.__aegosCalls.filter((item) => item.command === 'diagnostics').length;
+    const diagnosticCallsAfterCancel = window.__aegosCalls.filter((item) => item.command === 'diagnostics' || (item.command === 'start_job' && item.args.kind === 'diagnostics')).length;
     if (connectionCallsAfterCancel !== connectionCallsBeforeNav) throw new Error('stale navigation data load was not cancelled after leaving the page');
     if (diagnosticCallsAfterCancel !== diagnosticCallsBeforeNav) throw new Error('rapid cached navigation triggered diagnostics before the quiet period');
     await navDown('[data-page="diagnostics"]');
     await new Promise((resolve) => setTimeout(resolve, 900));
-    const diagnosticCallsAfterSettle = window.__aegosCalls.filter((item) => item.command === 'diagnostics').length;
+    const diagnosticCallsAfterSettle = window.__aegosCalls.filter((item) => item.command === 'diagnostics' || (item.command === 'start_job' && item.args.kind === 'diagnostics')).length;
     if (diagnosticCallsAfterSettle !== diagnosticCallsBeforeNav) throw new Error('diagnostics page navigation auto-ran heavy diagnostics');
     if (document.querySelectorAll('[data-home-mode]').length !== 4) throw new Error('home node mode buttons did not render');
     await navDown('[data-page="home"]');
@@ -613,12 +615,12 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 20));
     const commands = window.__aegosCalls.map((item) => item.command);
     const advancedSettingsCall = window.__aegosCalls.find((item) => item.command === 'start_job' && item.args.kind === 'updateSettings');
-    const required = ['start_job', 'job_status', 'cancel_job', 'start_proxy_delay_test', 'speed_test_status', 'relaunch_as_admin', 'connections', 'close_connections', 'diagnostics'];
+    const required = ['start_job', 'job_status', 'cancel_job', 'start_proxy_delay_test', 'speed_test_status', 'relaunch_as_admin', 'connections', 'close_connections'];
     const jobKinds = window.__aegosCalls.filter((item) => item.command === 'start_job').map((item) => item.args.kind);
     return {
       commands,
       missing: required.filter((name) => !commands.includes(name)),
-      missingJobKinds: ['startCore', 'stopCore', 'restartCore', 'setMode', 'changeProxy', 'repairSystemProxy', 'setActiveProfile', 'removeProfile', 'renameProfile', 'updateSetting', 'updateSettings', 'refreshOutboundIp', 'updateProfile', 'updateAllProfiles', 'addProfileUrl'].filter((name) => !jobKinds.includes(name)),
+      missingJobKinds: ['startCore', 'stopCore', 'restartCore', 'setMode', 'changeProxy', 'repairSystemProxy', 'setActiveProfile', 'removeProfile', 'renameProfile', 'updateSetting', 'updateSettings', 'refreshOutboundIp', 'diagnostics', 'updateProfile', 'updateAllProfiles', 'addProfileUrl'].filter((name) => !jobKinds.includes(name)),
       advancedSettings: advancedSettingsCall?.args?.payload?.updates || null,
       jobCenterText,
       notice: document.querySelector('#protectionNotice')?.textContent || ''

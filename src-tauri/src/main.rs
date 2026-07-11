@@ -6270,6 +6270,7 @@ fn start_job(
             | "updateAllProfiles"
             | "recoverNetwork"
             | "refreshOutboundIp"
+            | "diagnostics"
             | "startCore"
             | "stopCore"
             | "restartCore"
@@ -6365,6 +6366,10 @@ fn start_job(
             "refreshOutboundIp" => {
                 set_job_state(&jobs, &id, "running", 1, 2, "正在查询落地 IP");
                 refresh_outbound_ip_detached(core.clone()).map(|ip| json!({ "ip": ip }))
+            }
+            "diagnostics" => {
+                set_job_state(&jobs, &id, "running", 1, 2, "diagnostics running");
+                Ok(core.lock().unwrap().diagnostics())
             }
             "recoverNetwork" => {
                 let force = payload

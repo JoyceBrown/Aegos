@@ -2255,9 +2255,17 @@ async function runDiagnostics(showNotice = true, token = null) {
   if (pageCacheState.diagnostics.loading) return;
   pageCacheState.diagnostics.loading = true;
   try {
-    const data = await invoke('diagnostics');
-    if (!isCurrentPageTask(token, 'diagnostics')) return;
+    const data = await runBackgroundJob('diagnostics', {}, {
+      pendingNotice: showNotice ? '诊断已开始，正在后台运行...' : '',
+      progressNotice: () => '',
+      pollMs: 300
+    });
+    if (!data) return;
     latestDiagnostics = data;
+    if (!isCurrentPageTask(token, 'diagnostics')) {
+      markPageCache('diagnostics');
+      return;
+    }
     const checks = (data.checks || []).map(normalizeDiagnosticCheck);
     renderDiagnosticSummary(data, checks);
     renderDiagnosticRows(checks);

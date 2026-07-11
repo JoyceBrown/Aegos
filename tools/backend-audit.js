@@ -72,8 +72,8 @@ check(
 check(
   'long operations expose background job API',
   ['start_job', 'job_status', 'cancel_job'].every((name) => commandSection.includes(`fn ${name}`)) &&
-    ['addProfileUrl', 'updateProfile', 'setActiveProfile', 'updateSetting', 'updateSettings', 'setMode', 'changeProxy', 'recoverNetwork', 'refreshOutboundIp', 'startCore', 'stopCore', 'restartCore'].every((name) => mainRs.includes(name)),
-  'background jobs for core power, settings, mode/proxy, subscription, recovery, and outbound IP'
+    ['addProfileUrl', 'updateProfile', 'setActiveProfile', 'updateSetting', 'updateSettings', 'setMode', 'changeProxy', 'recoverNetwork', 'refreshOutboundIp', 'diagnostics', 'startCore', 'stopCore', 'restartCore'].every((name) => mainRs.includes(name)),
+  'background jobs for core power, settings, mode/proxy, subscription, recovery, diagnostics, and outbound IP'
 );
 
 check(
