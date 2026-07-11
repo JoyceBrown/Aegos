@@ -34,12 +34,16 @@ check(
   'background delay test'
 );
 check(
-  'speed tests never auto-start or restart the core',
-  speedTestBody.includes('Speed test skipped because core controller is unavailable') &&
-    speedTestBody.includes('测速需要先连接') &&
-    !speedTestBody.includes('restart_core_preserving_proxy') &&
-    !speedTestBody.includes('start_core'),
-  'delay test is measurement-only'
+  'speed tests use standby core without traffic takeover or proxy switching',
+  mainRs.includes('fn start_standby') &&
+    mainRs.includes('fn ensure_core_for_delay_test') &&
+    speedTestBody.includes('ensure_core_for_delay_test') &&
+    mainRs.includes('Speed test starting mihomo in standby without traffic takeover') &&
+    mainRs.includes('settings.tun_enabled = false') &&
+    mainRs.includes('"trafficTakeover"') &&
+    !speedTestBody.includes('change_proxy') &&
+    !speedTestBody.includes('select_best_proxy'),
+  'delay test may prepare a standby controller but remains measurement-only'
 );
 check(
   'TUIC delay path has lower concurrency',

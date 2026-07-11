@@ -192,7 +192,7 @@ function escapeHtml(value = '') {
 }
 
 function formatClock() {
-  const total = latestStatus?.running ? Math.floor((Date.now() - startedAt) / 1000) : 0;
+  const total = latestStatus?.trafficTakeover ? Math.floor((Date.now() - startedAt) / 1000) : 0;
   const h = String(Math.floor(total / 3600)).padStart(2, '0');
   const m = String(Math.floor((total % 3600) / 60)).padStart(2, '0');
   const s = String(total % 60).padStart(2, '0');
@@ -1122,8 +1122,6 @@ function positionQuickProfileMenu() {
   const menu = $('#profileMenu');
   const button = $('#quickProfileBtn');
   if (!menu || !button || menu.classList.contains('hidden')) return;
-  const parent = menu.offsetParent || button.closest('.quick-row') || document.body;
-  const parentBox = parent.getBoundingClientRect();
   const buttonBox = button.getBoundingClientRect();
   const menuWidth = Math.min(320, Math.max(240, window.innerWidth - 28));
   const viewportLeft = Math.min(
@@ -1132,8 +1130,8 @@ function positionQuickProfileMenu() {
   );
   const viewportTop = Math.min(buttonBox.bottom + 8, Math.max(14, window.innerHeight - 140));
   menu.style.width = `${menuWidth}px`;
-  menu.style.left = `${viewportLeft - parentBox.left}px`;
-  menu.style.top = `${viewportTop - parentBox.top}px`;
+  menu.style.left = `${viewportLeft}px`;
+  menu.style.top = `${viewportTop}px`;
   menu.style.maxHeight = `${Math.max(120, window.innerHeight - viewportTop - 14)}px`;
 }
 
@@ -1158,8 +1156,10 @@ function renderSettings(status) {
     takeoverSummary.textContent = takeover.snapshotCaptured ? '可恢复原代理' : '接管时记录';
     takeoverSummary.classList.toggle('ok', Boolean(takeover.snapshotCaptured));
   }
-  $('#settingsRuntimeSummary').textContent = latestStatus?.running
+  $('#settingsRuntimeSummary').textContent = latestStatus?.trafficTakeover
     ? (settings.tunEnabled ? 'TUN 接管中' : settings.systemProxy ? '系统代理接管' : '核心运行中')
+    : latestStatus?.coreReady
+    ? '核心待命'
     : '未接管';
   $('#settingsProxySummary').textContent = settings.systemProxy ? '系统代理已开启' : '系统代理未开启';
   $('#settingsReliabilitySummary').textContent = reliability.auto === false
@@ -1218,27 +1218,28 @@ function warmStaticPageCaches() {
 }
 
 function renderStatus(status) {
-  const wasRunning = latestStatus?.running;
+  const wasTakeover = latestStatus?.trafficTakeover;
   latestStatus = status;
-  if (status.running && !wasRunning) startedAt = Date.now();
-  if (!status.running) startedAt = Date.now();
 
   const settings = status.settings || {};
   const protection = status.protection || {};
   const activeProfile = status.activeProfile || {};
   const traffic = status.traffic || {};
-  const running = Boolean(status.running);
+  const coreReady = Boolean(status.coreReady ?? status.running);
+  const trafficTakeover = Boolean(status.trafficTakeover || settings.proxyTakeover?.active);
+  if (trafficTakeover && !wasTakeover) startedAt = Date.now();
+  if (!trafficTakeover) startedAt = Date.now();
   const modeText = modeLabel(status.mode);
 
   $('#appVersionLabel').textContent = `v${status.appVersion || defaultAppVersion}`;
-  $('.ring strong').textContent = running ? '已连接' : '未连接';
-  $('.ring').classList.toggle('offline', !running);
+  $('.ring strong').textContent = trafficTakeover ? '已连接' : coreReady ? '核心待命' : '未连接';
+  $('.ring').classList.toggle('offline', !trafficTakeover);
   $('#nodeName').textContent = selectedNode || latestGroup?.now || activeProfile.name || '等待节点数据';
   const nodeHost = $('#nodeHost');
   if (nodeHost) nodeHost.textContent = status.network?.proxyEndpoint || '-';
-  $('#connectBtn').textContent = running ? '断开连接' : '连接';
+  $('#connectBtn').textContent = trafficTakeover ? '断开连接' : '连接';
   $('#modeLabel').textContent = modeText;
-  setNotice(`${protection.label || '未接管'}：${running ? '内核正在运行，按当前接管策略处理流量。' : '内核未运行，当前没有流量接管。'}`);
+  setNotice(`${protection.label || '未接管'}：${trafficTakeover ? '正在按当前策略接管流量。' : coreReady ? '可测速，未接管系统流量。' : '内核未运行，当前没有流量接管。'}`);
 
   $('#protectMode').textContent = protection.label || '未接管';
   $('#dnsState').textContent = settings.dnsHijackEnabled === false ? '未开启' : '已开启';
@@ -1745,9 +1746,15 @@ async function repairSystemProxyJob() {
 
 async function corePowerJob(kind, options = {}) {
   const snapshot = snapshotUiState();
-  const targetRunning = kind === 'stopCore' ? false : true;
+  const targetTakeover = kind === 'stopCore' ? false : true;
   if (latestStatus) {
-    latestStatus = { ...latestStatus, running: targetRunning };
+    latestStatus = {
+      ...latestStatus,
+      running: targetTakeover,
+      coreReady: targetTakeover,
+      trafficTakeover: targetTakeover,
+      standby: false
+    };
     renderStatus(latestStatus);
   }
   const result = await runBackgroundJob(kind, {}, {
@@ -1776,7 +1783,7 @@ async function maybeAutoRecover() {
   const reliability = latestStatus?.settings?.reliability || {};
   if (isForegroundHot()) return;
   if (foregroundBusy > 0 || backgroundJobBusy > 0) return;
-  if (reliability.auto === false || !latestStatus?.running || recoveryBusy) return;
+  if (reliability.auto === false || !latestStatus?.trafficTakeover || recoveryBusy) return;
   if (Date.now() - lastRecoveryAt < 60000) return;
   await recoverNetworkJob(false, false);
 }
@@ -1812,14 +1819,14 @@ async function toggleCore() {
   button.classList.add('is-pending');
   button.setAttribute('aria-busy', 'true');
   try {
-    setNotice(latestStatus?.running ? '正在断开核心...' : '正在启动核心...');
-    const stopping = Boolean(latestStatus?.running);
+    const stopping = Boolean(latestStatus?.trafficTakeover);
+    setNotice(stopping ? '正在断开连接...' : '正在启动连接...');
     await corePowerJob(stopping ? 'stopCore' : 'startCore', {
-      pendingNotice: stopping ? '正在后台断开核心...' : '正在后台启动核心...',
+      pendingNotice: stopping ? '正在后台断开连接...' : '正在后台启动连接...',
       successNotice: stopping ? '已断开连接。' : '已连接，核心正在运行。',
       failureNotice: (err) => `核心操作失败：${err.message || err}`
     });
-    setNotice(latestStatus?.running ? '已连接，核心正在运行。' : '已断开连接。');
+    setNotice(latestStatus?.trafficTakeover ? '已连接，核心正在运行。' : '已断开连接。');
   } catch (err) {
     setNotice(`操作失败：${err.message || err}`);
   } finally {
@@ -2114,7 +2121,8 @@ function diagnosticReportText(data = latestDiagnostics) {
   const lines = [
     `Aegos Diagnostics ${data.appVersion || defaultAppVersion}`,
     `Generated: ${data.generatedAt || '-'}`,
-    `Running: ${status.running ? 'yes' : 'no'}`,
+    `Core ready: ${status.coreReady || status.running ? 'yes' : 'no'}`,
+    `Traffic takeover: ${status.trafficTakeover ? 'yes' : 'no'}`,
     `Mode: ${status.mode || '-'}`,
     `Active profile: ${status.activeProfile?.name || '-'}`,
     `Proxy endpoint: ${status.network?.proxyEndpoint || '-'}`,

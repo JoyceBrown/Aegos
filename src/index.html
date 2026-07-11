@@ -7,13 +7,19 @@
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
+  <div class="window-drag-gutters" aria-hidden="true">
+    <div class="edge-drag edge-drag-top" data-tauri-drag-region></div>
+    <div class="edge-drag edge-drag-left" data-tauri-drag-region></div>
+    <div class="edge-drag edge-drag-right" data-tauri-drag-region></div>
+    <div class="edge-drag edge-drag-bottom" data-tauri-drag-region></div>
+  </div>
   <main class="shell">
     <aside class="sidebar">
       <section class="brand drag-zone" data-tauri-drag-region>
         <div class="brand-mark">A</div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v2.7.3</span>
+          <span id="appVersionLabel" class="brand-version">v2.7.4</span>
         </div>
       </section>
 
@@ -131,7 +137,6 @@
             <button id="quickKillBtn"><span class="kill-icon" aria-hidden="true"></span>断网保护</button>
             <button id="quickProfileBtn"><span>SUB</span>切换订阅</button>
             <button id="quickRestartBtn"><span>R</span>&#37325;&#21551;&#20869;&#26680;</button>
-            <div id="profileMenu" class="quick-profile-menu hidden"></div>
           </div>
         </section>
 
@@ -355,6 +360,7 @@
       </footer>
     </form>
   </div>
+  <div id="profileMenu" class="quick-profile-menu hidden"></div>
   <script src="./app.js"></script>
 </body>
 </html>

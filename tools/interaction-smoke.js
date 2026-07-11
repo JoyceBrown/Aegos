@@ -101,6 +101,7 @@ try {
         const calls = [];
         const state = {
           running: false,
+          trafficTakeover: false,
           mode: 'rule',
           activeProfileId: 'url-test',
           systemProxy: false,
@@ -141,6 +142,9 @@ try {
           product: 'Aegos',
           appVersion: '${pkg.version}',
           running: state.running,
+          coreReady: state.running,
+          trafficTakeover: state.trafficTakeover,
+          standby: state.running && !state.trafficTakeover,
           controller: state.running,
           mode: state.mode,
           traffic: { up: 128, down: 256 },
@@ -153,7 +157,7 @@ try {
           activeProfile: profiles.find((item) => item.id === state.activeProfileId),
           network: { lanIp: '192.168.1.2', proxyEndpoint: '127.0.0.1:' + state.settings.mixedPort, outboundIp: '-' },
           permissions: { isAdmin: true, requiresAdminFor: ['TUN', '断网保护'] },
-          protection: { label: state.running ? 'Core running' : 'Idle' },
+          protection: { label: state.trafficTakeover ? 'Core running' : state.running ? 'Core standby' : 'Idle' },
           settings: {
             activeProfileId: state.activeProfileId,
             profiles,
@@ -171,6 +175,8 @@ try {
             reliability: state.settings.reliability,
             proxyTakeover: {
               endpoint: '127.0.0.1:' + state.settings.mixedPort,
+              active: state.trafficTakeover,
+              standby: state.running && !state.trafficTakeover,
               snapshotCaptured: state.systemProxy,
               restoresPreviousProxy: true
             }
@@ -180,17 +186,17 @@ try {
         window.__TAURI__ = { core: { invoke: async (command, args = {}) => {
           calls.push({ command, args });
           if (command === 'app_status') return status();
-          if (command === 'start_core') { state.running = true; return { ok: true }; }
-          if (command === 'stop_core') { state.running = false; return { ok: true }; }
-          if (command === 'restart_core') { state.running = true; return { ok: true }; }
+          if (command === 'start_core') { state.running = true; state.trafficTakeover = true; return { ok: true }; }
+          if (command === 'stop_core') { state.running = false; state.trafficTakeover = false; return { ok: true }; }
+          if (command === 'restart_core') { state.running = true; state.trafficTakeover = true; return { ok: true }; }
           if (command === 'proxy_groups') return groups;
           if (command === 'start_job') {
             const id = 'job-' + (jobs.size + 1);
             let result = {};
             if (args.kind === 'refreshOutboundIp') result = { ip: '203.0.113.8' };
-            if (args.kind === 'startCore') { state.running = true; result = { ok: true }; }
-            if (args.kind === 'stopCore') { state.running = false; result = { ok: true }; }
-            if (args.kind === 'restartCore') { state.running = true; result = { ok: true }; }
+            if (args.kind === 'startCore') { state.running = true; state.trafficTakeover = true; result = { ok: true, trafficTakeover: true }; }
+            if (args.kind === 'stopCore') { state.running = false; state.trafficTakeover = false; result = { ok: true, trafficTakeover: false }; }
+            if (args.kind === 'restartCore') { state.running = true; state.trafficTakeover = true; result = { ok: true, trafficTakeover: true }; }
             if (args.kind === 'setActiveProfile') {
               state.activeProfileId = args.payload?.id;
               result = { profile: profiles.find((item) => item.id === args.payload?.id) };
@@ -211,7 +217,10 @@ try {
               result = { settings: status().settings };
             }
             if (args.kind === 'updateSetting') {
-              if (args.payload?.key === 'systemProxy') state.systemProxy = Boolean(args.payload.value);
+              if (args.payload?.key === 'systemProxy') {
+                state.systemProxy = Boolean(args.payload.value);
+                state.trafficTakeover = state.systemProxy || (state.trafficTakeover && state.tunEnabled);
+              }
               else if (args.payload?.key === 'tunEnabled') state.tunEnabled = Boolean(args.payload.value);
               else if (args.payload?.key === 'killSwitchEnabled') state.killSwitchEnabled = Boolean(args.payload.value);
               else state.settings[args.payload?.key] = args.payload?.value;
@@ -228,11 +237,13 @@ try {
             }
             if (args.kind === 'repairSystemProxy') {
               state.running = true;
+              state.trafficTakeover = true;
               state.systemProxy = true;
               result = { ok: true, endpoint: '127.0.0.1:' + state.settings.mixedPort };
             }
             if (args.kind === 'recoverNetwork') {
               state.running = true;
+              state.trafficTakeover = true;
               groups[0].now = 'HK 02';
               result = { ok: true, profileChanged: false, result: { action: 'switchProxy', group: 'GLOBAL', proxy: 'HK 02', delay: 48 } };
             }
@@ -255,6 +266,7 @@ try {
             return job;
           }
           if (command === 'start_proxy_delay_test') {
+            state.running = true;
             groups[0].items.forEach((item, index) => {
               item.delay = [31, 48, 116, 132, 99][index];
               item.alive = true;
@@ -382,6 +394,19 @@ try {
     if (!document.querySelector('#outboundMetric')?.textContent.includes('203.0.113.8')) throw new Error('auto refreshed outbound IP did not render');
     if (!document.querySelector('#homeNodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('home node delays did not update after quick speed test');
     if (!document.querySelector('.delay-good') || !document.querySelector('.delay-bad')) throw new Error('delay color classes did not render green/red states');
+    if (document.querySelector('#connectBtn')?.textContent.trim() === '断开连接') {
+      await click('#connectBtn');
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    }
+    if (document.querySelector('#connectBtn')?.textContent.trim() !== '连接') throw new Error('disconnect did not return connect button to idle');
+    const startCoreBeforeStandbySpeed = window.__aegosCalls.filter((item) => item.command === 'start_job' && item.args.kind === 'startCore').length;
+    const switchCallsBeforeStandbySpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
+    await click('#quickTestBtn');
+    const startCoreAfterStandbySpeed = window.__aegosCalls.filter((item) => item.command === 'start_job' && item.args.kind === 'startCore').length;
+    const switchCallsAfterStandbySpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
+    if (startCoreAfterStandbySpeed !== startCoreBeforeStandbySpeed) throw new Error('standby speed test triggered the connect job');
+    if (switchCallsAfterStandbySpeed !== switchCallsBeforeStandbySpeed) throw new Error('standby speed test triggered a proxy switch');
+    if (document.querySelector('#connectBtn')?.textContent.trim() !== '连接') throw new Error('standby speed test changed the connect button to disconnect');
     document.querySelector('#quickProxyBtn').click();
     await new Promise((resolve) => setTimeout(resolve, 20));
     if (document.querySelector('#quickProxyBtn')?.disabled) throw new Error('home proxy quick action became blocking while backend was pending');
@@ -393,6 +418,8 @@ try {
     if (document.querySelector('#profileMenu')?.classList.contains('hidden')) throw new Error('quick subscription menu did not open');
     const profileMenuBox = document.querySelector('#profileMenu')?.getBoundingClientRect();
     if (!profileMenuBox || profileMenuBox.width > 340 || profileMenuBox.height > 340 || profileMenuBox.left < 0 || profileMenuBox.right > window.innerWidth || profileMenuBox.top < 0 || profileMenuBox.bottom > window.innerHeight) throw new Error('quick subscription menu layout overflowed');
+    const topElement = document.elementFromPoint(profileMenuBox.left + profileMenuBox.width / 2, profileMenuBox.top + Math.min(28, profileMenuBox.height / 2));
+    if (!topElement?.closest('#profileMenu')) throw new Error('quick subscription menu was covered by another layer');
     document.querySelector('#profileMenu [data-profile-switch="url-test"]')?.click();
     await new Promise((resolve) => setTimeout(resolve, 420));
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'setActiveProfile')) throw new Error('quick subscription menu did not switch through background job');

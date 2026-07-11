@@ -187,6 +187,7 @@ struct CoreManager {
     process: Option<Child>,
     runtime_profile_id: Option<String>,
     runtime_config_digest: Option<String>,
+    traffic_takeover: bool,
     logs: Arc<Mutex<Vec<LogEntry>>>,
     last_traffic: JsonValue,
     speed_test: Arc<Mutex<SpeedTestState>>,
@@ -2512,6 +2513,7 @@ impl CoreManager {
             process: None,
             runtime_profile_id: None,
             runtime_config_digest: None,
+            traffic_takeover: false,
             logs: Arc::new(Mutex::new(Vec::new())),
             last_traffic: json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 }),
             speed_test: Arc::new(Mutex::new(SpeedTestState::default())),
@@ -2761,19 +2763,33 @@ impl CoreManager {
         patch_config_with_settings(source, &self.settings, Some(&profile.id))
     }
 
+    fn standby_settings(&self) -> Settings {
+        let mut settings = self.settings.clone();
+        settings.tun_enabled = false;
+        settings
+    }
+
     fn preflight_profile_file(&self, profile: &Profile) -> Result<JsonValue, String> {
         self.render_runtime_profile(profile)
             .map(|rendered| rendered.report)
     }
 
     fn render_runtime_profile(&self, profile: &Profile) -> Result<RenderedProfile, String> {
+        self.render_runtime_profile_with_settings(profile, &self.settings)
+    }
+
+    fn render_runtime_profile_with_settings(
+        &self,
+        profile: &Profile,
+        settings: &Settings,
+    ) -> Result<RenderedProfile, String> {
         let path = PathBuf::from(&profile.path);
         let raw = fs::read_to_string(&path)
             .map_err(|err| format!("profile config read failed {}: {err}", path.display()))?;
         let source: YamlValue = serde_yaml::from_str(&raw)
             .map_err(|err| format!("profile YAML parse failed {}: {err}", path.display()))?;
-        let patched = self.patched_config(profile, source)?;
-        let report = preflight_runtime_config(&patched, profile, &self.settings)?;
+        let patched = patch_config_with_settings(source, settings, Some(&profile.id))?;
+        let report = preflight_runtime_config(&patched, profile, settings)?;
         let yaml = serde_yaml::to_string(&patched).map_err(|err| err.to_string())?;
         let digest = sha256_text(&yaml);
         Ok(RenderedProfile {
@@ -2858,6 +2874,7 @@ impl CoreManager {
         self.home_dir.join("aegos-runtime-profile.yaml")
     }
 
+    #[allow(dead_code)]
     fn write_runtime_profile_copy(&self, profile: &Profile) -> Result<PathBuf, String> {
         ensure_dir(&self.home_dir)?;
         let source_path = PathBuf::from(&profile.path);
@@ -2906,7 +2923,7 @@ impl CoreManager {
         self.wait_for_controller()?;
         self.runtime_profile_id = Some(profile.id.clone());
         self.runtime_config_digest = Some(config_digest.clone());
-        if self.settings.start_with_system_proxy || self.settings.system_proxy {
+        if self.traffic_takeover && (self.settings.start_with_system_proxy || self.settings.system_proxy) {
             if let Err(err) = self.set_system_proxy(true) {
                 self.add_log(
                     format!("System proxy enable failed after profile hot reload: {err}"),
@@ -2947,12 +2964,16 @@ impl CoreManager {
             Ok(Some(status)) => {
                 self.process = None;
                 self.runtime_profile_id = None;
+                self.runtime_config_digest = None;
+                self.traffic_takeover = false;
                 Some(format!("mihomo exited before ready: {status}"))
             }
             Ok(None) => None,
             Err(err) => {
                 self.process = None;
                 self.runtime_profile_id = None;
+                self.runtime_config_digest = None;
+                self.traffic_takeover = false;
                 Some(format!("mihomo status check failed: {err}"))
             }
         }
@@ -3019,7 +3040,69 @@ impl CoreManager {
         )
     }
 
+    fn prepare_runtime_profile(
+        &mut self,
+        profile: &Profile,
+        enable_takeover: bool,
+    ) -> Result<String, String> {
+        if enable_takeover {
+            return self.patch_profile_file(profile);
+        }
+        let settings = self.standby_settings();
+        let rendered = self.render_runtime_profile_with_settings(profile, &settings)?;
+        ensure_dir(&self.home_dir)?;
+        let runtime_path = self.runtime_profile_path();
+        fs::write(&runtime_path, &rendered.yaml).map_err(|err| {
+            format!(
+                "standby runtime profile write failed {}: {err}",
+                runtime_path.display()
+            )
+        })?;
+        self.add_log(
+            format!(
+                "Standby config preflight passed: {} proxies, {} groups, digest {}",
+                rendered
+                    .report
+                    .get("proxies")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0),
+                rendered
+                    .report
+                    .get("proxyGroups")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0),
+                &rendered.digest[..12.min(rendered.digest.len())]
+            ),
+            "info",
+        );
+        Ok(rendered.digest)
+    }
+
+    fn apply_takeover_after_core_ready(&mut self, enable_takeover: bool) {
+        if enable_takeover {
+            if self.settings.start_with_system_proxy || self.settings.system_proxy {
+                if let Err(err) = self.set_system_proxy(true) {
+                    self.add_log(
+                        format!("System proxy enable failed after core start: {err}"),
+                        "warn",
+                    );
+                }
+            }
+            self.traffic_takeover = self.settings.system_proxy || self.settings.tun_enabled;
+        } else {
+            self.traffic_takeover = false;
+        }
+    }
+
     fn start(&mut self) -> Result<JsonValue, String> {
+        self.start_with_takeover(true)
+    }
+
+    fn start_standby(&mut self) -> Result<JsonValue, String> {
+        self.start_with_takeover(false)
+    }
+
+    fn start_with_takeover(&mut self, enable_takeover: bool) -> Result<JsonValue, String> {
         if !self.core_path.exists() {
             return Err(format!(
                 "mihomo core not found: {}",
@@ -3031,34 +3114,46 @@ impl CoreManager {
         let profile = self
             .active_profile()
             .ok_or_else(|| "没有活动配置".to_string())?;
+        let config_digest = self.prepare_runtime_profile(&profile, enable_takeover).map_err(|err| {
+            self.start_failure_message(Some(&profile), &format!("配置生成失败：{err}"))
+        })?;
         if self.process.is_some() {
             let same_profile = self.runtime_profile_id.as_deref() == Some(profile.id.as_str());
-            if same_profile && self.controller("GET", "/version", None, 900).is_ok() {
-                return Ok(json!({ "ok": true, "message": "Core already running" }));
+            let same_config = self.runtime_config_digest.as_deref() == Some(config_digest.as_str());
+            if same_profile && same_config && self.controller("GET", "/version", None, 900).is_ok() {
+                self.apply_takeover_after_core_ready(enable_takeover);
+                return Ok(json!({
+                    "ok": true,
+                    "message": "Core already running",
+                    "standby": !enable_takeover,
+                    "trafficTakeover": self.traffic_takeover
+                }));
             }
             let restore_system_proxy = self.settings.system_proxy;
+            let restore_takeover = self.traffic_takeover && enable_takeover;
             self.add_log(
                 "Runtime profile or controller drift detected; restarting mihomo",
                 "warn",
             );
             self.stop()?;
-            self.restore_system_proxy_preference(restore_system_proxy);
+            if restore_takeover {
+                self.restore_system_proxy_preference(restore_system_proxy);
+            }
             thread::sleep(Duration::from_millis(250));
         }
-        let config_digest = self.patch_profile_file(&profile).map_err(|err| {
-            self.start_failure_message(Some(&profile), &format!("配置生成失败：{err}"))
-        })?;
         ensure_dir(&self.home_dir).map_err(|err| {
             self.start_failure_message(Some(&profile), &format!("运行目录准备失败：{err}"))
         })?;
-        let runtime_profile_path = self.write_runtime_profile_copy(&profile).map_err(|err| {
-            self.start_failure_message(
-                Some(&profile),
-                &format!("runtime profile write failed: {err}"),
-            )
-        })?;
+        let runtime_profile_path = self.runtime_profile_path();
         let runtime_profile_arg = runtime_profile_path.to_string_lossy().to_string();
-        self.add_log(format!("Starting mihomo: {}", profile.name), "info");
+        self.add_log(
+            format!(
+                "Starting mihomo{}: {}",
+                if enable_takeover { "" } else { " in standby" },
+                profile.name
+            ),
+            "info",
+        );
         let mut command = Command::new(&self.core_path);
         command
             .args([
@@ -3117,15 +3212,12 @@ impl CoreManager {
         }
         self.runtime_profile_id = Some(profile.id.clone());
         self.runtime_config_digest = Some(config_digest);
-        if self.settings.start_with_system_proxy || self.settings.system_proxy {
-            if let Err(err) = self.set_system_proxy(true) {
-                self.add_log(
-                    format!("System proxy enable failed after core start: {err}"),
-                    "warn",
-                );
-            }
-        }
-        Ok(json!({ "ok": true }))
+        self.apply_takeover_after_core_ready(enable_takeover);
+        Ok(json!({
+            "ok": true,
+            "standby": !enable_takeover,
+            "trafficTakeover": self.traffic_takeover
+        }))
     }
 
     fn terminate_core_process(&mut self, message: &str) {
@@ -3136,6 +3228,7 @@ impl CoreManager {
         }
         self.runtime_profile_id = None;
         self.runtime_config_digest = None;
+        self.traffic_takeover = false;
     }
 
     fn restore_system_proxy_preference(&mut self, enabled: bool) {
@@ -3152,10 +3245,17 @@ impl CoreManager {
 
     fn restart_core_preserving_proxy(&mut self, delay_ms: u64) -> Result<JsonValue, String> {
         let restore_system_proxy = self.settings.system_proxy;
+        let restore_takeover = self.traffic_takeover;
         self.stop()?;
-        self.restore_system_proxy_preference(restore_system_proxy);
+        if restore_takeover {
+            self.restore_system_proxy_preference(restore_system_proxy);
+        }
         thread::sleep(Duration::from_millis(delay_ms));
-        self.start()
+        if restore_takeover {
+            self.start()
+        } else {
+            self.start_standby()
+        }
     }
 
     fn stop(&mut self) -> Result<JsonValue, String> {
@@ -3274,6 +3374,9 @@ impl CoreManager {
             "runtime": "mihomo",
             "shell": "tauri",
             "running": running,
+            "coreReady": running,
+            "trafficTakeover": self.traffic_takeover,
+            "standby": running && !self.traffic_takeover,
             "controller": running,
             "version": JsonValue::Null,
             "traffic": traffic,
@@ -3397,6 +3500,8 @@ impl CoreManager {
             },
             "proxyTakeover": {
                 "endpoint": format!("127.0.0.1:{}", self.settings.mixed_port),
+                "active": self.traffic_takeover,
+                "standby": self.process.is_some() && !self.traffic_takeover,
                 "snapshotCaptured": self.proxy_snapshot_path.exists(),
                 "restoresPreviousProxy": true
             }
@@ -3411,6 +3516,8 @@ impl CoreManager {
         let running = self.process.is_some();
         let level = if !running {
             "idle"
+        } else if !self.traffic_takeover {
+            "standby"
         } else if self.settings.kill_switch_enabled && self.settings.tun_enabled {
             "strict"
         } else if self.settings.kill_switch_enabled {
@@ -3427,6 +3534,7 @@ impl CoreManager {
             "guarded" => "防断连保护",
             "tunnel" => "全局接管",
             "proxy" => "系统代理",
+            "standby" => "核心待命",
             "partial" => "仅内核运行",
             _ => "未接管",
         };
@@ -3444,6 +3552,7 @@ impl CoreManager {
             run_powershell(&build_proxy_script(false, self.settings.mixed_port))?;
         }
         self.settings.system_proxy = enable;
+        self.traffic_takeover = enable || (self.traffic_takeover && self.settings.tun_enabled);
         self.save_settings()?;
         self.add_log(
             if enable {
@@ -4082,13 +4191,29 @@ impl CoreManager {
         }))
     }
 
-    fn start_proxy_delay_test(&mut self) -> Result<JsonValue, String> {
-        if self.process.is_none() || self.controller("GET", "/version", None, 900).is_err() {
+    fn ensure_core_for_delay_test(&mut self) -> Result<(), String> {
+        if self.process.is_some() && self.controller("GET", "/version", None, 900).is_ok() {
+            return Ok(());
+        }
+        if self.traffic_takeover {
             self.add_log(
-                "Speed test skipped because core controller is unavailable",
+                "Speed test requires controller recovery; restarting active core",
                 "warn",
             );
-            let message = "测速需要先连接；测速不会自动启动核心或切换节点".to_string();
+            self.start()?;
+        } else {
+            self.add_log(
+                "Speed test starting mihomo in standby without traffic takeover",
+                "info",
+            );
+            self.start_standby()?;
+        }
+        Ok(())
+    }
+
+    fn start_proxy_delay_test(&mut self) -> Result<JsonValue, String> {
+        if let Err(err) = self.ensure_core_for_delay_test() {
+            let message = format!("测速准备失败：{err}");
             let mut speed = self.speed_test.lock().unwrap();
             speed.running = false;
             speed.error = Some(message.clone());
@@ -4210,9 +4335,7 @@ impl CoreManager {
     }
 
     fn test_single_proxy_delay(&mut self, name: String) -> Result<JsonValue, String> {
-        if self.process.is_none() || self.controller("GET", "/version", None, 900).is_err() {
-            return Err("Core controller is not available; start the core before testing a node".to_string());
-        }
+        self.ensure_core_for_delay_test()?;
         let groups = self.proxy_groups();
         let targets = Self::collect_proxy_targets(&groups);
         let target = targets
@@ -4742,6 +4865,7 @@ impl CoreManager {
         self.save_settings()?;
         if was_running {
             let restore_system_proxy = self.settings.system_proxy;
+            let restore_takeover = self.traffic_takeover;
             let apply_result = self.hot_reload_profile(&profile).or_else(|hot_err| {
                 self.add_log(
                     format!("Profile hot reload failed; falling back to restart: {hot_err}"),
@@ -4751,11 +4875,17 @@ impl CoreManager {
             });
             if let Err(start_err) = apply_result {
                 let _ = self.stop();
-                self.restore_system_proxy_preference(restore_system_proxy);
+                if restore_takeover {
+                    self.restore_system_proxy_preference(restore_system_proxy);
+                }
                 self.settings.active_profile_id = previous_profile_id.clone();
                 let save_result = self.save_settings();
                 let rollback_result = if save_result.is_ok() {
-                    self.start().map(|_| ())
+                    if restore_takeover {
+                        self.start().map(|_| ())
+                    } else {
+                        self.start_standby().map(|_| ())
+                    }
                 } else {
                     save_result.map(|_| ())
                 };
@@ -4808,6 +4938,7 @@ impl CoreManager {
         }
         let was_running = self.process.is_some();
         let was_active = self.settings.active_profile_id == id;
+        let restore_takeover = self.traffic_takeover;
         let remove_path = self
             .settings
             .profiles
@@ -4817,7 +4948,9 @@ impl CoreManager {
         if was_running && was_active {
             let restore_system_proxy = self.settings.system_proxy;
             self.stop()?;
-            self.restore_system_proxy_preference(restore_system_proxy);
+            if restore_takeover {
+                self.restore_system_proxy_preference(restore_system_proxy);
+            }
             thread::sleep(Duration::from_millis(250));
         }
         if let Some(path) = remove_path {
@@ -4829,7 +4962,11 @@ impl CoreManager {
         }
         self.save_settings()?;
         if was_running && was_active {
-            self.start()?;
+            if restore_takeover {
+                self.start()?;
+            } else {
+                self.start_standby()?;
+            }
         }
         Ok(true)
     }

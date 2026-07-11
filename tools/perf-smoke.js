@@ -125,6 +125,9 @@ try {
           product: 'Aegos',
           appVersion: '${pkg.version}',
           running: true,
+          coreReady: true,
+          trafficTakeover: true,
+          standby: false,
           controller: true,
           mode: 'rule',
           traffic: { up: 0, down: 0 },
@@ -147,7 +150,8 @@ try {
             allowLan: false,
             tunStack: 'mixed',
             logLevel: 'info',
-            reliability: { auto: true, profileFailover: true, failureThreshold: 2, maxDelayMs: 800, candidateLimit: 24 }
+            reliability: { auto: true, profileFailover: true, failureThreshold: 2, maxDelayMs: 800, candidateLimit: 24 },
+            proxyTakeover: { endpoint: '127.0.0.1:7891', active: true, standby: false, snapshotCaptured: false, restoresPreviousProxy: true }
           }
         });
         window.__aegosCalls = calls;

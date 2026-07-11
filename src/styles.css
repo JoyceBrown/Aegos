@@ -37,6 +37,48 @@ button {
   background: #fff;
 }
 
+.window-drag-gutters {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.edge-drag {
+  position: absolute;
+  pointer-events: auto;
+  cursor: default;
+  -webkit-app-region: drag;
+}
+
+.edge-drag-top {
+  top: 4px;
+  left: 4px;
+  right: 136px;
+  height: 8px;
+}
+
+.edge-drag-left {
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: 8px;
+}
+
+.edge-drag-right {
+  top: 36px;
+  right: 4px;
+  bottom: 4px;
+  width: 8px;
+}
+
+.edge-drag-bottom {
+  left: 4px;
+  right: 4px;
+  bottom: 4px;
+  height: 8px;
+}
+
 button.is-pending {
   opacity: .84;
   cursor: progress;
@@ -804,8 +846,8 @@ h1 {
 }
 
 .quick-profile-menu {
-  position: absolute;
-  z-index: 1000;
+  position: fixed;
+  z-index: 2147483000;
   left: 16px;
   top: 16px;
   width: min(320px, calc(100vw - 28px));
@@ -2838,6 +2880,8 @@ h2 {
 }
 
 .quick-profile-menu {
+  position: fixed;
+  z-index: 2147483000;
   border-radius: var(--radius-panel);
   background: rgba(255, 255, 255, .94);
   backdrop-filter: blur(18px);
@@ -2962,7 +3006,7 @@ select {
 
 /* 2.7.1 layout stabilization: only the node list grows with window height. */
 :root {
-  --home-hero-row: 330px;
+  --home-hero-row: 310px;
   --home-quick-row: 72px;
 }
 
@@ -2988,8 +3032,8 @@ select {
 
 @media (min-height: 900px) {
   :root {
-    --home-hero-row: 410px;
-    --home-quick-row: 96px;
+    --home-hero-row: 330px;
+    --home-quick-row: 76px;
   }
 }
 
