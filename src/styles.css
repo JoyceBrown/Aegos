@@ -718,6 +718,35 @@ h1 {
   font-size: 13px;
 }
 
+.metric-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.metric-refresh {
+  width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 1px solid rgba(126, 151, 182, .18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .72);
+  color: #58708f;
+  cursor: pointer;
+}
+
+.metric-refresh .aegos-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.metric-refresh:hover {
+  background: rgba(62, 141, 255, .12);
+  color: #2f73d8;
+}
+
 .metric-grid strong.is-danger {
   color: #d94343;
 }
@@ -1508,7 +1537,7 @@ h1 {
 
 .row {
   display: grid;
-  grid-template-columns: 24px 26px minmax(118px, 1.1fr) minmax(118px, 1fr) 54px 62px 74px 76px 116px;
+  grid-template-columns: 24px 26px minmax(148px, 1.25fr) minmax(140px, 1fr) 64px 72px 116px;
   gap: 8px;
   align-items: center;
   min-width: 0;

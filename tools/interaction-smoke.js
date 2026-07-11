@@ -139,6 +139,7 @@ try {
         }];
         let speedTestPollsRemaining = 0;
         const applyDelayResults = () => {
+          const testedAt = Math.floor(Date.now() / 1000);
           groups[0].items.forEach((item, index) => {
             item.delay = [31, 48, 116, 132, 99][index];
             item.alive = true;
@@ -146,6 +147,8 @@ try {
             item.healthScore = item.delay + (item.type === 'tuic' ? 18 : 0);
             item.medianDelay = item.delay;
             item.jitter = index;
+            item.healthConfidence = item.delay < 100 ? 'high' : 'medium';
+            item.lastTestedAt = testedAt;
             item.recommended = item.name === 'HK 02';
           });
         };
@@ -214,8 +217,8 @@ try {
         window.__TAURI__ = { core: { invoke: async (command, args = {}) => {
           calls.push({ command, args });
           if (command === 'app_status') return status();
-          if (command === 'start_core') { state.running = true; state.trafficTakeover = true; return { ok: true }; }
-          if (command === 'stop_core') { state.running = false; state.trafficTakeover = false; return { ok: true }; }
+          if (command === 'start_core') { state.running = true; state.trafficTakeover = true; if (!state.tunEnabled) state.systemProxy = true; return { ok: true, trafficTakeover: true }; }
+          if (command === 'stop_core') { state.running = false; state.trafficTakeover = false; state.systemProxy = false; return { ok: true, trafficTakeover: false }; }
           if (command === 'restart_core') { state.running = true; state.trafficTakeover = true; return { ok: true }; }
           if (command === 'proxy_groups') return groups;
           if (command === 'start_job') {
@@ -223,8 +226,8 @@ try {
             let result = {};
             if (args.kind === 'refreshOutboundIp') result = { ip: '203.0.113.8' };
             if (args.kind === 'diagnostics') result = diagnosticsResult();
-            if (args.kind === 'startCore') { state.running = true; state.trafficTakeover = true; result = { ok: true, trafficTakeover: true }; }
-            if (args.kind === 'stopCore') { state.running = false; state.trafficTakeover = false; result = { ok: true, trafficTakeover: false }; }
+            if (args.kind === 'startCore') { state.running = true; state.trafficTakeover = true; if (!state.tunEnabled) state.systemProxy = true; result = { ok: true, trafficTakeover: true }; }
+            if (args.kind === 'stopCore') { state.running = false; state.trafficTakeover = false; state.systemProxy = false; result = { ok: true, trafficTakeover: false }; }
             if (args.kind === 'restartCore') { state.running = true; state.trafficTakeover = true; result = { ok: true, trafficTakeover: true }; }
             if (args.kind === 'setActiveProfile') {
               state.activeProfileId = args.payload?.id;
@@ -303,6 +306,7 @@ try {
               item.healthScore = 999999;
               item.medianDelay = -1;
               item.jitter = index;
+              item.healthConfidence = 'testing';
               item.recommended = false;
             });
             speedTestPollsRemaining = 2;
@@ -317,6 +321,8 @@ try {
               item.healthScore = 42;
               item.medianDelay = 42;
               item.jitter = 0;
+              item.healthConfidence = 'high';
+              item.lastTestedAt = Math.floor(Date.now() / 1000);
             }
             return { ok: true, proxy: args.name, realProxyName: args.name, delay: 42, healthStatus: 'low' };
           }
@@ -365,6 +371,7 @@ try {
           if (command === 'remove_profile') { await new Promise((resolve) => setTimeout(resolve, 350)); const index = profiles.findIndex((item) => item.id === args.id); if (index >= 0) profiles.splice(index, 1); if (state.activeProfileId === args.id) state.activeProfileId = profiles[0]?.id || 'direct'; return true; }
           if (command === 'add_profile_url') return profiles[1];
           if (command === 'connections') return [{ id: '1', metadata: { host: 'example.com' }, rule: 'MATCH', chains: ['GLOBAL', 'HK 01'], upload: 1, download: 2 }];
+          if (command === 'active_connection_count') return { count: state.trafficTakeover ? 2 : 0, checkedAt: Date.now() };
           if (command === 'export_logs') return { path: 'C:\\Users\\JIE\\AppData\\Roaming\\Aegos\\diagnostics\\aegos-logs-smoke.txt', count: status().logs.length };
           if (command === 'close_connection' || command === 'close_connections' || command === 'clear_logs') { await new Promise((resolve) => setTimeout(resolve, 350)); return true; }
           if (command === 'diagnostics') {
@@ -426,8 +433,8 @@ try {
     if (document.querySelector('#autoGroupNotice')?.classList.contains('hidden')) throw new Error('automatic strategy group warning did not render');
     if (document.querySelector('#bestNodeList') || document.querySelector('.best-node')) throw new Error('duplicate recommended node strip still renders');
     if (!document.querySelector('#quickTestBtn')?.textContent.includes('⚡')) throw new Error('speed test quick action does not use lightning icon');
-    if (!document.querySelector('#systemProxyMetric')?.classList.contains('is-danger')) throw new Error('disabled system proxy metric is not highlighted');
-    if (!document.querySelector('#systemProxyMetric') || !document.querySelector('#upRate') || !document.querySelector('#downRate')) throw new Error('home runtime metrics did not show proxy and traffic state');
+    if (document.querySelector('#systemProxyMetric')?.classList.contains('is-danger')) throw new Error('connected TUN-off system proxy metric stayed highlighted as disabled');
+    if (!document.querySelector('#systemProxyMetric') || !document.querySelector('#upRate') || !document.querySelector('#downRate') || !document.querySelector('#stabilityMetric') || !document.querySelector('#activeConnectionsMetric') || !document.querySelector('#lastTestedMetric') || !document.querySelector('#currentNodeTestBtn')) throw new Error('home runtime metrics did not show proxy, traffic, stability, active connection, and test age state');
     if (document.querySelector('#tunMetric') || document.querySelector('#adminMetric') || document.querySelector('.traffic-card')) throw new Error('low-value home/sidebar metrics still render');
     await click('#lockAutoGroupBtn');
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'changeProxy')) throw new Error('auto group lock did not use background proxy change job');
@@ -435,6 +442,13 @@ try {
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'refreshOutboundIp')) throw new Error('node switch did not auto refresh outbound IP');
     if (!document.querySelector('#outboundMetric')?.textContent.includes('203.0.113.8')) throw new Error('auto refreshed outbound IP did not render');
     if (!document.querySelector('#homeNodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('home node delays did not update after quick speed test');
+    const switchCallsBeforeCurrentNodeTest = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
+    await click('#currentNodeTestBtn');
+    const switchCallsAfterCurrentNodeTest = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
+    if (!window.__aegosCalls.some((item) => item.command === 'test_single_proxy_delay')) throw new Error('current node delay refresh did not call single-node speed test');
+    if (switchCallsAfterCurrentNodeTest !== switchCallsBeforeCurrentNodeTest) throw new Error('current node delay refresh triggered a proxy switch');
+    if (!['高', '中', '低'].some((label) => document.querySelector('#stabilityMetric')?.textContent.includes(label))) throw new Error('current node stability did not render a real level');
+    if (!document.querySelector('#lastTestedMetric')?.textContent.includes('刚刚')) throw new Error('current node last tested time did not render after refresh');
     if (!document.querySelector('.delay-good') || !document.querySelector('.delay-bad')) throw new Error('delay color classes did not render green/red states');
     if (document.querySelector('#connectBtn')?.textContent.trim() === '断开连接') {
       await click('#connectBtn');
@@ -546,7 +560,7 @@ try {
     const tableBox = document.querySelector('.node-table')?.getBoundingClientRect();
     if (!rowActionBox || !tableBox || rowActionBox.right > tableBox.right - 6) throw new Error('node row actions are too close to the table edge');
     if (!document.querySelector('.row-action-labels')?.textContent.includes('测速')) throw new Error('node action labels did not render');
-    if (document.querySelector('#nodeRows .row[data-node]')?.children.length !== 9) throw new Error('node status column was not removed');
+    if (document.querySelector('#nodeRows .row[data-node]')?.children.length !== 7) throw new Error('node load/traffic columns were not removed');
     await click('#nodeRows [data-node-action="edit"]');
     if (!document.querySelector('#protectionNotice')?.textContent.includes('编辑节点')) throw new Error('node edit action did not show feedback');
     await click('#nodeRows [data-node-action="test"]');

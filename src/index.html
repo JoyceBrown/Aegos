@@ -19,7 +19,7 @@
         <div class="brand-mark"><span class="aegos-icon icon-brand" aria-hidden="true"></span></div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v2.9.8</span>
+          <span id="appVersionLabel" class="brand-version">v2.9.9</span>
         </div>
       </section>
 
@@ -110,9 +110,9 @@
             </div>
 
             <div class="metric-grid top">
-              <article><span class="metric-icon purple aegos-icon icon-latency" aria-hidden="true"></span><small>延迟</small><strong id="delayMetric">-</strong></article>
-              <article><span class="metric-icon blue aegos-icon icon-loss" aria-hidden="true"></span><small>丢包率</small><strong>0.0%</strong></article>
-              <article><span class="metric-icon amber aegos-icon icon-load" aria-hidden="true"></span><small>负载</small><strong>38%</strong></article>
+              <article><span class="metric-icon purple aegos-icon icon-latency" aria-hidden="true"></span><small>延迟</small><strong class="metric-inline"><span id="delayMetric">-</span><button id="currentNodeTestBtn" class="metric-refresh" aria-label="测速当前节点"><span class="aegos-icon icon-refresh" aria-hidden="true"></span></button></strong></article>
+              <article><span class="metric-icon blue aegos-icon icon-loss" aria-hidden="true"></span><small>稳定性</small><strong id="stabilityMetric">未测速</strong></article>
+              <article><span class="metric-icon amber aegos-icon icon-load" aria-hidden="true"></span><small>活跃连接</small><strong id="activeConnectionsMetric">0</strong></article>
               <article><span class="metric-icon cyan aegos-icon icon-protocol" aria-hidden="true"></span><small>&#21327;&#35758;</small><strong id="protocolMetric">DIRECT</strong></article>
               <article><span class="metric-icon green aegos-icon icon-dns" aria-hidden="true"></span><small>DNS</small><strong>自动</strong></article>
             </div>
@@ -120,7 +120,7 @@
             <div class="metric-grid bottom">
               <article><span class="metric-icon purple aegos-icon icon-port" aria-hidden="true"></span><small>代理端口</small><strong id="proxyMetric">-</strong></article>
               <article><span class="metric-icon violet aegos-icon icon-ip" aria-hidden="true"></span><small>落地 IP</small><strong id="outboundMetric">-</strong></article>
-              <article><span class="metric-icon teal aegos-icon icon-clock" aria-hidden="true"></span><small>连接时长</small><strong id="metricClock">00:00:00</strong></article>
+              <article><span class="metric-icon teal aegos-icon icon-clock" aria-hidden="true"></span><small>上次测速</small><strong id="lastTestedMetric">未测速</strong></article>
               <article><span class="metric-icon amber aegos-icon icon-proxy" aria-hidden="true"></span><small>系统代理</small><strong id="systemProxyMetric">-</strong></article>
               <article><span class="metric-icon up aegos-icon icon-upload" aria-hidden="true"></span><small>上传</small><strong id="upRate">0 B/s</strong></article>
               <article><span class="metric-icon down aegos-icon icon-download" aria-hidden="true"></span><small>下载</small><strong id="downRate">0 B/s</strong></article>
@@ -160,7 +160,7 @@
             <button data-region="SG"><b>SG</b>&#26032;&#21152;&#22369;</button>
             <button data-region="GB"><b>GB</b>&#33521;&#22269;</button>
           </div>
-          <div class="home-row-head"><span></span><span></span><span>节点名称</span><span>地址</span><span>延迟</span><span>丢包率</span></div>
+          <div class="home-row-head"><span></span><span></span><span>节点名称</span><span>地址</span><span>延迟</span><span>稳定性</span></div>
           <div id="homeNodeRows" class="home-node-list"></div>
         </section>
       </section>
@@ -184,7 +184,7 @@
             </div>
           </header>
           <div class="node-table">
-            <div class="row head"><span></span><span></span><span>节点名称</span><span>地址</span><span>延迟</span><span>丢包率</span><span>负载</span><span>流量</span><span class="row-action-labels"><span>测速</span><span>编辑</span><span>收藏</span></span></div>
+            <div class="row head"><span></span><span></span><span>节点名称</span><span>地址</span><span>延迟</span><span>稳定性</span><span class="row-action-labels"><span>测速</span><span>编辑</span><span>收藏</span></span></div>
             <div id="nodeRows"></div>
           </div>
         </section>

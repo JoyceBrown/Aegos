@@ -166,6 +166,25 @@ check(
 );
 
 check(
+  'TUN-off connect applies system proxy takeover',
+  mainRs.includes('fn apply_takeover_after_core_ready') &&
+    mainRs.includes('|| !self.settings.tun_enabled') &&
+    mainRs.includes('self.settings.system_proxy = true;') &&
+    mainRs.includes('self.set_system_proxy(true)'),
+  'connect should still take over traffic through Windows system proxy when TUN is off'
+);
+
+check(
+  'active connection count uses short controller query',
+  mainRs.includes('fn active_connection_count(&self) -> JsonValue') &&
+    mainRs.includes('fn active_connection_count(state: State<AppState>)') &&
+    mainRs.includes('active_connection_count,') &&
+    mainRs.includes('"/connections"') &&
+    mainRs.includes('350'),
+  'home active connection metric should stay lightweight'
+);
+
+check(
   'port conflict diagnostics include owner lookup',
   mainRs.includes('fn port_owner_detail') &&
     mainRs.includes('Get-NetTCPConnection') &&

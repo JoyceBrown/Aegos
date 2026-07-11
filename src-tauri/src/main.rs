@@ -4576,13 +4576,20 @@ impl CoreManager {
 
     fn apply_takeover_after_core_ready(&mut self, enable_takeover: bool) {
         if enable_takeover {
-            if self.settings.start_with_system_proxy || self.settings.system_proxy {
+            let should_apply_system_proxy = self.settings.system_proxy
+                || self.settings.start_with_system_proxy
+                || !self.settings.tun_enabled;
+            if should_apply_system_proxy {
+                self.settings.system_proxy = true;
                 self.traffic_takeover = true;
-                if let Err(err) = self.set_system_proxy(true) {
-                    self.add_log(
-                        format!("System proxy enable failed after core start: {err}"),
-                        "warn",
-                    );
+                match self.set_system_proxy(true) {
+                    Ok(_) => {}
+                    Err(err) => {
+                        self.add_log(
+                            format!("System proxy enable failed after core start: {err}"),
+                            "warn",
+                        );
+                    }
                 }
             }
             self.traffic_takeover = self.settings.system_proxy || self.settings.tun_enabled;
@@ -6574,6 +6581,21 @@ impl CoreManager {
             .unwrap_or_else(|| json!([]))
     }
 
+    fn active_connection_count(&self) -> JsonValue {
+        let count = if self.process.is_some() {
+            self.controller("GET", "/connections", None, 350)
+                .ok()
+                .and_then(|data| data.get("connections").and_then(|value| value.as_array()).map(|items| items.len()))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        json!({
+            "count": count,
+            "checkedAt": now_secs()
+        })
+    }
+
     fn close_connection(&self, id: &str) -> Result<bool, String> {
         self.controller("DELETE", &format!("/connections/{id}"), None, 2000)?;
         Ok(true)
@@ -8401,6 +8423,11 @@ fn connections(state: State<AppState>) -> Result<JsonValue, String> {
 }
 
 #[tauri::command]
+fn active_connection_count(state: State<AppState>) -> Result<JsonValue, String> {
+    Ok(state.core.lock().unwrap().active_connection_count())
+}
+
+#[tauri::command]
 fn close_connection(state: State<AppState>, id: String) -> Result<bool, String> {
     state.core.lock().unwrap().close_connection(&id)
 }
@@ -8511,6 +8538,7 @@ fn main() {
             change_proxy,
             select_best_proxy,
             connections,
+            active_connection_count,
             close_connection,
             close_connections,
             add_profile_url,

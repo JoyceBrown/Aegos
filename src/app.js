@@ -49,6 +49,9 @@ let lastUiHeartbeatAt = performance.now();
 let latestDiagnostics = null;
 let jobCenterSyncBusy = false;
 let jobCenterLastSyncAt = 0;
+let activeConnectionCount = 0;
+let activeConnectionBusy = false;
+let lastActiveConnectionAt = 0;
 const jobRecords = new Map();
 const terminalJobStates = new Set(['succeeded', 'failed', 'cancelled']);
 const recentInvokes = [];
@@ -252,10 +255,11 @@ function normalizeRows(items = []) {
           favoriteNodes.has(item.name),
           isFixedNodeItem(item),
           Number(nodeUsageCounts.get(item.name) || 0),
-          healthConfidence
+          healthConfidence,
+          Number(item.lastTestedAt ?? 0)
         ];
       })
-    : fallbackNodes.map((row, index) => [...row, -1, true, index === 0, 'direct', 'unknown', -1, 0, 999999, false, 0, false, false, index === 0 ? 1 : 0, 'unknown']);
+    : fallbackNodes.map((row, index) => [...row, -1, true, index === 0, 'direct', 'unknown', -1, 0, 999999, false, 0, false, false, index === 0 ? 1 : 0, 'unknown', 0]);
 }
 
 function filterRows(rows, filter) {
@@ -325,7 +329,8 @@ function normalizeNodeItem(item = {}, index = 0) {
     favoriteNodes.has(name),
     isFixedNodeItem(item),
     Number(nodeUsageCounts.get(name) || 0),
-    healthConfidence
+    healthConfidence,
+    Number(item.lastTestedAt ?? 0)
   ];
 }
 
@@ -367,7 +372,8 @@ function normalizeNodeItemCached(item = {}, index = 0) {
     favoriteNodes.has(cached.name),
     cached.fixed,
     Number(nodeUsageCounts.get(cached.name) || 0),
-    healthConfidence
+    healthConfidence,
+    Number(item.lastTestedAt ?? 0)
   ];
 }
 
@@ -464,6 +470,51 @@ function confidenceClass(value) {
   return 'confidence-muted';
 }
 
+function averageAvailableDelay(rows = []) {
+  const delays = rows.map((row) => Number(row?.[3] || -1)).filter((delay) => delay > 0);
+  if (!delays.length) return 0;
+  return delays.reduce((sum, delay) => sum + delay, 0) / delays.length;
+}
+
+function stabilityInfo(row, rows = []) {
+  if (!row) return { label: '\u672a\u6d4b\u901f', level: 'unknown', className: 'confidence-muted' };
+  const delay = Number(row[3] || -1);
+  const healthStatus = String(row[7] || 'unknown');
+  const medianDelay = Number(row[8] || delay);
+  const jitter = Number(row[9] || 0);
+  const failureStreak = Number(row[12] || 0);
+  const confidence = String(row[16] || 'unknown');
+  if (delay === 0 || healthStatus === 'testing' || confidence === 'testing') {
+    return { label: '\u6d4b\u901f\u4e2d', level: 'testing', className: 'confidence-muted' };
+  }
+  if (delay <= 0 || healthStatus === 'unknown') {
+    return { label: '\u672a\u6d4b\u901f', level: 'unknown', className: 'confidence-muted' };
+  }
+  if (failureStreak >= 2 || healthStatus === 'cooldown' || confidence === 'failed') {
+    return { label: '\u4f4e', level: 'low', className: 'confidence-bad' };
+  }
+  const baseline = averageAvailableDelay(rows);
+  const relative = baseline > 0 ? delay / baseline : 1;
+  const jitterRatio = delay > 0 ? jitter / delay : 1;
+  const confidenceOk = confidence === 'high' || confidence === 'medium';
+  if (confidenceOk && failureStreak === 0 && delay < 100 && relative <= 0.95 && jitterRatio <= 0.45 && medianDelay <= delay * 1.25) {
+    return { label: '\u9ad8', level: 'high', className: 'confidence-good' };
+  }
+  if (failureStreak <= 1 && relative <= 1.35 && jitterRatio <= 0.85 && delay < 220) {
+    return { label: '\u4e2d', level: 'medium', className: 'confidence-warn' };
+  }
+  return { label: '\u4f4e', level: 'low', className: 'confidence-bad' };
+}
+
+function lastTestedText(row) {
+  const testedAt = Number(row?.[17] || 0);
+  if (!testedAt) return '\u672a\u6d4b\u901f';
+  const age = Math.max(0, Math.floor(Date.now() / 1000) - testedAt);
+  if (age < 90) return '\u521a\u521a';
+  if (age < 3600) return `${Math.max(1, Math.round(age / 60))}\u5206\u949f\u524d`;
+  return `${Math.max(1, Math.round(age / 3600))}\u5c0f\u65f6\u524d`;
+}
+
 function normalizedGroupType(value = '') {
   return String(value || '').replace(/[\s_-]/g, '').toLowerCase();
 }
@@ -489,12 +540,20 @@ function renderHomeNodeSummary(rows = []) {
   const currentRow = currentNodeRow(sourceRows);
   const currentDelay = delayText(currentRow?.[3]);
   const currentDelayClass = delayClass(currentRow?.[3]);
+  const stability = stabilityInfo(currentRow, sourceRows);
 
   const delayMetric = $('#delayMetric');
   if (delayMetric) {
     delayMetric.textContent = currentDelay;
     delayMetric.className = currentDelayClass;
   }
+  const stabilityMetric = $('#stabilityMetric');
+  if (stabilityMetric) {
+    stabilityMetric.textContent = stability.label;
+    stabilityMetric.className = stability.className;
+  }
+  const lastTestedMetric = $('#lastTestedMetric');
+  if (lastTestedMetric) lastTestedMetric.textContent = lastTestedText(currentRow);
 
   const autoGroup = isAutoStrategyGroup(latestGroup);
   const notice = $('#autoGroupNotice');
@@ -541,12 +600,12 @@ function renderHomeNodeRow([region, name, host, delay, alive, active]) {
 
 */
 
-function renderNodeRow([region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak, favorite, fixed, usageCount, healthConfidence]) {
+function renderNodeRow(row, stabilityRows = []) {
+  const [region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak, favorite] = row;
   const delayValue = Number(delay);
   const delayText = delayValue > 0 ? `${Math.round(delayValue)} ms` : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : '-');
   const delayState = delayClass(delayValue);
-  const confidenceText = confidenceLabel(healthConfidence);
-  const confidenceState = confidenceClass(healthConfidence);
+  const stability = stabilityInfo(row, stabilityRows);
   return `
     <div class="row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="select ${escapeHtml(name)}">
       <span class="radio"></span>
@@ -554,9 +613,7 @@ function renderNodeRow([region, name, host, delay, alive, active, protocol, heal
       <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
       <span>${escapeHtml(protocolLabel(protocol))} / ${escapeHtml(host)}</span>
       <span class="${delayState}">${delayText}</span>
-      <span>${Number(medianDelay) > 0 ? `${Math.round(Number(medianDelay))} ms` : '-'}</span>
-      <span class="confidence-pill ${confidenceState}">${confidenceText}</span>
-      <span>${Number(jitter) > 0 ? `${Math.round(Number(jitter))} ms` : '-'}</span>
+      <span class="confidence-pill ${stability.className}">${stability.label}</span>
       <span class="row-actions">
         <button data-node-action="test" data-node="${escapeHtml(name)}" aria-label="test delay"><span class="aegos-icon icon-speed" aria-hidden="true"></span></button>
         <button data-node-action="edit" data-node="${escapeHtml(name)}" aria-label="edit node"><span class="aegos-icon icon-edit" aria-hidden="true"></span></button>
@@ -566,12 +623,12 @@ function renderNodeRow([region, name, host, delay, alive, active, protocol, heal
   `;
 }
 
-function renderHomeNodeRow([region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak, favorite, fixed, usageCount, healthConfidence]) {
+function renderHomeNodeRow(row, stabilityRows = []) {
+  const [region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak, favorite] = row;
   const delayValue = Number(delay);
   const delayText = delayValue > 0 ? `${Math.round(delayValue)} ms` : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : '-');
   const delayState = delayClass(delayValue);
-  const confidenceText = confidenceLabel(healthConfidence);
-  const confidenceState = confidenceClass(healthConfidence);
+  const stability = stabilityInfo(row, stabilityRows);
   return `
     <div class="row home-row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="select ${escapeHtml(name)}">
       <span class="radio"></span>
@@ -579,7 +636,7 @@ function renderHomeNodeRow([region, name, host, delay, alive, active, protocol, 
       <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
       <span>${escapeHtml(protocolLabel(protocol))} / ${escapeHtml(host)}</span>
       <span class="${delayState}">${delayText}</span>
-      <span class="confidence-pill ${confidenceState}">${confidenceText}</span>
+      <span class="confidence-pill ${stability.className}">${stability.label}</span>
     </div>
   `;
 }
@@ -1047,6 +1104,7 @@ function renderRows(items = [], options = {}) {
   const fallbackBestRows = [];
   const nodeRows = [];
   const homeRows = [];
+  const stabilityRows = [];
   let activeRow = null;
   let matchingNodeCount = 0;
   const largeList = sourceItems.length > 1500;
@@ -1054,6 +1112,7 @@ function renderRows(items = [], options = {}) {
   for (let index = 0; index < sourceItems.length; index += 1) {
     const item = sourceItems[index];
     const row = normalizeNodeItemCached(item, index);
+    if (Number(row[3]) > 0) stabilityRows.push(row);
     rememberBestRow(bestRows, row);
     if (fallbackBestRows.length < 3) fallbackBestRows.push(row);
     if (!activeRow && row[5]) activeRow = row;
@@ -1084,7 +1143,7 @@ function renderRows(items = [], options = {}) {
     const overflowNotice = matchingNodeCount > nodeRows.length
       ? `<p class="empty">\u5df2\u663e\u793a\u524d ${nodeRows.length} \u4e2a\u8282\u70b9\uff0c\u8bf7\u641c\u7d22\u6216\u7b5b\u9009\u7f29\u5c0f\u8303\u56f4\u3002</p>`
       : '';
-    $('#nodeRows').innerHTML = nodeRows.map(renderNodeRow).join('') + overflowNotice || '<p class="empty">\u6682\u65e0\u7b26\u5408\u6761\u4ef6\u7684\u8282\u70b9\u3002</p>';
+    $('#nodeRows').innerHTML = nodeRows.map((row) => renderNodeRow(row, stabilityRows)).join('') + overflowNotice || '<p class="empty">\u6682\u65e0\u7b26\u5408\u6761\u4ef6\u7684\u8282\u70b9\u3002</p>';
   }
   const sortedHomeRows = homeRows;
   const homeFallbackRows = homeNodeMode === 'frequent' || homeNodeMode === 'region' ? fallbackBestRows : [];
@@ -1097,7 +1156,7 @@ function renderRows(items = [], options = {}) {
         : '\u6682\u65e0\u5e38\u7528\u8282\u70b9\u3002';
   if (shouldRenderHomeRows) {
     $('#homeNodeRows').innerHTML = (sortedHomeRows.length ? sortedHomeRows : homeFallbackRows).slice(0, homeNodeRenderLimit)
-      .map(renderHomeNodeRow)
+      .map((row) => renderHomeNodeRow(row, stabilityRows))
       .join('') || `<p class="empty">${homeEmptyText}</p>`;
   }
   renderHomeNodeSummary();
@@ -1358,6 +1417,7 @@ function renderStatus(status) {
   const down = formatRate(traffic.down);
   if ($('#upRate')) $('#upRate').textContent = up;
   if ($('#downRate')) $('#downRate').textContent = down;
+  renderActiveConnectionMetric();
   renderHomeNodeSummary();
   renderSettings(status);
   if (isPageActive('profiles')) renderProfiles();
@@ -1591,6 +1651,35 @@ async function refreshStatus(force = false) {
     });
   } finally {
     statusBusy = false;
+  }
+}
+
+function renderActiveConnectionMetric() {
+  const metric = $('#activeConnectionsMetric');
+  if (metric) metric.textContent = String(activeConnectionCount || 0);
+}
+
+async function refreshActiveConnectionCount(force = false) {
+  if (activeConnectionBusy) return;
+  if (!latestStatus?.trafficTakeover) {
+    activeConnectionCount = 0;
+    renderActiveConnectionMetric();
+    return;
+  }
+  if (!force && isForegroundHot()) return;
+  if (!force && (foregroundBusy > 0 || backgroundJobBusy > 0 || isSpeedTestActive())) return;
+  const now = Date.now();
+  if (!force && now - lastActiveConnectionAt < 5000) return;
+  lastActiveConnectionAt = now;
+  activeConnectionBusy = true;
+  try {
+    const result = await invoke('active_connection_count');
+    activeConnectionCount = Number(result?.count || 0);
+  } catch {
+    activeConnectionCount = activeConnectionCount || 0;
+  } finally {
+    activeConnectionBusy = false;
+    renderActiveConnectionMetric();
   }
 }
 
@@ -2033,6 +2122,15 @@ async function testSingleNode(name, button) {
   }
 }
 
+async function testCurrentNode(button) {
+  const name = selectedNode || latestGroup?.now || $('#nodeName')?.textContent?.trim();
+  if (!name || name === '-' || name.includes('\u7b49\u5f85')) {
+    setNotice('\u6682\u65e0\u53ef\u6d4b\u901f\u7684\u5f53\u524d\u8282\u70b9\u3002');
+    return;
+  }
+  await testSingleNode(name, button);
+}
+
 function setEditorValue(selector, value) {
   const el = $(selector);
   if (el) el.value = value ?? '';
@@ -2354,7 +2452,8 @@ async function wireWindowControls() {
 function tick() {
   const value = formatClock();
   $('#sessionClock').textContent = value;
-  $('#metricClock').textContent = value;
+  const metricClock = $('#metricClock');
+  if (metricClock) metricClock.textContent = value;
 }
 
 $all('.nav button').forEach((button) => {
@@ -2369,7 +2468,12 @@ $all('.nav button').forEach((button) => {
   };
 });
 
-$('#connectBtn').onclick = toggleCore;if ($('#refreshNodesBtn')) $('#refreshNodesBtn').onclick = refreshNodes;
+$('#connectBtn').onclick = toggleCore;
+$('#currentNodeTestBtn')?.addEventListener('click', (event) => {
+  event.stopPropagation();
+  testCurrentNode(event.currentTarget);
+});
+if ($('#refreshNodesBtn')) $('#refreshNodesBtn').onclick = refreshNodes;
 $('#modeBtn').onclick = toggleModeMenu;
 $('#quickKillBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '切换中...', () => updateSetting('killSwitchEnabled', !latestStatus?.settings?.killSwitchEnabled), { preserveContent: true }));
 $('#quickTestBtn').onclick = (event) => testNodes(event.currentTarget);
@@ -2724,5 +2828,6 @@ refreshNodes();
 tick();
 setInterval(tick, 1000);
 setInterval(() => syncJobCenter(false), 2500);
+setInterval(() => refreshActiveConnectionCount(false), 5000);
 setInterval(refreshStatus, 8000);
 setInterval(maybeAutoRecover, 60000);
