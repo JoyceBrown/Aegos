@@ -1227,6 +1227,7 @@ function renderStatus(status) {
   const traffic = status.traffic || {};
   const coreReady = Boolean(status.coreReady ?? status.running);
   const trafficTakeover = Boolean(status.trafficTakeover || settings.proxyTakeover?.active);
+  const systemProxyApplied = trafficTakeover && Boolean(settings.systemProxy);
   if (trafficTakeover && !wasTakeover) startedAt = Date.now();
   if (!trafficTakeover) startedAt = Date.now();
   const modeText = modeLabel(status.mode);
@@ -1246,7 +1247,7 @@ function renderStatus(status) {
   $('#tunState').textContent = settings.tunEnabled ? '已开启' : '未开启';
   $('#killState').textContent = settings.killSwitchEnabled ? '已开启' : '未开启';
   $('#quickKillBtn')?.classList.toggle('active', Boolean(settings.killSwitchEnabled));
-  $('#proxyState').textContent = settings.systemProxy ? '已开启' : '未开启';
+  $('#proxyState').textContent = systemProxyApplied ? '已开启' : settings.systemProxy ? '待连接' : '未开启';
   $('#proxyStateRow').classList.toggle('hidden', !settings.systemProxy);
   $('#protocolState').textContent = currentProtocol;
   $('#protocolMetric').textContent = currentProtocol;
@@ -1257,8 +1258,8 @@ function renderStatus(status) {
   $('#outboundIpState').textContent = status.network?.outboundIp || '-';
   $('#proxyMetric').textContent = formatProxyPort(status.network?.proxyEndpoint);
   $('#outboundMetric').textContent = status.network?.outboundIp || '-';
-  $('#systemProxyMetric').textContent = settings.systemProxy ? '已开启' : '未开启';
-  $('#systemProxyMetric').classList.toggle('is-danger', !settings.systemProxy);
+  $('#systemProxyMetric').textContent = systemProxyApplied ? '已开启' : settings.systemProxy ? '待连接' : '未开启';
+  $('#systemProxyMetric').classList.toggle('is-danger', !systemProxyApplied);
 
   const up = formatRate(traffic.up);
   const down = formatRate(traffic.down);

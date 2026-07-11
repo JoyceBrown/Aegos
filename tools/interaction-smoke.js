@@ -219,7 +219,7 @@ try {
             if (args.kind === 'updateSetting') {
               if (args.payload?.key === 'systemProxy') {
                 state.systemProxy = Boolean(args.payload.value);
-                state.trafficTakeover = state.systemProxy || (state.trafficTakeover && state.tunEnabled);
+                state.trafficTakeover = state.trafficTakeover && (state.systemProxy || state.tunEnabled);
               }
               else if (args.payload?.key === 'tunEnabled') state.tunEnabled = Boolean(args.payload.value);
               else if (args.payload?.key === 'killSwitchEnabled') state.killSwitchEnabled = Boolean(args.payload.value);
@@ -412,6 +412,8 @@ try {
     if (document.querySelector('#quickProxyBtn')?.disabled) throw new Error('home proxy quick action became blocking while backend was pending');
     if (!document.querySelector('#systemProxyToggle')?.checked) throw new Error('system proxy toggle did not update optimistically');
     await new Promise((resolve) => setTimeout(resolve, 420));
+    if (document.querySelector('#connectBtn')?.textContent.trim() !== '连接') throw new Error('manual system proxy toggle auto-connected traffic takeover');
+    if (!document.querySelector('#systemProxyMetric')?.textContent.includes('待连接')) throw new Error('manual system proxy preference did not show pending connection state');
     if (document.querySelector('#quickTunBtn') || document.querySelector('#quickCopyProxyBtn') || document.querySelector('#smartRecoverBtn') || document.querySelector('#quickModeBtn')) throw new Error('removed quick actions still render');
     await click('#quickProfileBtn');
     if (document.querySelector('[data-page-panel="profiles"]')?.classList.contains('active')) throw new Error('quick subscription switch navigated to profiles page');

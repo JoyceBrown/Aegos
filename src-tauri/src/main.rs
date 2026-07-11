@@ -3081,6 +3081,7 @@ impl CoreManager {
     fn apply_takeover_after_core_ready(&mut self, enable_takeover: bool) {
         if enable_takeover {
             if self.settings.start_with_system_proxy || self.settings.system_proxy {
+                self.traffic_takeover = true;
                 if let Err(err) = self.set_system_proxy(true) {
                     self.add_log(
                         format!("System proxy enable failed after core start: {err}"),
@@ -3542,6 +3543,15 @@ impl CoreManager {
     }
 
     fn set_system_proxy(&mut self, enable: bool) -> Result<bool, String> {
+        if enable && !self.traffic_takeover {
+            self.settings.system_proxy = true;
+            self.save_settings()?;
+            self.add_log(
+                "System proxy preference enabled; connect before applying Windows proxy takeover",
+                "info",
+            );
+            return Ok(enable);
+        }
         if enable {
             self.capture_proxy_snapshot_before_takeover()?;
             run_powershell(&build_proxy_script(true, self.settings.mixed_port))?;
@@ -3552,7 +3562,7 @@ impl CoreManager {
             run_powershell(&build_proxy_script(false, self.settings.mixed_port))?;
         }
         self.settings.system_proxy = enable;
-        self.traffic_takeover = enable || (self.traffic_takeover && self.settings.tun_enabled);
+        self.traffic_takeover = self.process.is_some() && (enable || (self.traffic_takeover && self.settings.tun_enabled));
         self.save_settings()?;
         self.add_log(
             if enable {

@@ -3043,3 +3043,42 @@ select {
     --home-quick-row: 56px;
   }
 }
+
+/* 2.7.5: keep home controls visually stable across window heights. */
+:root {
+  --home-quick-row: 72px;
+}
+
+@media (min-height: 900px) {
+  :root {
+    --home-quick-row: 72px;
+  }
+}
+
+@media (max-height: 760px) {
+  :root {
+    --home-quick-row: 72px;
+  }
+}
+
+.connect-column {
+  align-content: start;
+  justify-content: center;
+  padding-top: 24px;
+}
+
+.page[data-page-panel="home"].active > .quick {
+  align-items: stretch;
+  padding: 12px;
+}
+
+.quick .action-row {
+  grid-template-rows: 36px;
+  align-content: center;
+  align-items: center;
+}
+
+.quick-row button {
+  min-height: 36px;
+  height: 36px;
+}

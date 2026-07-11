@@ -115,6 +115,14 @@ check(
 );
 
 check(
+  'manual system proxy preference does not auto-connect traffic takeover',
+  mainRs.includes('System proxy preference enabled; connect before applying Windows proxy takeover') &&
+    mainRs.includes('if enable && !self.traffic_takeover') &&
+    mainRs.includes('self.traffic_takeover = self.process.is_some() &&'),
+  'system proxy can be saved as preference before connection'
+);
+
+check(
   'port conflict diagnostics include owner lookup',
   mainRs.includes('fn port_owner_detail') &&
     mainRs.includes('Get-NetTCPConnection') &&
