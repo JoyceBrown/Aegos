@@ -647,6 +647,16 @@ async function runButtonAction(button, busyLabel, action, options = {}) {
   }
 }
 
+async function runLocalButtonAction(button, busyLabel, action, options = {}) {
+  if (button?.dataset.busy === 'true') return null;
+  setButtonBusy(button, true, busyLabel, options);
+  try {
+    return await action();
+  } finally {
+    setButtonBusy(button, false, '', options);
+  }
+}
+
 async function runForegroundAction(action) {
   foregroundBusy += 1;
   try {
@@ -1129,9 +1139,10 @@ renderProfiles = function renderProfiles() {
   }).join('') || '<p class="empty">\u6682\u65e0\u8ba2\u9605\u3002</p>';
 };
 
-function renderQuickProfileMenu() {
+function renderQuickProfileMenu(options = {}) {
   const menu = $('#profileMenu');
   if (!menu) return;
+  if (!options.force && !menu.classList.contains('hidden')) return;
   const profiles = latestStatus?.settings?.profiles || [];
   const activeId = latestStatus?.settings?.activeProfileId || '';
   menu.innerHTML = profiles.map((profile) => {
@@ -1881,7 +1892,8 @@ function toggleProfileMenu() {
   const menu = $('#profileMenu');
   if (!menu) return;
   if (menu.classList.contains('hidden')) {
-    renderQuickProfileMenu();
+    $('#modeMenu')?.classList.add('hidden');
+    renderQuickProfileMenu({ force: true });
     menu.classList.remove('hidden');
     positionQuickProfileMenu();
   } else {
@@ -2290,9 +2302,16 @@ $('#quickKillBtn')?.addEventListener('click', (event) => runButtonAction(event.c
 $('#quickTestBtn').onclick = (event) => testNodes(event.currentTarget);
 $('#quickUpdateSubBtn').onclick = (event) => runButtonAction(event.currentTarget, '更新中...', updateActiveProfile);
 $('#quickProxyBtn').onclick = () => updateSetting('systemProxy', !latestStatus?.settings?.systemProxy);
-$('#quickProfileBtn')?.addEventListener('click', (event) => {
+$('#quickProfileBtn')?.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0) return;
+  event.preventDefault();
   event.stopPropagation();
   toggleProfileMenu();
+});
+$('#quickProfileBtn')?.addEventListener('click', (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.detail === 0) toggleProfileMenu();
 });
 $('#quickRestartBtn').onclick = (event) => runButtonAction(event.currentTarget, '重启中...', restartCoreJob);
 $('#lockAutoGroupBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '锁定中...', lockAutoGroupJob));
@@ -2306,7 +2325,7 @@ $('#closeAllConnectionsBtn').onclick = (event) => runButtonAction(event.currentT
   successNotice: '连接已关闭。',
   failureNotice: (err) => `关闭连接失败：${err.message || err}`
 }));
-$('#runDiagBtn').onclick = (event) => runButtonAction(event.currentTarget, '诊断中...', () => runDiagnostics());
+$('#runDiagBtn').onclick = (event) => runLocalButtonAction(event.currentTarget, '诊断中...', () => runDiagnostics());
 const copyDiagBtn = $('#copyDiagBtn');
 if (copyDiagBtn) copyDiagBtn.onclick = (event) => runButtonAction(event.currentTarget, '复制中...', async () => {
   if (!latestDiagnostics) await runDiagnostics(false);

@@ -3790,6 +3790,7 @@ impl CoreManager {
         Ok(enable)
     }
 
+    #[allow(dead_code)]
     fn refresh_kill_switch_rules_if_enabled(&mut self, reason: &str) -> Result<(), String> {
         if !self.settings.kill_switch_enabled {
             return Ok(());
@@ -4424,7 +4425,6 @@ impl CoreManager {
 
     fn ensure_core_for_delay_test(&mut self) -> Result<(), String> {
         if self.process.is_some() && self.controller("GET", "/version", None, 900).is_ok() {
-            self.refresh_kill_switch_rules_if_enabled("speed test")?;
             return Ok(());
         }
         if self.traffic_takeover {
@@ -4440,7 +4440,6 @@ impl CoreManager {
             );
             self.start_standby()?;
         }
-        self.refresh_kill_switch_rules_if_enabled("speed test")?;
         Ok(())
     }
 
@@ -4497,21 +4496,25 @@ impl CoreManager {
         } else {
             Vec::new()
         };
-        if speed_firewall_enabled {
-            if let Err(err) = self.set_speed_test_firewall_rules(true, &speed_firewall_ports) {
-                let message = format!("断网保护测速放行失败：{err}");
-                let mut speed = speed_test.lock().unwrap();
-                speed.running = false;
-                speed.error = Some(message.clone());
-                speed.updated_at = now_secs();
-                return Err(message);
-            }
-        }
-
         self.add_log(format!("Speed test started: {total} nodes"), "info");
         let speed_firewall_app_data = self.app_data.clone();
         let speed_firewall_core_path = self.core_path.clone();
         thread::spawn(move || {
+            if speed_firewall_enabled {
+                if let Err(err) = run_powershell(&build_speed_test_firewall_script(
+                    true,
+                    &speed_firewall_app_data,
+                    &speed_firewall_core_path,
+                    &speed_firewall_ports,
+                )) {
+                    let message = format!("断网保护测速放行失败：{err}");
+                    let mut speed = speed_test.lock().unwrap();
+                    speed.running = false;
+                    speed.error = Some(message);
+                    speed.updated_at = now_secs();
+                    return;
+                }
+            }
             let cleanup_speed_firewall = || {
                 if speed_firewall_enabled {
                     let _ = run_powershell(&build_speed_test_firewall_script(

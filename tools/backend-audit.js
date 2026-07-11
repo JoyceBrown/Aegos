@@ -57,8 +57,9 @@ check(
     mainRs.includes('service=Dnscache protocol=TCP remoteport=53') &&
     mainRs.includes('remoteport=$portList') &&
     mainRs.includes('cleanup_speed_firewall') &&
-    /fn ensure_core_for_delay_test[\s\S]*refresh_kill_switch_rules_if_enabled\("speed test"\)/.test(mainRs),
-  'speed-test preparation refreshes base rules and opens a temporary node-port firewall window'
+    /thread::spawn\(move \|\| \{[\s\S]*build_speed_test_firewall_script\(\s*true/.test(mainRs) &&
+    !/fn ensure_core_for_delay_test[\s\S]*refresh_kill_switch_rules_if_enabled\("speed test"\)/.test(mainRs),
+  'speed-test preparation opens a temporary node-port firewall window inside the background worker'
 );
 check(
   'TUIC delay path has lower concurrency',

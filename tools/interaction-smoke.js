@@ -445,6 +445,10 @@ try {
     await click('#quickProfileBtn');
     if (document.querySelector('[data-page-panel="profiles"]')?.classList.contains('active')) throw new Error('quick subscription switch navigated to profiles page');
     if (document.querySelector('#profileMenu')?.classList.contains('hidden')) throw new Error('quick subscription menu did not open');
+    await click('#quickProfileBtn');
+    if (!document.querySelector('#profileMenu')?.classList.contains('hidden')) throw new Error('quick subscription menu did not close on second click');
+    await click('#quickProfileBtn');
+    if (document.querySelector('#profileMenu')?.classList.contains('hidden')) throw new Error('quick subscription menu did not reopen on third click');
     const profileMenuBox = document.querySelector('#profileMenu')?.getBoundingClientRect();
     if (!profileMenuBox || profileMenuBox.width > 340 || profileMenuBox.height > 340 || profileMenuBox.left < 0 || profileMenuBox.right > window.innerWidth || profileMenuBox.top < 0 || profileMenuBox.bottom > window.innerHeight) throw new Error('quick subscription menu layout overflowed');
     const topElement = document.elementFromPoint(profileMenuBox.left + profileMenuBox.width / 2, profileMenuBox.top + Math.min(28, profileMenuBox.height / 2));
