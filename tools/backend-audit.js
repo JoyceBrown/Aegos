@@ -332,6 +332,21 @@ check(
 );
 
 check(
+  'node switching preflights group and proxy before mutating selection',
+  (() => {
+    const body = mainRs.match(/fn change_proxy\(&mut self, group: &str, proxy: &str\) -> Result<bool, String> \{([\s\S]*?)\n    \}/)?.[1] || '';
+    return mainRs.includes('fn validate_proxy_selection_from_groups') &&
+      mainRs.includes('Node switch preflight failed') &&
+      mainRs.includes('Node switch preflight passed') &&
+      mainRs.includes('node_switch_preflight_validates_group_and_proxy') &&
+      body.includes('let groups = self.proxy_groups();') &&
+      body.includes('validate_proxy_selection_from_groups(&groups, group, proxy)?') &&
+      body.indexOf('validate_proxy_selection_from_groups') < body.indexOf('selected_proxy_map');
+  })(),
+  'change_proxy validates current group/node snapshot first'
+);
+
+check(
   'speed engine tracks node health and low-latency recommendations',
   mainRs.includes('struct NodeHealth') &&
     mainRs.includes('fn update_node_health') &&

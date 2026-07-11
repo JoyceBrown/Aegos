@@ -2687,6 +2687,36 @@ rules:
     }
 
     #[test]
+    fn node_switch_preflight_validates_group_and_proxy() {
+        let groups = json!([
+            {
+                "name": "GLOBAL",
+                "type": "Selector",
+                "items": [
+                    { "name": "Node A", "type": "ss" },
+                    { "name": "Auto", "type": "Group", "realProxyName": "Node B" }
+                ]
+            }
+        ]);
+
+        let ok = validate_proxy_selection_from_groups(&groups, "GLOBAL", "Node A")
+            .expect("existing node should pass");
+        assert_eq!(ok.get("realProxyName").and_then(JsonValue::as_str), Some("Node A"));
+
+        let by_real = validate_proxy_selection_from_groups(&groups, "GLOBAL", "Node B")
+            .expect("real proxy alias should pass");
+        assert_eq!(by_real.get("realProxyName").and_then(JsonValue::as_str), Some("Node B"));
+
+        let missing_group = validate_proxy_selection_from_groups(&groups, "Missing", "Node A")
+            .expect_err("missing group should fail");
+        assert!(missing_group.contains("group 'Missing' was not found"));
+
+        let missing_proxy = validate_proxy_selection_from_groups(&groups, "GLOBAL", "Missing")
+            .expect_err("missing proxy should fail");
+        assert!(missing_proxy.contains("proxy 'Missing' is not in group 'GLOBAL'"));
+    }
+
+    #[test]
     fn runtime_config_digest_is_stable_until_settings_change() {
         let source: YamlValue = serde_yaml::from_str(
             r#"
@@ -3193,6 +3223,67 @@ fn resolve_group_leaf(
         return name.to_string();
     }
     resolve_group_leaf(groups, selected_map, &selected, depth + 1)
+}
+
+fn validate_proxy_selection_from_groups(
+    groups: &JsonValue,
+    group: &str,
+    proxy: &str,
+) -> Result<JsonValue, String> {
+    let group = group.trim();
+    let proxy = proxy.trim();
+    if group.is_empty() {
+        return Err("Node switch preflight failed: missing proxy group".to_string());
+    }
+    if proxy.is_empty() {
+        return Err("Node switch preflight failed: missing proxy name".to_string());
+    }
+    let groups = groups
+        .as_array()
+        .ok_or_else(|| "Node switch preflight failed: proxy group list is unavailable".to_string())?;
+    let Some(target_group) = groups
+        .iter()
+        .find(|item| item.get("name").and_then(JsonValue::as_str) == Some(group))
+    else {
+        let available = groups
+            .iter()
+            .filter_map(|item| item.get("name").and_then(JsonValue::as_str))
+            .take(8)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "Node switch preflight failed: group '{group}' was not found. Available groups: {available}"
+        ));
+    };
+    let items = target_group
+        .get("items")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| format!("Node switch preflight failed: group '{group}' has no node list"))?;
+    let Some(target_proxy) = items.iter().find(|item| {
+        item.get("name").and_then(JsonValue::as_str) == Some(proxy)
+            || item.get("realProxyName").and_then(JsonValue::as_str) == Some(proxy)
+    }) else {
+        let available = items
+            .iter()
+            .filter_map(|item| item.get("name").and_then(JsonValue::as_str))
+            .take(8)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "Node switch preflight failed: proxy '{proxy}' is not in group '{group}'. Available nodes: {available}"
+        ));
+    };
+    Ok(json!({
+        "ok": true,
+        "group": group,
+        "proxy": proxy,
+        "groupType": target_group.get("type").and_then(JsonValue::as_str).unwrap_or(""),
+        "realProxyName": target_proxy
+            .get("realProxyName")
+            .and_then(JsonValue::as_str)
+            .or_else(|| target_proxy.get("name").and_then(JsonValue::as_str))
+            .unwrap_or(proxy)
+    }))
 }
 
 fn is_recovery_candidate_name(name: &str) -> bool {
@@ -5966,6 +6057,20 @@ impl CoreManager {
     }
 
     fn change_proxy(&mut self, group: &str, proxy: &str) -> Result<bool, String> {
+        let groups = self.proxy_groups();
+        let preflight = validate_proxy_selection_from_groups(&groups, group, proxy)?;
+        self.add_log(
+            format!(
+                "Node switch preflight passed: {} -> {} ({})",
+                preflight.get("group").and_then(JsonValue::as_str).unwrap_or(group),
+                preflight.get("proxy").and_then(JsonValue::as_str).unwrap_or(proxy),
+                preflight
+                    .get("groupType")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("")
+            ),
+            "info",
+        );
         let previous = self
             .settings
             .selected_proxy_map
