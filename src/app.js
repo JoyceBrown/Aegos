@@ -2187,10 +2187,8 @@ $('#connectBtn').onclick = toggleCore;
 $('#refreshStatusBtn').onclick = async () => { await refreshStatus(true); await refreshNodes(true); setNotice('已刷新核心状态和节点列表。'); };
 if ($('#refreshNodesBtn')) $('#refreshNodesBtn').onclick = refreshNodes;
 $('#modeBtn').onclick = toggleModeMenu;
-$('#quickModeBtn').onclick = toggleModeMenu;
 $('#quickKillBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '切换中...', () => updateSetting('killSwitchEnabled', !latestStatus?.settings?.killSwitchEnabled), { preserveContent: true }));
 $('#quickTestBtn').onclick = (event) => runButtonAction(event.currentTarget, '测速中...', testNodes);
-$('#smartRecoverBtn').onclick = (event) => runButtonAction(event.currentTarget, '自愈中...', () => recoverNetworkJob(true, true));
 $('#quickUpdateSubBtn').onclick = (event) => runButtonAction(event.currentTarget, '更新中...', updateActiveProfile);
 $('#quickProxyBtn').onclick = () => updateSetting('systemProxy', !latestStatus?.settings?.systemProxy);
 $('#quickProfileBtn')?.addEventListener('click', (event) => {

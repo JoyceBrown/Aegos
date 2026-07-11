@@ -380,8 +380,6 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'refreshOutboundIp')) throw new Error('node switch did not auto refresh outbound IP');
     if (!document.querySelector('#outboundMetric')?.textContent.includes('203.0.113.8')) throw new Error('auto refreshed outbound IP did not render');
-    await click('#smartRecoverBtn');
-    await new Promise((resolve) => setTimeout(resolve, 420));
     if (!document.querySelector('#homeNodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('home node delays did not update after quick speed test');
     if (!document.querySelector('.delay-good') || !document.querySelector('.delay-bad')) throw new Error('delay color classes did not render green/red states');
     document.querySelector('#quickProxyBtn').click();
@@ -389,7 +387,7 @@ try {
     if (document.querySelector('#quickProxyBtn')?.disabled) throw new Error('home proxy quick action became blocking while backend was pending');
     if (!document.querySelector('#systemProxyToggle')?.checked) throw new Error('system proxy toggle did not update optimistically');
     await new Promise((resolve) => setTimeout(resolve, 420));
-    if (document.querySelector('#quickTunBtn') || document.querySelector('#quickCopyProxyBtn')) throw new Error('removed quick actions still render');
+    if (document.querySelector('#quickTunBtn') || document.querySelector('#quickCopyProxyBtn') || document.querySelector('#smartRecoverBtn') || document.querySelector('#quickModeBtn')) throw new Error('removed quick actions still render');
     await click('#quickProfileBtn');
     if (document.querySelector('[data-page-panel="profiles"]')?.classList.contains('active')) throw new Error('quick subscription switch navigated to profiles page');
     if (document.querySelector('#profileMenu')?.classList.contains('hidden')) throw new Error('quick subscription menu did not open');
@@ -400,7 +398,7 @@ try {
     const hkRows = [...document.querySelectorAll('#homeNodeRows .row[data-node]')].map((row) => row.dataset.node);
     if (!hkRows.length || hkRows.some((name) => !name.includes('HK'))) throw new Error('home region filter did not stay on home page');
     await click('[data-region="HK"]');
-    await click('#quickModeBtn');
+    await click('#modeBtn');
     document.querySelector('[data-mode-option="global"]').click();
     await new Promise((resolve) => setTimeout(resolve, 20));
     if (document.querySelector('#modeLabel')?.textContent.trim() !== '全局代理') throw new Error('mode label did not update optimistically');
@@ -549,7 +547,7 @@ try {
     return {
       commands,
       missing: required.filter((name) => !commands.includes(name)),
-      missingJobKinds: ['startCore', 'stopCore', 'restartCore', 'setMode', 'changeProxy', 'repairSystemProxy', 'setActiveProfile', 'removeProfile', 'renameProfile', 'updateSetting', 'updateSettings', 'refreshOutboundIp', 'updateProfile', 'updateAllProfiles', 'recoverNetwork', 'addProfileUrl'].filter((name) => !jobKinds.includes(name)),
+      missingJobKinds: ['startCore', 'stopCore', 'restartCore', 'setMode', 'changeProxy', 'repairSystemProxy', 'setActiveProfile', 'removeProfile', 'renameProfile', 'updateSetting', 'updateSettings', 'refreshOutboundIp', 'updateProfile', 'updateAllProfiles', 'addProfileUrl'].filter((name) => !jobKinds.includes(name)),
       advancedSettings: advancedSettingsCall?.args?.payload?.updates || null,
       jobCenterText,
       notice: document.querySelector('#protectionNotice')?.textContent || ''

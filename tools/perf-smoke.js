@@ -232,7 +232,7 @@ try {
     const menuDurations = [];
     const callsBeforeMenus = nonSpeedCallCount();
     for (let i = 0; i < 80; i += 1) {
-      const button = document.querySelector(i % 2 === 0 ? '#modeBtn' : '#quickModeBtn');
+      const button = document.querySelector('#modeBtn');
       const start = performance.now();
       button.click();
       menuDurations.push(performance.now() - start);
