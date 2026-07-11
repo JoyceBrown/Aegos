@@ -565,6 +565,8 @@ fn protocol_family(protocol: &str) -> &'static str {
     let text = protocol.trim().to_ascii_lowercase();
     if text.contains("tuic") {
         "tuic"
+    } else if text.contains("anytls") {
+        "anytls"
     } else if text.contains("hysteria") || text.contains("hy2") {
         "hysteria"
     } else if text.contains("reality") {
@@ -586,6 +588,7 @@ fn protocol_concurrency(protocol: &str) -> usize {
     match protocol_family(protocol) {
         "tuic" => 8,
         "hysteria" | "wireguard" => 10,
+        "anytls" => 16,
         "reality" | "vmess" | "trojan" | "ss" => 32,
         _ => 24,
     }
@@ -595,6 +598,7 @@ fn protocol_primary_timeout_ms(protocol: &str) -> u64 {
     match protocol_family(protocol) {
         "tuic" => 2600,
         "hysteria" | "wireguard" => 3200,
+        "anytls" => 3400,
         "reality" | "vmess" | "trojan" | "ss" => 3600,
         _ => 4000,
     }
@@ -871,6 +875,45 @@ fn query_value(query: &str, key: &str) -> Option<String> {
     })
 }
 
+fn query_value_any(query: &str, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| query_value(query, key))
+}
+
+fn uri_name(name_part: &str, fallback: impl Into<String>) -> String {
+    if name_part.is_empty() {
+        fallback.into()
+    } else {
+        percent_decode(name_part)
+    }
+}
+
+fn set_bool_query(map: &mut Mapping, key: &str, query: &str, params: &[&str]) {
+    if let Some(value) = query_value_any(query, params) {
+        set_yaml(map, key, YamlValue::Bool(truthy(&value)));
+    }
+}
+
+fn set_string_query(map: &mut Mapping, key: &str, query: &str, params: &[&str]) {
+    if let Some(value) = query_value_any(query, params).filter(|value| !value.is_empty()) {
+        set_yaml(map, key, yaml_str(value));
+    }
+}
+
+fn set_alpn_query(map: &mut Mapping, query: &str) {
+    if let Some(alpn) = query_value(query, "alpn").filter(|value| !value.is_empty()) {
+        set_yaml(
+            map,
+            "alpn",
+            YamlValue::Sequence(
+                alpn.split(',')
+                    .filter(|item| !item.is_empty())
+                    .map(|item| yaml_str(item.to_string()))
+                    .collect(),
+            ),
+        );
+    }
+}
+
 fn parse_ss_uri(uri: &str, index: usize) -> Option<YamlValue> {
     let raw = uri.strip_prefix("ss://")?;
     let (body, name_part) = raw.split_once('#').unwrap_or((raw, ""));
@@ -975,11 +1018,113 @@ fn parse_vmess_uri(uri: &str, index: usize) -> Option<YamlValue> {
     Some(YamlValue::Mapping(map))
 }
 
+fn parse_vless_uri(uri: &str, index: usize) -> Option<YamlValue> {
+    let raw = uri.strip_prefix("vless://")?;
+    let (before_name, name_part) = raw.split_once('#').unwrap_or((raw, ""));
+    let (main, query) = before_name.split_once('?').unwrap_or((before_name, ""));
+    let (uuid, host_port) = main.split_once('@')?;
+    let (server, port) = host_port.rsplit_once(':')?;
+    let security = query_value(query, "security").unwrap_or_default().to_ascii_lowercase();
+    let network = query_value_any(query, &["type", "network"]).unwrap_or_else(|| "tcp".to_string());
+    let mut map = Mapping::new();
+    set_yaml(&mut map, "name", yaml_str(uri_name(name_part, format!("VLESS {index}"))));
+    set_yaml(&mut map, "type", yaml_str("vless"));
+    set_yaml(&mut map, "server", yaml_str(percent_decode(server)));
+    set_yaml(&mut map, "port", yaml_num(port.parse().ok()?));
+    set_yaml(&mut map, "uuid", yaml_str(percent_decode(uuid)));
+    set_yaml(&mut map, "network", yaml_str(network.clone()));
+    set_yaml(&mut map, "udp", YamlValue::Bool(true));
+    set_string_query(&mut map, "flow", query, &["flow"]);
+    set_string_query(&mut map, "servername", query, &["sni", "servername", "peer"]);
+    set_string_query(&mut map, "client-fingerprint", query, &["fp", "fingerprint"]);
+    set_bool_query(&mut map, "skip-cert-verify", query, &["allowInsecure", "insecure", "skip-cert-verify"]);
+    if matches!(security.as_str(), "tls" | "reality") {
+        set_yaml(&mut map, "tls", YamlValue::Bool(true));
+    }
+    if security == "reality" {
+        let mut reality = Mapping::new();
+        if let Some(public_key) = query_value_any(query, &["pbk", "public-key", "publicKey"]) {
+            set_yaml(&mut reality, "public-key", yaml_str(public_key));
+        }
+        if let Some(short_id) = query_value_any(query, &["sid", "short-id", "shortId"]) {
+            set_yaml(&mut reality, "short-id", yaml_str(short_id));
+        }
+        if !reality.is_empty() {
+            set_yaml(&mut map, "reality-opts", YamlValue::Mapping(reality));
+        }
+    }
+    if network == "ws" {
+        let mut ws_opts = Mapping::new();
+        if let Some(path) = query_value(query, "path") {
+            set_yaml(&mut ws_opts, "path", yaml_str(path));
+        }
+        if let Some(host) = query_value_any(query, &["host", "headers"]) {
+            let mut headers = Mapping::new();
+            set_yaml(&mut headers, "Host", yaml_str(host));
+            set_yaml(&mut ws_opts, "headers", YamlValue::Mapping(headers));
+        }
+        if !ws_opts.is_empty() {
+            set_yaml(&mut map, "ws-opts", YamlValue::Mapping(ws_opts));
+        }
+    }
+    if network == "grpc" {
+        let mut grpc_opts = Mapping::new();
+        if let Some(service_name) = query_value_any(query, &["serviceName", "service-name"]) {
+            set_yaml(&mut grpc_opts, "grpc-service-name", yaml_str(service_name));
+        }
+        if !grpc_opts.is_empty() {
+            set_yaml(&mut map, "grpc-opts", YamlValue::Mapping(grpc_opts));
+        }
+    }
+    Some(YamlValue::Mapping(map))
+}
+
 fn truthy(value: &str) -> bool {
     matches!(
         value.to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+fn parse_hysteria2_uri(uri: &str, index: usize) -> Option<YamlValue> {
+    let raw = uri
+        .strip_prefix("hysteria2://")
+        .or_else(|| uri.strip_prefix("hy2://"))?;
+    let (before_name, name_part) = raw.split_once('#').unwrap_or((raw, ""));
+    let (main, query) = before_name.split_once('?').unwrap_or((before_name, ""));
+    let (password, host_port) = main.split_once('@')?;
+    let (server, port) = host_port.rsplit_once(':')?;
+    let mut map = Mapping::new();
+    set_yaml(&mut map, "name", yaml_str(uri_name(name_part, format!("Hysteria2 {index}"))));
+    set_yaml(&mut map, "type", yaml_str("hysteria2"));
+    set_yaml(&mut map, "server", yaml_str(percent_decode(server)));
+    set_yaml(&mut map, "port", yaml_num(port.parse().ok()?));
+    set_yaml(&mut map, "password", yaml_str(percent_decode(password)));
+    set_string_query(&mut map, "sni", query, &["sni", "peer"]);
+    set_bool_query(&mut map, "skip-cert-verify", query, &["insecure", "allowInsecure", "skip-cert-verify"]);
+    set_string_query(&mut map, "obfs", query, &["obfs"]);
+    set_string_query(&mut map, "obfs-password", query, &["obfs-password", "obfs_password", "obfsPassword"]);
+    set_alpn_query(&mut map, query);
+    Some(YamlValue::Mapping(map))
+}
+
+fn parse_anytls_uri(uri: &str, index: usize) -> Option<YamlValue> {
+    let raw = uri.strip_prefix("anytls://")?;
+    let (before_name, name_part) = raw.split_once('#').unwrap_or((raw, ""));
+    let (main, query) = before_name.split_once('?').unwrap_or((before_name, ""));
+    let (password, host_port) = main.split_once('@')?;
+    let (server, port) = host_port.rsplit_once(':')?;
+    let mut map = Mapping::new();
+    set_yaml(&mut map, "name", yaml_str(uri_name(name_part, format!("AnyTLS {index}"))));
+    set_yaml(&mut map, "type", yaml_str("anytls"));
+    set_yaml(&mut map, "server", yaml_str(percent_decode(server)));
+    set_yaml(&mut map, "port", yaml_num(port.parse().ok()?));
+    set_yaml(&mut map, "password", yaml_str(percent_decode(password)));
+    set_string_query(&mut map, "sni", query, &["sni", "servername", "peer"]);
+    set_string_query(&mut map, "client-fingerprint", query, &["fp", "fingerprint"]);
+    set_bool_query(&mut map, "skip-cert-verify", query, &["insecure", "allowInsecure", "skip-cert-verify"]);
+    set_alpn_query(&mut map, query);
+    Some(YamlValue::Mapping(map))
 }
 
 fn parse_tuic_uri(uri: &str, index: usize) -> Option<YamlValue> {
@@ -1007,18 +1152,7 @@ fn parse_tuic_uri(uri: &str, index: usize) -> Option<YamlValue> {
     if let Some(sni) = query_value(query, "sni") {
         set_yaml(&mut map, "sni", yaml_str(sni));
     }
-    if let Some(alpn) = query_value(query, "alpn") {
-        set_yaml(
-            &mut map,
-            "alpn",
-            YamlValue::Sequence(
-                alpn.split(',')
-                    .filter(|item| !item.is_empty())
-                    .map(|item| yaml_str(item.to_string()))
-                    .collect(),
-            ),
-        );
-    }
+    set_alpn_query(&mut map, query);
     if let Some(fp) = query_value(query, "fp") {
         set_yaml(&mut map, "client-fingerprint", yaml_str(fp));
     }
@@ -1152,6 +1286,12 @@ fn parse_uri_subscription(text: &str) -> Option<YamlValue> {
             parse_trojan_uri(line, index + 1)
         } else if line.starts_with("vmess://") {
             parse_vmess_uri(line, index + 1)
+        } else if line.starts_with("vless://") {
+            parse_vless_uri(line, index + 1)
+        } else if line.starts_with("hysteria2://") || line.starts_with("hy2://") {
+            parse_hysteria2_uri(line, index + 1)
+        } else if line.starts_with("anytls://") {
+            parse_anytls_uri(line, index + 1)
         } else if line.starts_with("tuic://") {
             parse_tuic_uri(line, index + 1)
         } else {
@@ -1171,7 +1311,7 @@ fn parse_uri_subscription(text: &str) -> Option<YamlValue> {
 
 fn parse_uri_subscription_source(text: &str) -> Result<ProfileSource, String> {
     let config = parse_uri_subscription(text).ok_or_else(|| {
-        "订阅格式不支持：不是 Clash YAML，也不是可识别的 ss/vmess/trojan/tuic URI 订阅".to_string()
+        "订阅格式不支持：不是 Clash YAML，也不是可识别的 ss/vmess/vless/trojan/hysteria2/anytls/tuic URI 订阅".to_string()
     })?;
     let body = if text.contains("://") {
         text.to_string()
@@ -1186,6 +1326,10 @@ fn parse_uri_subscription_source(text: &str) -> Result<ProfileSource, String> {
             !line.starts_with("ss://")
                 && !line.starts_with("trojan://")
                 && !line.starts_with("vmess://")
+                && !line.starts_with("vless://")
+                && !line.starts_with("hysteria2://")
+                && !line.starts_with("hy2://")
+                && !line.starts_with("anytls://")
                 && !line.starts_with("tuic://")
         })
         .count();
@@ -1401,7 +1545,16 @@ fn normalize_manual_node(input: &JsonValue) -> Result<JsonValue, String> {
     }
     if !matches!(
         node_type.as_str(),
-        "ss" | "vmess" | "vless" | "trojan" | "socks5" | "http" | "hysteria2" | "tuic"
+        "ss"
+            | "vmess"
+            | "vless"
+            | "trojan"
+            | "socks5"
+            | "http"
+            | "hysteria2"
+            | "hy2"
+            | "anytls"
+            | "tuic"
     ) {
         return Err(format!("暂不支持的固定节点协议：{node_type}"));
     }
@@ -1423,6 +1576,9 @@ fn normalize_manual_node(input: &JsonValue) -> Result<JsonValue, String> {
         "network",
         "flow",
         "skip-cert-verify",
+        "client-fingerprint",
+        "obfs",
+        "obfs-password",
     ] {
         if let Some(value) = map.get(key) {
             if !value
@@ -1898,6 +2054,66 @@ mod tests {
     }
 
     #[test]
+    fn parses_modern_uri_subscription_protocols() {
+        let text = [
+            "vless://00000000-0000-4000-8000-000000000000@example.com:443?security=reality&type=grpc&sni=www.microsoft.com&fp=chrome&pbk=publicKey&sid=abcd&flow=xtls-rprx-vision&serviceName=edge#US%20VLESS",
+            "hysteria2://secret@example.net:8443?sni=example.net&insecure=1&obfs=salamander&obfs-password=obfsSecret&alpn=h3#SG%20HY2",
+            "anytls://password@example.org:443?sni=example.org&insecure=0&alpn=h2,h3#JP%20AnyTLS",
+        ].join("\n");
+        let parsed = parse_uri_subscription(&text).expect("modern URI subscription should parse");
+        let proxies = parsed
+            .as_mapping()
+            .and_then(|root| root.get(yaml_key("proxies")))
+            .and_then(YamlValue::as_sequence)
+            .expect("proxies sequence");
+
+        assert_eq!(proxies.len(), 3);
+        let vless = proxies[0].as_mapping().expect("vless mapping");
+        assert_eq!(
+            vless.get(yaml_key("type")).and_then(YamlValue::as_str),
+            Some("vless")
+        );
+        assert_eq!(
+            vless.get(yaml_key("flow")).and_then(YamlValue::as_str),
+            Some("xtls-rprx-vision")
+        );
+        assert_eq!(
+            vless
+                .get(yaml_key("reality-opts"))
+                .and_then(YamlValue::as_mapping)
+                .and_then(|opts| opts.get(yaml_key("short-id")))
+                .and_then(YamlValue::as_str),
+            Some("abcd")
+        );
+
+        let hy2 = proxies[1].as_mapping().expect("hysteria2 mapping");
+        assert_eq!(
+            hy2.get(yaml_key("type")).and_then(YamlValue::as_str),
+            Some("hysteria2")
+        );
+        assert_eq!(
+            hy2.get(yaml_key("skip-cert-verify"))
+                .and_then(YamlValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            hy2.get(yaml_key("obfs-password"))
+                .and_then(YamlValue::as_str),
+            Some("obfsSecret")
+        );
+
+        let anytls = proxies[2].as_mapping().expect("anytls mapping");
+        assert_eq!(
+            anytls.get(yaml_key("type")).and_then(YamlValue::as_str),
+            Some("anytls")
+        );
+        assert_eq!(
+            anytls.get(yaml_key("name")).and_then(YamlValue::as_str),
+            Some("JP AnyTLS")
+        );
+    }
+
+    #[test]
     fn preflight_allows_proxy_groups_to_reference_groups() {
         let config: YamlValue = serde_yaml::from_str(
             r#"
@@ -2259,11 +2475,14 @@ rules:
         assert_eq!(protocol_family("vless-reality"), "reality");
         assert_eq!(protocol_family("hysteria2"), "hysteria");
         assert_eq!(protocol_family("hy2"), "hysteria");
+        assert_eq!(protocol_family("anytls"), "anytls");
         assert_eq!(protocol_concurrency("vless-reality"), 32);
         assert_eq!(protocol_concurrency("hysteria2"), 10);
+        assert_eq!(protocol_concurrency("anytls"), 16);
         assert_eq!(protocol_concurrency("tuic"), 8);
         assert_eq!(protocol_primary_timeout_ms("vless-reality"), 3600);
         assert_eq!(protocol_primary_timeout_ms("hysteria2"), 3200);
+        assert_eq!(protocol_primary_timeout_ms("anytls"), 3400);
         assert_eq!(protocol_primary_timeout_ms("tuic"), 2600);
 
         let targets = vec![

@@ -70,6 +70,18 @@ check(
   'protocol-aware concurrency'
 );
 check(
+  'modern URI airport protocols are parsed',
+  mainRs.includes('fn parse_vless_uri') &&
+    mainRs.includes('fn parse_hysteria2_uri') &&
+    mainRs.includes('fn parse_anytls_uri') &&
+    mainRs.includes('line.starts_with("vless://")') &&
+    mainRs.includes('line.starts_with("hysteria2://")') &&
+    mainRs.includes('line.starts_with("hy2://")') &&
+    mainRs.includes('line.starts_with("anytls://")') &&
+    mainRs.includes('parses_modern_uri_subscription_protocols'),
+  'VLESS, Hysteria2/Hy2, and AnyTLS URI subscriptions'
+);
+check(
   'long operations expose background job API',
   ['start_job', 'job_status', 'cancel_job'].every((name) => commandSection.includes(`fn ${name}`)) &&
     ['addProfileUrl', 'updateProfile', 'setActiveProfile', 'updateSetting', 'updateSettings', 'setMode', 'changeProxy', 'recoverNetwork', 'refreshOutboundIp', 'diagnostics', 'startCore', 'stopCore', 'restartCore'].every((name) => mainRs.includes(name)),

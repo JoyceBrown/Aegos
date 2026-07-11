@@ -88,7 +88,9 @@ function protocolLabel(value = '') {
   if (text.includes('ssr')) return 'SSR';
   if (text.includes('vmess')) return 'VMess';
   if (text.includes('vless')) return 'VLESS';
+  if (text.includes('anytls')) return 'AnyTLS';
   if (text.includes('hysteria')) return 'Hysteria';
+  if (text === 'hy2') return 'Hysteria';
   if (text.includes('tuic')) return 'TUIC';
   if (text.includes('wireguard')) return 'WireGuard';
   if (text.includes('direct')) return 'DIRECT';
@@ -1992,7 +1994,7 @@ function openNodeEditor(name = '') {
   const protocol = (item?.type || item?.protocol || 'ss').toLowerCase();
   setEditorValue('#nodeOriginalNameInput', item?.name || '');
   setEditorValue('#nodeEditNameInput', item?.name || '');
-  setEditorValue('#nodeEditTypeSelect', ['ss', 'trojan', 'vmess', 'vless', 'socks5', 'http', 'hysteria2', 'tuic'].includes(protocol) ? protocol : 'ss');
+  setEditorValue('#nodeEditTypeSelect', ['ss', 'trojan', 'vmess', 'vless', 'socks5', 'http', 'hysteria2', 'hy2', 'anytls', 'tuic'].includes(protocol) ? protocol : 'ss');
   setEditorValue('#nodeEditServerInput', item?.server || '');
   setEditorValue('#nodeEditPortInput', item?.port || '');
   setEditorValue('#nodeEditSecretInput', item?.password || item?.uuid || '');
