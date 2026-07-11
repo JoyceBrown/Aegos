@@ -3003,3 +3003,43 @@ select {
     height: 34px;
   }
 }
+
+/* 2.7.1 layout stabilization: only the node list grows with window height. */
+:root {
+  --home-hero-row: 330px;
+  --home-quick-row: 72px;
+}
+
+.page[data-page-panel="home"].active {
+  grid-template-rows: var(--home-hero-row) var(--home-quick-row) minmax(0, 1fr);
+  align-content: stretch;
+}
+
+.page[data-page-panel="home"].active > .hero,
+.page[data-page-panel="home"].active > .quick {
+  min-height: 0;
+  height: 100%;
+}
+
+.page[data-page-panel="home"].active > .home-nodes {
+  min-height: 0;
+}
+
+.page[data-page-panel="home"].active > .quick {
+  display: grid;
+  align-items: center;
+}
+
+@media (min-height: 900px) {
+  :root {
+    --home-hero-row: 410px;
+    --home-quick-row: 96px;
+  }
+}
+
+@media (max-height: 760px) {
+  :root {
+    --home-hero-row: 264px;
+    --home-quick-row: 56px;
+  }
+}
