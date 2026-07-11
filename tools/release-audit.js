@@ -43,7 +43,7 @@ check('product name is Aegos', tauri.productName === 'Aegos', tauri.productName)
 check('identifier does not collide with Aegis', tauri.identifier === 'com.codex.aegos', tauri.identifier);
 check('Tauri shell configured', Boolean(pkg.devDependencies?.['@tauri-apps/cli']), '@tauri-apps/cli');
 check('transparent window disabled for performance', tauri.app?.windows?.[0]?.transparent === false, `transparent=${tauri.app?.windows?.[0]?.transparent}`);
-check('WebView2 online bootstrapper is skipped', tauri.bundle?.windows?.webviewInstallMode?.type === 'skip', JSON.stringify(tauri.bundle?.windows?.webviewInstallMode));
+check('WebView2 missing runtime is handled by installer', tauri.bundle?.windows?.webviewInstallMode?.type === 'downloadBootstrapper' && tauri.bundle?.windows?.webviewInstallMode?.silent === false, JSON.stringify(tauri.bundle?.windows?.webviewInstallMode));
 check('mihomo bundled as only core resource', exists('resources/core/mihomo.exe') && !exists('resources/core/sing-box.exe'), 'resources/core');
 check('Aegos installer exists or release is source-only', exists(installer) || sourceOnlyRelease, installer);
 check('Aegis installer name is not reused', !exists(`src-tauri/target/release/bundle/nsis/Aegis-Setup-${pkg.version}.exe`), 'no Aegis installer artifact');
@@ -51,6 +51,7 @@ check('UI smoke script exists', exists('tools/ui-smoke.js'), 'tools/ui-smoke.js'
 check('performance smoke script exists', exists('tools/perf-smoke.js') && pkg.scripts?.['smoke:perf'] === 'node tools/perf-smoke.js', 'tools/perf-smoke.js');
 check('soak smoke script exists', exists('tools/soak-smoke.js') && pkg.scripts?.['smoke:soak'] === 'node tools/soak-smoke.js', 'tools/soak-smoke.js');
 check('backend audit script exists', exists('tools/backend-audit.js') && pkg.scripts?.['audit:backend'] === 'node tools/backend-audit.js', 'tools/backend-audit.js');
+check('security hotfix audit script exists', exists('tools/security-hotfix-audit.js') && pkg.scripts?.['audit:security'] === 'node tools/security-hotfix-audit.js', 'tools/security-hotfix-audit.js');
 
 const mainRs = readText('src-tauri/src/main.rs');
 const powershellCalls = (mainRs.match(/Command::new\("powershell\.exe"\)/g) || []).length;

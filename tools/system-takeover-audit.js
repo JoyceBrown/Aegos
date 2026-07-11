@@ -38,11 +38,14 @@ check(
     mainRs.includes('fn read_windows_proxy_snapshot') &&
     mainRs.includes('fn write_windows_proxy_snapshot') &&
     mainRs.includes('fn capture_proxy_snapshot_before_takeover') &&
+    mainRs.includes('fn verify_system_proxy_points_to_aegos') &&
     mainRs.includes('fn load_system_proxy_snapshot') &&
     mainRs.includes('fn clear_system_proxy_snapshot') &&
     mainRs.includes('fn shutdown_for_exit') &&
     proxyScriptBody.includes('InternetSetOption') &&
-    lifecycleBody.includes('self.restore_system_proxy_preference(restore_system_proxy)'),
+    lifecycleBody.includes('self.restore_system_proxy_preference(restore_system_proxy)') &&
+    setSystemProxyBody.includes('verify_system_proxy_points_to_aegos(true)') &&
+    setSystemProxyBody.includes('verify_system_proxy_points_to_aegos(false)'),
   'Aegos must be able to leave Windows proxy as it found it'
 );
 

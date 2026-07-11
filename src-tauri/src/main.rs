@@ -804,6 +804,138 @@ fn log_category(level: &str, line: &str) -> &'static str {
     }
 }
 
+fn redact_after_key(mut value: String, key: &str, separators: &[char]) -> String {
+    let needles = [
+        format!("{key}="),
+        format!("{key}:"),
+        format!("{key}%3d"),
+        format!("{key}%3a"),
+    ];
+    let mut search_from = 0;
+    loop {
+        let lower = value.to_ascii_lowercase();
+        let Some((index, needle_len)) = needles
+            .iter()
+            .filter_map(|needle| {
+                lower[search_from..]
+                    .find(needle)
+                    .map(|pos| (search_from + pos, needle.len()))
+            })
+            .min_by_key(|(index, _)| *index)
+        else {
+            break;
+        };
+        let mut start = index + needle_len;
+        while start < value.len()
+            && matches!(
+                value.as_bytes()[start] as char,
+                ' ' | '"' | '\'' | ':' | '='
+            )
+        {
+            start += 1;
+        }
+        let mut end = start;
+        while end < value.len() {
+            let ch = value.as_bytes()[end] as char;
+            if separators.contains(&ch) || ch.is_ascii_whitespace() {
+                break;
+            }
+            end += 1;
+        }
+        if end > start {
+            value.replace_range(start..end, "[redacted]");
+            search_from = start + "[redacted]".len();
+        } else {
+            search_from = start.saturating_add(1);
+        }
+    }
+    value
+}
+
+fn redact_uri_userinfo(mut value: String) -> String {
+    for scheme in [
+        "ss://",
+        "ssr://",
+        "trojan://",
+        "vmess://",
+        "vless://",
+        "hysteria2://",
+        "hy2://",
+        "anytls://",
+        "tuic://",
+    ] {
+        let mut search_from = 0;
+        loop {
+            let lower = value.to_ascii_lowercase();
+            let Some(index) = lower[search_from..]
+                .find(scheme)
+                .map(|pos| search_from + pos)
+            else {
+                break;
+            };
+            let credential_start = index + scheme.len();
+            let tail = &value[credential_start..];
+            let Some(at_offset) = tail.find('@') else {
+                break;
+            };
+            let delimiter_offset = tail
+                .find(|ch: char| matches!(ch, '/' | '?' | '#' | ' ' | '\r' | '\n' | '\t'))
+                .unwrap_or(usize::MAX);
+            if at_offset < delimiter_offset && at_offset > 0 {
+                let credential_end = credential_start + at_offset;
+                value.replace_range(credential_start..credential_end, "[redacted]");
+                search_from = credential_start + "[redacted]".len();
+            } else {
+                search_from = credential_start;
+            }
+        }
+    }
+    value
+}
+
+fn sanitize_sensitive_text(value: &str) -> String {
+    let mut redacted = value.to_string();
+    let separators = ['&', ';', ',', '|', '"', '\'', '<', '>', ')', ']', '}'];
+    for key in [
+        "token",
+        "access_token",
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "uuid",
+        "key",
+        "api_key",
+        "apikey",
+        "auth",
+        "authorization",
+        "private-key",
+        "private_key",
+        "client-secret",
+        "client_secret",
+        "obfs-password",
+        "obfs_password",
+    ] {
+        redacted = redact_after_key(redacted, key, &separators);
+    }
+    let lower = redacted.to_ascii_lowercase();
+    if let Some(index) = lower.find("bearer ") {
+        let start = index + "bearer ".len();
+        let mut end = start;
+        while end < redacted.len() {
+            let ch = redacted.as_bytes()[end] as char;
+            if separators.contains(&ch) || ch.is_ascii_whitespace() {
+                break;
+            }
+            end += 1;
+        }
+        if end > start {
+            redacted.replace_range(start..end, "[redacted]");
+        }
+    }
+    redact_uri_userinfo(redacted)
+}
+
 fn log_matches_node(entry: &LogEntry, node: &str) -> bool {
     let node = node.trim().to_ascii_lowercase();
     if node.is_empty() {
@@ -1631,13 +1763,17 @@ fn derived_profile_metadata(profile: &Profile) -> (usize, usize, &'static str, O
 fn public_profile(profile: &Profile) -> JsonValue {
     let (node_count, proxy_group_count, metadata_status, metadata_error) =
         derived_profile_metadata(profile);
+    let source_url = profile
+        .source_url
+        .as_ref()
+        .map(|value| sanitize_sensitive_text(value));
     json!({
         "id": &profile.id,
         "name": &profile.name,
         "type": &profile.profile_type,
         "profile_type": &profile.profile_type,
         "path": &profile.path,
-        "source_url": &profile.source_url,
+        "source_url": source_url,
         "node_count": node_count,
         "nodeCount": node_count,
         "proxy_group_count": proxy_group_count,
@@ -3258,6 +3394,21 @@ rules:
     }
 
     #[test]
+    fn log_sanitizer_redacts_subscription_and_node_secrets() {
+        let line = "update failed https://train.example/api/linkon?token=fixture-token-redacted&protocol=vless password: secret uuid=00000000-0000-4000-8000-000000000000 bearer abc.def trojan://pass@example.com:443";
+        let sanitized = sanitize_sensitive_text(line);
+
+        assert!(sanitized.contains("token=[redacted]"));
+        assert!(sanitized.contains("password: [redacted]"));
+        assert!(sanitized.contains("uuid=[redacted]"));
+        assert!(sanitized.contains("bearer [redacted]"));
+        assert!(sanitized.contains("trojan://[redacted]@example.com:443"));
+        assert!(!sanitized.contains("fixture-token-redacted"));
+        assert!(!sanitized.contains("00000000-0000-4000-8000-000000000000"));
+        assert!(!sanitized.contains("abc.def"));
+    }
+
+    #[test]
     fn node_log_matching_finds_related_failures() {
         let entry = LogEntry {
             at: "test".to_string(),
@@ -4104,7 +4255,8 @@ impl CoreManager {
     }
 
     fn add_log(&self, line: impl AsRef<str>, level: &str) {
-        let line = line.as_ref().trim();
+        let line = sanitize_sensitive_text(line.as_ref());
+        let line = line.trim();
         if line.is_empty() {
             return;
         }
@@ -4145,6 +4297,24 @@ impl CoreManager {
         let snapshot = read_windows_proxy_snapshot()?;
         if !proxy_points_to_aegos(&snapshot, self.settings.mixed_port) {
             self.save_system_proxy_snapshot(&snapshot)?;
+        }
+        Ok(())
+    }
+
+    fn verify_system_proxy_points_to_aegos(&self, expected: bool) -> Result<(), String> {
+        let current = read_windows_proxy_snapshot()?;
+        let points_to_aegos = proxy_points_to_aegos(&current, self.settings.mixed_port);
+        if expected && !points_to_aegos {
+            return Err(format!(
+                "Windows system proxy verification failed: current '{}', expected 127.0.0.1:{}",
+                current.proxy_server, self.settings.mixed_port
+            ));
+        }
+        if !expected && points_to_aegos {
+            return Err(format!(
+                "Windows system proxy restore verification failed: still points to '{}'",
+                current.proxy_server
+            ));
         }
         Ok(())
     }
@@ -4714,11 +4884,11 @@ impl CoreManager {
             let should_apply_system_proxy = self.settings.system_proxy
                 || self.settings.start_with_system_proxy
                 || !self.settings.tun_enabled;
+            let mut system_proxy_applied = false;
             if should_apply_system_proxy {
-                self.settings.system_proxy = true;
                 self.traffic_takeover = true;
                 match self.set_system_proxy(true) {
-                    Ok(_) => {}
+                    Ok(_) => system_proxy_applied = true,
                     Err(err) => {
                         self.add_log(
                             format!("System proxy enable failed after core start: {err}"),
@@ -4727,7 +4897,7 @@ impl CoreManager {
                     }
                 }
             }
-            self.traffic_takeover = self.settings.system_proxy || self.settings.tun_enabled;
+            self.traffic_takeover = self.settings.tun_enabled || system_proxy_applied;
         } else {
             self.traffic_takeover = false;
         }
@@ -4817,6 +4987,7 @@ impl CoreManager {
             let logs = self.logs.clone();
             thread::spawn(move || {
                 for line in BufReader::new(stdout).lines().flatten() {
+                    let line = sanitize_sensitive_text(&line);
                     let mut logs = logs.lock().unwrap();
                     logs.push(LogEntry {
                         at: now_iso(),
@@ -4834,6 +5005,7 @@ impl CoreManager {
             let logs = self.logs.clone();
             thread::spawn(move || {
                 for line in BufReader::new(stderr).lines().flatten() {
+                    let line = sanitize_sensitive_text(&line);
                     let mut logs = logs.lock().unwrap();
                     logs.push(LogEntry {
                         at: now_iso(),
@@ -4903,8 +5075,13 @@ impl CoreManager {
     }
 
     fn stop(&mut self) -> Result<JsonValue, String> {
-        let _ = self.set_system_proxy(false);
+        let restore_result = self.set_system_proxy(false);
         self.terminate_core_process("Stopping mihomo");
+        if let Err(err) = restore_result {
+            return Err(format!(
+                "Core stopped, but Windows system proxy restore failed: {err}"
+            ));
+        }
         Ok(json!({ "ok": true }))
     }
 
@@ -5219,11 +5396,14 @@ impl CoreManager {
         if enable {
             self.capture_proxy_snapshot_before_takeover()?;
             run_powershell(&build_proxy_script(true, self.settings.mixed_port))?;
+            self.verify_system_proxy_points_to_aegos(true)?;
         } else if let Some(snapshot) = self.load_system_proxy_snapshot() {
             write_windows_proxy_snapshot(&snapshot)?;
             self.clear_system_proxy_snapshot();
+            self.verify_system_proxy_points_to_aegos(false)?;
         } else {
             run_powershell(&build_proxy_script(false, self.settings.mixed_port))?;
+            self.verify_system_proxy_points_to_aegos(false)?;
         }
         self.settings.system_proxy = enable;
         self.traffic_takeover = self.process.is_some()
