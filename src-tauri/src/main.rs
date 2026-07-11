@@ -1172,11 +1172,14 @@ fn normalize_manual_node(input: &JsonValue) -> Result<JsonValue, String> {
         .unwrap_or("ss")
         .trim()
         .to_lowercase();
-    let port = map.get("port").and_then(|value| value.as_u64()).or_else(|| {
-        map.get("port")
-            .and_then(|value| value.as_str())
-            .and_then(|value| value.trim().parse::<u64>().ok())
-    });
+    let port = map
+        .get("port")
+        .and_then(|value| value.as_u64())
+        .or_else(|| {
+            map.get("port")
+                .and_then(|value| value.as_str())
+                .and_then(|value| value.trim().parse::<u64>().ok())
+        });
     let Some(port) = port else {
         return Err("请输入固定节点端口".to_string());
     };
@@ -1215,7 +1218,11 @@ fn normalize_manual_node(input: &JsonValue) -> Result<JsonValue, String> {
         "skip-cert-verify",
     ] {
         if let Some(value) = map.get(key) {
-            if !value.as_str().map(|text| text.trim().is_empty()).unwrap_or(false) {
+            if !value
+                .as_str()
+                .map(|text| text.trim().is_empty())
+                .unwrap_or(false)
+            {
                 node.insert(key.to_string(), value.clone());
             }
         }
@@ -1225,7 +1232,10 @@ fn normalize_manual_node(input: &JsonValue) -> Result<JsonValue, String> {
     }
     node.insert(
         "udp".to_string(),
-        json!(map.get("udp").and_then(|value| value.as_bool()).unwrap_or(true)),
+        json!(map
+            .get("udp")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true)),
     );
     node.insert("manual".to_string(), json!(true));
     node.insert("fixed".to_string(), json!(true));
@@ -1242,7 +1252,13 @@ fn manual_node_yaml(node: &JsonValue) -> Result<YamlValue, String> {
     for (key, value) in map {
         if matches!(
             key.as_str(),
-            "manual" | "fixed" | "static" | "residential" | "source" | "profileType" | "originalName"
+            "manual"
+                | "fixed"
+                | "static"
+                | "residential"
+                | "source"
+                | "profileType"
+                | "originalName"
         ) {
             continue;
         }
@@ -1396,6 +1412,31 @@ fn yaml_mapping_name(item: &YamlValue) -> Option<&str> {
     item.as_mapping()?
         .get(yaml_key("name"))
         .and_then(|value| value.as_str())
+}
+
+fn proxy_ports_from_config(config: &YamlValue) -> Vec<u16> {
+    let mut ports = HashSet::new();
+    for proxy in yaml_sequence(config, "proxies")
+        .into_iter()
+        .flat_map(|items| items.iter())
+    {
+        let Some(map) = proxy.as_mapping() else {
+            continue;
+        };
+        let Some(port) = map
+            .get(yaml_key("port"))
+            .and_then(|value| value.as_u64())
+            .and_then(|value| u16::try_from(value).ok())
+        else {
+            continue;
+        };
+        if port > 0 {
+            ports.insert(port);
+        }
+    }
+    let mut ports = ports.into_iter().collect::<Vec<_>>();
+    ports.sort_unstable();
+    ports
 }
 
 fn preflight_runtime_config(
@@ -1771,7 +1812,8 @@ rules:
         .expect("yaml");
         let mut settings = default_settings();
         settings.secret = "test".to_string();
-        let first = patch_config_with_settings(source.clone(), &settings, None).expect("first patch");
+        let first =
+            patch_config_with_settings(source.clone(), &settings, None).expect("first patch");
         let second = patch_config_with_settings(source, &settings, None).expect("second patch");
         let first_yaml = serde_yaml::to_string(&first).expect("first yaml");
         let second_yaml = serde_yaml::to_string(&second).expect("second yaml");
@@ -2248,6 +2290,14 @@ fn ps_array_literal(items: &[String]) -> String {
     format!("@({quoted})")
 }
 
+fn ps_port_list(ports: &[u16]) -> String {
+    ports
+        .iter()
+        .map(|port| port.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn run_powershell(script: &str) -> Result<String, String> {
     let wrapped_script = format!(
         "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;\n{script}"
@@ -2415,6 +2465,8 @@ try {{
     Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix DNS UDP" dir=out action=allow "program=$dnsServiceHost" service=Dnscache protocol=UDP remoteport=53 enable=yes profile=any | Out-Null
     Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix DNS TCP" dir=out action=allow "program=$dnsServiceHost" service=Dnscache protocol=TCP remoteport=53 enable=yes profile=any | Out-Null
   }}
+  Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix DNS Any UDP" dir=out action=allow protocol=UDP remoteport=53 enable=yes profile=any | Out-Null
+  Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix DNS Any TCP" dir=out action=allow protocol=TCP remoteport=53 enable=yes profile=any | Out-Null
   Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Block
   $rules = @(Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Where-Object {{ $_.Direction -eq 'Outbound' -and $_.Action -eq 'Allow' -and $_.Enabled -eq 'True' }})
   if ($rules.Count -lt 1) {{ throw 'Disconnect protection did not create Aegos allow rules' }}
@@ -2474,6 +2526,79 @@ if ($rules.Count -gt 0) {{ throw 'Disconnect protection rules were not fully rem
 "#,
             ps_escape(snapshot.to_string_lossy()),
             ps_escape(&group)
+        )
+    }
+}
+
+fn build_speed_test_firewall_script(
+    enable: bool,
+    user_data: &Path,
+    core_path: &Path,
+    ports: &[u16],
+) -> String {
+    let group = format!("{APP_NAME} Kill Switch Speed Test");
+    let exe = std::env::current_exe().unwrap_or_default();
+    let programs = [exe, core_path.to_path_buf()]
+        .into_iter()
+        .filter_map(|path| firewall_program_path(&path))
+        .collect::<Vec<_>>();
+    let program_array = ps_array_literal(&programs);
+    let port_list = ps_port_list(ports);
+    let marker = user_data.join("kill-switch-speed-test-rules.marker");
+    if enable {
+        format!(
+            r#"
+$ErrorActionPreference = 'Stop'
+$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{ throw 'Speed test firewall rules require administrator permission' }}
+$markerPath = '{}'
+$group = '{}'
+$rulePrefix = "$group Allow"
+$programs = {}
+$portList = '{}'
+function Invoke-AegosNetsh {{
+  $output = & netsh @args 2>&1
+  if ($LASTEXITCODE -ne 0) {{
+    $message = ($output | Out-String).Trim()
+    if (-not $message) {{ $message = "netsh failed with exit code $LASTEXITCODE" }}
+    throw $message
+  }}
+  return ($output | Out-String).Trim()
+}}
+New-Item -ItemType Directory -Path (Split-Path -Parent $markerPath) -Force | Out-Null
+Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+$index = 1
+foreach ($program in $programs) {{
+  if (Test-Path -LiteralPath $program) {{
+    Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix Program $index" dir=out action=allow "program=$program" enable=yes profile=any | Out-Null
+    $index += 1
+  }}
+}}
+Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix DNS UDP" dir=out action=allow protocol=UDP remoteport=53 enable=yes profile=any | Out-Null
+Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix DNS TCP" dir=out action=allow protocol=TCP remoteport=53 enable=yes profile=any | Out-Null
+if ($portList) {{
+  Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix Node TCP" dir=out action=allow protocol=TCP remoteport=$portList enable=yes profile=any | Out-Null
+  Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix Node UDP" dir=out action=allow protocol=UDP remoteport=$portList enable=yes profile=any | Out-Null
+}}
+Set-Content -LiteralPath $markerPath -Value (Get-Date).ToString('o') -Encoding UTF8
+"#,
+            ps_escape(marker.to_string_lossy()),
+            ps_escape(&group),
+            program_array,
+            ps_escape(port_list)
+        )
+    } else {
+        format!(
+            r#"
+$ErrorActionPreference = 'Stop'
+$group = '{}'
+$rulePrefix = "$group Allow"
+$markerPath = '{}'
+Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+if (Test-Path -LiteralPath $markerPath) {{ Remove-Item -LiteralPath $markerPath -Force }}
+"#,
+            ps_escape(&group),
+            ps_escape(marker.to_string_lossy())
         )
     }
 }
@@ -2844,6 +2969,51 @@ impl CoreManager {
         Ok(rendered.digest)
     }
 
+    fn speed_test_firewall_ports(&self) -> Vec<u16> {
+        let mut ports = [80u16, 443u16].into_iter().collect::<HashSet<_>>();
+        if let Some(profile) = self.active_profile() {
+            let path = PathBuf::from(&profile.path);
+            if let Ok(raw) = fs::read_to_string(&path) {
+                if let Ok(source) = serde_yaml::from_str::<YamlValue>(&raw) {
+                    if let Ok(patched) = patch_config_with_settings(
+                        source,
+                        &self.standby_settings(),
+                        Some(&profile.id),
+                    ) {
+                        ports.extend(proxy_ports_from_config(&patched));
+                    }
+                }
+            }
+        }
+        let mut ports = ports.into_iter().collect::<Vec<_>>();
+        ports.sort_unstable();
+        ports
+    }
+
+    fn set_speed_test_firewall_rules(&self, enable: bool, ports: &[u16]) -> Result<(), String> {
+        if !self.settings.kill_switch_enabled {
+            return Ok(());
+        }
+        run_powershell(&build_speed_test_firewall_script(
+            enable,
+            &self.app_data,
+            &self.core_path,
+            ports,
+        ))?;
+        self.add_log(
+            if enable {
+                format!(
+                    "Speed test firewall window opened for ports: {}",
+                    ps_port_list(ports)
+                )
+            } else {
+                "Speed test firewall window closed".to_string()
+            },
+            "info",
+        );
+        Ok(())
+    }
+
     #[allow(dead_code)]
     fn patch_profile_file_legacy(&mut self, profile: &Profile) -> Result<(), String> {
         let path = PathBuf::from(&profile.path);
@@ -2928,7 +3098,9 @@ impl CoreManager {
         self.wait_for_controller()?;
         self.runtime_profile_id = Some(profile.id.clone());
         self.runtime_config_digest = Some(config_digest.clone());
-        if self.traffic_takeover && (self.settings.start_with_system_proxy || self.settings.system_proxy) {
+        if self.traffic_takeover
+            && (self.settings.start_with_system_proxy || self.settings.system_proxy)
+        {
             if let Err(err) = self.set_system_proxy(true) {
                 self.add_log(
                     format!("System proxy enable failed after profile hot reload: {err}"),
@@ -3003,10 +3175,7 @@ impl CoreManager {
                 .iter()
                 .map(|entry| {
                     let line = entry.line.replace('\r', " ").replace('\n', " ");
-                    format!(
-                        "{} [{}:{}] {}",
-                        entry.at, entry.level, entry.category, line
-                    )
+                    format!("{} [{}:{}] {}", entry.at, entry.level, entry.category, line)
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -3120,13 +3289,16 @@ impl CoreManager {
         let profile = self
             .active_profile()
             .ok_or_else(|| "没有活动配置".to_string())?;
-        let config_digest = self.prepare_runtime_profile(&profile, enable_takeover).map_err(|err| {
-            self.start_failure_message(Some(&profile), &format!("配置生成失败：{err}"))
-        })?;
+        let config_digest = self
+            .prepare_runtime_profile(&profile, enable_takeover)
+            .map_err(|err| {
+                self.start_failure_message(Some(&profile), &format!("配置生成失败：{err}"))
+            })?;
         if self.process.is_some() {
             let same_profile = self.runtime_profile_id.as_deref() == Some(profile.id.as_str());
             let same_config = self.runtime_config_digest.as_deref() == Some(config_digest.as_str());
-            if same_profile && same_config && self.controller("GET", "/version", None, 900).is_ok() {
+            if same_profile && same_config && self.controller("GET", "/version", None, 900).is_ok()
+            {
                 self.apply_takeover_after_core_ready(enable_takeover);
                 return Ok(json!({
                     "ok": true,
@@ -3567,7 +3739,8 @@ impl CoreManager {
             run_powershell(&build_proxy_script(false, self.settings.mixed_port))?;
         }
         self.settings.system_proxy = enable;
-        self.traffic_takeover = self.process.is_some() && (enable || (self.traffic_takeover && self.settings.tun_enabled));
+        self.traffic_takeover = self.process.is_some()
+            && (enable || (self.traffic_takeover && self.settings.tun_enabled));
         self.save_settings()?;
         self.add_log(
             if enable {
@@ -3582,9 +3755,7 @@ impl CoreManager {
 
     fn set_kill_switch(&mut self, enable: bool) -> Result<bool, String> {
         if enable && !is_process_elevated() {
-            return Err(
-                "断网保护需要管理员权限，请在设置中以管理员身份重启 Aegos。".to_string(),
-            );
+            return Err("断网保护需要管理员权限，请在设置中以管理员身份重启 Aegos。".to_string());
         }
         run_powershell(&build_kill_switch_script(
             enable,
@@ -3854,7 +4025,10 @@ impl CoreManager {
             return;
         };
         for group in groups {
-            let Some(items) = group.get_mut("items").and_then(|items| items.as_array_mut()) else {
+            let Some(items) = group
+                .get_mut("items")
+                .and_then(|items| items.as_array_mut())
+            else {
                 continue;
             };
             for item in items {
@@ -4294,8 +4468,37 @@ impl CoreManager {
             };
         }
 
+        let speed_firewall_enabled = self.settings.kill_switch_enabled;
+        let speed_firewall_ports = if speed_firewall_enabled {
+            self.speed_test_firewall_ports()
+        } else {
+            Vec::new()
+        };
+        if speed_firewall_enabled {
+            if let Err(err) = self.set_speed_test_firewall_rules(true, &speed_firewall_ports) {
+                let message = format!("断网保护测速放行失败：{err}");
+                let mut speed = speed_test.lock().unwrap();
+                speed.running = false;
+                speed.error = Some(message.clone());
+                speed.updated_at = now_secs();
+                return Err(message);
+            }
+        }
+
         self.add_log(format!("Speed test started: {total} nodes"), "info");
+        let speed_firewall_app_data = self.app_data.clone();
+        let speed_firewall_core_path = self.core_path.clone();
         thread::spawn(move || {
+            let cleanup_speed_firewall = || {
+                if speed_firewall_enabled {
+                    let _ = run_powershell(&build_speed_test_firewall_script(
+                        false,
+                        &speed_firewall_app_data,
+                        &speed_firewall_core_path,
+                        &speed_firewall_ports,
+                    ));
+                }
+            };
             let client = match Client::builder()
                 .no_proxy()
                 .timeout(Duration::from_millis(6500))
@@ -4307,12 +4510,14 @@ impl CoreManager {
                     speed.running = false;
                     speed.error = Some(err.to_string());
                     speed.updated_at = now_secs();
+                    cleanup_speed_firewall();
                     return;
                 }
             };
             for (phase_targets, chunk_size) in phases {
                 for chunk in phase_targets.chunks(chunk_size) {
                     if !speed_test.lock().unwrap().running {
+                        cleanup_speed_firewall();
                         return;
                     }
                     let (tx, rx) = mpsc::channel();
@@ -4336,6 +4541,7 @@ impl CoreManager {
                     for (target, delay) in rx {
                         let mut speed = speed_test.lock().unwrap();
                         if !speed.running {
+                            cleanup_speed_firewall();
                             return;
                         }
                         speed.completed += 1;
@@ -4366,6 +4572,8 @@ impl CoreManager {
             let mut speed = speed_test.lock().unwrap();
             speed.running = false;
             speed.updated_at = now_secs();
+            drop(speed);
+            cleanup_speed_firewall();
         });
         Ok(self.speed_test_snapshot())
     }
@@ -4390,6 +4598,12 @@ impl CoreManager {
             .timeout(Duration::from_millis(6500))
             .build()
             .map_err(|err| err.to_string())?;
+        let speed_firewall_ports = if self.settings.kill_switch_enabled {
+            self.speed_test_firewall_ports()
+        } else {
+            Vec::new()
+        };
+        self.set_speed_test_firewall_rules(true, &speed_firewall_ports)?;
         let delay = test_proxy_delay_with_retry(
             &client,
             self.settings.controller_port,
@@ -4397,6 +4611,12 @@ impl CoreManager {
             &target.name,
             &target.protocol,
         );
+        if let Err(err) = self.set_speed_test_firewall_rules(false, &speed_firewall_ports) {
+            self.add_log(
+                format!("Speed test firewall cleanup failed after single test: {err}"),
+                "warn",
+            );
+        }
         let now = now_secs();
         let health = {
             let mut speed = self.speed_test.lock().unwrap();
@@ -4964,7 +5184,10 @@ impl CoreManager {
         profile.name = next_name.to_string();
         let renamed = profile.clone();
         self.save_settings()?;
-        self.add_log(format!("Profile renamed: {} -> {}", renamed.id, renamed.name), "info");
+        self.add_log(
+            format!("Profile renamed: {} -> {}", renamed.id, renamed.name),
+            "info",
+        );
         Ok(renamed)
     }
 

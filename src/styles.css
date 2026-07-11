@@ -3109,15 +3109,54 @@ select {
   height: 36px;
 }
 
-/* 2.7.6: final home metric proportions; keep IP readable at minimum width. */
+/* 2.7.7: one home hero alignment model; both columns center their content groups. */
+:root {
+  --home-hero-row: 264px;
+}
+
+@media (min-height: 900px) {
+  :root {
+    --home-hero-row: 264px;
+  }
+}
+
+@media (max-height: 760px) {
+  :root {
+    --home-hero-row: 252px;
+  }
+}
+
+.page[data-page-panel="home"].active > .hero {
+  align-items: stretch;
+  grid-template-columns: 156px minmax(0, 1fr);
+}
+
+.connect-column,
+.node-column {
+  min-height: 0;
+  align-self: stretch;
+  align-content: center;
+}
+
+.connect-column {
+  justify-content: center;
+  padding: 0;
+}
+
+.node-column {
+  justify-content: stretch;
+  padding: 0;
+}
+
+/* 2.7.7: keep IP readable without letting it swallow the traffic metrics. */
 .metric-grid.bottom {
   grid-template-columns:
     minmax(88px, .9fr)
-    minmax(142px, 1.45fr)
+    minmax(124px, 1.08fr)
     minmax(102px, .95fr)
     minmax(108px, 1fr)
-    minmax(72px, .58fr)
-    minmax(72px, .58fr);
+    minmax(76px, .66fr)
+    minmax(76px, .66fr);
 }
 
 #outboundMetric {

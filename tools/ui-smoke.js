@@ -169,6 +169,14 @@ async function auditViewport(page, width, height) {
     const statusBox = box('.status-card');
     const sidebarOverlap = navBox && statusBox ? navBox.bottom > statusBox.top + 1 : false;
     const bottomMetricWidths = all('.metric-grid.bottom article').map((el) => Math.round(el.getBoundingClientRect().width));
+    const contentCenter = (selector) => {
+      const boxes = all(selector).filter((el) => visible(el) && !el.classList.contains('hidden')).map((el) => el.getBoundingClientRect());
+      if (!boxes.length) return null;
+      const top = Math.min(...boxes.map((r) => r.top));
+      const bottom = Math.max(...boxes.map((r) => r.bottom));
+      return (top + bottom) / 2;
+    };
+    const heroCenterOffset = Math.abs((contentCenter('.connect-column > *') || 0) - (contentCenter('.node-column > *') || 0));
     document.querySelector('[data-page="nodes"]').click();
     const nodeBase = collectBase();
     const table = document.querySelector('.node-table')?.getBoundingClientRect();
@@ -215,6 +223,7 @@ async function auditViewport(page, width, height) {
       hero: box('.hero'),
       quick: box('.quick'),
       bottomMetricWidths,
+      heroCenterOffset,
       nodes: box('.nodes'),
       settings: settingsBox,
       settingsActive,
@@ -278,11 +287,13 @@ try {
     if (report.maxMetricIcon > 24) failures.push(`${report.width}x${report.height}: metric icon width ${report.maxMetricIcon}px`);
     if (!report.hero || report.hero.height > 276) failures.push(`${report.width}x${report.height}: home hero row too tall ${report.hero?.height || 0}px`);
     if (!report.quick || Math.abs(report.quick.height - 72) > 1) failures.push(`${report.width}x${report.height}: quick row height changed to ${report.quick?.height || 0}px`);
+    if (report.heroCenterOffset > 8) failures.push(`${report.width}x${report.height}: home hero columns use mismatched vertical alignment (${report.heroCenterOffset.toFixed(1)}px)`);
     if (report.bottomMetricWidths?.length === 6) {
       const outboundWidth = report.bottomMetricWidths[1];
       const upWidth = report.bottomMetricWidths[4];
       const downWidth = report.bottomMetricWidths[5];
       if (outboundWidth <= upWidth || outboundWidth <= downWidth) failures.push(`${report.width}x${report.height}: outbound IP metric is not wider than traffic metrics`);
+      if (outboundWidth > upWidth * 2.5 || outboundWidth > downWidth * 2.5) failures.push(`${report.width}x${report.height}: outbound IP metric is wider than needed`);
     } else {
       failures.push(`${report.width}x${report.height}: bottom metric widths missing`);
     }

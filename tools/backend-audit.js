@@ -48,11 +48,17 @@ check(
 check(
   'disconnect protection allows speed tests without disabling protection',
   mainRs.includes('fn refresh_kill_switch_rules_if_enabled') &&
+    mainRs.includes('fn build_speed_test_firewall_script') &&
+    mainRs.includes('fn speed_test_firewall_ports') &&
+    mainRs.includes('fn set_speed_test_firewall_rules') &&
     mainRs.includes('Disconnect protection allow rules refreshed for {reason}') &&
+    mainRs.includes('Speed test firewall window opened for ports') &&
     mainRs.includes('service=Dnscache protocol=UDP remoteport=53') &&
     mainRs.includes('service=Dnscache protocol=TCP remoteport=53') &&
+    mainRs.includes('remoteport=$portList') &&
+    mainRs.includes('cleanup_speed_firewall') &&
     /fn ensure_core_for_delay_test[\s\S]*refresh_kill_switch_rules_if_enabled\("speed test"\)/.test(mainRs),
-  'speed-test preparation refreshes Aegos, mihomo, and DNS firewall allow rules'
+  'speed-test preparation refreshes base rules and opens a temporary node-port firewall window'
 );
 check(
   'TUIC delay path has lower concurrency',
