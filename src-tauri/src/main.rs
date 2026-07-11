@@ -28,6 +28,7 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const AEGOS_DEFAULT_MIXED_PORT: u16 = 7891;
 const AEGOS_DEFAULT_CONTROLLER_PORT: u16 = 19091;
 const RESERVED_MIXED_PORTS: &[u16] = &[7890];
+const AEGOS_OUTBOUND_IP_GROUP: &str = "Aegos Landing IP";
 const OUTBOUND_IP_RULE_DOMAINS: &[&str] = &[
     "api.ipify.org",
     "api64.ipify.org",
@@ -292,26 +293,147 @@ fn proxy_group_names(config: &Mapping) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn outbound_ip_rule_target(config: &Mapping, settings: &Settings) -> String {
+fn proxy_node_names(config: &Mapping) -> Vec<String> {
+    config
+        .get(yaml_key("proxies"))
+        .and_then(|value| value.as_sequence())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.get(yaml_key("name"))
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn outbound_ip_primary_group_name(config: &Mapping, settings: &Settings) -> Option<String> {
     let groups = proxy_group_names(config);
     for preferred in ["GLOBAL", "Final", "Proxy", "Proxies"] {
         if groups.iter().any(|name| name == preferred) {
-            return preferred.to_string();
+            return Some(preferred.to_string());
         }
     }
     for selected_group in settings.selected_proxy_map.keys() {
         if groups.iter().any(|name| name == selected_group) {
-            return selected_group.clone();
+            return Some(selected_group.clone());
         }
     }
-    groups
+    groups.first().cloned()
+}
+
+fn yaml_group_selected_name(group: &YamlValue, settings: &Settings) -> String {
+    let Some(map) = group.as_mapping() else {
+        return String::new();
+    };
+    let group_name = map
+        .get(yaml_key("name"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    settings
+        .selected_proxy_map
+        .get(group_name)
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .or_else(|| {
+            map.get(yaml_key("now"))
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            map.get(yaml_key("proxies"))
+                .and_then(|value| value.as_sequence())
+                .and_then(|items| items.first())
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
+fn resolve_yaml_group_leaf(
+    groups: &[YamlValue],
+    settings: &Settings,
+    name: &str,
+    depth: usize,
+) -> String {
+    if depth > 8 {
+        return name.to_string();
+    }
+    let Some(group) = groups
+        .iter()
+        .find(|group| yaml_mapping_name(group) == Some(name))
+    else {
+        return name.to_string();
+    };
+    let selected = yaml_group_selected_name(group, settings);
+    if selected.is_empty() || selected == name {
+        return name.to_string();
+    }
+    resolve_yaml_group_leaf(groups, settings, &selected, depth + 1)
+}
+
+fn outbound_ip_selected_proxy(
+    config: &Mapping,
+    settings: &Settings,
+    proxy_names: &[String],
+) -> String {
+    let groups = config
+        .get(yaml_key("proxy-groups"))
+        .and_then(|value| value.as_sequence())
+        .cloned()
+        .unwrap_or_default();
+    let selected = outbound_ip_primary_group_name(config, settings)
+        .map(|group| resolve_yaml_group_leaf(&groups, settings, &group, 0))
+        .unwrap_or_default();
+    if selected == "DIRECT" || proxy_names.iter().any(|name| name == &selected) {
+        return selected;
+    }
+    proxy_names
         .first()
         .cloned()
         .unwrap_or_else(|| "DIRECT".to_string())
 }
 
+fn upsert_outbound_ip_group(config: &mut Mapping, settings: &Settings) -> String {
+    let proxy_names = proxy_node_names(config);
+    if proxy_names.is_empty() {
+        return "DIRECT".to_string();
+    }
+    let selected = outbound_ip_selected_proxy(config, settings, &proxy_names);
+    let mut ordered = Vec::new();
+    let mut seen = HashSet::new();
+    for name in std::iter::once(selected.clone())
+        .chain(proxy_names.into_iter())
+        .chain(std::iter::once("DIRECT".to_string()))
+    {
+        if seen.insert(name.clone()) {
+            ordered.push(YamlValue::String(name));
+        }
+    }
+    let mut group = Mapping::new();
+    set_yaml(&mut group, "name", yaml_str(AEGOS_OUTBOUND_IP_GROUP));
+    set_yaml(&mut group, "type", yaml_str("select"));
+    set_yaml(&mut group, "proxies", YamlValue::Sequence(ordered));
+    let mut groups = config
+        .get(yaml_key("proxy-groups"))
+        .and_then(|value| value.as_sequence())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|group| yaml_mapping_name(group) != Some(AEGOS_OUTBOUND_IP_GROUP))
+        .collect::<Vec<_>>();
+    groups.push(YamlValue::Mapping(group));
+    set_yaml(config, "proxy-groups", YamlValue::Sequence(groups));
+    AEGOS_OUTBOUND_IP_GROUP.to_string()
+}
+
 fn insert_outbound_ip_rules(config: &mut Mapping, settings: &Settings) {
-    let target = outbound_ip_rule_target(config, settings);
+    let target = upsert_outbound_ip_group(config, settings);
     let mut rules = config
         .get(yaml_key("rules"))
         .and_then(|value| value.as_sequence())
@@ -1917,8 +2039,11 @@ rules:
     }
 
     #[test]
-    fn outbound_ip_lookup_rules_follow_primary_proxy_group() {
-        let settings = default_settings();
+    fn outbound_ip_lookup_rules_use_internal_current_node_group() {
+        let mut settings = default_settings();
+        settings
+            .selected_proxy_map
+            .insert("Final".to_string(), "Node A".to_string());
         let source: YamlValue = serde_yaml::from_str(
             r#"
 proxies:
@@ -1942,7 +2067,10 @@ rules:
         .expect("source yaml");
         let patched = patch_config_with_settings(source, &settings, Some("test")).expect("patch");
         let rules = yaml_sequence(&patched, "rules").expect("rules");
-        assert_eq!(rules[0].as_str(), Some("DOMAIN,api.ipify.org,Final"));
+        assert_eq!(
+            rules[0].as_str(),
+            Some("DOMAIN,api.ipify.org,Aegos Landing IP")
+        );
         assert!(
             rules
                 .iter()
@@ -1950,6 +2078,16 @@ rules:
                 .unwrap()
                 > OUTBOUND_IP_RULE_DOMAINS.len()
         );
+        let groups = yaml_sequence(&patched, "proxy-groups").expect("groups");
+        let lookup_group = groups
+            .iter()
+            .find(|group| yaml_mapping_name(group) == Some(AEGOS_OUTBOUND_IP_GROUP))
+            .expect("lookup group");
+        let lookup_proxies = lookup_group
+            .get(yaml_key("proxies"))
+            .and_then(|value| value.as_sequence())
+            .expect("lookup proxies");
+        assert_eq!(lookup_proxies[0].as_str(), Some("Node A"));
     }
 
     #[test]
@@ -4110,6 +4248,7 @@ impl CoreManager {
                     let groups: Vec<JsonValue> = proxies
                         .values()
                         .filter(|item| matches!(item.get("type").and_then(|v| v.as_str()), Some("Selector" | "URLTest" | "Fallback" | "LoadBalance" | "Relay")))
+                        .filter(|item| item.get("name").and_then(|v| v.as_str()) != Some(AEGOS_OUTBOUND_IP_GROUP))
                         .filter(|item| item.get("all").and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false))
                         .map(|group| {
                             let items = group.get("all").and_then(|v| v.as_array()).cloned().unwrap_or_default()
@@ -4214,6 +4353,7 @@ impl CoreManager {
             .collect::<HashSet<_>>();
         let groups = proxy_groups
             .iter()
+            .filter(|group| yaml_mapping_name(group) != Some(AEGOS_OUTBOUND_IP_GROUP))
             .filter_map(|group| {
                 let map = group.as_mapping()?;
                 let name = map
@@ -4463,6 +4603,59 @@ impl CoreManager {
                 }
             }
         }
+    }
+
+    fn current_outbound_ip_proxy_name(&self, groups: &JsonValue) -> Option<String> {
+        let snapshot = groups.as_array()?;
+        let group_names = snapshot
+            .iter()
+            .filter_map(|group| group.get("name").and_then(|value| value.as_str()))
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+        let primary = ["GLOBAL", "Final", "Proxy", "Proxies"]
+            .iter()
+            .find(|name| group_names.contains(**name))
+            .map(|name| (*name).to_string())
+            .or_else(|| {
+                self.settings
+                    .selected_proxy_map
+                    .keys()
+                    .find(|name| group_names.contains(*name))
+                    .cloned()
+            })
+            .or_else(|| {
+                snapshot
+                    .first()
+                    .and_then(|group| group.get("name"))
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            })?;
+        let leaf = resolve_group_leaf(snapshot, &self.settings.selected_proxy_map, &primary, 0);
+        if leaf.trim().is_empty() || leaf == AEGOS_OUTBOUND_IP_GROUP {
+            return None;
+        }
+        Some(leaf)
+    }
+
+    fn sync_outbound_ip_group_selection(&mut self) -> Option<String> {
+        if self.process.is_none() {
+            return None;
+        }
+        let groups = self.proxy_groups();
+        let proxy = self.current_outbound_ip_proxy_name(&groups)?;
+        if let Err(err) = self.controller(
+            "PUT",
+            &format!("/proxies/{}", url_path_encode(AEGOS_OUTBOUND_IP_GROUP)),
+            Some(json!({ "name": proxy })),
+            1500,
+        ) {
+            self.add_log(
+                format!("Outbound IP lookup group sync failed: {err}"),
+                "warn",
+            );
+            return None;
+        }
+        Some(proxy)
     }
 
     fn speed_test_snapshot(&self) -> JsonValue {
@@ -5111,6 +5304,7 @@ impl CoreManager {
                 let _ = self.save_settings();
                 return Err(err);
             }
+            let _ = self.sync_outbound_ip_group_selection();
             let _ = self.controller("DELETE", "/connections", None, 1500);
         }
         Ok(true)
@@ -5884,6 +6078,7 @@ fn refresh_outbound_ip_detached(core: Arc<Mutex<CoreManager>>) -> Result<String,
             core.outbound_ip_checked_at = now_secs();
             return Err("请先连接核心后再刷新落地 IP".to_string());
         }
+        let _ = core.sync_outbound_ip_group_selection();
         core.settings.mixed_port
     };
     let ip = query_outbound_ip(mixed_port);

@@ -657,6 +657,16 @@ async function runLocalButtonAction(button, busyLabel, action, options = {}) {
   }
 }
 
+function runDetachedButtonAction(button, busyLabel, action, options = {}) {
+  if (button?.dataset.busy === 'true') return null;
+  setButtonBusy(button, true, busyLabel, options);
+  Promise.resolve()
+    .then(action)
+    .catch((err) => setNotice(`操作异常：${err.message || err}`))
+    .finally(() => setButtonBusy(button, false, '', options));
+  return null;
+}
+
 async function runForegroundAction(action) {
   foregroundBusy += 1;
   try {
@@ -2325,7 +2335,7 @@ $('#closeAllConnectionsBtn').onclick = (event) => runButtonAction(event.currentT
   successNotice: '连接已关闭。',
   failureNotice: (err) => `关闭连接失败：${err.message || err}`
 }));
-$('#runDiagBtn').onclick = (event) => runLocalButtonAction(event.currentTarget, '诊断中...', () => runDiagnostics());
+$('#runDiagBtn').onclick = (event) => runDetachedButtonAction(event.currentTarget, '诊断中...', () => runDiagnostics());
 const copyDiagBtn = $('#copyDiagBtn');
 if (copyDiagBtn) copyDiagBtn.onclick = (event) => runButtonAction(event.currentTarget, '复制中...', async () => {
   if (!latestDiagnostics) await runDiagnostics(false);

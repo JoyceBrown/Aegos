@@ -90,12 +90,15 @@ check(
 );
 
 check(
-  'smart-mode outbound IP lookup follows the primary selected proxy group',
+  'smart-mode outbound IP lookup uses an internal current-node group',
   mainRs.includes('OUTBOUND_IP_RULE_DOMAINS') &&
+    mainRs.includes('AEGOS_OUTBOUND_IP_GROUP') &&
+    mainRs.includes('fn upsert_outbound_ip_group') &&
+    mainRs.includes('fn sync_outbound_ip_group_selection') &&
     mainRs.includes('fn insert_outbound_ip_rules') &&
     mainRs.includes('DOMAIN,{domain},{target}') &&
-    mainRs.includes('outbound_ip_lookup_rules_follow_primary_proxy_group'),
-  'internal IP lookup domains are routed to the primary proxy group before general rules'
+    mainRs.includes('outbound_ip_lookup_rules_use_internal_current_node_group'),
+  'internal IP lookup domains are routed through a hidden group synced to the current node'
 );
 
 check(
