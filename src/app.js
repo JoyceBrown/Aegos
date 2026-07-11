@@ -518,7 +518,7 @@ function renderNodeRow([region, name, host, delay, alive, active, protocol, heal
   return `
     <div class="row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="select ${escapeHtml(name)}">
       <span class="radio"></span>
-      <span class="star">${favorite ? '&#9733;' : '&#9734;'}</span>
+      <span class="star aegos-icon ${favorite ? 'icon-star-filled' : 'icon-star'}" aria-hidden="true"></span>
       <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
       <span>${escapeHtml(protocolLabel(protocol))} / ${escapeHtml(host)}</span>
       <span class="${delayState}">${delayText}</span>
@@ -526,9 +526,9 @@ function renderNodeRow([region, name, host, delay, alive, active, protocol, heal
       <span class="load"><span class="bar"></span>${Math.max(0, Math.min(99, Math.round(100 - Math.min(Number(score) || 99, 99))))}%</span>
       <span>${Number(jitter) > 0 ? `${Math.round(Number(jitter))} ms` : '-'}</span>
       <span class="row-actions">
-        <button data-node-action="test" data-node="${escapeHtml(name)}" aria-label="test delay">&#9889;</button>
-        <button data-node-action="edit" data-node="${escapeHtml(name)}" aria-label="edit node">&#9998;</button>
-        <button data-node-action="favorite" data-node="${escapeHtml(name)}" aria-label="favorite node">${favorite ? '&#9733;' : '&#9734;'}</button>
+        <button data-node-action="test" data-node="${escapeHtml(name)}" aria-label="test delay"><span class="aegos-icon icon-speed" aria-hidden="true"></span></button>
+        <button data-node-action="edit" data-node="${escapeHtml(name)}" aria-label="edit node"><span class="aegos-icon icon-edit" aria-hidden="true"></span></button>
+        <button data-node-action="favorite" data-node="${escapeHtml(name)}" aria-label="favorite node"><span class="aegos-icon ${favorite ? 'icon-star-filled' : 'icon-star'}" aria-hidden="true"></span></button>
       </span>
     </div>
   `;

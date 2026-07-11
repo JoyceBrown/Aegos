@@ -16,21 +16,21 @@
   <main class="shell">
     <aside class="sidebar">
       <section class="brand drag-zone" data-tauri-drag-region>
-        <div class="brand-mark">A</div>
+        <div class="brand-mark"><span class="aegos-icon icon-brand" aria-hidden="true"></span></div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v2.7.13</span>
+          <span id="appVersionLabel" class="brand-version">v2.7.14</span>
         </div>
       </section>
 
       <nav class="nav" aria-label="主导航">
-        <button class="active" data-page="home"><span>⌂</span>首页</button>
-        <button data-page="nodes"><span>◎</span>节点</button>
-        <button data-page="connections"><span>≋</span>连接</button>
-        <button data-page="profiles"><span>▤</span>订阅</button>
-        <button data-page="diagnostics"><span>◇</span>诊断</button>
-        <button data-page="logs"><span>□</span>日志</button>
-        <button data-page="settings"><span>⚙</span>设置</button>
+        <button class="active" data-page="home"><span class="aegos-icon icon-home" aria-hidden="true"></span>首页</button>
+        <button data-page="nodes"><span class="aegos-icon icon-nodes" aria-hidden="true"></span>节点</button>
+        <button data-page="connections"><span class="aegos-icon icon-connections" aria-hidden="true"></span>连接</button>
+        <button data-page="profiles"><span class="aegos-icon icon-profiles" aria-hidden="true"></span>订阅</button>
+        <button data-page="diagnostics"><span class="aegos-icon icon-diagnostics" aria-hidden="true"></span>诊断</button>
+        <button data-page="logs"><span class="aegos-icon icon-logs" aria-hidden="true"></span>日志</button>
+        <button data-page="settings"><span class="aegos-icon icon-settings" aria-hidden="true"></span>设置</button>
       </nav>
 
       <section class="side-card status-card">
@@ -69,7 +69,7 @@
         <section class="hero panel">
           <div class="connect-column">
             <div class="ring">
-              <span class="check">✓</span>
+              <span class="check aegos-icon icon-check" aria-hidden="true"></span>
               <strong>未连接</strong>
               <small id="sessionClock">00:00:00</small>
             </div>
@@ -92,7 +92,7 @@
                 </div>
               </div>
               <div class="mode-box">
-                <button id="modeBtn" class="mode-pill">当前模式 <strong id="modeLabel">智能分流</strong><span>›</span></button>
+                <button id="modeBtn" class="mode-pill">当前模式 <strong id="modeLabel">智能分流</strong><span class="aegos-icon icon-chevron" aria-hidden="true"></span></button>
                 <div id="modeMenu" class="mode-menu hidden">
                   <button data-mode-option="rule"><b>智能分流</b><small>按规则选择代理或直连</small></button>
                   <button data-mode-option="global"><b>全局代理</b><small>所有流量走当前节点</small></button>
@@ -110,20 +110,20 @@
             </div>
 
             <div class="metric-grid top">
-              <article><span class="metric-icon purple">ms</span><small>延迟</small><strong id="delayMetric">-</strong></article>
-              <article><span class="metric-icon blue">%</span><small>丢包率</small><strong>0.0%</strong></article>
-              <article><span class="metric-icon amber">L</span><small>负载</small><strong>38%</strong></article>
-              <article><span class="metric-icon cyan">M</span><small>&#21327;&#35758;</small><strong id="protocolMetric">DIRECT</strong></article>
-              <article><span class="metric-icon green">D</span><small>DNS</small><strong>自动</strong></article>
+              <article><span class="metric-icon purple aegos-icon icon-latency" aria-hidden="true"></span><small>延迟</small><strong id="delayMetric">-</strong></article>
+              <article><span class="metric-icon blue aegos-icon icon-loss" aria-hidden="true"></span><small>丢包率</small><strong>0.0%</strong></article>
+              <article><span class="metric-icon amber aegos-icon icon-load" aria-hidden="true"></span><small>负载</small><strong>38%</strong></article>
+              <article><span class="metric-icon cyan aegos-icon icon-protocol" aria-hidden="true"></span><small>&#21327;&#35758;</small><strong id="protocolMetric">DIRECT</strong></article>
+              <article><span class="metric-icon green aegos-icon icon-dns" aria-hidden="true"></span><small>DNS</small><strong>自动</strong></article>
             </div>
 
             <div class="metric-grid bottom">
-              <article><span class="metric-icon purple">P</span><small>代理端口</small><strong id="proxyMetric">-</strong></article>
-              <article><span class="metric-icon violet">IP</span><small>落地 IP</small><strong id="outboundMetric">-</strong></article>
-              <article><span class="metric-icon teal">T</span><small>连接时长</small><strong id="metricClock">00:00:00</strong></article>
-              <article><span class="metric-icon amber">PX</span><small>系统代理</small><strong id="systemProxyMetric">-</strong></article>
-              <article><span class="metric-icon up">↑</span><small>上传</small><strong id="upRate">0 B/s</strong></article>
-              <article><span class="metric-icon down">↓</span><small>下载</small><strong id="downRate">0 B/s</strong></article>
+              <article><span class="metric-icon purple aegos-icon icon-port" aria-hidden="true"></span><small>代理端口</small><strong id="proxyMetric">-</strong></article>
+              <article><span class="metric-icon violet aegos-icon icon-ip" aria-hidden="true"></span><small>落地 IP</small><strong id="outboundMetric">-</strong></article>
+              <article><span class="metric-icon teal aegos-icon icon-clock" aria-hidden="true"></span><small>连接时长</small><strong id="metricClock">00:00:00</strong></article>
+              <article><span class="metric-icon amber aegos-icon icon-proxy" aria-hidden="true"></span><small>系统代理</small><strong id="systemProxyMetric">-</strong></article>
+              <article><span class="metric-icon up aegos-icon icon-upload" aria-hidden="true"></span><small>上传</small><strong id="upRate">0 B/s</strong></article>
+              <article><span class="metric-icon down aegos-icon icon-download" aria-hidden="true"></span><small>下载</small><strong id="downRate">0 B/s</strong></article>
             </div>
           </div>
         </section>
@@ -131,12 +131,12 @@
         <section class="quick panel">
           <div class="quick-row action-row">
             <strong>快捷操作</strong>
-            <button id="quickTestBtn"><span>⚡</span>一键测速</button>
-            <button id="quickProxyBtn"><span>PX</span>&#31995;&#32479;&#20195;&#29702;</button>
-            <button id="quickUpdateSubBtn"><span>&#8635;</span>&#26356;&#26032;&#35746;&#38405;</button>
-            <button id="quickKillBtn"><span class="kill-icon" aria-hidden="true"></span>断网保护</button>
-            <button id="quickProfileBtn"><span>SUB</span>切换订阅</button>
-            <button id="quickRestartBtn"><span>R</span>&#37325;&#21551;&#20869;&#26680;</button>
+            <button id="quickTestBtn"><span class="aegos-icon icon-speed" aria-hidden="true"></span><span class="sr-only">⚡</span>一键测速</button>
+            <button id="quickProxyBtn"><span class="aegos-icon icon-proxy" aria-hidden="true"></span>&#31995;&#32479;&#20195;&#29702;</button>
+            <button id="quickUpdateSubBtn"><span class="aegos-icon icon-refresh" aria-hidden="true"></span>&#26356;&#26032;&#35746;&#38405;</button>
+            <button id="quickKillBtn"><span class="kill-icon aegos-icon icon-shield" aria-hidden="true"></span>断网保护</button>
+            <button id="quickProfileBtn"><span class="aegos-icon icon-subscription" aria-hidden="true"></span>切换订阅</button>
+            <button id="quickRestartBtn"><span class="aegos-icon icon-power" aria-hidden="true"></span>&#37325;&#21551;&#20869;&#26680;</button>
           </div>
         </section>
 
@@ -180,7 +180,7 @@
             </div>
             <div class="table-actions">
               <button id="batchTestBtn">批量测速</button>
-              <label><span>⌕</span><input id="nodeSearch" placeholder="搜索节点"></label>
+              <label><span class="aegos-icon icon-search" aria-hidden="true"></span><input id="nodeSearch" placeholder="搜索节点"></label>
             </div>
           </header>
           <div class="node-table">
