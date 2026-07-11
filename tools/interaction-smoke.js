@@ -308,6 +308,7 @@ try {
           if (command === 'remove_profile') { await new Promise((resolve) => setTimeout(resolve, 350)); const index = profiles.findIndex((item) => item.id === args.id); if (index >= 0) profiles.splice(index, 1); if (state.activeProfileId === args.id) state.activeProfileId = profiles[0]?.id || 'direct'; return true; }
           if (command === 'add_profile_url') return profiles[1];
           if (command === 'connections') return [{ id: '1', metadata: { host: 'example.com' }, rule: 'MATCH', chains: ['GLOBAL', 'HK 01'], upload: 1, download: 2 }];
+          if (command === 'export_logs') return { path: 'C:\\Users\\JIE\\AppData\\Roaming\\Aegos\\diagnostics\\aegos-logs-smoke.txt', count: status().logs.length };
           if (command === 'close_connection' || command === 'close_connections' || command === 'clear_logs') { await new Promise((resolve) => setTimeout(resolve, 350)); return true; }
           if (command === 'diagnostics') return {
             generatedAt: new Date().toISOString(),
@@ -348,6 +349,7 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 20));
     };
     await click('#connectBtn');
+    if (document.querySelector('#pageTitle')) throw new Error('duplicate top-left page title still renders');
     if (document.querySelector('#connectBtn')?.textContent.trim() !== '断开连接') throw new Error('connect button did not optimistically show disconnect');
     await new Promise((resolve) => setTimeout(resolve, 1000));
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'refreshOutboundIp')) throw new Error('first connect did not auto refresh outbound IP');
@@ -518,6 +520,8 @@ try {
     await click('[data-log-filter="all"]');
     if (!document.querySelector('#logRows')?.textContent.includes('Diagnostic warning')) throw new Error('all log filter did not restore diagnostic log');
     if (window.__aegosCalls.length !== callsBeforeLogFilter) throw new Error('log filters triggered backend calls');
+    await click('#exportLogsBtn');
+    if (!window.__aegosCalls.some((item) => item.command === 'export_logs')) throw new Error('log export button did not call export_logs');
     await click('[data-page="settings"]');
     if (!document.querySelector('.settings-summary-grid')) throw new Error('settings runtime summary did not render');
     if (document.querySelectorAll('[data-page-panel="settings"] .settings-section').length < 5) throw new Error('settings grouped sections did not render');

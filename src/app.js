@@ -130,7 +130,6 @@ const pageCacheTtlMs = {
 };
 const navButtons = new Map($all('.nav button').map((button) => [button.dataset.page, button]));
 const pagePanels = new Map($all('.page').map((panel) => [panel.dataset.pagePanel, panel]));
-const pageTitleEl = $('#pageTitle');
 let renderedPage = '';
 let renderedHomeRegionFilter = null;
 let renderedHomeNodeMode = null;
@@ -835,7 +834,6 @@ function renderUiState(state = uiStore.state) {
     pagePanels.get(page)?.classList.add('active');
     renderedPage = page;
   }
-  if (pageTitleEl) pageTitleEl.textContent = pageNames[page];
   if (renderedHomeRegionFilter !== homeRegionFilter) {
     $all('[data-region]').forEach((button) => button.classList.toggle('active', button.dataset.region === homeRegionFilter));
     renderedHomeRegionFilter = homeRegionFilter;
@@ -1279,6 +1277,17 @@ function applyOptimisticLogsClear() {
   if (!latestStatus) return;
   latestStatus = { ...latestStatus, logs: [] };
   if (isPageActive('logs')) renderLogs();
+}
+
+async function exportLogs() {
+  const result = await invoke('export_logs');
+  const path = result?.path || '';
+  if (path) {
+    setNotice(`日志已导出：${path}`);
+  } else {
+    setNotice('日志已导出。');
+  }
+  return result;
 }
 
 function removeConnectionElement(button) {
@@ -2167,6 +2176,8 @@ if (copyDiagBtn) copyDiagBtn.onclick = (event) => runButtonAction(event.currentT
   await navigator.clipboard?.writeText(report);
   setNotice('诊断报告已复制。');
 });
+const exportLogsBtn = $('#exportLogsBtn');
+if (exportLogsBtn) exportLogsBtn.onclick = (event) => runButtonAction(event.currentTarget, '导出中...', exportLogs);
 $('#clearLogsBtn').onclick = () => runOptimisticAction({
   apply: () => applyOptimisticLogsClear(),
   commit: () => invoke('clear_logs'),

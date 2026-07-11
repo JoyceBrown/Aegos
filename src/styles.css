@@ -334,18 +334,13 @@ dd {
 .titlebar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   min-height: 30px;
   user-select: none;
 }
 
 .drag-zone {
   cursor: move;
-}
-
-.titlebar-title {
-  color: #627089;
-  font-weight: 850;
 }
 
 .window-actions {

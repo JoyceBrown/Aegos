@@ -2224,14 +2224,40 @@ fn ps_escape(value: impl AsRef<str>) -> String {
     value.as_ref().replace('\'', "''")
 }
 
+fn firewall_program_path(path: &Path) -> Option<String> {
+    if !path.exists() {
+        return None;
+    }
+    let normalized = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut text = normalized.to_string_lossy().replace('/', "\\");
+    if text.starts_with("\\\\?\\UNC\\") {
+        text = format!("\\\\{}", &text[8..]);
+    } else if text.starts_with("\\\\?\\") {
+        text = text[4..].to_string();
+    }
+    Some(text)
+}
+
+fn ps_array_literal(items: &[String]) -> String {
+    let quoted = items
+        .iter()
+        .map(|item| format!("'{}'", ps_escape(item)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("@({quoted})")
+}
+
 fn run_powershell(script: &str) -> Result<String, String> {
+    let wrapped_script = format!(
+        "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;\n{script}"
+    );
     let mut command = Command::new("powershell.exe");
     command.args([
         "-NoProfile",
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        script,
+        &wrapped_script,
     ]);
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
@@ -2346,40 +2372,47 @@ fn build_kill_switch_script(enable: bool, user_data: &Path, core_path: &Path) ->
     let group = format!("{APP_NAME} Kill Switch");
     let snapshot = user_data.join("kill-switch-firewall-profile.json");
     let exe = std::env::current_exe().unwrap_or_default();
-    let allow_rules = [exe, core_path.to_path_buf()]
+    let programs = [exe, core_path.to_path_buf()]
         .into_iter()
-        .filter(|p| p.exists())
-        .enumerate()
-        .map(|(index, program)| {
-            format!(
-                "New-NetFirewallRule -DisplayName '{} Allow {}' -Group '{}' -Direction Outbound -Action Allow -Program '{}' -Profile Any | Out-Null",
-                ps_escape(&group),
-                index + 1,
-                ps_escape(&group),
-                ps_escape(program.to_string_lossy())
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+        .filter_map(|path| firewall_program_path(&path))
+        .collect::<Vec<_>>();
+    let program_array = ps_array_literal(&programs);
     if enable {
         format!(
             r#"
 $ErrorActionPreference = 'Stop'
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{ throw '断网保护需要管理员权限' }}
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{ throw 'Disconnect protection requires administrator permission' }}
 $snapshotPath = '{}'
+$group = '{}'
+$programs = {}
+function Invoke-AegosNetsh {{
+  $output = & netsh @args 2>&1
+  if ($LASTEXITCODE -ne 0) {{
+    $message = ($output | Out-String).Trim()
+    if (-not $message) {{ $message = "netsh failed with exit code $LASTEXITCODE" }}
+    throw $message
+  }}
+  return ($output | Out-String).Trim()
+}}
+if ($programs.Count -lt 1) {{ throw 'No Aegos executable paths are available for firewall allow rules' }}
 New-Item -ItemType Directory -Path (Split-Path -Parent $snapshotPath) -Force | Out-Null
 if (-not (Test-Path -LiteralPath $snapshotPath)) {{
   Get-NetFirewallProfile | Select-Object Name,DefaultOutboundAction | ConvertTo-Json | Set-Content -LiteralPath $snapshotPath -Encoding UTF8
 }}
 try {{
-  Get-NetFirewallRule -Group '{}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-  {}
+  Invoke-AegosNetsh advfirewall firewall delete rule "group=$group" | Out-Null
+  $index = 1
+  foreach ($program in $programs) {{
+    if (-not (Test-Path -LiteralPath $program)) {{ throw "Firewall allow target missing: $program" }}
+    Invoke-AegosNetsh advfirewall firewall add rule "name=$group Allow $index" dir=out action=allow "program=$program" enable=yes profile=any "group=$group" | Out-Null
+    $index += 1
+  }}
   Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Block
-  $rules = @(Get-NetFirewallRule -Group '{}' -ErrorAction SilentlyContinue)
-  if ($rules.Count -lt 1) {{ throw '断网保护未创建 Aegos 放行规则' }}
+  $rules = @(Get-NetFirewallRule -Group $group -ErrorAction SilentlyContinue | Where-Object {{ $_.Direction -eq 'Outbound' -and $_.Action -eq 'Allow' -and $_.Enabled -eq 'True' }})
+  if ($rules.Count -lt 1) {{ throw 'Disconnect protection did not create Aegos allow rules' }}
   $badProfiles = @(Get-NetFirewallProfile | Where-Object {{ $_.DefaultOutboundAction -ne 'Block' }})
-  if ($badProfiles.Count -gt 0) {{ throw '断网保护未成功阻止直连出站流量' }}
+  if ($badProfiles.Count -gt 0) {{ throw 'Disconnect protection did not block direct outbound traffic' }}
 }} catch {{
   $failure = $_.Exception.Message
   try {{
@@ -2392,24 +2425,32 @@ try {{
     }} else {{
       Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Allow
     }}
-    Get-NetFirewallRule -Group '{}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    Invoke-AegosNetsh advfirewall firewall delete rule "group=$group" | Out-Null
   }} catch {{}}
-  throw $failure
+  throw "Disconnect protection enable failed: $failure"
 }}
 "#,
             ps_escape(snapshot.to_string_lossy()),
             ps_escape(&group),
-            allow_rules,
-            ps_escape(&group),
-            ps_escape(&group)
+            program_array
         )
     } else {
         format!(
             r#"
 $ErrorActionPreference = 'Stop'
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{ throw '关闭断网保护需要管理员权限' }}
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{ throw 'Disabling disconnect protection requires administrator permission' }}
 $snapshotPath = '{}'
+$group = '{}'
+function Invoke-AegosNetsh {{
+  $output = & netsh @args 2>&1
+  if ($LASTEXITCODE -ne 0) {{
+    $message = ($output | Out-String).Trim()
+    if (-not $message) {{ $message = "netsh failed with exit code $LASTEXITCODE" }}
+    throw $message
+  }}
+  return ($output | Out-String).Trim()
+}}
 if (Test-Path -LiteralPath $snapshotPath) {{
   $profiles = Get-Content -LiteralPath $snapshotPath -Raw | ConvertFrom-Json
   foreach ($profile in @($profiles)) {{
@@ -2419,12 +2460,11 @@ if (Test-Path -LiteralPath $snapshotPath) {{
 }} else {{
   Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Allow
 }}
-Get-NetFirewallRule -Group '{}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-$rules = @(Get-NetFirewallRule -Group '{}' -ErrorAction SilentlyContinue)
-if ($rules.Count -gt 0) {{ throw '断网保护规则未完全关闭' }}
+Invoke-AegosNetsh advfirewall firewall delete rule "group=$group" | Out-Null
+$rules = @(Get-NetFirewallRule -Group $group -ErrorAction SilentlyContinue)
+if ($rules.Count -gt 0) {{ throw 'Disconnect protection rules were not fully removed' }}
 "#,
             ps_escape(snapshot.to_string_lossy()),
-            ps_escape(&group),
             ps_escape(&group)
         )
     }
@@ -2921,6 +2961,34 @@ impl CoreManager {
         let mut items = logs.iter().rev().take(limit).cloned().collect::<Vec<_>>();
         items.reverse();
         items
+    }
+
+    fn export_logs(&self) -> Result<JsonValue, String> {
+        let items = self.logs.lock().unwrap().clone();
+        let export_dir = self.app_data.join("diagnostics");
+        ensure_dir(&export_dir)?;
+        let path = export_dir.join(format!("aegos-logs-{}.txt", now_secs()));
+        let content = if items.is_empty() {
+            "No Aegos logs captured yet.\n".to_string()
+        } else {
+            items
+                .iter()
+                .map(|entry| {
+                    let line = entry.line.replace('\r', " ").replace('\n', " ");
+                    format!(
+                        "{} [{}:{}] {}",
+                        entry.at, entry.level, entry.category, line
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n"
+        };
+        fs::write(&path, content).map_err(|err| err.to_string())?;
+        Ok(json!({
+            "path": path.to_string_lossy(),
+            "count": items.len()
+        }))
     }
 
     fn recent_log_summary(&self, limit: usize) -> String {
@@ -5939,6 +6007,11 @@ fn clear_logs(state: State<AppState>) -> Result<bool, String> {
 }
 
 #[tauri::command]
+fn export_logs(state: State<AppState>) -> Result<JsonValue, String> {
+    state.core.lock().unwrap().export_logs()
+}
+
+#[tauri::command]
 fn window_minimize(window: Window) -> Result<(), String> {
     window.minimize().map_err(|err| err.to_string())
 }
@@ -6002,6 +6075,7 @@ fn main() {
             save_manual_node,
             diagnostics,
             clear_logs,
+            export_logs,
             window_minimize,
             window_toggle_maximize,
             window_close

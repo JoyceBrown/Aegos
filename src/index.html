@@ -13,7 +13,7 @@
         <div class="brand-mark">A</div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v2.6.15</span>
+          <span id="appVersionLabel" class="brand-version">v2.6.16</span>
         </div>
       </section>
 
@@ -52,7 +52,6 @@
 
     <section class="workspace">
       <header class="titlebar drag-zone" data-tauri-drag-region>
-        <div class="titlebar-title" id="pageTitle">首页</div>
         <div class="window-actions">
           <button id="minBtn" aria-label="最小化">−</button>
           <button id="maxBtn" aria-label="最大化">□</button>
@@ -235,7 +234,10 @@
         <section class="panel fill page-card">
           <header class="section-head">
             <div><h2>日志</h2><p>查看 Aegos 与 mihomo 运行日志。</p></div>
-            <button id="clearLogsBtn" class="ghost">清空</button>
+            <div class="section-actions">
+              <button id="exportLogsBtn" class="ghost">导出</button>
+              <button id="clearLogsBtn" class="ghost">清空</button>
+            </div>
           </header>
           <div class="tabs log-filter-row" role="tablist" aria-label="Log filters">
             <button class="active" data-log-filter="all">&#20840;&#37096;</button>
