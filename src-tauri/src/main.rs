@@ -2385,6 +2385,7 @@ $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{ throw 'Disconnect protection requires administrator permission' }}
 $snapshotPath = '{}'
 $group = '{}'
+$rulePrefix = "$group Allow"
 $programs = {}
 function Invoke-AegosNetsh {{
   $output = & netsh @args 2>&1
@@ -2401,15 +2402,15 @@ if (-not (Test-Path -LiteralPath $snapshotPath)) {{
   Get-NetFirewallProfile | Select-Object Name,DefaultOutboundAction | ConvertTo-Json | Set-Content -LiteralPath $snapshotPath -Encoding UTF8
 }}
 try {{
-  Invoke-AegosNetsh advfirewall firewall delete rule "group=$group" | Out-Null
+  Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
   $index = 1
   foreach ($program in $programs) {{
     if (-not (Test-Path -LiteralPath $program)) {{ throw "Firewall allow target missing: $program" }}
-    Invoke-AegosNetsh advfirewall firewall add rule "name=$group Allow $index" dir=out action=allow "program=$program" enable=yes profile=any "group=$group" | Out-Null
+    Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix $index" dir=out action=allow "program=$program" enable=yes profile=any | Out-Null
     $index += 1
   }}
   Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Block
-  $rules = @(Get-NetFirewallRule -Group $group -ErrorAction SilentlyContinue | Where-Object {{ $_.Direction -eq 'Outbound' -and $_.Action -eq 'Allow' -and $_.Enabled -eq 'True' }})
+  $rules = @(Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Where-Object {{ $_.Direction -eq 'Outbound' -and $_.Action -eq 'Allow' -and $_.Enabled -eq 'True' }})
   if ($rules.Count -lt 1) {{ throw 'Disconnect protection did not create Aegos allow rules' }}
   $badProfiles = @(Get-NetFirewallProfile | Where-Object {{ $_.DefaultOutboundAction -ne 'Block' }})
   if ($badProfiles.Count -gt 0) {{ throw 'Disconnect protection did not block direct outbound traffic' }}
@@ -2425,7 +2426,7 @@ try {{
     }} else {{
       Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Allow
     }}
-    Invoke-AegosNetsh advfirewall firewall delete rule "group=$group" | Out-Null
+    Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
   }} catch {{}}
   throw "Disconnect protection enable failed: $failure"
 }}
@@ -2442,6 +2443,7 @@ $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{ throw 'Disabling disconnect protection requires administrator permission' }}
 $snapshotPath = '{}'
 $group = '{}'
+$rulePrefix = "$group Allow"
 function Invoke-AegosNetsh {{
   $output = & netsh @args 2>&1
   if ($LASTEXITCODE -ne 0) {{
@@ -2460,8 +2462,8 @@ if (Test-Path -LiteralPath $snapshotPath) {{
 }} else {{
   Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Allow
 }}
-Invoke-AegosNetsh advfirewall firewall delete rule "group=$group" | Out-Null
-$rules = @(Get-NetFirewallRule -Group $group -ErrorAction SilentlyContinue)
+Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+$rules = @(Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue)
 if ($rules.Count -gt 0) {{ throw 'Disconnect protection rules were not fully removed' }}
 "#,
             ps_escape(snapshot.to_string_lossy()),

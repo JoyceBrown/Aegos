@@ -130,6 +130,7 @@ const pageCacheTtlMs = {
 };
 const navButtons = new Map($all('.nav button').map((button) => [button.dataset.page, button]));
 const pagePanels = new Map($all('.page').map((panel) => [panel.dataset.pagePanel, panel]));
+let nodeRowStaticCache = new Map();
 let renderedPage = '';
 let renderedHomeRegionFilter = null;
 let renderedHomeNodeMode = null;
@@ -288,6 +289,46 @@ function normalizeNodeItem(item = {}, index = 0) {
     favoriteNodes.has(name),
     isFixedNodeItem(item),
     Number(nodeUsageCounts.get(name) || 0)
+  ];
+}
+
+function normalizeNodeItemCached(item = {}, index = 0) {
+  const name = item.name || `Node ${index + 1}`;
+  const host = item.server || name;
+  const protocol = item.type || item.protocol || 'unknown';
+  const cacheKey = `${name}\u0000${host}\u0000${protocol}\u0000${item.source || ''}\u0000${item.profileType || ''}`;
+  let cached = nodeRowStaticCache.get(cacheKey);
+  if (!cached) {
+    cached = {
+      region: inferRegion(name),
+      name,
+      host,
+      protocol,
+      fixed: isFixedNodeItem(item)
+    };
+    if (nodeRowStaticCache.size > 20000) nodeRowStaticCache = new Map();
+    nodeRowStaticCache.set(cacheKey, cached);
+  }
+  const delay = Number(item.delay ?? -1);
+  const healthStatus = item.healthStatus || (delay === 0 ? 'testing' : delay > 0 ? 'available' : 'unknown');
+  const score = Number(item.healthScore ?? (delay > 0 ? delay : 999999));
+  return [
+    cached.region,
+    cached.name,
+    cached.host,
+    delay,
+    item.alive !== false || delay === 0,
+    cached.name === selectedNode || cached.name === latestGroup?.now,
+    cached.protocol,
+    healthStatus,
+    Number(item.medianDelay ?? delay),
+    Number(item.jitter ?? 0),
+    score,
+    Boolean(item.recommended),
+    Number(item.failureStreak ?? 0),
+    favoriteNodes.has(cached.name),
+    cached.fixed,
+    Number(nodeUsageCounts.get(cached.name) || 0)
   ];
 }
 
@@ -919,7 +960,7 @@ function renderRows(items = []) {
   for (let index = 0; index < sourceItems.length; index += 1) {
     const item = sourceItems[index];
     if (!itemMatchesNodeSearch(item)) continue;
-    const row = normalizeNodeItem(item, index);
+    const row = normalizeNodeItemCached(item, index);
     rememberBestRow(bestRows, row);
     if (fallbackBestRows.length < 3) fallbackBestRows.push(row);
     if (!activeRow && row[5]) activeRow = row;
