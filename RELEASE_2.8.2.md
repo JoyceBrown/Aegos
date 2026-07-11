@@ -16,5 +16,6 @@
 
 ## Artifact
 
-- Source-only release; no installer requested for this subscription protocol expansion.
-- SHA-256: Source-only
+- Installer: `src-tauri/target/release/bundle/nsis/Aegos_2.8.2_x64-setup.exe`
+- Size: 15,364,700 bytes
+- SHA-256: `e1431e577da28d788748e74ba24565d5cc1a8528da9e9a29f99c964aa2749c70`
