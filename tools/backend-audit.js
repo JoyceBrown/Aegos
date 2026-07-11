@@ -403,6 +403,18 @@ check(
 );
 
 check(
+  'recovery suggestions are controlled and same-region aware',
+  mainRs.includes('fn recovery_suggestions') &&
+    mainRs.includes('fn infer_node_region') &&
+    mainRs.includes('fn recovery_confidence_rank') &&
+    mainRs.includes('"requiresConfirmation"') &&
+    mainRs.includes('"sameRegion"') &&
+    mainRs.includes('"suggestions": self.recovery_suggestions(5)') &&
+    mainRs.includes('recovery_suggestions_rank_same_region_and_fresh_results'),
+  'same-region suggestions require confirmation'
+);
+
+check(
   'active profile removal reconciles running core',
   mainRs.includes('"removeProfile"') &&
     mainRs.includes('fn remove_profile') &&

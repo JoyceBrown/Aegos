@@ -1094,6 +1094,37 @@ fn speed_confidence_summary(speed: &SpeedTestState, now: u64) -> JsonValue {
     })
 }
 
+fn infer_node_region(name: &str) -> &'static str {
+    let text = name.to_ascii_lowercase();
+    if text.contains("hk") || name.contains("\u{9999}\u{6e2f}") || text.contains("hong kong") {
+        "HK"
+    } else if text.contains("jp") || name.contains("\u{65e5}\u{672c}") || text.contains("japan") {
+        "JP"
+    } else if text.contains("sg") || name.contains("\u{65b0}\u{52a0}\u{5761}") || text.contains("singapore") {
+        "SG"
+    } else if text.contains("tw") || name.contains("\u{53f0}\u{6e7e}") || name.contains("\u{81fa}\u{7063}") || text.contains("taiwan") {
+        "TW"
+    } else if text.contains("us") || name.contains("\u{7f8e}\u{56fd}") || name.contains("\u{7f8e}\u{570b}") || text.contains("united states") {
+        "US"
+    } else if text.contains("uk") || text.contains("gb") || name.contains("\u{82f1}\u{56fd}") || name.contains("\u{82f1}\u{570b}") {
+        "GB"
+    } else {
+        "GL"
+    }
+}
+
+fn recovery_confidence_rank(confidence: &str) -> usize {
+    match confidence {
+        "high" => 0,
+        "medium" => 1,
+        "low" => 2,
+        "stale" => 3,
+        "cooldown" => 4,
+        "failed" => 5,
+        _ => 6,
+    }
+}
+
 fn test_proxy_delay_with_retry(
     client: &Client,
     controller_port: u16,
@@ -3117,6 +3148,14 @@ rules:
             speed_result_confidence(-1, 2, 100, 220, 400, 230),
             "cooldown"
         );
+    }
+
+    #[test]
+    fn recovery_suggestions_rank_same_region_and_fresh_results() {
+        assert_eq!(infer_node_region("HK Premium 01"), "HK");
+        assert_eq!(infer_node_region("\u{65e5}\u{672c} Tokyo"), "JP");
+        assert!(recovery_confidence_rank("high") < recovery_confidence_rank("stale"));
+        assert!(recovery_confidence_rank("medium") < recovery_confidence_rank("failed"));
     }
 
     #[test]
@@ -6200,6 +6239,76 @@ impl CoreManager {
         results
     }
 
+    fn recovery_suggestions(&self, limit: usize) -> Vec<JsonValue> {
+        let groups = self.proxy_groups();
+        let targets = Self::collect_proxy_targets(&groups);
+        let speed = self.speed_test.lock().unwrap().clone();
+        let now = now_secs();
+        let current_node = groups
+            .as_array()
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find_map(|group| group.get("now").and_then(|value| value.as_str()))
+            })
+            .unwrap_or("");
+        let current_region = infer_node_region(current_node);
+        let max_delay = self.settings.reliability_max_delay_ms as i64;
+        let mut suggestions = targets
+            .into_iter()
+            .filter_map(|target| {
+                if target.name == current_node || target.select_name == current_node {
+                    return None;
+                }
+                let health = speed.health.get(&target.name)?;
+                if health.last_delay <= 0 || health.last_delay > max_delay {
+                    return None;
+                }
+                let confidence = speed_result_confidence(
+                    health.last_delay,
+                    health.failure_streak,
+                    health.last_success_at,
+                    health.last_tested_at,
+                    health.cooldown_until,
+                    now,
+                );
+                if confidence == "failed" || confidence == "cooldown" {
+                    return None;
+                }
+                let region = infer_node_region(&target.name);
+                let same_region = region == current_region && region != "GL";
+                Some((
+                    if same_region { 0usize } else { 1usize },
+                    recovery_confidence_rank(&confidence),
+                    health.score,
+                    health.last_delay,
+                    json!({
+                        "group": target.group_name,
+                        "proxy": target.select_name,
+                        "realProxyName": target.name,
+                        "region": region,
+                        "sameRegion": same_region,
+                        "delay": health.last_delay,
+                        "medianDelay": health.median_delay,
+                        "jitter": health.jitter,
+                        "confidence": confidence,
+                        "score": health.score,
+                        "requiresConfirmation": true,
+                        "reason": if same_region { "same-region low-latency fallback" } else { "low-latency fallback" }
+                    }),
+                ))
+            })
+            .collect::<Vec<_>>();
+        suggestions.sort_by_key(|(same_region_rank, confidence_rank, score, delay, _)| {
+            (*same_region_rank, *confidence_rank, *score, *delay)
+        });
+        suggestions
+            .into_iter()
+            .take(limit)
+            .map(|(_, _, _, _, value)| value)
+            .collect()
+    }
+
     fn try_recover_current_profile(&mut self) -> Result<Option<JsonValue>, String> {
         let candidates = self.recovery_candidates();
         for (group, proxy, delay) in candidates.into_iter().take(5) {
@@ -6241,6 +6350,7 @@ impl CoreManager {
                 "action": "none",
                 "failures": self.reliability_failures,
                 "probe": before,
+                "suggestions": self.recovery_suggestions(5),
                 "settings": self.public_settings()
             }));
         }
@@ -6260,6 +6370,7 @@ impl CoreManager {
                 "failures": self.reliability_failures,
                 "threshold": self.settings.reliability_failure_threshold,
                 "probe": before,
+                "suggestions": self.recovery_suggestions(5),
                 "settings": self.public_settings()
             }));
         }
@@ -6272,6 +6383,7 @@ impl CoreManager {
                 "profileChanged": false,
                 "failures": self.reliability_failures,
                 "result": result,
+                "suggestions": self.recovery_suggestions(5),
                 "settings": self.public_settings()
             }));
         }
@@ -6304,6 +6416,7 @@ impl CoreManager {
                         "failures": self.reliability_failures,
                         "profile": profile,
                         "result": result,
+                        "suggestions": self.recovery_suggestions(5),
                         "settings": self.public_settings()
                     }));
                 }
@@ -6318,6 +6431,7 @@ impl CoreManager {
             "action": "failed",
             "failures": self.reliability_failures,
             "probe": before,
+            "suggestions": self.recovery_suggestions(5),
             "settings": self.public_settings()
         }))
     }
