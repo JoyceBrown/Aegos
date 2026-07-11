@@ -37,6 +37,34 @@ const OUTBOUND_IP_RULE_DOMAINS: &[&str] = &[
     "ifconfig.me",
     "icanhazip.com",
 ];
+const AEGOS_URI_PROTOCOLS: &[&str] = &[
+    "ss",
+    "trojan",
+    "vmess",
+    "vless",
+    "hysteria2",
+    "hy2",
+    "anytls",
+    "tuic",
+];
+const MIHOMO_PROXY_TYPES: &[&str] = &[
+    "direct",
+    "reject",
+    "ss",
+    "ssr",
+    "vmess",
+    "vless",
+    "trojan",
+    "hysteria",
+    "hysteria2",
+    "anytls",
+    "tuic",
+    "http",
+    "socks5",
+    "snell",
+    "wireguard",
+    "ssh",
+];
 
 fn default_reliability_auto() -> bool {
     true
@@ -98,9 +126,28 @@ fn subscription_diagnostic(stage: &str, reason: impl AsRef<str>, suggestion: &st
 }
 
 fn is_supported_uri_scheme(scheme: &str) -> bool {
-    matches!(
-        scheme.to_ascii_lowercase().as_str(),
-        "ss" | "trojan" | "vmess" | "vless" | "hysteria2" | "hy2" | "anytls" | "tuic"
+    let scheme = scheme.to_ascii_lowercase();
+    AEGOS_URI_PROTOCOLS.contains(&scheme.as_str())
+}
+
+fn normalize_proxy_type(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "hy2" => "hysteria2".to_string(),
+        "socks" => "socks5".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn mihomo_supports_proxy_type(value: &str) -> bool {
+    let normalized = normalize_proxy_type(value);
+    MIHOMO_PROXY_TYPES.contains(&normalized.as_str())
+}
+
+fn protocol_capability_summary() -> String {
+    format!(
+        "Aegos URI parser: {}; bundled Mihomo proxy types: {}",
+        AEGOS_URI_PROTOCOLS.join(", "),
+        MIHOMO_PROXY_TYPES.join(", ")
     )
 }
 
@@ -649,7 +696,7 @@ fn protocol_family(protocol: &str) -> &'static str {
         "vmess"
     } else if text.contains("trojan") {
         "trojan"
-    } else if text == "ss" || text.contains("shadowsocks") {
+    } else if text == "ss" || text == "ssr" || text.contains("shadowsocks") {
         "ss"
     } else {
         "generic"
@@ -1715,12 +1762,12 @@ fn normalize_manual_node(input: &JsonValue) -> Result<JsonValue, String> {
         .and_then(|value| value.as_str())
         .unwrap_or("")
         .trim();
-    let node_type = map
-        .get("type")
-        .and_then(|value| value.as_str())
-        .unwrap_or("ss")
-        .trim()
-        .to_lowercase();
+    let node_type = normalize_proxy_type(
+        map.get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("ss")
+            .trim(),
+    );
     let port = map
         .get("port")
         .and_then(|value| value.as_u64())
@@ -1741,18 +1788,31 @@ fn normalize_manual_node(input: &JsonValue) -> Result<JsonValue, String> {
     if port == 0 || port > 65535 {
         return Err("固定节点端口必须在 1-65535 之间".to_string());
     }
+    if !mihomo_supports_proxy_type(&node_type) {
+        return Err(format!(
+            "Unsupported manual node protocol: {node_type}; {}",
+            protocol_capability_summary()
+        ));
+    }
     if !matches!(
         node_type.as_str(),
         "ss"
+            | "ssr"
             | "vmess"
             | "vless"
             | "trojan"
             | "socks5"
             | "http"
+            | "hysteria"
             | "hysteria2"
             | "hy2"
             | "anytls"
             | "tuic"
+            | "snell"
+            | "wireguard"
+            | "ssh"
+            | "direct"
+            | "reject"
     ) {
         return Err(format!("暂不支持的固定节点协议：{node_type}"));
     }
@@ -2019,6 +2079,7 @@ fn preflight_runtime_config(
     let mut names = HashSet::new();
     let mut duplicate_names = Vec::new();
     let mut missing_fields = Vec::new();
+    let mut unsupported_proxy_types = Vec::new();
 
     for (index, proxy) in proxies.iter().enumerate() {
         let Some(map) = proxy.as_mapping() else {
@@ -2047,6 +2108,18 @@ fn preflight_runtime_config(
                 if name.is_empty() { "proxy" } else { name }
             ));
         }
+        let proxy_type = map
+            .get(yaml_key("type"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim();
+        if !proxy_type.is_empty() && !mihomo_supports_proxy_type(proxy_type) {
+            unsupported_proxy_types.push(format!(
+                "{} ({})",
+                if name.is_empty() { "proxy" } else { name },
+                proxy_type
+            ));
+        }
     }
 
     if !builtin_direct && proxies.is_empty() {
@@ -2062,6 +2135,15 @@ fn preflight_runtime_config(
     }
     if !missing_fields.is_empty() {
         return Err(format!("配置预检失败：{}", missing_fields.join("；")));
+    }
+    if !unsupported_proxy_types.is_empty() {
+        unsupported_proxy_types.sort();
+        unsupported_proxy_types.dedup();
+        return Err(format!(
+            "Config preflight failed: unsupported proxy type(s): {}. {}",
+            unsupported_proxy_types.join(", "),
+            protocol_capability_summary()
+        ));
     }
     if !proxies.is_empty() && proxy_groups.is_empty() {
         return Err("配置预检失败：存在节点但没有 proxy-groups".to_string());
@@ -2147,7 +2229,12 @@ fn preflight_runtime_config(
         "proxyGroups": proxy_groups.len(),
         "rules": rules.len(),
         "mixedPort": settings.mixed_port,
-        "controllerPort": settings.controller_port
+        "controllerPort": settings.controller_port,
+        "protocolCapabilities": {
+            "uriParser": AEGOS_URI_PROTOCOLS,
+            "mihomoProxyTypes": MIHOMO_PROXY_TYPES,
+            "core": "Mihomo Meta v1.19.27 bundled"
+        }
     }))
 }
 
@@ -2482,6 +2569,65 @@ rules:
             err.contains("Missing Node"),
             "preflight error should name the missing target: {err}"
         );
+    }
+
+    #[test]
+    fn preflight_rejects_core_unsupported_proxy_type() {
+        let config: YamlValue = serde_yaml::from_str(
+            r#"
+mixed-port: 7891
+external-controller: 127.0.0.1:19091
+secret: test
+proxies:
+  - name: Experimental
+    type: shadowtls
+    server: example.com
+    port: 443
+proxy-groups:
+  - name: Final
+    type: select
+    proxies:
+      - Experimental
+rules:
+  - MATCH,Final
+"#,
+        )
+        .expect("yaml");
+        let mut settings = default_settings();
+        settings.secret = "test".to_string();
+        let profile = Profile {
+            id: "url-unsupported".to_string(),
+            name: "unsupported".to_string(),
+            profile_type: "url".to_string(),
+            path: "unsupported.yaml".to_string(),
+            source_url: None,
+            node_count: 1,
+            proxy_group_count: 1,
+            updated_at: "test".to_string(),
+            digest: "test".to_string(),
+        };
+
+        let err = preflight_runtime_config(&config, &profile, &settings)
+            .expect_err("unsupported core protocol should fail preflight");
+        assert!(err.contains("unsupported proxy type"));
+        assert!(err.contains("shadowtls"));
+        assert!(err.contains("bundled Mihomo proxy types"));
+    }
+
+    #[test]
+    fn manual_hy2_node_is_normalized_to_hysteria2() {
+        let node = normalize_manual_node(&json!({
+            "name": "Static HY2",
+            "type": "hy2",
+            "server": "example.com",
+            "port": 443,
+            "password": "secret"
+        }))
+        .expect("hy2 manual node should be accepted");
+
+        assert_eq!(node.get("type").and_then(JsonValue::as_str), Some("hysteria2"));
+        assert!(mihomo_supports_proxy_type("anytls"));
+        assert!(protocol_capability_summary().contains("Aegos URI parser"));
     }
 
     #[test]

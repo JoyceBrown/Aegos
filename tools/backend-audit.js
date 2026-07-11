@@ -309,6 +309,19 @@ check(
 );
 
 check(
+  'protocol capability matrix rejects core-unsupported proxy types',
+  mainRs.includes('const AEGOS_URI_PROTOCOLS') &&
+    mainRs.includes('const MIHOMO_PROXY_TYPES') &&
+    mainRs.includes('fn mihomo_supports_proxy_type') &&
+    mainRs.includes('fn protocol_capability_summary') &&
+    mainRs.includes('unsupported_proxy_types') &&
+    mainRs.includes('Config preflight failed: unsupported proxy type(s)') &&
+    mainRs.includes('preflight_rejects_core_unsupported_proxy_type') &&
+    mainRs.includes('manual_hy2_node_is_normalized_to_hysteria2'),
+  'parser/core/manual protocol support stays explicit'
+);
+
+check(
   'speed engine tracks node health and low-latency recommendations',
   mainRs.includes('struct NodeHealth') &&
     mainRs.includes('fn update_node_health') &&
