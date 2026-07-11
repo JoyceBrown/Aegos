@@ -1595,7 +1595,7 @@ fn query_outbound_ip(mixed_port: u16) -> Result<String, String> {
     let proxy = reqwest::Proxy::all(&proxy_url).map_err(|err| err.to_string())?;
     let client = Client::builder()
         .proxy(proxy)
-        .timeout(Duration::from_secs(8))
+        .timeout(Duration::from_millis(2800))
         .build()
         .map_err(|err| err.to_string())?;
     let services = [

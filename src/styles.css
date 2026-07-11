@@ -3162,3 +3162,100 @@ select {
 #outboundMetric {
   font-size: 12px;
 }
+
+/* 2.7.8 canonical layout layer: this must stay at EOF. */
+:root {
+  --app-shell-padding: 14px;
+  --app-shell-gap: 12px;
+  --app-sidebar-width: 214px;
+  --app-titlebar-height: 28px;
+  --app-page-top: 38px;
+  --home-hero-row: 264px;
+  --home-quick-row: 72px;
+  --home-connect-width: 156px;
+  --home-ring-size: 94px;
+}
+
+@media (min-height: 900px), (max-height: 760px) {
+  :root {
+    --app-shell-padding: 14px;
+    --app-shell-gap: 12px;
+    --app-sidebar-width: 214px;
+    --app-titlebar-height: 28px;
+    --app-page-top: 38px;
+    --home-hero-row: 264px;
+    --home-quick-row: 72px;
+    --home-connect-width: 156px;
+    --home-ring-size: 94px;
+  }
+}
+
+.shell {
+  grid-template-columns: var(--app-sidebar-width) minmax(0, 1fr);
+  gap: var(--app-shell-gap);
+  padding: var(--app-shell-padding);
+}
+
+.sidebar {
+  gap: 12px;
+  padding: 18px 14px;
+}
+
+.nav {
+  gap: 5px;
+  padding-top: 8px;
+}
+
+.nav button {
+  min-height: 36px;
+  height: 36px;
+}
+
+.workspace {
+  padding: 4px 18px 12px 12px;
+}
+
+.titlebar {
+  min-height: var(--app-titlebar-height);
+  height: var(--app-titlebar-height);
+}
+
+.page {
+  top: var(--app-page-top);
+  bottom: 0;
+  gap: 10px;
+}
+
+.page[data-page-panel="home"].active {
+  grid-template-rows: var(--home-hero-row) var(--home-quick-row) minmax(0, 1fr);
+}
+
+.page[data-page-panel="home"].active > .hero {
+  grid-template-columns: var(--home-connect-width) minmax(0, 1fr);
+  min-height: 0;
+  height: 100%;
+  padding: 12px;
+}
+
+.ring {
+  width: var(--home-ring-size);
+}
+
+.metric-grid article {
+  min-height: 40px;
+}
+
+.quick {
+  min-height: 0;
+  height: 100%;
+  padding: 12px;
+}
+
+.quick .action-row {
+  grid-template-rows: 36px;
+}
+
+.quick-row button {
+  min-height: 36px;
+  height: 36px;
+}

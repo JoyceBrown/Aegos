@@ -133,7 +133,7 @@ check(
   'manual system proxy preference does not auto-connect traffic takeover',
   mainRs.includes('System proxy preference enabled; connect before applying Windows proxy takeover') &&
     mainRs.includes('if enable && !self.traffic_takeover') &&
-    mainRs.includes('self.traffic_takeover = self.process.is_some() &&'),
+    /self\.traffic_takeover\s*=\s*self\.process\.is_some\(\)\s*&&/.test(mainRs),
   'system proxy can be saved as preference before connection'
 );
 

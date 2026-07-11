@@ -31,7 +31,12 @@ let nodePageFilter = 'all';
 let nodeSearchKeyword = '';
 let logFilter = 'all';
 let speedTestTimer = null;
+let speedTestStarting = false;
+const speedTestButtons = new Set();
 let lastSpeedNodeRefreshAt = 0;
+let outboundIpRequestSeq = 0;
+let outboundIpPendingSeq = 0;
+let outboundIpLastStable = '-';
 let recoveryBusy = false;
 let lastRecoveryAt = 0;
 let pageLoadTimer = null;
@@ -1217,6 +1222,18 @@ function warmStaticPageCaches() {
   }
 }
 
+function setOutboundIpText(value) {
+  const text = value || '-';
+  $('#outboundIpState').textContent = text;
+  $('#outboundMetric').textContent = text;
+}
+
+function renderOutboundIpFromStatus(value) {
+  if (outboundIpPendingSeq) return;
+  outboundIpLastStable = value || outboundIpLastStable || '-';
+  setOutboundIpText(outboundIpLastStable);
+}
+
 function renderStatus(status) {
   const wasTakeover = latestStatus?.trafficTakeover;
   latestStatus = status;
@@ -1255,9 +1272,8 @@ function renderStatus(status) {
   $('#tunHomeState').textContent = settings.tunEnabled ? '已开启' : '未开启';
   $('#lanIpState').textContent = status.network?.lanIp || '-';
   $('#proxyPortState').textContent = formatProxyPort(status.network?.proxyEndpoint);
-  $('#outboundIpState').textContent = status.network?.outboundIp || '-';
+  renderOutboundIpFromStatus(status.network?.outboundIp || '-');
   $('#proxyMetric').textContent = formatProxyPort(status.network?.proxyEndpoint);
-  $('#outboundMetric').textContent = status.network?.outboundIp || '-';
   $('#systemProxyMetric').textContent = systemProxyApplied ? '已开启' : settings.systemProxy ? '待连接' : '未开启';
   $('#systemProxyMetric').classList.toggle('is-danger', !systemProxyApplied);
 
@@ -1523,6 +1539,9 @@ async function refreshNodes(force = false, options = {}) {
 function stopSpeedTestPolling() {
   if (speedTestTimer) clearInterval(speedTestTimer);
   speedTestTimer = null;
+  speedTestStarting = false;
+  speedTestButtons.forEach((button) => setButtonBusy(button, false, '', { preserveContent: true }));
+  speedTestButtons.clear();
 }
 
 async function pollSpeedTest() {
@@ -1545,62 +1564,59 @@ async function pollSpeedTest() {
   }
 }
 
-async function testNodes() {
-  if (speedTestTimer) return;
+async function testNodes(button = null) {
+  if (speedTestTimer || speedTestStarting) return;
+  speedTestStarting = true;
+  if (button) {
+    speedTestButtons.add(button);
+    setButtonBusy(button, true, '\u6d4b\u901f\u4e2d...', { preserveContent: true });
+  }
+  setNotice('\u6d4b\u901f\u5df2\u53d1\u9001\u5230\u540e\u53f0\uff0c\u754c\u9762\u53ef\u7ee7\u7eed\u64cd\u4f5c\u3002');
   try {
     const status = await invoke('start_proxy_delay_test');
     lastSpeedNodeRefreshAt = 0;
-    await refreshNodes(true, { target: activeNodeRenderTarget() });
-    setNotice(`测速已在后台开始：0/${status.total || 0}`);
+    refreshNodes(true, { target: activeNodeRenderTarget() }).catch(() => {});
+    setNotice(`\u6d4b\u901f\u5df2\u5728\u540e\u53f0\u5f00\u59cb\uff1a0/${status.total || 0}`);
     speedTestTimer = setInterval(pollSpeedTest, speedTestPollMs);
     await pollSpeedTest();
   } catch (err) {
-    setNotice(`节点测速失败：${err.message || err}`);
+    stopSpeedTestPolling();
+    setNotice(`\u8282\u70b9\u6d4b\u901f\u5931\u8d25\uff1a${err.message || err}`);
   }
 }
-
 async function refreshOutboundIpJob() {
-  await runBackgroundJob('refreshOutboundIp', {}, {
-    pendingNotice: '正在后台查询落地 IP...',
-    onSuccess: async (result) => {
-      const ip = result?.ip || '-';
-      await refreshStatus(true);
-      $('#outboundIpState').textContent = ip;
-      $('#outboundMetric').textContent = ip;
-    },
-    successNotice: (result) => `落地 IP 已刷新：${result?.ip || '-'}`,
-    failureNotice: (err) => `刷新落地 IP 失败：${err.message || err}`
-  });
+  return refreshOutboundIpAfterNodeChange({ manual: true });
 }
 
-async function refreshOutboundIpAfterNodeChange() {
-  $('#outboundIpState').textContent = '\u67e5\u8be2\u4e2d';
-  $('#outboundMetric').textContent = '\u67e5\u8be2\u4e2d';
-  await runBackgroundJob('refreshOutboundIp', {}, {
-    onSuccess: async (result) => {
-      const ip = result?.ip || '-';
+async function refreshOutboundIpAfterNodeChange(options = {}) {
+  const seq = ++outboundIpRequestSeq;
+  outboundIpPendingSeq = seq;
+  setOutboundIpText('\u67e5\u8be2\u4e2d');
+  if (options.manual) setNotice('\u6b63\u5728\u540e\u53f0\u67e5\u8be2\u843d\u5730 IP...');
+  const result = await runBackgroundJob('refreshOutboundIp', {}, {
+    pendingNotice: options.manual ? '\u6b63\u5728\u540e\u53f0\u67e5\u8be2\u843d\u5730 IP...' : '',
+    onSuccess: async (value) => {
+      if (seq !== outboundIpRequestSeq) return;
+      const ip = value?.ip || '-';
+      outboundIpPendingSeq = 0;
+      outboundIpLastStable = ip;
       await refreshStatus(true);
-      $('#outboundIpState').textContent = ip;
-      $('#outboundMetric').textContent = ip;
+      setOutboundIpText(ip);
     },
-    failureNotice: (err) => `\u843d\u5730 IP \u81ea\u52a8\u5237\u65b0\u5931\u8d25\uff1a${err.message || err}`
+    successNotice: (value) => seq === outboundIpRequestSeq && options.manual ? `\u843d\u5730 IP \u5df2\u5237\u65b0\uff1a${value?.ip || '-'}` : '',
+    failureNotice: (err) => seq === outboundIpRequestSeq && options.manual ? `\u5237\u65b0\u843d\u5730 IP \u5931\u8d25\uff1a${err.message || err}` : ''
   });
+  if (seq !== outboundIpRequestSeq) return null;
+  if (!result) {
+    outboundIpPendingSeq = 0;
+    setOutboundIpText(outboundIpLastStable && outboundIpLastStable !== '\u67e5\u8be2\u4e2d' ? outboundIpLastStable : '-');
+  }
+  return result;
 }
 
 async function refreshOutboundIp() {
-  try {
-    setNotice('正在通过当前代理查询落地 IP...');
-    const ip = await invoke('refresh_outbound_ip');
-    await refreshStatus(true);
-    $('#outboundIpState').textContent = ip || '-';
-    $('#outboundMetric').textContent = ip || '-';
-    setNotice(`落地 IP 已刷新：${ip || '-'}`);
-  } catch (err) {
-    await refreshStatus(true);
-    setNotice(`刷新落地 IP 失败：${err.message || err}`);
-  }
+  return refreshOutboundIpAfterNodeChange({ manual: true });
 }
-
 async function recoverNetwork(showHealthyNotice = true, force = false) {
   if (recoveryBusy) return null;
   recoveryBusy = true;
@@ -1764,7 +1780,7 @@ async function corePowerJob(kind, options = {}) {
     onSuccess: async () => {
       await refreshStatus(true);
       await refreshNodes(true);
-      if (kind === 'startCore') await refreshOutboundIpAfterNodeChange();
+      if (kind === 'startCore') void refreshOutboundIpAfterNodeChange();
     },
     successNotice: options.successNotice,
     failureNotice: options.failureNotice
@@ -1892,7 +1908,7 @@ async function selectNode(name) {
     }),
     refresh: async (result) => {
       await refreshNodes(true, { target: 'nodes' });
-      if (result) await refreshOutboundIpAfterNodeChange();
+      if (result) void refreshOutboundIpAfterNodeChange();
     },
     pendingNotice: '正在后台切换节点...',
     successNotice: (result) => result ? `已切换节点：${name}` : '',
@@ -2031,7 +2047,7 @@ async function lockAutoGroupJob() {
     }),
     refresh: async (result) => {
       await refreshNodes(true);
-      if (result) await refreshOutboundIpAfterNodeChange();
+      if (result) void refreshOutboundIpAfterNodeChange();
     },
     pendingNotice: '已请求锁定当前节点...',
     successNotice: (result) => result ? `已锁定当前节点：${proxy}` : '',
@@ -2252,7 +2268,7 @@ $all('.nav button').forEach((button) => {
 $('#connectBtn').onclick = toggleCore;if ($('#refreshNodesBtn')) $('#refreshNodesBtn').onclick = refreshNodes;
 $('#modeBtn').onclick = toggleModeMenu;
 $('#quickKillBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '切换中...', () => updateSetting('killSwitchEnabled', !latestStatus?.settings?.killSwitchEnabled), { preserveContent: true }));
-$('#quickTestBtn').onclick = (event) => runButtonAction(event.currentTarget, '测速中...', testNodes);
+$('#quickTestBtn').onclick = (event) => testNodes(event.currentTarget);
 $('#quickUpdateSubBtn').onclick = (event) => runButtonAction(event.currentTarget, '更新中...', updateActiveProfile);
 $('#quickProxyBtn').onclick = () => updateSetting('systemProxy', !latestStatus?.settings?.systemProxy);
 $('#quickProfileBtn')?.addEventListener('click', (event) => {
@@ -2291,7 +2307,7 @@ $('#clearLogsBtn').onclick = () => runOptimisticAction({
 });
 $('#restartCoreBtn').onclick = (event) => runButtonAction(event.currentTarget, '重启中...', restartCoreJob);
 const batchTestBtn = $('#batchTestBtn');
-if (batchTestBtn) batchTestBtn.onclick = (event) => runButtonAction(event.currentTarget, '测速中...', testNodes);
+if (batchTestBtn) batchTestBtn.onclick = (event) => testNodes(event.currentTarget);
 const nodeSearch = $('#nodeSearch');
 if (nodeSearch) nodeSearch.oninput = () => {
   nodeSearchKeyword = nodeSearch.value.trim().toLowerCase();

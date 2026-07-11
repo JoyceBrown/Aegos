@@ -212,6 +212,8 @@ async function auditViewport(page, width, height) {
       tableOverflowX: tableEl ? tableEl.scrollWidth - tableEl.clientWidth : 0,
       maxMetricIcon: Math.max(...metricIcons),
       brandFontSize: parseFloat(getComputedStyle(document.querySelector('.brand-name')).fontSize),
+      shell: box('.shell'),
+      nav: box('.nav'),
       navButtonHeight: box('.nav button')?.height || 0,
       ringWidth: box('.ring')?.width || 0,
       tunHomeVisible,
@@ -262,6 +264,7 @@ try {
   await page.send('Runtime.enable');
   const reports = [
     await auditViewport(page, 1280, 820),
+    await auditViewport(page, 1280, 700),
     await auditViewport(page, 1180, 700),
     await auditViewport(page, 1700, 900),
     await auditViewport(page, 1280, 1080)
@@ -310,7 +313,14 @@ try {
     if (Math.abs(report.brandFontSize - base.brandFontSize) > 0.1) failures.push(`${report.width}x${report.height}: brand font scaled from ${base.brandFontSize}px to ${report.brandFontSize}px`);
     if (Math.abs(report.maxMetricIcon - base.maxMetricIcon) > 0.1) failures.push(`${report.width}x${report.height}: metric icons scaled from ${base.maxMetricIcon}px to ${report.maxMetricIcon}px`);
     if (Math.abs(report.navButtonHeight - base.navButtonHeight) > 4) failures.push(`${report.width}x${report.height}: nav height changed from ${base.navButtonHeight}px to ${report.navButtonHeight}px`);
-    if (report.width > 1380 && Math.abs(report.ringWidth - base.ringWidth) > 0.1) failures.push(`${report.width}x${report.height}: ring scaled from ${base.ringWidth}px to ${report.ringWidth}px`);
+    if (Math.abs(report.ringWidth - base.ringWidth) > 0.1) failures.push(`${report.width}x${report.height}: ring scaled from ${base.ringWidth}px to ${report.ringWidth}px`);
+  }
+  const base1280 = reports.find((report) => report.width === 1280 && report.height === 820);
+  for (const report of reports.filter((item) => item.width === 1280 && item !== base1280)) {
+    if (Math.abs((report.shell?.left || 0) - (base1280.shell?.left || 0)) > 0.1) failures.push(`${report.width}x${report.height}: shell left shifted with height`);
+    if (Math.abs((report.nav?.top || 0) - (base1280.nav?.top || 0)) > 0.1) failures.push(`${report.width}x${report.height}: nav top shifted with height`);
+    if (Math.abs(report.hero.height - base1280.hero.height) > 0.1) failures.push(`${report.width}x${report.height}: home hero height shifted with height`);
+    if (Math.abs(report.quick.height - base1280.quick.height) > 0.1) failures.push(`${report.width}x${report.height}: quick height shifted with height`);
   }
   console.log(JSON.stringify({ ok: failures.length === 0, failures, reports }, null, 2));
   if (failures.length) process.exitCode = 2;
