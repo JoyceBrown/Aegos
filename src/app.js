@@ -1991,6 +1991,25 @@ async function selectNode(name) {
   });
 }
 
+async function captureNodeDiagnostics(name) {
+  if (!name) return null;
+  try {
+    const data = await invoke('node_diagnostics', { name });
+    const failure = data?.lastFailure;
+    const suggestions = Array.isArray(data?.suggestions) ? data.suggestions : [];
+    const reason = failure?.classification || data?.health?.status || 'unknown';
+    appendLocalLog(
+      failure ? 'warn' : 'info',
+      'diagnostic',
+      `Node diagnostics: ${name} / ${reason} / suggestions ${suggestions.length}`
+    );
+    return data;
+  } catch (err) {
+    appendLocalLog('warn', 'diagnostic', `Node diagnostics failed: ${name} / ${err.message || err}`);
+    return null;
+  }
+}
+
 async function testSingleNode(name, button) {
   if (!name) return;
   applyOptimisticNodeDelay(name, 0);
@@ -2004,11 +2023,13 @@ async function testSingleNode(name, button) {
         setNotice(`\u8282\u70b9\u6d4b\u901f\u5b8c\u6210\uff1a${name} / ${Math.round(delay)} ms`);
       } else {
         setNotice(`\u8282\u70b9\u6d4b\u901f\u5931\u8d25\uff1a${name}`);
+        void captureNodeDiagnostics(name);
       }
     });
   } catch (err) {
     applyOptimisticNodeDelay(name, -1);
     setNotice(`\u8282\u70b9\u6d4b\u901f\u5931\u8d25\uff1a${name} / ${err.message || err}`);
+    void captureNodeDiagnostics(name);
   }
 }
 

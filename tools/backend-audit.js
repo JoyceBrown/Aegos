@@ -415,6 +415,18 @@ check(
 );
 
 check(
+  'node-level diagnostics link health, logs, and suggestions',
+  mainRs.includes('fn node_diagnostics') &&
+    mainRs.includes('fn recent_node_logs') &&
+    mainRs.includes('fn log_matches_node') &&
+    mainRs.includes('"lastFailure"') &&
+    mainRs.includes('classify_failure_reason(&entry.line)') &&
+    mainRs.includes('node_log_matching_finds_related_failures') &&
+    mainRs.includes('node_diagnostics,'),
+  'node health/log/suggestion diagnostics'
+);
+
+check(
   'active profile removal reconciles running core',
   mainRs.includes('"removeProfile"') &&
     mainRs.includes('fn remove_profile') &&

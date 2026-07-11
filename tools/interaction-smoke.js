@@ -320,6 +320,16 @@ try {
             }
             return { ok: true, proxy: args.name, realProxyName: args.name, delay: 42, healthStatus: 'low' };
           }
+          if (command === 'node_diagnostics') {
+            return {
+              node: { group: 'GLOBAL', proxy: args.name, realProxyName: args.name, protocol: 'trojan', region: 'HK' },
+              health: { status: 'low', confidence: 'high', lastDelay: 42 },
+              logs: [],
+              lastFailure: null,
+              suggestions: [],
+              generatedAt: 1
+            };
+          }
           if (command === 'save_manual_node') {
             const node = { ...args.node, alive: true, delay: -1, manual: true, fixed: true, static: true, source: 'manual' };
             const index = groups[0].items.findIndex((item) => item.name === (args.node?.originalName || args.node?.name));

@@ -808,6 +808,14 @@ fn log_category(level: &str, line: &str) -> &'static str {
     }
 }
 
+fn log_matches_node(entry: &LogEntry, node: &str) -> bool {
+    let node = node.trim().to_ascii_lowercase();
+    if node.is_empty() {
+        return false;
+    }
+    entry.line.to_ascii_lowercase().contains(&node)
+}
+
 fn health_status(delay: i64, failure_streak: u64, cooldown_until: u64, now: u64) -> String {
     if cooldown_until > now {
         "cooldown".to_string()
@@ -3171,6 +3179,19 @@ rules:
     }
 
     #[test]
+    fn node_log_matching_finds_related_failures() {
+        let entry = LogEntry {
+            at: "test".to_string(),
+            level: "warn".to_string(),
+            category: "core".to_string(),
+            line: "dial HK Premium 01 error: i/o timeout".to_string(),
+        };
+        assert!(log_matches_node(&entry, "HK Premium 01"));
+        assert!(!log_matches_node(&entry, "JP Premium 01"));
+        assert!(!log_matches_node(&entry, ""));
+    }
+
+    #[test]
     fn speed_test_phases_prioritize_fast_non_tuic_targets() {
         let targets = vec![
             SpeedTestTarget {
@@ -4447,6 +4468,19 @@ impl CoreManager {
     fn recent_logs(&self, limit: usize) -> Vec<LogEntry> {
         let logs = self.logs.lock().unwrap();
         let mut items = logs.iter().rev().take(limit).cloned().collect::<Vec<_>>();
+        items.reverse();
+        items
+    }
+
+    fn recent_node_logs(&self, node: &str, limit: usize) -> Vec<LogEntry> {
+        let logs = self.logs.lock().unwrap();
+        let mut items = logs
+            .iter()
+            .rev()
+            .filter(|entry| log_matches_node(entry, node))
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>();
         items.reverse();
         items
     }
@@ -5760,6 +5794,57 @@ impl CoreManager {
         let targets = Self::collect_proxy_targets(&groups);
         let speed = self.speed_test.lock().unwrap().clone();
         speed_recommendation(&targets, &speed.health, now_secs())
+    }
+
+    fn node_diagnostics(&self, name: String) -> Result<JsonValue, String> {
+        let groups = self.proxy_groups();
+        let targets = Self::collect_proxy_targets(&groups);
+        let target = targets
+            .iter()
+            .find(|target| target.name == name || target.select_name == name)
+            .cloned()
+            .ok_or_else(|| format!("Node not found: {name}"))?;
+        let speed = self.speed_test.lock().unwrap().clone();
+        let health = speed.health.get(&target.name).cloned();
+        let logs = self.recent_node_logs(&target.name, 20);
+        let last_failure = logs
+            .iter()
+            .rev()
+            .find(|entry| entry.level == "warn" || entry.level == "error")
+            .map(|entry| {
+                json!({
+                    "level": entry.level,
+                    "category": entry.category,
+                    "line": entry.line,
+                    "classification": classify_failure_reason(&entry.line)
+                })
+            });
+        let region = infer_node_region(&target.name);
+        let suggestions = self
+            .recovery_suggestions(8)
+            .into_iter()
+            .filter(|item| {
+                item.get("region")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value == region)
+                    .unwrap_or(false)
+            })
+            .take(5)
+            .collect::<Vec<_>>();
+        Ok(json!({
+            "node": {
+                "group": target.group_name,
+                "proxy": target.select_name,
+                "realProxyName": target.name,
+                "protocol": target.protocol,
+                "region": region
+            },
+            "health": health,
+            "logs": logs,
+            "lastFailure": last_failure,
+            "suggestions": suggestions,
+            "generatedAt": now_secs()
+        }))
     }
 
     fn select_best_proxy(&mut self) -> Result<JsonValue, String> {
@@ -8264,6 +8349,11 @@ fn test_single_proxy_delay(state: State<AppState>, name: String) -> Result<JsonV
 }
 
 #[tauri::command]
+fn node_diagnostics(state: State<AppState>, name: String) -> Result<JsonValue, String> {
+    state.core.lock().unwrap().node_diagnostics(name)
+}
+
+#[tauri::command]
 fn speed_test_status(state: State<AppState>) -> Result<JsonValue, String> {
     Ok(state.core.lock().unwrap().speed_test_snapshot())
 }
@@ -8412,6 +8502,7 @@ fn main() {
             proxy_groups,
             start_proxy_delay_test,
             test_single_proxy_delay,
+            node_diagnostics,
             speed_test_status,
             cancel_proxy_delay_test,
             recover_network,
