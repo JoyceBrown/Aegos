@@ -49,6 +49,25 @@ check(
 );
 
 check(
+  'subscription text normalization is shared and testable',
+  mainRs.includes('fn decoded_subscription_body') &&
+    mainRs.includes('fn parse_profile_source_text_diagnostic') &&
+    mainRs.includes('download_profile_source_url_diagnostic') &&
+    mainRs.includes('parse_profile_source_text_diagnostic(&text)'),
+  'downloaded text is normalized before YAML/URI parsing'
+);
+
+check(
+  'airport metadata and comments are ignored in URI subscriptions',
+  mainRs.includes('fn is_ignorable_subscription_line') &&
+    mainRs.includes('subscription-userinfo:') &&
+    mainRs.includes('profile-title:') &&
+    mainRs.includes('profile-update-interval:') &&
+    mainRs.includes('subscription_parser_ignores_metadata_comments_and_blank_lines'),
+  'comments/airport info lines do not count as unsupported proxy lines'
+);
+
+check(
   'unsupported URI protocols are detected before generic format failure',
   mainRs.includes('fn unsupported_uri_schemes') &&
     mainRs.includes('fn is_supported_uri_scheme') &&
@@ -66,6 +85,15 @@ check(
     'subscription_diagnostics_classify_invalid_url_scheme',
   ].every((name) => mainRs.includes(name)),
   'Rust unit tests'
+);
+
+check(
+  'mixed base64 URI and BOM Clash YAML variants are covered',
+  mainRs.includes('subscription_parser_accepts_base64_mixed_uri_sources') &&
+    mainRs.includes('subscription_parser_accepts_bom_prefixed_clash_yaml') &&
+    mainRs.includes("trim_start_matches('\\u{feff}')") &&
+    mainRs.includes('b64_decode_text(raw).unwrap_or_else'),
+  'common airport response wrappers'
 );
 
 check(

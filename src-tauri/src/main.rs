@@ -104,15 +104,42 @@ fn is_supported_uri_scheme(scheme: &str) -> bool {
     )
 }
 
-fn unsupported_uri_schemes(text: &str) -> Vec<String> {
-    let body = if text.contains("://") {
-        text.to_string()
+fn is_ignorable_subscription_line(line: &str) -> bool {
+    let line = line.trim().trim_start_matches('\u{feff}');
+    if line.is_empty()
+        || line.starts_with('#')
+        || line.starts_with("//")
+        || line.starts_with(';')
+    {
+        return true;
+    }
+    let lower = line.to_ascii_lowercase();
+    lower.starts_with("subscription-userinfo:")
+        || lower.starts_with("profile-title:")
+        || lower.starts_with("profile-update-interval:")
+        || lower.starts_with("profile-web-page-url:")
+        || lower.starts_with("support-url:")
+        || lower.starts_with("upload=")
+        || lower.starts_with("download=")
+        || lower.starts_with("total=")
+        || lower.starts_with("expire=")
+}
+
+fn decoded_subscription_body(text: &str) -> String {
+    let raw = text.trim_start_matches('\u{feff}').trim();
+    if raw.contains("://") || looks_like_clash_yaml(raw) {
+        raw.to_string()
     } else {
-        b64_decode_text(text).unwrap_or_default()
-    };
+        b64_decode_text(raw).unwrap_or_else(|| raw.to_string())
+    }
+}
+
+fn unsupported_uri_schemes(text: &str) -> Vec<String> {
+    let body = decoded_subscription_body(text);
     let mut schemes = body
         .lines()
         .map(str::trim)
+        .filter(|line| !is_ignorable_subscription_line(line))
         .filter_map(|line| line.split_once("://").map(|(scheme, _)| scheme.trim()))
         .filter(|scheme| !scheme.is_empty() && !is_supported_uri_scheme(scheme))
         .map(|scheme| scheme.to_ascii_lowercase())
@@ -1313,16 +1340,12 @@ fn public_profile(profile: &Profile) -> JsonValue {
 }
 
 fn parse_uri_subscription(text: &str) -> Option<YamlValue> {
-    let body = if text.contains("://") {
-        text.to_string()
-    } else {
-        b64_decode_text(text)?
-    };
+    let body = decoded_subscription_body(text);
     let mut proxies = Vec::new();
     for (index, line) in body
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .filter(|line| !is_ignorable_subscription_line(line))
         .enumerate()
     {
         let item = if line.starts_with("ss://") {
@@ -1359,15 +1382,11 @@ fn parse_uri_subscription_source(text: &str) -> Result<ProfileSource, String> {
     let config = parse_uri_subscription(text).ok_or_else(|| {
         "订阅格式不支持：不是 Clash YAML，也不是可识别的 ss/vmess/vless/trojan/hysteria2/anytls/tuic URI 订阅".to_string()
     })?;
-    let body = if text.contains("://") {
-        text.to_string()
-    } else {
-        b64_decode_text(text).unwrap_or_default()
-    };
+    let body = decoded_subscription_body(text);
     let unsupported_lines = body
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .filter(|line| !is_ignorable_subscription_line(line))
         .filter(|line| {
             !line.starts_with("ss://")
                 && !line.starts_with("trojan://")
@@ -1432,15 +1451,11 @@ fn parse_uri_subscription_source_diagnostic(text: &str) -> Result<ProfileSource,
             )
         }
     })?;
-    let body = if text.contains("://") {
-        text.to_string()
-    } else {
-        b64_decode_text(text).unwrap_or_default()
-    };
+    let body = decoded_subscription_body(text);
     let unsupported_lines = body
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .filter(|line| !is_ignorable_subscription_line(line))
         .filter(|line| {
             !line.starts_with("ss://")
                 && !line.starts_with("trojan://")
@@ -1460,6 +1475,34 @@ fn parse_uri_subscription_source_diagnostic(text: &str) -> Result<ProfileSource,
         )
     })?;
     Ok(ProfileSource { config, summary })
+}
+
+fn parse_profile_source_text_diagnostic(text: &str) -> Result<ProfileSource, String> {
+    let source_text = decoded_subscription_body(text);
+    match serde_yaml::from_str::<YamlValue>(&source_text) {
+        Ok(YamlValue::Mapping(map)) => {
+            let config = YamlValue::Mapping(map);
+            let summary = summarize_profile_source(&config, "clash-yaml", 0).map_err(|err| {
+                subscription_diagnostic(
+                    "empty-proxies",
+                    err,
+                    "check whether the subscription contains usable proxy nodes",
+                )
+            })?;
+            Ok(ProfileSource { config, summary })
+        }
+        Ok(_) => parse_uri_subscription_source_diagnostic(&source_text),
+        Err(err) => {
+            if looks_like_clash_yaml(&source_text) {
+                return Err(subscription_diagnostic(
+                    "yaml-parse",
+                    format!("Clash YAML parse failed: {err}"),
+                    "open the subscription in the airport panel and choose a Clash/Mihomo format, then retry",
+                ));
+            }
+            parse_uri_subscription_source_diagnostic(&source_text)
+        }
+    }
 }
 
 fn download_profile_source_url_diagnostic(url: &str) -> Result<ProfileSource, String> {
@@ -1520,30 +1563,7 @@ fn download_profile_source_url_diagnostic(url: &str) -> Result<ProfileSource, St
             "check whether the subscription token is expired or the airport returned an empty plan",
         ));
     }
-    match serde_yaml::from_str::<YamlValue>(&text) {
-        Ok(YamlValue::Mapping(map)) => {
-            let config = YamlValue::Mapping(map);
-            let summary = summarize_profile_source(&config, "clash-yaml", 0).map_err(|err| {
-                subscription_diagnostic(
-                    "empty-proxies",
-                    err,
-                    "check whether the subscription contains usable proxy nodes",
-                )
-            })?;
-            Ok(ProfileSource { config, summary })
-        }
-        Ok(_) => parse_uri_subscription_source_diagnostic(&text),
-        Err(err) => {
-            if looks_like_clash_yaml(&text) {
-                return Err(subscription_diagnostic(
-                    "yaml-parse",
-                    format!("Clash YAML parse failed: {err}"),
-                    "open the subscription in the airport panel and choose a Clash/Mihomo format, then retry",
-                ));
-            }
-            parse_uri_subscription_source_diagnostic(&text)
-        }
-    }
+    parse_profile_source_text_diagnostic(&text)
 }
 
 fn patch_config_with_settings(
@@ -2320,6 +2340,50 @@ mod tests {
 
         assert!(err.contains("Subscription diagnostics [invalid-url]"));
         assert!(err.contains("unsupported URL scheme"));
+    }
+
+    #[test]
+    fn subscription_parser_ignores_metadata_comments_and_blank_lines() {
+        let raw = r#"
+# airport title
+subscription-userinfo: upload=1; download=2; total=3; expire=4102444800
+profile-title: Example Airport
+// generated comment
+trojan://password@example.com:443?sni=example.com#HK%20Trojan
+; trailing comment
+"#;
+        let source =
+            parse_uri_subscription_source_diagnostic(raw).expect("metadata-wrapped URI source");
+
+        assert_eq!(source.summary.proxies, 1);
+        assert_eq!(source.summary.unsupported_lines, 0);
+    }
+
+    #[test]
+    fn subscription_parser_accepts_base64_mixed_uri_sources() {
+        let raw = r#"
+profile-update-interval: 24
+vless://00000000-0000-4000-8000-000000000000@example.com:443?security=reality&sni=www.microsoft.com&pbk=publicKey&sid=abcd#US%20VLESS
+hysteria2://secret@example.net:8443?sni=example.net&insecure=1#SG%20HY2
+"#;
+        let encoded = general_purpose::STANDARD.encode(raw);
+        let source = parse_profile_source_text_diagnostic(&encoded)
+            .expect("base64 URI subscription should parse");
+
+        assert_eq!(source.summary.format, "uri");
+        assert_eq!(source.summary.proxies, 2);
+        assert_eq!(source.summary.unsupported_lines, 0);
+    }
+
+    #[test]
+    fn subscription_parser_accepts_bom_prefixed_clash_yaml() {
+        let raw = "\u{feff}proxies:\n  - name: Node A\n    type: ss\n    server: example.com\n    port: 443\n    cipher: aes-128-gcm\n    password: secret\nproxy-groups:\n  - name: Proxy\n    type: select\n    proxies:\n      - Node A\nrules:\n  - MATCH,Proxy\n";
+        let source =
+            parse_profile_source_text_diagnostic(raw).expect("BOM-prefixed Clash YAML should parse");
+
+        assert_eq!(source.summary.format, "clash-yaml");
+        assert_eq!(source.summary.proxies, 1);
+        assert_eq!(source.summary.proxy_groups, 1);
     }
 
     #[test]
