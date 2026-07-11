@@ -805,10 +805,12 @@ h1 {
 
 .quick-profile-menu {
   position: absolute;
-  z-index: 24;
-  right: 108px;
-  top: calc(100% + 8px);
-  width: 260px;
+  z-index: 1000;
+  left: 16px;
+  top: 16px;
+  width: min(320px, calc(100vw - 28px));
+  max-height: min(320px, calc(100vh - 28px));
+  overflow-y: auto;
   display: grid;
   gap: 6px;
   padding: 8px;
@@ -2491,51 +2493,6 @@ body::before {
     repeating-linear-gradient(0deg, rgba(255, 255, 255, .10) 0 1px, transparent 1px 72px);
 }
 
-.window-edge-frame {
-  position: fixed;
-  inset: 0;
-  z-index: 10000;
-  pointer-events: none;
-}
-
-.window-drag-edge {
-  position: absolute;
-  pointer-events: auto;
-  user-select: none;
-  -webkit-user-select: none;
-  cursor: default;
-}
-
-.window-drag-top,
-.window-drag-bottom {
-  left: 0;
-  right: 0;
-  height: 8px;
-}
-
-.window-drag-left,
-.window-drag-right {
-  top: 8px;
-  bottom: 8px;
-  width: 8px;
-}
-
-.window-drag-top {
-  top: 0;
-}
-
-.window-drag-right {
-  right: 0;
-}
-
-.window-drag-bottom {
-  bottom: 0;
-}
-
-.window-drag-left {
-  left: 0;
-}
-
 button {
   transition: background-color .16s ease, box-shadow .16s ease, color .16s ease, transform .16s ease;
 }
@@ -2881,7 +2838,6 @@ h2 {
 }
 
 .quick-profile-menu {
-  right: 120px;
   border-radius: var(--radius-panel);
   background: rgba(255, 255, 255, .94);
   backdrop-filter: blur(18px);

@@ -4085,16 +4085,15 @@ impl CoreManager {
     fn start_proxy_delay_test(&mut self) -> Result<JsonValue, String> {
         if self.process.is_none() || self.controller("GET", "/version", None, 900).is_err() {
             self.add_log(
-                "Speed test found controller unavailable; restarting active profile",
+                "Speed test skipped because core controller is unavailable",
                 "warn",
             );
-            if let Err(err) = self.restart_core_preserving_proxy(250) {
-                self.add_log(format!("Speed test restart failed: {err}"), "error");
-                let mut speed = self.speed_test.lock().unwrap();
-                speed.running = false;
-                speed.error = Some(err.clone());
-                return Err(err);
-            }
+            let message = "测速需要先连接；测速不会自动启动核心或切换节点".to_string();
+            let mut speed = self.speed_test.lock().unwrap();
+            speed.running = false;
+            speed.error = Some(message.clone());
+            speed.updated_at = now_secs();
+            return Err(message);
         }
         let groups = self.proxy_groups();
         let targets = Self::collect_proxy_targets(&groups);

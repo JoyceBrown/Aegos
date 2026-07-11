@@ -1118,6 +1118,25 @@ function renderQuickProfileMenu() {
   }).join('') || '<p class="empty">暂无订阅</p>';
 }
 
+function positionQuickProfileMenu() {
+  const menu = $('#profileMenu');
+  const button = $('#quickProfileBtn');
+  if (!menu || !button || menu.classList.contains('hidden')) return;
+  const parent = menu.offsetParent || button.closest('.quick-row') || document.body;
+  const parentBox = parent.getBoundingClientRect();
+  const buttonBox = button.getBoundingClientRect();
+  const menuWidth = Math.min(320, Math.max(240, window.innerWidth - 28));
+  const viewportLeft = Math.min(
+    Math.max(14, buttonBox.left + buttonBox.width / 2 - menuWidth / 2),
+    Math.max(14, window.innerWidth - menuWidth - 14)
+  );
+  const viewportTop = Math.min(buttonBox.bottom + 8, Math.max(14, window.innerHeight - 140));
+  menu.style.width = `${menuWidth}px`;
+  menu.style.left = `${viewportLeft - parentBox.left}px`;
+  menu.style.top = `${viewportTop - parentBox.top}px`;
+  menu.style.maxHeight = `${Math.max(120, window.innerHeight - viewportTop - 14)}px`;
+}
+
 function renderSettings(status) {
   const settings = status.settings || {};
   const reliability = settings.reliability || {};
@@ -1508,7 +1527,7 @@ async function pollSpeedTest() {
   try {
     const status = await invoke('speed_test_status');
     const now = Date.now();
-    if (!isForegroundHot() && (!status.running || now - lastSpeedNodeRefreshAt >= speedTestNodeRefreshMs)) {
+    if (isNodeSurfaceActive() && !isForegroundHot() && (!status.running || now - lastSpeedNodeRefreshAt >= speedTestNodeRefreshMs)) {
       lastSpeedNodeRefreshAt = now;
       await refreshNodes(true, { target: activeNodeRenderTarget() });
     }
@@ -1816,8 +1835,15 @@ function toggleModeMenu() {
 }
 
 function toggleProfileMenu() {
-  renderQuickProfileMenu();
-  $('#profileMenu')?.classList.toggle('hidden');
+  const menu = $('#profileMenu');
+  if (!menu) return;
+  if (menu.classList.contains('hidden')) {
+    renderQuickProfileMenu();
+    menu.classList.remove('hidden');
+    positionQuickProfileMenu();
+  } else {
+    menu.classList.add('hidden');
+  }
 }
 
 async function restartCoreJob() {
@@ -2398,6 +2424,8 @@ window.addEventListener('keydown', (event) => {
     closeNodeEditor();
   }
 });
+
+window.addEventListener('resize', positionQuickProfileMenu);
 
 $('#nodeRows').addEventListener('click', (event) => {
   const actionButton = event.target.closest('[data-node-action]');

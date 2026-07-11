@@ -14,6 +14,9 @@ function check(name, ok, detail = '') {
 
 const statusBody = mainRs.match(/fn status\(&mut self\) -> JsonValue \{([\s\S]*?)\n    \}/)?.[1] || '';
 const commandSection = mainRs.slice(mainRs.indexOf('#[tauri::command]'));
+const speedStart = mainRs.indexOf('fn start_proxy_delay_test');
+const speedEnd = mainRs.indexOf('fn test_single_proxy_delay', speedStart);
+const speedTestBody = speedStart >= 0 && speedEnd > speedStart ? mainRs.slice(speedStart, speedEnd) : '';
 
 check(
   'status snapshot avoids controller version probe',
@@ -29,6 +32,14 @@ check(
   'speed tests run in background thread',
   mainRs.includes('fn start_proxy_delay_test') && mainRs.includes('thread::spawn(move ||') && mainRs.includes('speed_test_snapshot'),
   'background delay test'
+);
+check(
+  'speed tests never auto-start or restart the core',
+  speedTestBody.includes('Speed test skipped because core controller is unavailable') &&
+    speedTestBody.includes('测速需要先连接') &&
+    !speedTestBody.includes('restart_core_preserving_proxy') &&
+    !speedTestBody.includes('start_core'),
+  'delay test is measurement-only'
 );
 check(
   'TUIC delay path has lower concurrency',
