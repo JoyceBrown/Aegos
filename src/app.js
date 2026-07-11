@@ -477,7 +477,7 @@ function averageAvailableDelay(rows = []) {
 }
 
 function stabilityInfo(row, rows = []) {
-  if (!row) return { label: '\u672a\u6d4b\u901f', level: 'unknown', className: 'confidence-muted' };
+  if (!row) return { label: '\u672a\u6d4b\u901f', level: 'unknown', className: 'confidence-muted', metricClassName: 'metric-stability-muted' };
   const delay = Number(row[3] || -1);
   const healthStatus = String(row[7] || 'unknown');
   const medianDelay = Number(row[8] || delay);
@@ -485,25 +485,25 @@ function stabilityInfo(row, rows = []) {
   const failureStreak = Number(row[12] || 0);
   const confidence = String(row[16] || 'unknown');
   if (delay === 0 || healthStatus === 'testing' || confidence === 'testing') {
-    return { label: '\u6d4b\u901f\u4e2d', level: 'testing', className: 'confidence-muted' };
+    return { label: '\u6d4b\u901f\u4e2d', level: 'testing', className: 'confidence-muted', metricClassName: 'metric-stability-muted' };
   }
   if (delay <= 0 || healthStatus === 'unknown') {
-    return { label: '\u672a\u6d4b\u901f', level: 'unknown', className: 'confidence-muted' };
+    return { label: '\u672a\u6d4b\u901f', level: 'unknown', className: 'confidence-muted', metricClassName: 'metric-stability-muted' };
   }
   if (failureStreak >= 2 || healthStatus === 'cooldown' || confidence === 'failed') {
-    return { label: '\u4f4e', level: 'low', className: 'confidence-bad' };
+    return { label: '\u4f4e', level: 'low', className: 'confidence-bad', metricClassName: 'metric-stability-low' };
   }
   const baseline = averageAvailableDelay(rows);
   const relative = baseline > 0 ? delay / baseline : 1;
   const jitterRatio = delay > 0 ? jitter / delay : 1;
   const confidenceOk = confidence === 'high' || confidence === 'medium';
   if (confidenceOk && failureStreak === 0 && delay < 100 && relative <= 0.95 && jitterRatio <= 0.45 && medianDelay <= delay * 1.25) {
-    return { label: '\u9ad8', level: 'high', className: 'confidence-good' };
+    return { label: '\u9ad8', level: 'high', className: 'confidence-good', metricClassName: 'metric-stability-high' };
   }
   if (failureStreak <= 1 && relative <= 1.35 && jitterRatio <= 0.85 && delay < 220) {
-    return { label: '\u4e2d', level: 'medium', className: 'confidence-warn' };
+    return { label: '\u4e2d', level: 'medium', className: 'confidence-warn', metricClassName: 'metric-stability-medium' };
   }
-  return { label: '\u4f4e', level: 'low', className: 'confidence-bad' };
+  return { label: '\u4f4e', level: 'low', className: 'confidence-bad', metricClassName: 'metric-stability-low' };
 }
 
 function lastTestedText(row) {
@@ -550,7 +550,7 @@ function renderHomeNodeSummary(rows = []) {
   const stabilityMetric = $('#stabilityMetric');
   if (stabilityMetric) {
     stabilityMetric.textContent = stability.label;
-    stabilityMetric.className = stability.className;
+    stabilityMetric.className = stability.metricClassName;
   }
   const lastTestedMetric = $('#lastTestedMetric');
   if (lastTestedMetric) lastTestedMetric.textContent = lastTestedText(currentRow);

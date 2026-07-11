@@ -456,6 +456,10 @@ try {
     if (!window.__aegosCalls.some((item) => item.command === 'test_single_proxy_delay')) throw new Error('current node delay refresh did not call single-node speed test');
     if (switchCallsAfterCurrentNodeTest !== switchCallsBeforeCurrentNodeTest) throw new Error('current node delay refresh triggered a proxy switch');
     if (!['高', '中', '低'].some((label) => document.querySelector('#stabilityMetric')?.textContent.includes(label))) throw new Error('current node stability did not render a real level');
+    if (!document.querySelector('#currentNodeTestBtn .icon-speed')) throw new Error('current node delay refresh did not use a speed icon');
+    const stabilityStyle = getComputedStyle(document.querySelector('#stabilityMetric'));
+    if (stabilityStyle.backgroundColor !== 'rgba(0, 0, 0, 0)') throw new Error('home stability metric rendered a colored background block');
+    if (!/metric-stability-(high|medium|low)/.test(document.querySelector('#stabilityMetric')?.className || '')) throw new Error('home stability metric did not use dedicated level text class');
     if (!document.querySelector('#lastTestedMetric')?.textContent.includes('刚刚')) throw new Error('current node last tested time did not render after refresh');
     if (!document.querySelector('.delay-good') || !document.querySelector('.delay-bad')) throw new Error('delay color classes did not render green/red states');
     if (document.querySelector('#connectBtn')?.textContent.trim() === '断开连接') {

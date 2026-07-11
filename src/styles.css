@@ -730,29 +730,30 @@ h1 {
 }
 
 .metric-refresh {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
-  border: 1px solid rgba(126, 151, 182, .18);
+  border: 0;
   border-radius: 999px;
-  background: rgba(255, 255, 255, .72);
-  color: #58708f;
+  background: rgba(128, 101, 255, .08);
+  color: #6b63d9;
   cursor: pointer;
   overflow: hidden;
   font-size: 0;
   line-height: 1;
+  box-shadow: none;
 }
 
 .metric-refresh .aegos-icon {
-  width: 13px;
-  height: 13px;
+  --icon-size: 14px;
+  --glyph-size: 10px;
 }
 
 .metric-refresh:hover {
-  background: rgba(62, 141, 255, .12);
-  color: #2f73d8;
+  background: rgba(128, 101, 255, .14);
+  color: #5b4ee6;
 }
 
 .metric-refresh.is-pending .aegos-icon,
@@ -762,6 +763,35 @@ h1 {
 
 .metric-grid strong.is-danger {
   color: #d94343;
+}
+
+#stabilityMetric,
+.metric-grid strong.metric-stability-high,
+.metric-grid strong.metric-stability-medium,
+.metric-grid strong.metric-stability-low,
+.metric-grid strong.metric-stability-muted {
+  width: auto;
+  min-width: 0;
+  height: auto;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.metric-grid strong.metric-stability-high {
+  color: #1a9f62;
+}
+
+.metric-grid strong.metric-stability-medium {
+  color: #b77912;
+}
+
+.metric-grid strong.metric-stability-low {
+  color: #d94343;
+}
+
+.metric-grid strong.metric-stability-muted {
+  color: #6d7d96;
 }
 
 .metric-icon {
