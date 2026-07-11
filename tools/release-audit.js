@@ -52,6 +52,7 @@ check('performance smoke script exists', exists('tools/perf-smoke.js') && pkg.sc
 check('soak smoke script exists', exists('tools/soak-smoke.js') && pkg.scripts?.['smoke:soak'] === 'node tools/soak-smoke.js', 'tools/soak-smoke.js');
 check('backend audit script exists', exists('tools/backend-audit.js') && pkg.scripts?.['audit:backend'] === 'node tools/backend-audit.js', 'tools/backend-audit.js');
 check('security hotfix audit script exists', exists('tools/security-hotfix-audit.js') && pkg.scripts?.['audit:security'] === 'node tools/security-hotfix-audit.js', 'tools/security-hotfix-audit.js');
+check('architecture freeze audit script exists', exists('tools/architecture-freeze-audit.js') && pkg.scripts?.['audit:architecture'] === 'node tools/architecture-freeze-audit.js' && exists('ARCHITECTURE_FREEZE_2.9.20_TO_2.9.29.md'), 'tools/architecture-freeze-audit.js / ARCHITECTURE_FREEZE_2.9.20_TO_2.9.29.md');
 
 const mainRs = readText('src-tauri/src/main.rs');
 const powershellCalls = (mainRs.match(/Command::new\("powershell\.exe"\)/g) || []).length;
