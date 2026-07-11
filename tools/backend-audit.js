@@ -90,10 +90,10 @@ check(
 
 check(
   'subscription and outbound IP jobs reduce core lock scope',
-  mainRs.includes('add_profile_url_detached') &&
+    mainRs.includes('add_profile_url_detached') &&
     mainRs.includes('update_profile_detached') &&
     mainRs.includes('refresh_outbound_ip_detached') &&
-    mainRs.includes('download_profile_source_url(url)?') &&
+    mainRs.includes('download_profile_source_url_diagnostic(url)?') &&
     mainRs.includes('query_outbound_ip(mixed_port)') &&
     mainRs.includes('normalize_outbound_ip_response') &&
     mainRs.includes('checkip.amazonaws.com') &&
@@ -211,10 +211,11 @@ check(
 
 check(
   'subscription import/update validate before applying',
-  mainRs.includes('struct ProfileSourceSummary') &&
+    mainRs.includes('struct ProfileSourceSummary') &&
     mainRs.includes('fn summarize_profile_source') &&
     mainRs.includes('subscription download returned empty content') &&
-    mainRs.includes('preflight_runtime_config(&patched, &profile, &settings)?') &&
+    mainRs.includes('preflight_runtime_config(&patched, &profile, &settings).map_err') &&
+    mainRs.includes('"runtime-preflight"') &&
     mainRs.includes('node_count') &&
     mainRs.includes('fn profile_file_summary') &&
     mainRs.includes('fn repair_profile_metadata') &&
@@ -293,6 +294,18 @@ check(
     mainRs.includes('Profile switch preflight failed for') &&
     mainRs.includes('running_switch_preflight_accepts_two_local_profiles'),
   'profile switch diagnostics and local integration test'
+);
+
+check(
+  'subscription failures are classified with actionable diagnostics',
+  mainRs.includes('fn subscription_diagnostic') &&
+    mainRs.includes('download_profile_source_url_diagnostic') &&
+    mainRs.includes('parse_uri_subscription_source_diagnostic') &&
+    mainRs.includes('"unsupported-format"') &&
+    mainRs.includes('"unsupported-protocol"') &&
+    mainRs.includes('"runtime-preflight"') &&
+    mainRs.includes('subscription_diagnostics_classify_unsupported_protocols'),
+  'download, format, protocol, and runtime preflight diagnostics'
 );
 
 check(

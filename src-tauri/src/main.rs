@@ -75,7 +75,7 @@ struct Profile {
     digest: String,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 struct ProfileSourceSummary {
     format: String,
     proxies: usize,
@@ -84,9 +84,54 @@ struct ProfileSourceSummary {
     unsupported_lines: usize,
 }
 
+#[derive(Debug)]
 struct ProfileSource {
     config: YamlValue,
     summary: ProfileSourceSummary,
+}
+
+fn subscription_diagnostic(stage: &str, reason: impl AsRef<str>, suggestion: &str) -> String {
+    format!(
+        "Subscription diagnostics [{stage}]: {}. Suggestion: {suggestion}. Open Logs or Diagnostics for details.",
+        reason.as_ref()
+    )
+}
+
+fn is_supported_uri_scheme(scheme: &str) -> bool {
+    matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "ss" | "trojan" | "vmess" | "vless" | "hysteria2" | "hy2" | "anytls" | "tuic"
+    )
+}
+
+fn unsupported_uri_schemes(text: &str) -> Vec<String> {
+    let body = if text.contains("://") {
+        text.to_string()
+    } else {
+        b64_decode_text(text).unwrap_or_default()
+    };
+    let mut schemes = body
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.split_once("://").map(|(scheme, _)| scheme.trim()))
+        .filter(|scheme| !scheme.is_empty() && !is_supported_uri_scheme(scheme))
+        .map(|scheme| scheme.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    schemes.sort();
+    schemes.dedup();
+    schemes
+}
+
+fn looks_like_clash_yaml(text: &str) -> bool {
+    text.lines().take(48).any(|line| {
+        let line = line.trim_start();
+        line.starts_with("proxies:")
+            || line.starts_with("proxy-groups:")
+            || line.starts_with("rules:")
+            || line.starts_with("mixed-port:")
+            || line.starts_with("port:")
+            || line.starts_with("socks-port:")
+    })
 }
 
 struct RenderedProfile {
@@ -1309,6 +1354,7 @@ fn parse_uri_subscription(text: &str) -> Option<YamlValue> {
     Some(YamlValue::Mapping(root))
 }
 
+#[allow(dead_code)]
 fn parse_uri_subscription_source(text: &str) -> Result<ProfileSource, String> {
     let config = parse_uri_subscription(text).ok_or_else(|| {
         "订阅格式不支持：不是 Clash YAML，也不是可识别的 ss/vmess/vless/trojan/hysteria2/anytls/tuic URI 订阅".to_string()
@@ -1337,6 +1383,7 @@ fn parse_uri_subscription_source(text: &str) -> Result<ProfileSource, String> {
     Ok(ProfileSource { config, summary })
 }
 
+#[allow(dead_code)]
 fn download_profile_source_url(url: &str) -> Result<ProfileSource, String> {
     let parsed = reqwest::Url::parse(url).map_err(|err| format!("订阅 URL 无效：{err}"))?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -1366,6 +1413,137 @@ fn download_profile_source_url(url: &str) -> Result<ProfileSource, String> {
         _ => parse_uri_subscription_source(&text)?,
     };
     Ok(source)
+}
+
+fn parse_uri_subscription_source_diagnostic(text: &str) -> Result<ProfileSource, String> {
+    let config = parse_uri_subscription(text).ok_or_else(|| {
+        let unsupported = unsupported_uri_schemes(text);
+        if unsupported.is_empty() {
+            subscription_diagnostic(
+                "unsupported-format",
+                "content is not Clash YAML and no supported proxy URI lines were found",
+                "use a Clash/Mihomo subscription, or URI lines for ss/vmess/vless/trojan/hysteria2/anytls/tuic",
+            )
+        } else {
+            subscription_diagnostic(
+                "unsupported-protocol",
+                format!("unsupported URI protocol(s): {}", unsupported.join(", ")),
+                "switch the subscription protocol to Clash/Mihomo, or import a protocol supported by the current bundled core",
+            )
+        }
+    })?;
+    let body = if text.contains("://") {
+        text.to_string()
+    } else {
+        b64_decode_text(text).unwrap_or_default()
+    };
+    let unsupported_lines = body
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| {
+            !line.starts_with("ss://")
+                && !line.starts_with("trojan://")
+                && !line.starts_with("vmess://")
+                && !line.starts_with("vless://")
+                && !line.starts_with("hysteria2://")
+                && !line.starts_with("hy2://")
+                && !line.starts_with("anytls://")
+                && !line.starts_with("tuic://")
+        })
+        .count();
+    let summary = summarize_profile_source(&config, "uri", unsupported_lines).map_err(|err| {
+        subscription_diagnostic(
+            "empty-proxies",
+            err,
+            "check the subscription content and retry",
+        )
+    })?;
+    Ok(ProfileSource { config, summary })
+}
+
+fn download_profile_source_url_diagnostic(url: &str) -> Result<ProfileSource, String> {
+    let parsed = reqwest::Url::parse(url).map_err(|err| {
+        subscription_diagnostic(
+            "invalid-url",
+            format!("invalid subscription URL: {err}"),
+            "copy the full airport subscription URL again and make sure it starts with http:// or https://",
+        )
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(subscription_diagnostic(
+            "invalid-url",
+            format!("unsupported URL scheme: {}", parsed.scheme()),
+            "Aegos imports remote subscriptions through HTTP/HTTPS URLs; paste the airport subscription link instead of a local or custom scheme",
+        ));
+    }
+    let text = Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|err| {
+            subscription_diagnostic(
+                "download-client",
+                format!("download client init failed: {err}"),
+                "restart Aegos and retry; if it repeats, export logs for diagnosis",
+            )
+        })?
+        .get(url)
+        .header("User-Agent", format!("Aegos/{}", env!("CARGO_PKG_VERSION")))
+        .send()
+        .map_err(|err| {
+            subscription_diagnostic(
+                "download-failed",
+                format!("subscription download failed: {err}"),
+                "check system proxy/network reachability, then retry updating the subscription",
+            )
+        })?
+        .error_for_status()
+        .map_err(|err| {
+            subscription_diagnostic(
+                "http-status",
+                format!("subscription download failed: bad HTTP status: {err}"),
+                "check whether the subscription is expired, token is wrong, or the airport blocks this request",
+            )
+        })?
+        .text()
+        .map_err(|err| {
+            subscription_diagnostic(
+                "read-failed",
+                format!("subscription read failed: {err}"),
+                "retry once; if it repeats, the server may be returning malformed content",
+            )
+        })?;
+    if text.trim().is_empty() {
+        return Err(subscription_diagnostic(
+            "empty-content",
+            "subscription download returned empty content",
+            "check whether the subscription token is expired or the airport returned an empty plan",
+        ));
+    }
+    match serde_yaml::from_str::<YamlValue>(&text) {
+        Ok(YamlValue::Mapping(map)) => {
+            let config = YamlValue::Mapping(map);
+            let summary = summarize_profile_source(&config, "clash-yaml", 0).map_err(|err| {
+                subscription_diagnostic(
+                    "empty-proxies",
+                    err,
+                    "check whether the subscription contains usable proxy nodes",
+                )
+            })?;
+            Ok(ProfileSource { config, summary })
+        }
+        Ok(_) => parse_uri_subscription_source_diagnostic(&text),
+        Err(err) => {
+            if looks_like_clash_yaml(&text) {
+                return Err(subscription_diagnostic(
+                    "yaml-parse",
+                    format!("Clash YAML parse failed: {err}"),
+                    "open the subscription in the airport panel and choose a Clash/Mihomo format, then retry",
+                ));
+            }
+            parse_uri_subscription_source_diagnostic(&text)
+        }
+    }
 }
 
 fn patch_config_with_settings(
@@ -2111,6 +2289,37 @@ mod tests {
             anytls.get(yaml_key("name")).and_then(YamlValue::as_str),
             Some("JP AnyTLS")
         );
+    }
+
+    #[test]
+    fn subscription_diagnostics_classify_unsupported_protocols() {
+        let err = parse_uri_subscription_source_diagnostic(
+            "ssr://example-one\nwireguard://example-two",
+        )
+        .expect_err("unsupported protocols should be classified");
+
+        assert!(err.contains("Subscription diagnostics [unsupported-protocol]"));
+        assert!(err.contains("ssr"));
+        assert!(err.contains("wireguard"));
+        assert!(err.contains("Logs or Diagnostics"));
+    }
+
+    #[test]
+    fn subscription_diagnostics_classify_unsupported_format() {
+        let err = parse_uri_subscription_source_diagnostic("plain text without proxy uris")
+            .expect_err("plain text should be classified");
+
+        assert!(err.contains("Subscription diagnostics [unsupported-format]"));
+        assert!(err.contains("Clash YAML"));
+    }
+
+    #[test]
+    fn subscription_diagnostics_classify_invalid_url_scheme() {
+        let err = download_profile_source_url_diagnostic("ftp://example.com/sub")
+            .expect_err("non-http urls should be rejected before network access");
+
+        assert!(err.contains("Subscription diagnostics [invalid-url]"));
+        assert!(err.contains("unsupported URL scheme"));
     }
 
     #[test]
@@ -6546,7 +6755,7 @@ fn add_profile_url_detached(
         let core = core.lock().unwrap();
         (core.settings.clone(), core.profile_dir.clone())
     };
-    let source = download_profile_source_url(url)?;
+    let source = download_profile_source_url_diagnostic(url)?;
     let summary = source.summary.clone();
     let id = format!("url-{}", now_iso());
     let patched = patch_config_with_settings(source.config, &settings, Some(&id))?;
@@ -6562,7 +6771,13 @@ fn add_profile_url_detached(
         updated_at: now_iso(),
         digest: String::new(),
     };
-    preflight_runtime_config(&patched, &profile, &settings)?;
+    preflight_runtime_config(&patched, &profile, &settings).map_err(|err| {
+        subscription_diagnostic(
+            "runtime-preflight",
+            format!("runtime config preflight failed: {err}"),
+            "the subscription was downloaded, but the generated Mihomo config is not runnable; check unsupported node fields or malformed proxy groups",
+        )
+    })?;
     fs::write(
         &path,
         serde_yaml::to_string(&patched).map_err(|err| err.to_string())?,
@@ -6641,12 +6856,18 @@ fn update_profile_detached(
     let Some(url) = profile.source_url.clone() else {
         return Ok(profile);
     };
-    let source = download_profile_source_url(&url)?;
+    let source = download_profile_source_url_diagnostic(&url)?;
     let summary = source.summary.clone();
     let patched = patch_config_with_settings(source.config, &settings, Some(&profile.id))?;
     profile.node_count = summary.proxies;
     profile.proxy_group_count = summary.proxy_groups;
-    preflight_runtime_config(&patched, &profile, &settings)?;
+    preflight_runtime_config(&patched, &profile, &settings).map_err(|err| {
+        subscription_diagnostic(
+            "runtime-preflight",
+            format!("runtime config preflight failed: {err}"),
+            "the subscription was downloaded, but the generated Mihomo config is not runnable; the previous subscription is kept",
+        )
+    })?;
     let previous_profile = profile.clone();
     let profile_path = PathBuf::from(&profile.path);
     let previous_raw = fs::read_to_string(&profile_path).ok();
