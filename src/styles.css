@@ -340,7 +340,7 @@ dd {
 }
 
 .drag-zone {
-  cursor: move;
+  cursor: default;
 }
 
 .window-actions {

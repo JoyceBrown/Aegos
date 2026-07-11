@@ -2214,9 +2214,7 @@ $all('.nav button').forEach((button) => {
   };
 });
 
-$('#connectBtn').onclick = toggleCore;
-$('#refreshStatusBtn').onclick = async () => { await refreshStatus(true); await refreshNodes(true); setNotice('已刷新核心状态和节点列表。'); };
-if ($('#refreshNodesBtn')) $('#refreshNodesBtn').onclick = refreshNodes;
+$('#connectBtn').onclick = toggleCore;if ($('#refreshNodesBtn')) $('#refreshNodesBtn').onclick = refreshNodes;
 $('#modeBtn').onclick = toggleModeMenu;
 $('#quickKillBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '切换中...', () => updateSetting('killSwitchEnabled', !latestStatus?.settings?.killSwitchEnabled), { preserveContent: true }));
 $('#quickTestBtn').onclick = (event) => runButtonAction(event.currentTarget, '测速中...', testNodes);
