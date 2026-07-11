@@ -151,6 +151,66 @@ fn protocol_capability_summary() -> String {
     )
 }
 
+fn classify_failure_reason(reason: &str) -> &'static str {
+    let text = reason.to_ascii_lowercase();
+    if text.contains("timeout") || text.contains("timed out") || text.contains("i/o timeout") {
+        "timeout"
+    } else if text.contains("dns")
+        || text.contains("lookup")
+        || text.contains("no such host")
+        || text.contains("failed to lookup")
+    {
+        "dns"
+    } else if text.contains("tls")
+        || text.contains("certificate")
+        || text.contains("handshake")
+        || text.contains("x509")
+    {
+        "tls"
+    } else if text.contains("unauthorized")
+        || text.contains("forbidden")
+        || text.contains("authentication")
+        || text.contains("permission denied")
+        || text.contains("401")
+        || text.contains("403")
+    {
+        "auth"
+    } else if text.contains("unsupported proxy type")
+        || text.contains("unsupported protocol")
+        || text.contains("not supported")
+    {
+        "unsupported-protocol"
+    } else if text.contains("port")
+        && (text.contains("in use") || text.contains("conflict") || text.contains("占用"))
+    {
+        "port-conflict"
+    } else if text.contains("controller")
+        || text.contains("/proxies")
+        || text.contains("/configs")
+        || text.contains("connection refused")
+    {
+        "controller-unavailable"
+    } else if text.contains("yaml")
+        || text.contains("config")
+        || text.contains("preflight")
+        || text.contains("配置")
+    {
+        "config"
+    } else if text.contains("network") || text.contains("connect") || text.contains("proxy") {
+        "network"
+    } else {
+        "unknown"
+    }
+}
+
+fn classified_error(context: &str, reason: impl AsRef<str>) -> String {
+    let reason = reason.as_ref();
+    format!(
+        "{context} failed [{}]: {reason}",
+        classify_failure_reason(reason)
+    )
+}
+
 fn is_ignorable_subscription_line(line: &str) -> bool {
     let line = line.trim().trim_start_matches('\u{feff}');
     if line.is_empty()
@@ -2714,6 +2774,24 @@ rules:
         let missing_proxy = validate_proxy_selection_from_groups(&groups, "GLOBAL", "Missing")
             .expect_err("missing proxy should fail");
         assert!(missing_proxy.contains("proxy 'Missing' is not in group 'GLOBAL'"));
+    }
+
+    #[test]
+    fn failure_reason_classifier_covers_common_connection_failures() {
+        assert_eq!(classify_failure_reason("dial tcp: i/o timeout"), "timeout");
+        assert_eq!(classify_failure_reason("dns lookup failed"), "dns");
+        assert_eq!(classify_failure_reason("tls handshake failed"), "tls");
+        assert_eq!(classify_failure_reason("HTTP 401 unauthorized"), "auth");
+        assert_eq!(
+            classify_failure_reason("Config preflight failed: unsupported proxy type"),
+            "unsupported-protocol"
+        );
+        assert_eq!(
+            classify_failure_reason("controller connection refused"),
+            "controller-unavailable"
+        );
+        assert!(classified_error("Node switch", "connection refused")
+            .contains("Node switch failed [controller-unavailable]"));
     }
 
     #[test]
@@ -6117,7 +6195,7 @@ impl CoreManager {
                     }
                 }
                 let _ = self.save_settings();
-                return Err(err);
+                return Err(classified_error("Node switch", err));
             }
             let _ = self.sync_outbound_ip_group_selection();
             let _ = self.controller("DELETE", "/connections", None, 1500);
