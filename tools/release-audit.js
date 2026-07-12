@@ -58,6 +58,7 @@ check('node-flow audit script exists', exists('tools/node-flow-audit.js') && pkg
 check('architecture freeze audit script exists', exists('tools/architecture-freeze-audit.js') && pkg.scripts?.['audit:architecture'] === 'node tools/architecture-freeze-audit.js' && exists('ARCHITECTURE_FREEZE_2.9.20_TO_2.9.29.md'), 'tools/architecture-freeze-audit.js / ARCHITECTURE_FREEZE_2.9.20_TO_2.9.29.md');
 check('debt audit script exists', exists('tools/debt-audit.js') && pkg.scripts?.['audit:debt'] === 'node tools/debt-audit.js', 'tools/debt-audit.js');
 check('opensource absorption audit script exists', exists('tools/opensource-absorption-audit.js') && pkg.scripts?.['audit:opensource'] === 'node tools/opensource-absorption-audit.js' && exists('research/opensource-absorption-standard.md') && exists('research/opensource-reference.md') && exists('research/opensource-absorption-roadmap.md') && exists('core-api-contract.md'), 'tools/opensource-absorption-audit.js / research / core-api-contract.md');
+check('FlClash benchmark audit script exists', exists('tools/flclash-benchmark-audit.js') && pkg.scripts?.['audit:flclash'] === 'node tools/flclash-benchmark-audit.js' && exists('research/flclash-benchmark-2.9.54.md'), 'tools/flclash-benchmark-audit.js / research/flclash-benchmark-2.9.54.md');
 
 const mainRs = readText('src-tauri/src/main.rs');
 const powershellCalls = (mainRs.match(/Command::new\("powershell\.exe"\)/g) || []).length;
