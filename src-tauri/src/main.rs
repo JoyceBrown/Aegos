@@ -3971,6 +3971,58 @@ rules:
     }
 
     #[test]
+    fn routing_reload_preflight_contract_is_readonly_and_rollback_aware() {
+        let profile = Profile {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            profile_type: "file".to_string(),
+            path: "profile.yaml".to_string(),
+            source_url: None,
+            node_count: 1,
+            proxy_group_count: 1,
+            updated_at: "now".to_string(),
+            digest: "digest".to_string(),
+        };
+        let rule_validation = json!({
+            "ok": true,
+            "warningCount": 0,
+            "missingRuleTargets": [],
+            "ruleOrderIssues": []
+        });
+        let contract = routing_reload_contract_from_parts(
+            &profile,
+            rule_validation,
+            Ok(json!({ "proxies": 1, "proxyGroups": 1, "rules": 2 })),
+        );
+
+        assert_eq!(
+            contract.get("readOnly").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            contract.get("writesConfig").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            contract
+                .get("requiresRollbackPlan")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            contract
+                .get("hotReloadAllowed")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert!(contract
+            .get("steps")
+            .and_then(JsonValue::as_array)
+            .map(|steps| steps.len() >= 6)
+            .unwrap_or(false));
+    }
+
+    #[test]
     fn parses_base64_tuic_subscription() {
         let uri = "tuic://00000000-0000-4000-8000-000000000000:secret@example.com:443?sni=example.com&alpn=h3&congestion_control=bbr&udp_relay_mode=native&reduce_rtt=true#HK%20TUIC";
         let encoded = general_purpose::STANDARD.encode(uri);
@@ -9666,6 +9718,34 @@ fn profile_rule_validation(state: State<AppState>, id: String) -> Result<JsonVal
 }
 
 #[tauri::command]
+fn routing_reload_preflight(
+    state: State<AppState>,
+    id: Option<String>,
+) -> Result<JsonValue, String> {
+    let (profile, runtime_preflight) = {
+        let core = state.core.lock().unwrap();
+        let profile = if let Some(id) = id.as_deref() {
+            core.settings
+                .profiles
+                .iter()
+                .find(|profile| profile.id == id)
+                .cloned()
+        } else {
+            core.active_profile()
+        }
+        .ok_or_else(|| "Profile not found".to_string())?;
+        let runtime_preflight = core.preflight_profile_file(&profile);
+        (profile, runtime_preflight)
+    };
+    let rule_validation = routing_rule_validation_summary_for_profile(&profile);
+    Ok(routing_reload_contract_from_parts(
+        &profile,
+        rule_validation,
+        runtime_preflight,
+    ))
+}
+
+#[tauri::command]
 fn start_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
     let already_running = state.speed_test.lock().unwrap().running;
     let snapshot = mark_speed_test_preparing(&state.speed_test);
@@ -10240,6 +10320,45 @@ fn routing_rule_validation_summary_for_profile(profile: &Profile) -> JsonValue {
     })
 }
 
+fn routing_reload_contract_from_parts(
+    profile: &Profile,
+    rule_validation: JsonValue,
+    runtime_preflight: Result<JsonValue, String>,
+) -> JsonValue {
+    let runtime_ok = runtime_preflight.is_ok();
+    let runtime_error = runtime_preflight.as_ref().err().cloned();
+    let warning_count = rule_validation
+        .get("warningCount")
+        .and_then(JsonValue::as_u64)
+        .unwrap_or(0);
+    json!({
+        "profileId": profile.id,
+        "profileName": profile.name,
+        "readOnly": true,
+        "writesConfig": false,
+        "hotReloadAllowed": runtime_ok,
+        "requiresRollbackPlan": true,
+        "runtimePreflightOk": runtime_ok,
+        "runtimePreflight": runtime_preflight.ok(),
+        "runtimeError": runtime_error,
+        "ruleValidation": rule_validation,
+        "warningCount": warning_count,
+        "steps": [
+            "parse active profile rules",
+            "validate rule targets and order",
+            "render patched runtime config in memory",
+            "run runtime preflight before any write",
+            "write through confined atomic replacement only after preflight",
+            "reload mihomo with previous config rollback available"
+        ],
+        "rollback": {
+            "required": true,
+            "strategy": "restore previous profile file/runtime digest and restart or hot reload previous runtime",
+            "systemState": "preserve traffic takeover, system proxy preference, and current selected node map"
+        }
+    })
+}
+
 #[tauri::command]
 fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
     let (running, controller_port, secret, mode, groups, active_profile) = {
@@ -10526,6 +10645,7 @@ fn main() {
             proxy_groups,
             preview_profile_groups,
             profile_rule_validation,
+            routing_reload_preflight,
             start_proxy_delay_test,
             test_single_proxy_delay,
             node_diagnostics,

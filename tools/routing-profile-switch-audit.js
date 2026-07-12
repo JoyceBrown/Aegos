@@ -30,7 +30,7 @@ const setActiveStart = mainRs.indexOf('fn set_active_profile');
 const setActiveEnd = mainRs.indexOf('fn rename_profile', setActiveStart);
 const setActiveBody = setActiveStart >= 0 ? mainRs.slice(setActiveStart, setActiveEnd > setActiveStart ? setActiveEnd : undefined) : '';
 
-check('package version is 3.2.4 for profile-switch rule validation checkpoint', pkg.version === '3.2.4', pkg.version);
+check('package version remains in 3.2 rule foundation lane', /^3\.2\.\d+$/.test(pkg.version), pkg.version);
 check('profile switch routing audit is exposed as package script', pkg.scripts?.['audit:routing-profile-switch'] === 'node tools/routing-profile-switch-audit.js', 'npm run audit:routing-profile-switch');
 check('profile rule validation summary reuses parsed rule checks', mainRs.includes('fn routing_rule_validation_summary_for_profile') && mainRs.includes('"missingRuleTargets"') && mainRs.includes('"ruleOrderIssues"') && mainRs.includes('"warningCount"'), 'validation summary');
 check('profile switch runs rule validation before activation', setActiveBody.includes('routing_rule_validation_summary_for_profile(&profile)') && setActiveBody.includes('Profile switch rule validation warning') && setActiveBody.includes('Profile switch rule validation passed') && setActiveBody.indexOf('routing_rule_validation_summary_for_profile(&profile)') < setActiveBody.indexOf('self.settings.active_profile_id = id.to_string()'), 'set_active_profile validation order');
