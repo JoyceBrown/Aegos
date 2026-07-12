@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
 const appJs = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
+const indexHtml = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
 const backendAudit = fs.readFileSync(path.join(root, 'tools', 'backend-audit.js'), 'utf8');
 const interactionSmoke = fs.readFileSync(path.join(root, 'tools', 'interaction-smoke.js'), 'utf8');
 const releaseAudit = fs.readFileSync(path.join(root, 'tools', 'release-audit.js'), 'utf8');
@@ -129,10 +130,11 @@ check(
     mainRs.includes('DelayTestResult') &&
     mainRs.includes('classify_failure_reason(&err.to_string())') &&
     appJs.includes('function speedFailureReasonLabel') &&
-    appJs.includes('return \'超时\'') &&
-    appJs.includes('nodeDelayText(row)') &&
-    appJs.includes('speedFailureReasonLabel(row?.[18])'),
-  'tested failed nodes must show timeout/DNS/TLS/auth/etc. instead of reverting to untested'
+    appJs.includes('function nodeSpeedNoteInfo') &&
+    appJs.includes('speedFailureReasonLabel(failureReason)') &&
+    appJs.includes('className: \'node-note note-bad\'') &&
+    indexHtml.includes('<span>状态</span>'),
+  'tested failed nodes must show timeout/DNS/TLS/auth/etc. in a dedicated status column instead of reverting to untested'
 );
 
 check(

@@ -642,7 +642,8 @@ try {
     const tableBox = document.querySelector('.node-table')?.getBoundingClientRect();
     if (!rowActionBox || !tableBox || rowActionBox.right > tableBox.right - 6) throw new Error('node row actions are too close to the table edge');
     if (!document.querySelector('.row-action-labels')?.textContent.includes('测速')) throw new Error('node action labels did not render');
-    if (document.querySelector('#nodeRows .row[data-node]')?.children.length !== 7) throw new Error('node load/traffic columns were not removed');
+    if (document.querySelector('#nodeRows .row[data-node]')?.children.length !== 8) throw new Error('node table did not render the expected status/stability columns');
+    if (!document.querySelector('#nodeRows .row[data-node] .node-note')) throw new Error('node speed status note did not render');
     await click('#nodeRows [data-node-action="edit"]');
     if (!document.querySelector('#protectionNotice')?.textContent.includes('编辑节点')) throw new Error('node edit action did not show feedback');
     const rowTestButton = document.querySelector('#nodeRows [data-node-action="test"]');

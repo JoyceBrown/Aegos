@@ -1601,7 +1601,7 @@ h1 {
 
 .row {
   display: grid;
-  grid-template-columns: 24px 26px minmax(148px, 1.25fr) minmax(140px, 1fr) 64px 72px 116px;
+  grid-template-columns: 24px 26px minmax(148px, 1.35fr) minmax(112px, .78fr) 64px 68px 72px 116px;
   gap: 8px;
   align-items: center;
   min-width: 0;
@@ -1663,6 +1663,44 @@ h1 {
   background: linear-gradient(135deg, #72d5df, #8798ff);
   font-weight: 900;
   font-size: 12px;
+}
+
+.node-address {
+  color: #50617d;
+  font-size: 13px;
+}
+
+.node-delay {
+  font-variant-numeric: tabular-nums;
+}
+
+.node-note {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  height: 24px;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.note-ok {
+  color: #1f9f68;
+}
+
+.note-warn {
+  color: #b16f17;
+}
+
+.note-bad {
+  color: #c64e4e;
+}
+
+.note-testing {
+  color: var(--blue);
+}
+
+.note-muted {
+  color: #7b8798;
 }
 
 .load {
@@ -2041,7 +2079,7 @@ dd {
 }
 
 .home-nodes {
-  --home-node-columns: 24px 26px minmax(180px, 1.2fr) minmax(170px, 1fr) 72px 66px;
+  --home-node-columns: 24px 26px minmax(180px, 1.2fr) minmax(112px, .78fr) 72px 62px 66px;
   padding: 10px;
 }
 
@@ -2573,7 +2611,7 @@ dd {
 }
 
 .home-nodes {
-  --home-node-columns: 36px 42px minmax(0, 1.35fr) minmax(0, 1fr) 92px 84px;
+  --home-node-columns: 36px 42px minmax(0, 1.35fr) minmax(86px, .78fr) 82px 62px 76px;
 }
 
 .home-row-head,
@@ -2603,7 +2641,7 @@ dd {
   }
 
   .home-nodes {
-    --home-node-columns: 30px 34px minmax(0, 1.25fr) minmax(0, .95fr) 82px 76px;
+    --home-node-columns: 30px 34px minmax(0, 1.24fr) minmax(78px, .72fr) 76px 58px 70px;
   }
 }
 

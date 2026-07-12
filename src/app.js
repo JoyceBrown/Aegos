@@ -608,6 +608,29 @@ function delayText(value) {
   return '-';
 }
 
+function shortAddress(host = '') {
+  const value = String(host || '').trim();
+  if (!value) return '-';
+  if (value.length <= 24) return value;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(value)) return value;
+  const parts = value.split('.');
+  if (parts.length >= 2) {
+    const suffix = parts.slice(-2).join('.');
+    const prefix = parts[0].slice(0, 6);
+    return `${prefix}\u2026${suffix}`;
+  }
+  return `${value.slice(0, 10)}\u2026${value.slice(-8)}`;
+}
+
+function nodeAddressInfo(row = []) {
+  const protocol = protocolLabel(row?.[6] || 'unknown');
+  const host = String(row?.[2] || '').trim();
+  return {
+    label: `${protocol} / ${shortAddress(host)}`,
+    title: `${protocol} / ${host || '-'}`
+  };
+}
+
 function speedFailureReasonLabel(reason = '') {
   const key = String(reason || '').toLowerCase();
   if (!key) return '测速失败';
@@ -626,10 +649,27 @@ function nodeDelayText(row) {
   const delay = Number(row?.[3] ?? -1);
   if (delay > 0) return `${Math.round(delay)} ms`;
   if (delay === 0) return '\u6d4b\u901f\u4e2d';
-  if (Number(row?.[17] || 0) > 0 || Number(row?.[12] || 0) > 0) {
-    return speedFailureReasonLabel(row?.[18]);
-  }
   return '-';
+}
+
+function nodeSpeedNoteInfo(row) {
+  const delay = Number(row?.[3] ?? -1);
+  const failureReason = String(row?.[18] || '');
+  const hasFailed = Number(row?.[17] || 0) > 0 || Number(row?.[12] || 0) > 0 || Boolean(failureReason);
+  if (delay === 0) {
+    return { label: '\u6d4b\u901f\u4e2d', className: 'node-note note-testing', title: '\u8282\u70b9\u6b63\u5728\u6d4b\u901f' };
+  }
+  if (delay > 0 && delay < 100) {
+    return { label: '\u6b63\u5e38', className: 'node-note note-ok', title: '\u672c\u6b21\u6d4b\u901f\u6210\u529f' };
+  }
+  if (delay >= 100) {
+    return { label: '\u504f\u9ad8', className: 'node-note note-warn', title: '\u5ef6\u8fdf\u9ad8\u4e8e 100 ms' };
+  }
+  if (hasFailed) {
+    const label = speedFailureReasonLabel(failureReason);
+    return { label, className: 'node-note note-bad', title: failureReason || label };
+  }
+  return { label: '\u5f85\u6d4b', className: 'node-note note-muted', title: '\u5c1a\u672a\u6d4b\u901f' };
 }
 
 function confidenceLabel(value) {
@@ -775,6 +815,8 @@ function renderNodeRow(row, stabilityRows = []) {
   const delayValue = Number(delay);
   const delayText = nodeDelayText(row);
   const delayState = delayClass(delayValue);
+  const address = nodeAddressInfo(row);
+  const note = nodeSpeedNoteInfo(row);
   const stability = stabilityInfo(row, stabilityRows);
   const title = el('strong', {}, [
     el('span', { className: 'node-badge', textContent: region }),
@@ -794,8 +836,9 @@ function renderNodeRow(row, stabilityRows = []) {
     el('span', { className: 'radio' }),
     icon(`star ${favorite ? 'icon-star-filled' : 'icon-star'}`),
     title,
-    el('span', { textContent: `${protocolLabel(protocol)} / ${host || ''}` }),
-    el('span', { className: delayState, textContent: delayText }),
+    el('span', { className: 'node-address', textContent: address.label, attrs: { title: address.title } }),
+    el('span', { className: `node-delay ${delayState}`, textContent: delayText }),
+    el('span', { className: note.className, textContent: note.label, attrs: { title: note.title } }),
     el('span', { className: `confidence-pill ${stability.className}`, textContent: stability.label }),
     actions
   ]);
@@ -806,6 +849,8 @@ function renderHomeNodeRow(row, stabilityRows = []) {
   const delayValue = Number(delay);
   const delayText = nodeDelayText(row);
   const delayState = delayClass(delayValue);
+  const address = nodeAddressInfo(row);
+  const note = nodeSpeedNoteInfo(row);
   const stability = stabilityInfo(row, stabilityRows);
   const title = el('strong', {}, [
     el('span', { className: 'node-badge', textContent: region }),
@@ -820,8 +865,9 @@ function renderHomeNodeRow(row, stabilityRows = []) {
     el('span', { className: 'radio' }),
     el('span', { className: 'star', textContent: favorite ? '\u2605' : '\u2606' }),
     title,
-    el('span', { textContent: `${protocolLabel(protocol)} / ${host || ''}` }),
-    el('span', { className: delayState, textContent: delayText }),
+    el('span', { className: 'node-address', textContent: address.label, attrs: { title: address.title } }),
+    el('span', { className: `node-delay ${delayState}`, textContent: delayText }),
+    el('span', { className: note.className, textContent: note.label, attrs: { title: note.title } }),
     el('span', { className: `confidence-pill ${stability.className}`, textContent: stability.label })
   ]);
 }
@@ -1687,12 +1733,19 @@ function updateNodeDelayDom(name, delay, failureReason = '') {
   const value = Number(delay);
   $all('.row[data-node]').forEach((row) => {
     if (row.dataset.node !== name) return;
-    const delayCell = row.children?.[4];
+    const delayCell = row.querySelector('.node-delay');
     if (delayCell) {
-      delayCell.className = delayClass(value);
-      delayCell.textContent = value < 0 ? speedFailureReasonLabel(failureReason) : delayText(value);
+      delayCell.className = `node-delay ${delayClass(value)}`;
+      delayCell.textContent = delayText(value);
     }
-    const stabilityCell = row.children?.[5];
+    const noteCell = row.querySelector('.node-note');
+    if (noteCell) {
+      const note = nodeSpeedNoteInfo([null, name, null, value, null, null, null, null, null, null, null, null, value < 0 ? 1 : 0, null, null, null, value === 0 ? 'testing' : value > 0 ? 'medium' : 'failed', value === 0 ? 0 : Math.floor(Date.now() / 1000), failureReason]);
+      noteCell.className = note.className;
+      noteCell.textContent = note.label;
+      noteCell.setAttribute('title', note.title);
+    }
+    const stabilityCell = row.querySelector('.confidence-pill');
     if (stabilityCell) {
       stabilityCell.className = value === 0 ? 'confidence-pill confidence-muted' : stabilityCell.className;
       if (value === 0) stabilityCell.textContent = '\u6d4b\u901f\u4e2d';
