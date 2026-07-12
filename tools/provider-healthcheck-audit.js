@@ -17,6 +17,18 @@ function check(name, ok, detail = '') {
   (ok ? pass : fail).push({ name, ok, detail });
 }
 
+function semverAtLeast(version, baseline) {
+  const parse = (value) => String(value).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const current = parse(version);
+  const min = parse(baseline);
+  for (let index = 0; index < Math.max(current.length, min.length); index += 1) {
+    const left = current[index] || 0;
+    const right = min[index] || 0;
+    if (left !== right) return left > right;
+  }
+  return true;
+}
+
 check('provider healthcheck contract exists', Boolean(contract), contractPath);
 check(
   'contract separates provider health from node switching',
@@ -53,7 +65,7 @@ check(
     speedAudit.includes('batch speed probes align with FlClash delay-test defaults'),
   'speed audit separation'
 );
-check('package version is 2.9.56 for this checkpoint', pkg.version === '2.9.56', pkg.version);
+check('package version keeps provider healthcheck gate after 2.9.56', semverAtLeast(pkg.version, '2.9.56'), pkg.version);
 
 const result = { ok: fail.length === 0, failed: fail, passed: pass, generatedAt: new Date().toISOString() };
 console.log(JSON.stringify(result, null, 2));

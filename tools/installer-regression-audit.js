@@ -17,6 +17,18 @@ function check(name, ok, detail = '') {
   (ok ? pass : fail).push({ name, ok, detail });
 }
 
+function semverAtLeast(version, baseline) {
+  const parse = (value) => String(value).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const current = parse(version);
+  const min = parse(baseline);
+  for (let index = 0; index < Math.max(current.length, min.length); index += 1) {
+    const left = current[index] || 0;
+    const right = min[index] || 0;
+    if (left !== right) return left > right;
+  }
+  return true;
+}
+
 check('installer regression checklist exists', Boolean(checklist), checklistPath);
 check(
   'checklist covers install prerequisites',
@@ -58,7 +70,7 @@ check(
   releaseAudit.includes('installer regression audit script exists'),
   'tools/release-audit.js'
 );
-check('package version is 2.9.57 for this checkpoint', pkg.version === '2.9.57', pkg.version);
+check('package version keeps installer regression gate after 2.9.57', semverAtLeast(pkg.version, '2.9.57'), pkg.version);
 
 const result = { ok: fail.length === 0, failed: fail, passed: pass, generatedAt: new Date().toISOString() };
 console.log(JSON.stringify(result, null, 2));

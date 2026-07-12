@@ -18,6 +18,18 @@ function check(name, ok, detail = '') {
   (ok ? pass : fail).push({ name, ok, detail });
 }
 
+function semverAtLeast(version, baseline) {
+  const parse = (value) => String(value).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const current = parse(version);
+  const min = parse(baseline);
+  for (let index = 0; index < Math.max(current.length, min.length); index += 1) {
+    const left = current[index] || 0;
+    const right = min[index] || 0;
+    if (left !== right) return left > right;
+  }
+  return true;
+}
+
 check('FlClash benchmark report exists', Boolean(report), reportPath);
 check(
   'benchmark requires same environment',
@@ -46,7 +58,7 @@ check(
     interactionSmoke.includes('speed test blocked sidebar page switching'),
   'audit/smoke evidence'
 );
-check('package version is 2.9.54 for this checkpoint', pkg.version === '2.9.54', pkg.version);
+check('package version keeps FlClash benchmark gate after 2.9.54', semverAtLeast(pkg.version, '2.9.54'), pkg.version);
 
 const result = { ok: fail.length === 0, failed: fail, passed: pass, generatedAt: new Date().toISOString() };
 console.log(JSON.stringify(result, null, 2));

@@ -63,6 +63,7 @@ check('speed target contract audit script exists', exists('tools/speed-target-au
 check('provider healthcheck audit script exists', exists('tools/provider-healthcheck-audit.js') && pkg.scripts?.['audit:provider-healthcheck'] === 'node tools/provider-healthcheck-audit.js' && exists('provider-healthcheck-contract.md'), 'tools/provider-healthcheck-audit.js / provider-healthcheck-contract.md');
 check('installer regression audit script exists', exists('tools/installer-regression-audit.js') && pkg.scripts?.['audit:installer-regression'] === 'node tools/installer-regression-audit.js' && exists('installer-regression-checklist.md'), 'tools/installer-regression-audit.js / installer-regression-checklist.md');
 check('copy encoding audit script exists', exists('tools/copy-encoding-audit.js') && pkg.scripts?.['audit:copy'] === 'node tools/copy-encoding-audit.js' && exists('copy-encoding-debt.md'), 'tools/copy-encoding-audit.js / copy-encoding-debt.md');
+check('maturity gate audit script exists', exists('tools/maturity-gate-audit.js') && pkg.scripts?.['audit:maturity'] === 'node tools/maturity-gate-audit.js' && exists('ROADMAP_3.0.0_TO_3.6.4.md'), 'tools/maturity-gate-audit.js / ROADMAP_3.0.0_TO_3.6.4.md');
 
 const mainRs = readText('src-tauri/src/main.rs');
 const powershellCalls = (mainRs.match(/Command::new\("powershell\.exe"\)/g) || []).length;
