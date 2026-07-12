@@ -621,6 +621,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 900));
     if (!document.querySelector('#routingGroupRows .simple-row')) throw new Error('routing page did not render strategy rows after quiet load');
     if (!document.querySelector('#routingReadonlyBadge')?.textContent.includes('只读')) throw new Error('routing page did not keep read-only badge visible');
+    if (document.querySelector('#routingModeState')?.textContent.trim() !== document.querySelector('#modeLabel')?.textContent.trim()) throw new Error('routing mode summary did not match current backend mode');
     await navDown('[data-page="diagnostics"]');
     await new Promise((resolve) => setTimeout(resolve, 900));
     const diagnosticCallsAfterSettle = window.__aegosCalls.filter((item) => item.command === 'diagnostics' || (item.command === 'start_job' && item.args.kind === 'diagnostics')).length;

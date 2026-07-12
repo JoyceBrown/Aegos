@@ -65,7 +65,7 @@ check('2.9.20-2.9.29 freeze document exists', exists(docPath), docPath);
 check('freeze document contains required sections', docSections.every((section) => freezeDoc.includes(section)), docSections.join(', '));
 check('freeze document covers every freeze-lane patch version', Array.from({ length: 10 }, (_, i) => `2.9.${20 + i}`).every((version) => freezeDoc.includes(version)), '2.9.20..2.9.29');
 
-check('release version has moved to post-freeze cleanup or guarded 3.x line', pkg.version === tauri.version && (/^2\.9\.(?:29|[3-9]\d+)$/.test(pkg.version) || /^3\.(?:0\.0|1\.[01])$/.test(pkg.version)), `${pkg.version}/${tauri.version}`);
+check('release version has moved to post-freeze cleanup or guarded 3.x line', pkg.version === tauri.version && (/^2\.9\.(?:29|[3-9]\d+)$/.test(pkg.version) || /^3\.(?:0\.0|1\.[0-2])$/.test(pkg.version)), `${pkg.version}/${tauri.version}`);
 check('release audit includes architecture gate', releaseAudit.includes('architecture freeze audit script exists') && releaseAudit.includes(docPath), 'tools/release-audit.js');
 check('package exposes audit:architecture', pkg.scripts?.['audit:architecture'] === 'node tools/architecture-freeze-audit.js', 'package.json scripts');
 check('debt-audit gate is wired for post-freeze cleanup', pkg.scripts?.['audit:debt'] === 'node tools/debt-audit.js' && releaseAudit.includes('debt audit script exists') && exists('tools/debt-audit.js'), 'debt-audit post-freeze gate');

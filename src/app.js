@@ -1267,6 +1267,12 @@ function markPageCache(page) {
   pageCacheState[page].updatedAt = Date.now();
 }
 
+function invalidatePageCache(page) {
+  if (!pageCacheState[page]) return;
+  pageCacheState[page].loaded = false;
+  pageCacheState[page].updatedAt = 0;
+}
+
 function shouldRefreshPageCache(page) {
   const state = pageCacheState[page];
   if (!state || state.loading) return false;
@@ -1730,7 +1736,11 @@ function renderStatus(status) {
 
 function applyOptimisticMode(mode) {
   if (latestStatus) latestStatus = { ...latestStatus, mode };
-  $('#modeLabel').textContent = modeLabel(mode);
+  const label = modeLabel(mode);
+  $('#modeLabel').textContent = label;
+  const routingMode = $('#routingModeState');
+  if (routingMode) routingMode.textContent = label;
+  invalidatePageCache('routing');
 }
 
 function applyOptimisticProfile(profileId) {

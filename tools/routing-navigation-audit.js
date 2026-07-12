@@ -25,7 +25,7 @@ const perfSmoke = read('tools/perf-smoke.js');
 const interactionSmoke = read('tools/interaction-smoke.js');
 const releaseAudit = read('tools/release-audit.js');
 
-check('package version is 3.1.1 for routing navigation checkpoint', pkg.version === '3.1.1', pkg.version);
+check('package version remains within the 3.1 routing navigation lane', /^3\.1\.\d+$/.test(pkg.version), pkg.version);
 check('routing nav button and panel are wired', indexHtml.includes('data-page="routing"') && indexHtml.includes('data-page-panel="routing"'), 'routing nav/panel');
 check('routing page load is deferred through page scheduler', appJs.includes("if (page === 'routing' && shouldRefreshPageCache(page)) refreshRoutingSnapshot(token)") && appJs.includes("routing: { loaded: false, loading: false, updatedAt: 0 }"), 'schedulePageLoad/pageCacheState');
 check('routing snapshot is token guarded before rendering', appJs.includes("if (!isCurrentPageTask(token, 'routing')) return;") && appJs.includes("invoke('routing_snapshot'"), 'token guarded invoke');
