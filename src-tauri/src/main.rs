@@ -3838,6 +3838,53 @@ mod tests {
     }
 
     #[test]
+    fn routing_rule_target_validation_reports_missing_targets() {
+        let config: YamlValue = serde_yaml::from_str(
+            r#"
+proxies:
+  - name: Node A
+    type: ss
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies:
+      - Node A
+rules:
+  - DOMAIN-SUFFIX,example.com,Proxy
+  - DOMAIN-SUFFIX,missing.example,MissingGroup
+  - MATCH,DIRECT
+"#,
+        )
+        .expect("config should parse");
+        let mut rules = yaml_sequence(&config, "rules")
+            .expect("rules")
+            .iter()
+            .enumerate()
+            .map(|(index, value)| parse_routing_rule_value(index + 1, value))
+            .collect::<Vec<_>>();
+        let targets = routing_rule_target_catalog(&config);
+        let missing = validate_routing_rule_targets(&mut rules, &targets);
+
+        assert_eq!(missing, vec!["MissingGroup".to_string()]);
+        assert_eq!(
+            rules[0].get("targetExists").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            rules[1].get("status").and_then(JsonValue::as_str),
+            Some("missing-target")
+        );
+        assert_eq!(
+            rules[2].get("targetExists").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            rules[2].get("targetKind").and_then(JsonValue::as_str),
+            Some("builtin")
+        );
+    }
+
+    #[test]
     fn parses_base64_tuic_subscription() {
         let uri = "tuic://00000000-0000-4000-8000-000000000000:secret@example.com:443?sni=example.com&alpn=h3&congestion_control=bbr&udp_relay_mode=native&reduce_rtt=true#HK%20TUIC";
         let encoded = general_purpose::STANDARD.encode(uri);
@@ -9833,15 +9880,104 @@ fn parse_routing_rule_value(index: usize, value: &YamlValue) -> JsonValue {
     })
 }
 
-fn routing_rules_for_profile(profile: Option<&Profile>) -> (Vec<JsonValue>, Option<String>) {
+fn routing_rule_builtin_targets() -> HashSet<String> {
+    [
+        "DIRECT",
+        "REJECT",
+        "REJECT-DROP",
+        "PASS",
+        "COMPATIBLE",
+        "GLOBAL",
+    ]
+    .iter()
+    .map(|value| (*value).to_string())
+    .collect()
+}
+
+fn routing_rule_target_catalog(config: &YamlValue) -> HashSet<String> {
+    let mut targets = routing_rule_builtin_targets();
+    for group in yaml_sequence(config, "proxy-groups")
+        .into_iter()
+        .flat_map(|items| items.iter())
+    {
+        if let Some(name) = yaml_mapping_name(group) {
+            targets.insert(name.to_string());
+        }
+    }
+    for proxy in yaml_sequence(config, "proxies")
+        .into_iter()
+        .flat_map(|items| items.iter())
+    {
+        if let Some(name) = yaml_mapping_name(proxy) {
+            targets.insert(name.to_string());
+        }
+    }
+    targets
+}
+
+fn routing_rule_target_exists(targets: &HashSet<String>, target: &str) -> bool {
+    targets.contains(target) || targets.contains(&target.to_ascii_uppercase())
+}
+
+fn validate_routing_rule_targets(
+    rules: &mut [JsonValue],
+    targets: &HashSet<String>,
+) -> Vec<String> {
+    let mut missing = HashSet::new();
+    let builtin_targets = routing_rule_builtin_targets();
+    for rule in rules {
+        let target = rule
+            .get("target")
+            .and_then(|value| value.as_str())
+            .unwrap_or("-")
+            .to_string();
+        let builtin = target != "-" && builtin_targets.contains(&target.to_ascii_uppercase());
+        let known = target != "-" && routing_rule_target_exists(targets, &target);
+        if let Some(map) = rule.as_object_mut() {
+            map.insert("targetExists".to_string(), json!(known));
+            map.insert(
+                "targetKind".to_string(),
+                json!(if builtin {
+                    "builtin"
+                } else if known {
+                    "profile-target"
+                } else if target == "-" {
+                    "none"
+                } else {
+                    "missing"
+                }),
+            );
+            if !known && target != "-" {
+                map.insert("status".to_string(), json!("missing-target"));
+                map.insert(
+                    "note".to_string(),
+                    json!("target is not present in active profile"),
+                );
+                missing.insert(target);
+            }
+        }
+    }
+    let mut missing = missing.into_iter().collect::<Vec<_>>();
+    missing.sort();
+    missing
+}
+
+fn routing_rules_for_profile(
+    profile: Option<&Profile>,
+) -> (Vec<JsonValue>, Vec<String>, Option<String>) {
     let Some(profile) = profile else {
-        return (Vec::new(), Some("no active profile".to_string()));
+        return (
+            Vec::new(),
+            Vec::new(),
+            Some("no active profile".to_string()),
+        );
     };
     let path = Path::new(&profile.path);
     let raw = match fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(err) => {
             return (
+                Vec::new(),
                 Vec::new(),
                 Some(format!(
                     "profile config read failed {}: {err}",
@@ -9855,11 +9991,12 @@ fn routing_rules_for_profile(profile: Option<&Profile>) -> (Vec<JsonValue>, Opti
         Err(err) => {
             return (
                 Vec::new(),
+                Vec::new(),
                 Some(format!("profile YAML parse failed: {err}")),
             )
         }
     };
-    let rules = yaml_sequence(&config, "rules")
+    let mut rules = yaml_sequence(&config, "rules")
         .map(|items| {
             items
                 .iter()
@@ -9868,7 +10005,9 @@ fn routing_rules_for_profile(profile: Option<&Profile>) -> (Vec<JsonValue>, Opti
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    (rules, None)
+    let targets = routing_rule_target_catalog(&config);
+    let missing_targets = validate_routing_rule_targets(&mut rules, &targets);
+    (rules, missing_targets, None)
 }
 
 #[tauri::command]
@@ -9955,7 +10094,8 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
             })
         })
         .collect::<Vec<_>>();
-    let (static_rules, rule_error) = routing_rules_for_profile(active_profile.as_ref());
+    let (static_rules, missing_rule_targets, rule_error) =
+        routing_rules_for_profile(active_profile.as_ref());
     let group_count = group_rows.len();
     let auto_group_count = group_rows
         .iter()
@@ -9967,18 +10107,21 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
         .count();
     let recent_rule_hits = recent_rules.len();
     let rule_count = static_rules.len();
+    let missing_rule_target_count = missing_rule_targets.len();
     Ok(json!({
         "readOnly": true,
         "mode": mode,
         "groups": group_rows,
         "rules": static_rules,
         "ruleError": rule_error,
+        "missingRuleTargets": missing_rule_targets,
         "recentRules": recent_rules,
         "summary": {
             "groupCount": group_count,
             "autoGroupCount": auto_group_count,
             "recentRuleHits": recent_rule_hits,
-            "ruleCount": rule_count
+            "ruleCount": rule_count,
+            "missingRuleTargets": missing_rule_target_count
         }
     }))
 }
