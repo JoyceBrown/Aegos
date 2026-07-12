@@ -4132,6 +4132,33 @@ rules:
     }
 
     #[test]
+    fn routing_foundation_acceptance_keeps_editing_disabled_until_gates_pass() {
+        let acceptance = routing_foundation_acceptance_contract(Some("test".to_string()));
+
+        assert_eq!(
+            acceptance.get("readOnly").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            acceptance
+                .get("editableRoutingEnabled")
+                .and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            acceptance
+                .get("requiresAllAuditsPassing")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert!(acceptance
+            .get("requiredAudits")
+            .and_then(JsonValue::as_array)
+            .map(|audits| audits.len() >= 7)
+            .unwrap_or(false));
+    }
+
+    #[test]
     fn parses_base64_tuic_subscription() {
         let uri = "tuic://00000000-0000-4000-8000-000000000000:secret@example.com:443?sni=example.com&alpn=h3&congestion_control=bbr&udp_relay_mode=native&reduce_rtt=true#HK%20TUIC";
         let encoded = general_purpose::STANDARD.encode(uri);
@@ -9970,6 +9997,15 @@ fn routing_diagnostics_report(
 }
 
 #[tauri::command]
+fn routing_foundation_acceptance(state: State<AppState>) -> Result<JsonValue, String> {
+    let active_profile_id = {
+        let core = state.core.lock().unwrap();
+        core.active_profile().map(|profile| profile.id)
+    };
+    Ok(routing_foundation_acceptance_contract(active_profile_id))
+}
+
+#[tauri::command]
 fn start_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
     let already_running = state.speed_test.lock().unwrap().running;
     let snapshot = mark_speed_test_preparing(&state.speed_test);
@@ -10711,6 +10747,37 @@ fn routing_diagnostics_report_from_parts(
     })
 }
 
+fn routing_foundation_acceptance_contract(active_profile_id: Option<String>) -> JsonValue {
+    json!({
+        "lane": "3.2 routing foundation",
+        "activeProfileId": active_profile_id,
+        "readOnly": true,
+        "writesConfig": false,
+        "editableRoutingEnabled": false,
+        "requiresAllAuditsPassing": true,
+        "acceptance": [
+            "rules are parsed into structured records",
+            "rule targets are validated against groups, proxies, and built-ins",
+            "rule order risks are detected before activation",
+            "profile switch validates rules before changing active profile",
+            "reload preflight is available before future writes",
+            "rollback plan is available before future writes",
+            "diagnostics report combines rule, runtime, and rollback status"
+        ],
+        "requiredAudits": [
+            "audit:routing-rules",
+            "audit:routing-targets",
+            "audit:routing-order",
+            "audit:routing-profile-switch",
+            "audit:routing-reload-preflight",
+            "audit:routing-rollback",
+            "audit:routing-diagnostics",
+            "audit:routing-foundation"
+        ],
+        "nextGate": "3.3 editable routing design may start only after this source checkpoint passes release, smoke, and performance audits"
+    })
+}
+
 #[tauri::command]
 fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
     let (running, controller_port, secret, mode, groups, active_profile) = {
@@ -11000,6 +11067,7 @@ fn main() {
             routing_reload_preflight,
             routing_rollback_plan,
             routing_diagnostics_report,
+            routing_foundation_acceptance,
             start_proxy_delay_test,
             test_single_proxy_delay,
             node_diagnostics,
