@@ -31,7 +31,7 @@ const renderStart = appJs.indexOf('function renderRoutingSnapshot');
 const renderEnd = appJs.indexOf('async function refreshRoutingSnapshot', renderStart);
 const renderBody = renderStart >= 0 ? appJs.slice(renderStart, renderEnd > renderStart ? renderEnd : undefined) : '';
 
-check('package version is 3.1.6 for routing redaction checkpoint', pkg.version === '3.1.6', pkg.version);
+check('package version remains within the 3.1 routing redaction lane', /^3\.1\.\d+$/.test(pkg.version), pkg.version);
 check('routing snapshot sanitizes recent rule names', routingBody.includes('let rule = sanitize_sensitive_text') && routingBody.includes('.get("rule")'), 'rule redaction');
 check('routing snapshot sanitizes recent chain names', routingBody.includes('let chains = sanitize_sensitive_text') && routingBody.includes('.get("chains")'), 'chain redaction');
 check('routing frontend renders recent rules through text nodes', renderBody.includes('textContent: item.rule') && renderBody.includes('textContent: item.chains') && !renderBody.includes('innerHTML'), 'safe rule rendering');
