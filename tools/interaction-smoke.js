@@ -417,6 +417,21 @@ try {
           if (command === 'preview_profile_groups') return groups;
           if (command === 'remove_profile') { await new Promise((resolve) => setTimeout(resolve, 350)); const index = profiles.findIndex((item) => item.id === args.id); if (index >= 0) profiles.splice(index, 1); if (state.activeProfileId === args.id) state.activeProfileId = profiles[0]?.id || 'direct'; return true; }
           if (command === 'add_profile_url') return profiles[1];
+          if (command === 'routing_snapshot') {
+            await new Promise((resolve) => setTimeout(resolve, 240));
+            return {
+              readOnly: true,
+              mode: state.mode,
+              groups: [
+                { name: 'GLOBAL', type: 'select', now: groups[0].now, itemCount: groups[0].items.length, automatic: false },
+                { name: 'Auto', type: 'url-test', now: 'HK 02', itemCount: 2, automatic: true }
+              ],
+              recentRules: [
+                { rule: 'DOMAIN-SUFFIX,example.com', chains: 'GLOBAL -> HK 01', count: 1, note: 'mock hit' }
+              ],
+              summary: { groupCount: 2, autoGroupCount: 1, recentRuleHits: 1 }
+            };
+          }
           if (command === 'connections') return [{ id: '1', metadata: { host: 'example.com' }, rule: 'MATCH', chains: ['GLOBAL', 'HK 01'], upload: 1, download: 2 }];
           if (command === 'active_connection_count') return { count: state.trafficTakeover ? 2 : 0, checkedAt: Date.now() };
           if (command === 'export_logs') return { path: 'C:\\Users\\JIE\\AppData\\Roaming\\Aegos\\diagnostics\\aegos-logs-smoke.txt', count: status().logs.length };
@@ -580,10 +595,14 @@ try {
     if (document.querySelector('#modeLabel')?.textContent.trim() !== '全局代理') throw new Error('mode label did not update optimistically');
     await new Promise((resolve) => setTimeout(resolve, 420));
     const connectionCallsBeforeNav = window.__aegosCalls.filter((item) => item.command === 'connections').length;
+    const routingCallsBeforeNav = window.__aegosCalls.filter((item) => item.command === 'routing_snapshot').length;
     const diagnosticCallsBeforeNav = window.__aegosCalls.filter((item) => item.command === 'diagnostics' || (item.command === 'start_job' && item.args.kind === 'diagnostics')).length;
     await navDown('[data-page="connections"]');
     if (!document.querySelector('[data-page="connections"]')?.classList.contains('active')) throw new Error('sidebar navigation did not activate on pointerdown');
     if (!document.querySelector('[data-page-panel="connections"]')?.classList.contains('active')) throw new Error('connections page panel did not activate immediately');
+    await navDown('[data-page="routing"]');
+    if (!document.querySelector('[data-page="routing"]')?.classList.contains('active')) throw new Error('routing navigation did not activate on pointerdown');
+    if (!document.querySelector('[data-page-panel="routing"]')?.classList.contains('active')) throw new Error('routing page panel did not activate immediately');
     await navDown('[data-page="settings"]');
     await navDown('[data-page="diagnostics"]');
     await navDown('[data-page="profiles"]');
@@ -593,9 +612,15 @@ try {
     await navDown('[data-page="settings"]');
     await new Promise((resolve) => setTimeout(resolve, 140));
     const connectionCallsAfterCancel = window.__aegosCalls.filter((item) => item.command === 'connections').length;
+    const routingCallsAfterCancel = window.__aegosCalls.filter((item) => item.command === 'routing_snapshot').length;
     const diagnosticCallsAfterCancel = window.__aegosCalls.filter((item) => item.command === 'diagnostics' || (item.command === 'start_job' && item.args.kind === 'diagnostics')).length;
     if (connectionCallsAfterCancel !== connectionCallsBeforeNav) throw new Error('stale navigation data load was not cancelled after leaving the page');
+    if (routingCallsAfterCancel !== routingCallsBeforeNav) throw new Error('stale routing data load was not cancelled after leaving the page');
     if (diagnosticCallsAfterCancel !== diagnosticCallsBeforeNav) throw new Error('rapid cached navigation triggered diagnostics before the quiet period');
+    await navDown('[data-page="routing"]');
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    if (!document.querySelector('#routingGroupRows .simple-row')) throw new Error('routing page did not render strategy rows after quiet load');
+    if (!document.querySelector('#routingReadonlyBadge')?.textContent.includes('只读')) throw new Error('routing page did not keep read-only badge visible');
     await navDown('[data-page="diagnostics"]');
     await new Promise((resolve) => setTimeout(resolve, 900));
     const diagnosticCallsAfterSettle = window.__aegosCalls.filter((item) => item.command === 'diagnostics' || (item.command === 'start_job' && item.args.kind === 'diagnostics')).length;

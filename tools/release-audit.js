@@ -65,6 +65,7 @@ check('installer regression audit script exists', exists('tools/installer-regres
 check('copy encoding audit script exists', exists('tools/copy-encoding-audit.js') && pkg.scripts?.['audit:copy'] === 'node tools/copy-encoding-audit.js' && exists('copy-encoding-debt.md'), 'tools/copy-encoding-audit.js / copy-encoding-debt.md');
 check('maturity gate audit script exists', exists('tools/maturity-gate-audit.js') && pkg.scripts?.['audit:maturity'] === 'node tools/maturity-gate-audit.js' && exists('ROADMAP_3.0.0_TO_3.6.4.md'), 'tools/maturity-gate-audit.js / ROADMAP_3.0.0_TO_3.6.4.md');
 check('routing read-only audit script exists', exists('tools/routing-readonly-audit.js') && pkg.scripts?.['audit:routing-readonly'] === 'node tools/routing-readonly-audit.js', 'tools/routing-readonly-audit.js');
+check('routing navigation audit script exists', exists('tools/routing-navigation-audit.js') && pkg.scripts?.['audit:routing-navigation'] === 'node tools/routing-navigation-audit.js', 'tools/routing-navigation-audit.js');
 
 const mainRs = readText('src-tauri/src/main.rs');
 const powershellCalls = (mainRs.match(/Command::new\("powershell\.exe"\)/g) || []).length;

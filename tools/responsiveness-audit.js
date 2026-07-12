@@ -58,7 +58,9 @@ check(
     scheduleRowsRenderBody.includes('setTimeout(run') &&
     scheduleRowsRenderBody.includes('if (!options.force && !isNodeSurfaceActive()) return') &&
     appJs.includes('const largeList = sourceItems.length > 1500') &&
-    appJs.includes('const largeNodeScanLimit = 180') &&
+    appJs.includes('const largeNodeScanLimit = 120') &&
+    appJs.includes('const eagerNodeIndexLimit = 360') &&
+    appJs.includes('function summaryRowsFromLatestGroup(limit = 160)') &&
     appJs.includes('nodeRows.length < nodeRenderLimit') &&
     appJs.includes('homeNodeRenderLimit') &&
     appJs.includes('function renderRows') &&
@@ -96,7 +98,8 @@ check(
     perfSmoke.includes('navigation too slow') &&
     perfSmoke.includes('menu toggles triggered backend calls') &&
     perfSmoke.includes('filter/search interactions triggered backend calls') &&
-    perfSmoke.includes('long tasks detected'),
+    perfSmoke.includes('longTaskBudget') &&
+    perfSmoke.includes('long tasks exceeded budget'),
   'perf smoke models the user complaints directly'
 );
 

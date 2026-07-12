@@ -133,8 +133,8 @@ const defaultMixedPort = 7891;
 const defaultControllerPort = 19091;
 const speedTestPollMs = 180;
 const speedTestNodeRefreshMs = 1200;
-const largeNodeScanLimit = 180;
-const eagerNodeIndexLimit = 900;
+const largeNodeScanLimit = 120;
+const eagerNodeIndexLimit = 360;
 const logRenderLimit = 80;
 const nodeRenderLimit = 36;
 const homeNodeRenderLimit = 8;
@@ -796,7 +796,7 @@ function currentNodeRow(rows = []) {
   return findRowByName(currentName, rows) || rows.find((row) => row?.[5]) || null;
 }
 
-function summaryRowsFromLatestGroup(limit = 600) {
+function summaryRowsFromLatestGroup(limit = 160) {
   const items = latestGroup?.items || [];
   if (!items.length) return [];
   const currentName = selectedNode || latestGroup?.now || '';
@@ -809,8 +809,8 @@ function summaryRowsFromLatestGroup(limit = 600) {
     rows.push(row);
   }
   if (currentName && !currentRow) {
-    const currentIndex = items.findIndex((item) => item.name === currentName || item.realProxyName === currentName);
-    if (currentIndex >= 0) {
+    const currentIndex = nodeIndexForName(currentName);
+    if (Number.isInteger(currentIndex) && currentIndex >= 0) {
       currentRow = normalizeNodeItemCached(items[currentIndex], currentIndex);
       rows.unshift(currentRow);
     }

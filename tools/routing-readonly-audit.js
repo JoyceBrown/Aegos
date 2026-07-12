@@ -25,7 +25,7 @@ const mainRs = read('src-tauri/src/main.rs');
 const releaseAudit = read('tools/release-audit.js');
 const architectureAudit = read('tools/architecture-freeze-audit.js');
 
-check('package version is 3.1.0 for read-only routing skeleton', pkg.version === '3.1.0', pkg.version);
+check('package version is within the 3.1 read-only routing lane', /^3\.1\.\d+$/.test(pkg.version), pkg.version);
 check('routing page navigation and panel exist', indexHtml.includes('data-page="routing"') && indexHtml.includes('data-page-panel="routing"'), 'routing page');
 check('routing page is visibly read-only', indexHtml.includes('routingReadonlyBadge') && indexHtml.includes('只读') && indexHtml.includes('不修改配置'), 'read-only copy');
 check('routing snapshot backend command exists', mainRs.includes('fn routing_snapshot') && mainRs.includes('routing_snapshot,'), 'routing_snapshot command');
