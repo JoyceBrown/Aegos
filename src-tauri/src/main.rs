@@ -5866,11 +5866,12 @@ impl CoreManager {
         }
     }
 
-    fn profile_proxy_groups(&self) -> JsonValue {
-        let Some(profile) = self.active_profile() else {
-            return json!([]);
-        };
-        let raw = fs::read_to_string(profile.path).unwrap_or_default();
+    fn profile_proxy_groups_for_profile(
+        &self,
+        profile: &Profile,
+        use_selected_map: bool,
+    ) -> JsonValue {
+        let raw = fs::read_to_string(&profile.path).unwrap_or_default();
         let config: YamlValue =
             serde_yaml::from_str(&raw).unwrap_or_else(|_| YamlValue::Mapping(Mapping::new()));
         let proxies = config
@@ -5947,12 +5948,12 @@ impl CoreManager {
                 if items.is_empty() {
                     return None;
                 }
-                let now = self
-                    .settings
-                    .selected_proxy_map
-                    .get(name)
-                    .cloned()
-                    .or_else(|| {
+                let now = (if use_selected_map {
+                    self.settings.selected_proxy_map.get(name).cloned()
+                } else {
+                    None
+                })
+                .or_else(|| {
                         map.get(yaml_key("now"))
                             .and_then(|value| value.as_str())
                             .map(|value| value.to_string())
@@ -5987,6 +5988,24 @@ impl CoreManager {
             .cloned()
             .unwrap_or(json!(""));
         json!([{ "name": "GLOBAL", "type": "Selector", "now": now, "items": items }])
+    }
+
+    fn profile_proxy_groups(&self) -> JsonValue {
+        let Some(profile) = self.active_profile() else {
+            return json!([]);
+        };
+        self.profile_proxy_groups_for_profile(&profile, true)
+    }
+
+    fn preview_profile_groups(&self, id: &str) -> Result<JsonValue, String> {
+        let profile = self
+            .settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == id)
+            .cloned()
+            .ok_or_else(|| "Profile not found".to_string())?;
+        Ok(self.profile_proxy_groups_for_profile(&profile, false))
     }
 
     fn collect_proxy_targets(groups: &JsonValue) -> Vec<SpeedTestTarget> {
@@ -8451,6 +8470,11 @@ fn proxy_groups(state: State<AppState>) -> Result<JsonValue, String> {
 }
 
 #[tauri::command]
+fn preview_profile_groups(state: State<AppState>, id: String) -> Result<JsonValue, String> {
+    state.core.lock().unwrap().preview_profile_groups(&id)
+}
+
+#[tauri::command]
 fn start_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
     state.core.lock().unwrap().start_proxy_delay_test()
 }
@@ -8605,6 +8629,7 @@ fn main() {
             update_settings,
             relaunch_as_admin,
             proxy_groups,
+            preview_profile_groups,
             start_proxy_delay_test,
             test_single_proxy_delay,
             node_diagnostics,

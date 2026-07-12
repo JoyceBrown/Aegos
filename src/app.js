@@ -33,6 +33,7 @@ let logFilter = 'all';
 let speedTestTimer = null;
 let speedTestStarting = false;
 let activeSpeedRunId = 0;
+let profilePreviewSeq = 0;
 const speedTestButtons = new Set();
 let lastSpeedNodeRefreshAt = 0;
 let latestSpeedStatus = null;
@@ -1059,6 +1060,7 @@ function snapshotUiState() {
 }
 
 function restoreUiState(snapshot) {
+  profilePreviewSeq += 1;
   latestStatus = cloneUiValue(snapshot.latestStatus);
   latestGroup = cloneUiValue(snapshot.latestGroup);
   selectedNode = snapshot.selectedNode || '';
@@ -1567,7 +1569,9 @@ function applyOptimisticProfile(profileId) {
     activeProfile: profile ? { ...(latestStatus.activeProfile || {}), ...profile } : latestStatus.activeProfile,
     settings: { ...latestStatus.settings, activeProfileId: profileId }
   };
+  renderStatus(latestStatus);
   renderProfiles();
+  void previewProfileNodes(profileId);
 }
 
 function applyOptimisticNode(name) {
@@ -1847,6 +1851,24 @@ async function refreshNodes(force = false, options = {}) {
   }
 }
 
+async function previewProfileNodes(profileId) {
+  const previewSeq = ++profilePreviewSeq;
+  try {
+    const groups = await invoke('preview_profile_groups', { id: profileId });
+    const stillActive = latestStatus?.settings?.activeProfileId === profileId;
+    if (previewSeq !== profilePreviewSeq || !stillActive) return;
+    const group = Array.isArray(groups) ? (groups.find((item) => item.name === 'GLOBAL') || groups[0]) : null;
+    if (!group || !Array.isArray(group.items) || !group.items.length) return;
+    latestGroup = group;
+    selectedNode = group.now || '';
+    pendingRowItems = group.items;
+    scheduleRowsRender(group.items, { force: true, target: 'all', delay: 0 });
+    renderHomeNodeSummary(summaryRowsFromLatestGroup());
+  } catch {
+    // Preview is an opportunistic UI fast path; the verified refresh still follows the real profile switch.
+  }
+}
+
 function stopSpeedTestPolling() {
   if (speedTestTimer) clearInterval(speedTestTimer);
   speedTestTimer = null;
@@ -1857,13 +1879,17 @@ function stopSpeedTestPolling() {
 }
 
 function resetSpeedUiForProfileSwitch() {
+  profilePreviewSeq += 1;
   stopSpeedTestPolling();
   latestSpeedStatus = null;
   lastAppliedSpeedSignature = '';
   lastSpeedNodeRefreshAt = 0;
   selectedNode = '';
   latestGroup = latestGroup ? { ...latestGroup, now: '', items: [] } : null;
+  if (rowRenderFrame) clearTimeout(rowRenderFrame);
+  rowRenderFrame = null;
   pendingRowItems = [];
+  pendingRowTarget = null;
   renderRows([]);
   renderHomeNodeSummary([]);
 }

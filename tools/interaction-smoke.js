@@ -259,6 +259,7 @@ try {
           if (command === 'stop_core') { state.running = false; state.trafficTakeover = false; state.systemProxy = false; return { ok: true, trafficTakeover: false }; }
           if (command === 'restart_core') { state.running = true; state.trafficTakeover = true; return { ok: true }; }
           if (command === 'proxy_groups') return groups;
+          if (command === 'preview_profile_groups') return groups;
           if (command === 'start_job') {
             const id = 'job-' + (jobs.size + 1);
             let result = {};
@@ -410,6 +411,7 @@ try {
           if (command === 'update_settings') { Object.assign(state.settings, args.updates || {}); return status().settings; }
           if (command === 'update_profile') return profiles.find((item) => item.id === args.id);
           if (command === 'set_active_profile') { await new Promise((resolve) => setTimeout(resolve, 350)); state.activeProfileId = args.id; return profiles.find((item) => item.id === args.id); }
+          if (command === 'preview_profile_groups') return groups;
           if (command === 'remove_profile') { await new Promise((resolve) => setTimeout(resolve, 350)); const index = profiles.findIndex((item) => item.id === args.id); if (index >= 0) profiles.splice(index, 1); if (state.activeProfileId === args.id) state.activeProfileId = profiles[0]?.id || 'direct'; return true; }
           if (command === 'add_profile_url') return profiles[1];
           if (command === 'connections') return [{ id: '1', metadata: { host: 'example.com' }, rule: 'MATCH', chains: ['GLOBAL', 'HK 01'], upload: 1, download: 2 }];
@@ -540,7 +542,10 @@ try {
     if (!profileMenuBox || profileMenuBox.width > 340 || profileMenuBox.height > 340 || profileMenuBox.left < 0 || profileMenuBox.right > window.innerWidth || profileMenuBox.top < 0 || profileMenuBox.bottom > window.innerHeight) throw new Error('quick subscription menu layout overflowed');
     const topElement = document.elementFromPoint(profileMenuBox.left + profileMenuBox.width / 2, profileMenuBox.top + Math.min(28, profileMenuBox.height / 2));
     if (!topElement?.closest('#profileMenu')) throw new Error('quick subscription menu was covered by another layer');
+    const previewCallsBeforeProfileSwitch = window.__aegosCalls.filter((item) => item.command === 'preview_profile_groups').length;
     document.querySelector('#profileMenu [data-profile-switch="url-test"]')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    if (window.__aegosCalls.filter((item) => item.command === 'preview_profile_groups').length <= previewCallsBeforeProfileSwitch) throw new Error('quick subscription switch did not request local node preview');
     await new Promise((resolve) => setTimeout(resolve, 420));
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'setActiveProfile')) throw new Error('quick subscription menu did not switch through background job');
     await new Promise((resolve) => setTimeout(resolve, 420));
