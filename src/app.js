@@ -2722,12 +2722,13 @@ function renderRoutingSnapshot(data = {}) {
   replaceChildrenSafe($('#routingGroupRows'), groupRows.length ? groupRows : [emptyState('\u6682\u65e0\u7b56\u7565\u7ec4\u6570\u636e\u3002')]);
   const ruleRows = rules.slice(0, 40).map((item) => {
     const options = Array.isArray(item.options) && item.options.length ? ` \u00b7 ${item.options.join(' / ')}` : '';
+    const orderIssue = item.orderIssue?.detail ? ` \u00b7 ${item.orderIssue.detail}` : '';
     return el('div', { className: 'simple-row' }, [
       el('span', { textContent: `${item.index || '-'} ${item.kind || '-'}` }),
       el('span', { textContent: item.condition || '-' }),
       el('span', { textContent: item.target || '-' }),
       el('span', { textContent: item.status || 'readonly' }),
-      el('span', { textContent: `${item.note || 'profile rule'}${options}` })
+      el('span', { textContent: `${item.note || 'profile rule'}${options}${orderIssue}` })
     ]);
   });
   if (!ruleRows.length && data.ruleError) {

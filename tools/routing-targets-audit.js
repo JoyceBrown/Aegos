@@ -34,7 +34,7 @@ const renderStart = appJs.indexOf('function renderRoutingSnapshot');
 const renderEnd = appJs.indexOf('async function refreshRoutingSnapshot', renderStart);
 const renderBody = renderStart >= 0 ? appJs.slice(renderStart, renderEnd > renderStart ? renderEnd : undefined) : '';
 
-check('package version is 3.2.2 for rule target checkpoint', pkg.version === '3.2.2', pkg.version);
+check('package version remains in 3.2 rule foundation lane', /^3\.2\.\d+$/.test(pkg.version), pkg.version);
 check('routing targets audit is exposed as package script', pkg.scripts?.['audit:routing-targets'] === 'node tools/routing-targets-audit.js', 'npm run audit:routing-targets');
 check('target catalog includes groups, proxies, and built-in policy targets', mainRs.includes('fn routing_rule_target_catalog') && mainRs.includes('yaml_sequence(config, "proxy-groups")') && mainRs.includes('yaml_sequence(config, "proxies")') && mainRs.includes('fn routing_rule_builtin_targets') && mainRs.includes('"DIRECT"') && mainRs.includes('"REJECT-DROP"'), 'target catalog');
 check('missing targets are marked on rule records', mainRs.includes('fn validate_routing_rule_targets') && mainRs.includes('"targetExists"') && mainRs.includes('"targetKind"') && mainRs.includes('"missing-target"') && mainRs.includes('target is not present in active profile'), 'rule target validation');

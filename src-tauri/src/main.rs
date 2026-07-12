@@ -3885,6 +3885,43 @@ rules:
     }
 
     #[test]
+    fn routing_rule_order_detection_reports_duplicates_conflicts_and_unreachable() {
+        let mut rules = [
+            "DOMAIN-SUFFIX,example.com,Proxy",
+            "DOMAIN-SUFFIX,example.com,Proxy",
+            "DOMAIN-SUFFIX,example.com,DIRECT",
+            "MATCH,DIRECT",
+            "DOMAIN-SUFFIX,later.example,Proxy",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, rule)| parse_routing_rule_text(index + 1, rule))
+        .collect::<Vec<_>>();
+
+        let issues = detect_routing_rule_order_issues(&mut rules);
+        let kinds = issues
+            .iter()
+            .filter_map(|issue| issue.get("kind").and_then(JsonValue::as_str))
+            .collect::<Vec<_>>();
+
+        assert!(kinds.contains(&"duplicate-rule"));
+        assert!(kinds.contains(&"conflicting-target"));
+        assert!(kinds.contains(&"unreachable-after-match"));
+        assert_eq!(
+            rules[1].get("status").and_then(JsonValue::as_str),
+            Some("duplicate-rule")
+        );
+        assert_eq!(
+            rules[2].get("status").and_then(JsonValue::as_str),
+            Some("conflicting-target")
+        );
+        assert_eq!(
+            rules[4].get("status").and_then(JsonValue::as_str),
+            Some("unreachable-after-match")
+        );
+    }
+
+    #[test]
     fn parses_base64_tuic_subscription() {
         let uri = "tuic://00000000-0000-4000-8000-000000000000:secret@example.com:443?sni=example.com&alpn=h3&congestion_control=bbr&udp_relay_mode=native&reduce_rtt=true#HK%20TUIC";
         let encoded = general_purpose::STANDARD.encode(uri);
@@ -9962,11 +9999,104 @@ fn validate_routing_rule_targets(
     missing
 }
 
+fn set_routing_rule_order_issue(
+    rule: &mut JsonValue,
+    kind: &str,
+    detail: &str,
+    first_index: Option<u64>,
+) -> Option<JsonValue> {
+    let index = rule
+        .get("index")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let issue = json!({
+        "index": index,
+        "kind": kind,
+        "detail": detail,
+        "firstIndex": first_index
+    });
+    if let Some(map) = rule.as_object_mut() {
+        let current_status = map
+            .get("status")
+            .and_then(|value| value.as_str())
+            .unwrap_or("readonly");
+        if current_status == "readonly" {
+            map.insert("status".to_string(), json!(kind));
+        }
+        map.insert("orderIssue".to_string(), issue.clone());
+        Some(issue)
+    } else {
+        None
+    }
+}
+
+fn detect_routing_rule_order_issues(rules: &mut [JsonValue]) -> Vec<JsonValue> {
+    let mut seen: HashMap<String, (u64, String)> = HashMap::new();
+    let mut first_match_index: Option<u64> = None;
+    let mut issues = Vec::new();
+    for rule in rules {
+        let index = rule
+            .get("index")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let kind = rule
+            .get("kind")
+            .and_then(|value| value.as_str())
+            .unwrap_or("-");
+        let condition = rule
+            .get("condition")
+            .and_then(|value| value.as_str())
+            .unwrap_or("-");
+        let target = rule
+            .get("target")
+            .and_then(|value| value.as_str())
+            .unwrap_or("-");
+        if let Some(match_index) = first_match_index {
+            if index > match_index {
+                if let Some(issue) = set_routing_rule_order_issue(
+                    rule,
+                    "unreachable-after-match",
+                    "rule is after MATCH and will not be reached",
+                    Some(match_index),
+                ) {
+                    issues.push(issue);
+                }
+                continue;
+            }
+        }
+        let key = format!("{kind}\u{1f}{condition}");
+        if let Some((first_index, first_target)) = seen.get(&key) {
+            let kind = if first_target == target {
+                "duplicate-rule"
+            } else {
+                "conflicting-target"
+            };
+            let detail = if first_target == target {
+                "same matcher and target already appeared earlier"
+            } else {
+                "same matcher points to a different target earlier"
+            };
+            if let Some(issue) =
+                set_routing_rule_order_issue(rule, kind, detail, Some(*first_index))
+            {
+                issues.push(issue);
+            }
+            continue;
+        }
+        seen.insert(key, (index, target.to_string()));
+        if kind == "MATCH" {
+            first_match_index = Some(index);
+        }
+    }
+    issues
+}
+
 fn routing_rules_for_profile(
     profile: Option<&Profile>,
-) -> (Vec<JsonValue>, Vec<String>, Option<String>) {
+) -> (Vec<JsonValue>, Vec<String>, Vec<JsonValue>, Option<String>) {
     let Some(profile) = profile else {
         return (
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Some("no active profile".to_string()),
@@ -9977,6 +10107,7 @@ fn routing_rules_for_profile(
         Ok(raw) => raw,
         Err(err) => {
             return (
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
                 Some(format!(
@@ -9990,6 +10121,7 @@ fn routing_rules_for_profile(
         Ok(config) => config,
         Err(err) => {
             return (
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
                 Some(format!("profile YAML parse failed: {err}")),
@@ -10007,7 +10139,8 @@ fn routing_rules_for_profile(
         .unwrap_or_default();
     let targets = routing_rule_target_catalog(&config);
     let missing_targets = validate_routing_rule_targets(&mut rules, &targets);
-    (rules, missing_targets, None)
+    let order_issues = detect_routing_rule_order_issues(&mut rules);
+    (rules, missing_targets, order_issues, None)
 }
 
 #[tauri::command]
@@ -10094,7 +10227,7 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
             })
         })
         .collect::<Vec<_>>();
-    let (static_rules, missing_rule_targets, rule_error) =
+    let (static_rules, missing_rule_targets, rule_order_issues, rule_error) =
         routing_rules_for_profile(active_profile.as_ref());
     let group_count = group_rows.len();
     let auto_group_count = group_rows
@@ -10108,6 +10241,7 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
     let recent_rule_hits = recent_rules.len();
     let rule_count = static_rules.len();
     let missing_rule_target_count = missing_rule_targets.len();
+    let rule_order_issue_count = rule_order_issues.len();
     Ok(json!({
         "readOnly": true,
         "mode": mode,
@@ -10115,13 +10249,15 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
         "rules": static_rules,
         "ruleError": rule_error,
         "missingRuleTargets": missing_rule_targets,
+        "ruleOrderIssues": rule_order_issues,
         "recentRules": recent_rules,
         "summary": {
             "groupCount": group_count,
             "autoGroupCount": auto_group_count,
             "recentRuleHits": recent_rule_hits,
             "ruleCount": rule_count,
-            "missingRuleTargets": missing_rule_target_count
+            "missingRuleTargets": missing_rule_target_count,
+            "ruleOrderIssues": rule_order_issue_count
         }
     }))
 }
