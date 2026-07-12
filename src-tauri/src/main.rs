@@ -823,6 +823,8 @@ fn protocol_family(protocol: &str) -> &'static str {
         "vmess"
     } else if text.contains("trojan") {
         "trojan"
+    } else if text.contains("ss-obfs") || text.contains("shadowsocks-obfs") {
+        "ss-obfs"
     } else if text == "ss" || text == "ssr" || text.contains("shadowsocks") {
         "ss"
     } else {
@@ -834,6 +836,7 @@ fn protocol_concurrency(protocol: &str) -> usize {
     match protocol_family(protocol) {
         "tuic" => 8,
         "hysteria" | "wireguard" => 10,
+        "ss-obfs" => 12,
         "anytls" => 16,
         "reality" | "vmess" | "trojan" | "ss" => 32,
         _ => 24,
@@ -853,6 +856,7 @@ fn protocol_fast_timeout_ms(protocol: &str) -> u64 {
         "tuic" | "hysteria" | "wireguard" => 2800,
         "anytls" => 2600,
         "reality" => 2400,
+        "ss-obfs" => 2800,
         "vmess" | "trojan" | "ss" => 2200,
         _ => 2600,
     }
@@ -860,6 +864,12 @@ fn protocol_fast_timeout_ms(protocol: &str) -> u64 {
 
 fn delay_probe_plan(protocol: &str, depth: DelayProbeDepth) -> Vec<DelayProbe> {
     if matches!(depth, DelayProbeDepth::Fast) {
+        if protocol_family(protocol) == "ss-obfs" {
+            return vec![DelayProbe {
+                url: "http://www.gstatic.com/generate_204",
+                timeout_ms: protocol_fast_timeout_ms(protocol),
+            }];
+        }
         return vec![DelayProbe {
             url: "https://www.gstatic.com/generate_204",
             timeout_ms: protocol_fast_timeout_ms(protocol),
@@ -880,7 +890,12 @@ fn delay_probe_plan(protocol: &str, depth: DelayProbeDepth) -> Vec<DelayProbe> {
             timeout_ms,
         },
     ];
-    if matches!(
+    if protocol_family(protocol) == "ss-obfs" {
+        probes.push(DelayProbe {
+            url: "https://cp.cloudflare.com/generate_204",
+            timeout_ms,
+        });
+    } else if matches!(
         protocol_family(protocol),
         "tuic" | "hysteria" | "wireguard" | "anytls"
     ) {
@@ -1204,7 +1219,7 @@ fn speed_test_phases(
             .unwrap_or(false);
         let family_rank = match protocol_family(&target.protocol) {
             "ss" | "trojan" | "vmess" | "reality" | "generic" => 0,
-            "hysteria" | "wireguard" => 1,
+            "ss-obfs" | "hysteria" | "wireguard" => 1,
             "tuic" => 2,
             _ => 1,
         };
@@ -1217,7 +1232,7 @@ fn speed_test_phases(
             .get(&target.name)
             .map(|item| item.cooldown_until > now)
             .unwrap_or(false);
-        cooldown || matches!(family, "tuic" | "hysteria" | "wireguard")
+        cooldown || matches!(family, "tuic" | "hysteria" | "wireguard" | "ss-obfs")
     });
     let first_count = fast.len().min(16);
     let first = fast.iter().take(first_count).cloned().collect::<Vec<_>>();
@@ -1493,6 +1508,83 @@ fn set_alpn_query(map: &mut Mapping, query: &str) {
     }
 }
 
+fn parse_plugin_option_pairs(value: &str) -> HashMap<String, String> {
+    value
+        .split(';')
+        .skip(1)
+        .filter_map(|part| {
+            let (key, value) = part.split_once('=')?;
+            let key = key.trim().to_ascii_lowercase();
+            if key.is_empty() {
+                return None;
+            }
+            Some((key, percent_decode(value.trim())))
+        })
+        .collect()
+}
+
+fn set_ss_plugin_query(map: &mut Mapping, query: &str) {
+    let Some(plugin_value) = query_value(query, "plugin").filter(|value| !value.trim().is_empty())
+    else {
+        return;
+    };
+    let plugin_name = plugin_value
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let normalized_plugin = if plugin_name.contains("obfs") {
+        "obfs"
+    } else if plugin_name.contains("v2ray") {
+        "v2ray-plugin"
+    } else {
+        plugin_name.as_str()
+    };
+    if normalized_plugin.is_empty() {
+        return;
+    }
+    set_yaml(map, "plugin", yaml_str(normalized_plugin));
+
+    let mut option_pairs = parse_plugin_option_pairs(&plugin_value);
+    for key in ["obfs", "obfs-host", "host", "path", "mode", "tls"] {
+        if let Some(value) = query_value(query, key) {
+            option_pairs.insert(key.to_string(), value);
+        }
+    }
+
+    let mut opts = Mapping::new();
+    if normalized_plugin == "obfs" {
+        let mode = option_pairs
+            .get("obfs")
+            .or_else(|| option_pairs.get("mode"))
+            .map(String::as_str)
+            .unwrap_or("http");
+        set_yaml(&mut opts, "mode", yaml_str(mode));
+        if let Some(host) = option_pairs
+            .get("obfs-host")
+            .or_else(|| option_pairs.get("host"))
+            .filter(|value| !value.trim().is_empty())
+        {
+            set_yaml(&mut opts, "host", yaml_str(host));
+        }
+    } else {
+        for (key, value) in option_pairs {
+            if value.trim().is_empty() {
+                continue;
+            }
+            if key == "tls" {
+                set_yaml(&mut opts, "tls", YamlValue::Bool(truthy(&value)));
+            } else {
+                set_yaml(&mut opts, &key, yaml_str(value));
+            }
+        }
+    }
+    if !opts.is_empty() {
+        set_yaml(map, "plugin-opts", YamlValue::Mapping(opts));
+    }
+}
+
 fn parse_ss_uri(uri: &str, index: usize) -> Option<YamlValue> {
     let raw = uri.strip_prefix("ss://")?;
     let (body, name_part) = raw.split_once('#').unwrap_or((raw, ""));
@@ -1501,7 +1593,7 @@ fn parse_ss_uri(uri: &str, index: usize) -> Option<YamlValue> {
     } else {
         percent_decode(name_part)
     };
-    let body = body.split_once('?').map(|(left, _)| left).unwrap_or(body);
+    let (body, query) = body.split_once('?').unwrap_or((body, ""));
     let decoded = if body.contains('@') {
         percent_decode(body)
     } else {
@@ -1517,6 +1609,7 @@ fn parse_ss_uri(uri: &str, index: usize) -> Option<YamlValue> {
     set_yaml(&mut map, "port", yaml_num(port.parse().ok()?));
     set_yaml(&mut map, "cipher", yaml_str(method));
     set_yaml(&mut map, "password", yaml_str(password));
+    set_ss_plugin_query(&mut map, query);
     Some(YamlValue::Mapping(map))
 }
 
@@ -3524,10 +3617,12 @@ rules:
         assert_eq!(protocol_family("hysteria2"), "hysteria");
         assert_eq!(protocol_family("hy2"), "hysteria");
         assert_eq!(protocol_family("anytls"), "anytls");
+        assert_eq!(protocol_family("ss-obfs"), "ss-obfs");
         assert_eq!(protocol_concurrency("vless-reality"), 32);
         assert_eq!(protocol_concurrency("hysteria2"), 10);
         assert_eq!(protocol_concurrency("anytls"), 16);
         assert_eq!(protocol_concurrency("tuic"), 8);
+        assert_eq!(protocol_concurrency("ss-obfs"), 12);
         assert_eq!(protocol_primary_timeout_ms("vless-reality"), 5000);
         assert_eq!(protocol_primary_timeout_ms("hysteria2"), 5000);
         assert_eq!(protocol_primary_timeout_ms("anytls"), 5000);
@@ -3547,6 +3642,12 @@ rules:
         assert!(tuic_probes.iter().all(|probe| probe.timeout_ms == 5000));
         let trojan_fast_probes = delay_probe_plan("trojan", DelayProbeDepth::Fast);
         assert_eq!(trojan_fast_probes[0].timeout_ms, 2200);
+        let ss_obfs_fast_probes = delay_probe_plan("ss-obfs", DelayProbeDepth::Fast);
+        assert_eq!(
+            ss_obfs_fast_probes[0].url,
+            "http://www.gstatic.com/generate_204"
+        );
+        assert_eq!(ss_obfs_fast_probes[0].timeout_ms, 2800);
 
         let targets = vec![
             SpeedTestTarget {
@@ -3567,6 +3668,12 @@ rules:
                 group_name: "GLOBAL".to_string(),
                 protocol: "tuic".to_string(),
             },
+            SpeedTestTarget {
+                name: "SS Obfs".to_string(),
+                select_name: "SS Obfs".to_string(),
+                group_name: "GLOBAL".to_string(),
+                protocol: "ss-obfs".to_string(),
+            },
         ];
         let phases = speed_test_phases(targets, &HashMap::new(), 1);
         assert_eq!(phases.first().unwrap().0[0].name, "Reality");
@@ -3579,6 +3686,38 @@ rules:
             .collect::<Vec<_>>();
         assert!(slow_names.contains(&"Hysteria2"));
         assert!(slow_names.contains(&"TUIC"));
+        assert!(slow_names.contains(&"SS Obfs"));
+    }
+
+    #[test]
+    fn ss_uri_preserves_obfs_plugin_options() {
+        let node = parse_ss_uri(
+            "ss://aes-128-gcm:secret@example.com:10015?plugin=obfs-local%3Bobfs%3Dhttp%3Bobfs-host%3Dedge.example.com#HK%20SS",
+            1,
+        )
+        .expect("ss uri should parse");
+        let map = node.as_mapping().expect("node map");
+        assert_eq!(
+            map.get(yaml_key("plugin")).and_then(YamlValue::as_str),
+            Some("obfs")
+        );
+        let opts = map
+            .get(yaml_key("plugin-opts"))
+            .and_then(YamlValue::as_mapping)
+            .expect("plugin opts");
+        assert_eq!(
+            opts.get(yaml_key("mode")).and_then(YamlValue::as_str),
+            Some("http")
+        );
+        assert_eq!(
+            opts.get(yaml_key("host")).and_then(YamlValue::as_str),
+            Some("edge.example.com")
+        );
+        let item = yaml_proxy_to_json(&node).expect("proxy item");
+        assert_eq!(
+            item.get("speedProtocol").and_then(JsonValue::as_str),
+            Some("ss-obfs")
+        );
     }
 
     #[test]
@@ -3740,6 +3879,24 @@ fn builtin_proxy_item(name: &str) -> JsonValue {
     })
 }
 
+fn proxy_speed_protocol(protocol: &str, map: &Mapping) -> String {
+    let normalized = normalize_proxy_type(protocol);
+    if normalized == "ss" {
+        if let Some(plugin) = map
+            .get(yaml_key("plugin"))
+            .and_then(|value| value.as_str())
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+        {
+            if plugin.contains("obfs") {
+                return "ss-obfs".to_string();
+            }
+            return format!("ss-{plugin}");
+        }
+    }
+    normalized
+}
+
 fn yaml_proxy_to_json(proxy: &YamlValue) -> Option<JsonValue> {
     let map = proxy.as_mapping()?;
     let name = map
@@ -3754,10 +3911,12 @@ fn yaml_proxy_to_json(proxy: &YamlValue) -> Option<JsonValue> {
         .get(yaml_key("type"))
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
+    let speed_protocol = proxy_speed_protocol(protocol, map);
     Some(json!({
         "name": name,
         "server": server,
         "type": protocol,
+        "speedProtocol": speed_protocol,
         "alive": true,
         "delay": -1
     }))
@@ -5809,8 +5968,9 @@ impl CoreManager {
                                 return None;
                             }
                             let protocol = item
-                                .get("type")
+                                .get("speedProtocol")
                                 .or_else(|| item.get("protocol"))
+                                .or_else(|| item.get("type"))
                                 .and_then(|value| value.as_str())
                                 .unwrap_or("unknown")
                                 .to_string();
