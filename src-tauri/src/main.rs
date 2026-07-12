@@ -369,6 +369,12 @@ struct DelayProbe {
     timeout_ms: u64,
 }
 
+#[derive(Clone, Copy)]
+enum DelayProbeDepth {
+    Fast,
+    Full,
+}
+
 struct CoreManager {
     app_data: PathBuf,
     home_dir: PathBuf,
@@ -842,7 +848,23 @@ fn protocol_primary_timeout_ms(protocol: &str) -> u64 {
     }
 }
 
-fn delay_probe_plan(protocol: &str) -> Vec<DelayProbe> {
+fn protocol_fast_timeout_ms(protocol: &str) -> u64 {
+    match protocol_family(protocol) {
+        "tuic" | "hysteria" | "wireguard" => 2800,
+        "anytls" => 2600,
+        "reality" => 2400,
+        "vmess" | "trojan" | "ss" => 2200,
+        _ => 2600,
+    }
+}
+
+fn delay_probe_plan(protocol: &str, depth: DelayProbeDepth) -> Vec<DelayProbe> {
+    if matches!(depth, DelayProbeDepth::Fast) {
+        return vec![DelayProbe {
+            url: "https://www.gstatic.com/generate_204",
+            timeout_ms: protocol_fast_timeout_ms(protocol),
+        }];
+    }
     let timeout_ms = protocol_primary_timeout_ms(protocol);
     let mut probes = vec![
         DelayProbe {
@@ -1371,7 +1393,24 @@ fn test_proxy_delay_with_retry(
     name: &str,
     protocol: &str,
 ) -> i64 {
-    delay_probe_plan(protocol)
+    let fast_delay = delay_probe_plan(protocol, DelayProbeDepth::Fast)
+        .iter()
+        .map(|probe| {
+            test_proxy_delay_request(
+                client,
+                controller_port,
+                secret,
+                name,
+                probe.url,
+                probe.timeout_ms,
+            )
+        })
+        .find(|delay| *delay >= 0)
+        .unwrap_or(-1);
+    if fast_delay >= 0 {
+        return fast_delay;
+    }
+    delay_probe_plan(protocol, DelayProbeDepth::Full)
         .iter()
         .map(|probe| {
             test_proxy_delay_request(
@@ -3493,12 +3532,21 @@ rules:
         assert_eq!(protocol_primary_timeout_ms("hysteria2"), 5000);
         assert_eq!(protocol_primary_timeout_ms("anytls"), 5000);
         assert_eq!(protocol_primary_timeout_ms("tuic"), 5000);
-        let tuic_probes = delay_probe_plan("tuic");
+        let fast_tuic_probes = delay_probe_plan("tuic", DelayProbeDepth::Fast);
+        assert_eq!(fast_tuic_probes.len(), 1);
+        assert_eq!(
+            fast_tuic_probes[0].url,
+            "https://www.gstatic.com/generate_204"
+        );
+        assert_eq!(fast_tuic_probes[0].timeout_ms, 2800);
+        let tuic_probes = delay_probe_plan("tuic", DelayProbeDepth::Full);
         assert_eq!(tuic_probes[0].url, "https://www.gstatic.com/generate_204");
         assert!(tuic_probes
             .iter()
             .any(|probe| probe.url == "https://cp.cloudflare.com/generate_204"));
         assert!(tuic_probes.iter().all(|probe| probe.timeout_ms == 5000));
+        let trojan_fast_probes = delay_probe_plan("trojan", DelayProbeDepth::Fast);
+        assert_eq!(trojan_fast_probes[0].timeout_ms, 2200);
 
         let targets = vec![
             SpeedTestTarget {
