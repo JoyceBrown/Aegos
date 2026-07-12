@@ -710,6 +710,15 @@ try {
     await click('#nodeRows .row[data-node]');
     await click('[data-page="connections"]');
     await click('#refreshConnectionsBtn');
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    const callsBeforeConnectionDraft = window.__aegosCalls.length;
+    await click('#connectionRows [data-routing-draft-target]');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    if (!document.querySelector('[data-page-panel="routing"]')?.classList.contains('active')) throw new Error('connection draft action did not navigate to routing page');
+    if (!document.querySelector('#routingDraftPreview')?.dataset.rule?.includes('DOMAIN-SUFFIX,example.com')) throw new Error('connection draft action did not create a routing draft');
+    if (window.__aegosCalls.length !== callsBeforeConnectionDraft) throw new Error('connection draft action triggered a backend command');
+    await click('[data-page="connections"]');
+    await click('#refreshConnectionsBtn');
     document.querySelector('#closeAllConnectionsBtn').click();
     await new Promise((resolve) => setTimeout(resolve, 20));
     if (document.querySelector('#connectionRows .simple-row')) throw new Error('connections did not clear optimistically');

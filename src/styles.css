@@ -1566,6 +1566,19 @@ h1 {
   white-space: nowrap;
 }
 
+.connection-actions {
+  min-width: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.connection-actions button {
+  min-width: 54px;
+  height: 28px;
+  padding: 0 10px;
+}
+
 @media (max-width: 1120px) {
   .routing-card {
     grid-template-rows: auto auto auto minmax(88px, .72fr) minmax(128px, 1fr);

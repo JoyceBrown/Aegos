@@ -2682,7 +2682,10 @@ async function refreshConnections(token = null) {
         el('span', { textContent: item.rule || '-' }),
         el('span', { textContent: chains }),
         el('span', { textContent: traffic }),
-        el('button', { dataset: { closeConnection: item.id }, textContent: '\u5173\u95ed' })
+        el('span', { className: 'connection-actions' }, [
+          el('button', { dataset: { routingDraftTarget: target }, textContent: '\u8349\u7a3f' }),
+          el('button', { dataset: { closeConnection: item.id }, textContent: '\u5173\u95ed' })
+        ])
       ]);
     });
     replaceChildrenSafe($('#connectionRows'), rows.length ? rows : [emptyState('\u5f53\u524d\u6ca1\u6709\u6d3b\u52a8\u8fde\u63a5\u3002')]);
@@ -2863,6 +2866,40 @@ function previewAppRoutingDraft() {
   const next = routingDraftAction(action);
   preview.textContent = `\u8349\u7a3f\uff1a${parsed.value} \u2192 ${next.label}\u3002\u5f53\u524d\u53ea\u9884\u89c8\uff0c\u4e0d\u4f1a\u4fee\u6539\u914d\u7f6e\u3002`;
   preview.dataset.rule = `${parsed.kind},${parsed.value},${next.target}`;
+  preview.className = 'routing-draft-preview ok';
+}
+
+function normalizeConnectionRoutingTarget(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return { ok: false, error: '\u8fde\u63a5\u76ee\u6807\u4e0d\u53ef\u7528\u3002' };
+  const target = raw.replace(/^https?:\/\//i, '').split('/')[0].replace(/^\[|\]$/g, '');
+  const host = target.includes(':') && !target.includes('::') ? target.split(':')[0] : target;
+  if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(host)) {
+    const parts = host.split('.').map((item) => Number(item));
+    if (parts.every((item) => Number.isInteger(item) && item >= 0 && item <= 255)) {
+      return { ok: true, kind: 'IP-CIDR', value: `${host}/32`, display: host };
+    }
+  }
+  const domain = normalizeWebsiteRuleInput(host);
+  if (domain.ok) return { ok: true, kind: 'DOMAIN-SUFFIX', value: domain.domain, display: domain.domain };
+  return { ok: false, error: '\u8fde\u63a5\u76ee\u6807\u6682\u65e0\u6cd5\u751f\u6210\u8349\u7a3f\u3002' };
+}
+
+function previewConnectionRoutingDraftFromButton(button) {
+  const target = button?.dataset.routingDraftTarget || '';
+  const preview = $('#routingDraftPreview');
+  if (!preview) return;
+  const parsed = normalizeConnectionRoutingTarget(target);
+  if (!parsed.ok) {
+    preview.textContent = parsed.error;
+    preview.className = 'routing-draft-preview warn';
+    return;
+  }
+  const next = routingDraftAction('proxy');
+  const websiteInput = $('#routingWebsiteInput');
+  if (websiteInput && parsed.kind === 'DOMAIN-SUFFIX') websiteInput.value = parsed.value;
+  preview.textContent = `\u8349\u7a3f\uff1a${parsed.display} \u2192 ${next.label}\u3002\u6765\u81ea\u8fde\u63a5\u8bb0\u5f55\uff0c\u4e0d\u4f1a\u4fee\u6539\u914d\u7f6e\u3002`;
+  preview.dataset.rule = `${parsed.kind},${parsed.value},${next.target}${parsed.kind === 'IP-CIDR' ? ',no-resolve' : ''}`;
   preview.className = 'routing-draft-preview ok';
 }
 
@@ -3389,6 +3426,14 @@ document.body.addEventListener('click', async (event) => {
     const retryJobId = event.target.closest('[data-job-retry]')?.dataset.jobRetry;
     if (retryJobId) {
       await retryJob(retryJobId);
+      return;
+    }
+    const routingDraftButton = event.target.closest('[data-routing-draft-target]');
+    if (routingDraftButton) {
+      setPage('routing');
+      ensureRoutingAssistantUi();
+      previewConnectionRoutingDraftFromButton(routingDraftButton);
+      setNotice('\u5df2\u4ece\u8fde\u63a5\u8bb0\u5f55\u751f\u6210\u5206\u6d41\u8349\u7a3f\uff0c\u672a\u4fee\u6539\u914d\u7f6e\u3002');
       return;
     }
     const closeButton = event.target.closest('[data-close-connection]');
