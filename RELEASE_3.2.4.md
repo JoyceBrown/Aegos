@@ -26,8 +26,11 @@ Source checkpoint for profile-switch routing rule validation.
 - `npm run audit:release`
 - `npm run smoke:interactions`
 - `npm run smoke:perf`
+- `npm run build`
+- `npm run audit:installer`
 - `git diff --check`
 
 ## Artifact
-- Source checkpoint: no installer built for this checkpoint.
-- SHA-256: Source-only
+- Installer: `src-tauri/target/release/bundle/nsis/Aegos_3.2.4_x64-setup.exe`
+- Size: 15,438,127 bytes
+- SHA-256: DAFFF7B828FB0CE173B3609C2C6B29CA00CCD229C2673791A0B92C85AC5E93B8
