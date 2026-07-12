@@ -1930,12 +1930,21 @@ function applyOptimisticLogsClear() {
 async function exportLogs() {
   const result = await invoke('export_logs');
   const path = result?.path || '';
+  const count = Number(result?.count || 0);
   if (path) {
-    setNotice(`日志已导出：${path}`);
+    setNotice(`日志已脱敏导出：${path}（${count} 条）`);
   } else {
-    setNotice('日志已导出。');
+    setNotice('日志已脱敏导出。');
   }
   return result;
+}
+
+async function exportDiagnosticReport() {
+  return runBackgroundJob('exportDiagnostics', {}, {
+    pendingNotice: '正在后台生成并导出诊断报告...',
+    successNotice: (value) => `诊断报告已脱敏导出：${value?.path || '-'}`,
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
+  });
 }
 
 function removeConnectionElement(button) {
@@ -3584,6 +3593,8 @@ if (copyDiagBtn) copyDiagBtn.onclick = (event) => runButtonAction(event.currentT
 });
 const exportLogsBtn = $('#exportLogsBtn');
 if (exportLogsBtn) exportLogsBtn.onclick = (event) => runButtonAction(event.currentTarget, '导出中...', exportLogs);
+const exportDiagBtn = $('#exportDiagBtn');
+if (exportDiagBtn) exportDiagBtn.onclick = (event) => runDetachedButtonAction(event.currentTarget, '导出中...', exportDiagnosticReport);
 $('#clearLogsBtn').onclick = () => runOptimisticAction({
   apply: () => applyOptimisticLogsClear(),
   commit: () => invoke('clear_logs'),

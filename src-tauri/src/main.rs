@@ -563,13 +563,35 @@ fn export_logs_from_state(
     let export_dir = app_data.join("diagnostics");
     ensure_dir(&export_dir)?;
     let path = export_dir.join(format!("aegos-logs-{}.txt", now_secs()));
+    let mut categories: HashMap<String, usize> = HashMap::new();
+    for entry in &items {
+        *categories.entry(entry.category.clone()).or_insert(0) += 1;
+    }
+    let mut category_lines = categories
+        .iter()
+        .map(|(category, count)| format!("- {category}: {count}"))
+        .collect::<Vec<_>>();
+    category_lines.sort();
+    let header = format!(
+        "Aegos Logs Export\nGenerated: {}\nEntries: {}\nRedaction: subscription URLs, tokens, UUIDs, passwords, local paths, and sensitive IPs are masked before export.\nCategories:\n{}\n\n",
+        now_iso(),
+        items.len(),
+        if category_lines.is_empty() {
+            "- none".to_string()
+        } else {
+            category_lines.join("\n")
+        }
+    );
     let content = if items.is_empty() {
-        "No Aegos logs captured yet.\n".to_string()
+        format!("{header}No Aegos logs captured yet.\n")
     } else {
-        items
+        header
+            + &items
             .iter()
             .map(|entry| {
-                let line = entry.line.replace('\r', " ").replace('\n', " ");
+                let line = sanitize_sensitive_text(&entry.line)
+                    .replace('\r', " ")
+                    .replace('\n', " ");
                 format!("{} [{}:{}] {}", entry.at, entry.level, entry.category, line)
             })
             .collect::<Vec<_>>()
@@ -579,7 +601,130 @@ fn export_logs_from_state(
     atomic_write_text_confined(&path, &export_dir, &content)?;
     Ok(json!({
         "path": path.to_string_lossy(),
-        "count": items.len()
+        "count": items.len(),
+        "categories": categories,
+        "redacted": true
+    }))
+}
+
+fn diagnostics_report_text(report: &JsonValue) -> String {
+    let summary = report.get("summary").unwrap_or(&JsonValue::Null);
+    let status = report.get("status").unwrap_or(&JsonValue::Null);
+    let checks = report
+        .get("checks")
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut lines = vec![
+        format!(
+            "Aegos Diagnostics {}",
+            report
+                .get("appVersion")
+                .and_then(JsonValue::as_str)
+                .unwrap_or(env!("CARGO_PKG_VERSION"))
+        ),
+        format!(
+            "Generated: {}",
+            report
+                .get("generatedAt")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("-")
+        ),
+        "Redaction: sensitive URLs, tokens, UUIDs, passwords, local paths, and IP details are masked where possible.".to_string(),
+        format!(
+            "Core ready: {}",
+            status
+                .get("coreReady")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false)
+        ),
+        format!(
+            "Traffic takeover: {}",
+            status
+                .get("trafficTakeover")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false)
+        ),
+        format!(
+            "Mode: {}",
+            status.get("mode").and_then(JsonValue::as_str).unwrap_or("-")
+        ),
+        format!(
+            "Summary: {} errors, {} warnings, {} failed checks",
+            summary
+                .get("errors")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0),
+            summary
+                .get("warnings")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0),
+            summary
+                .get("failed")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0)
+        ),
+        String::new(),
+        "Next actions:".to_string(),
+    ];
+    let next_actions = summary
+        .get("nextActions")
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if next_actions.is_empty() {
+        lines.push("- No immediate action required.".to_string());
+    } else {
+        for action in next_actions {
+            if let Some(action) = action.as_str() {
+                lines.push(format!("- {}", sanitize_sensitive_text(action)));
+            }
+        }
+    }
+    lines.push(String::new());
+    lines.push("Checks:".to_string());
+    for item in checks {
+        let name = item.get("name").and_then(JsonValue::as_str).unwrap_or("Check");
+        let severity = item
+            .get("severity")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("info");
+        let ok = item.get("ok").and_then(JsonValue::as_bool).unwrap_or(false);
+        let detail = item.get("detail").and_then(JsonValue::as_str).unwrap_or("-");
+        let hint = item.get("hint").and_then(JsonValue::as_str).unwrap_or("");
+        lines.push(format!(
+            "[{}] {}: {}",
+            severity,
+            sanitize_sensitive_text(name),
+            if ok { "ok" } else { "failed" }
+        ));
+        lines.push(format!("  detail: {}", sanitize_sensitive_text(detail)));
+        if !hint.is_empty() {
+            lines.push(format!("  action: {}", sanitize_sensitive_text(hint)));
+        }
+    }
+    lines.join("\n") + "\n"
+}
+
+fn export_diagnostics_report_from_state(
+    core: Arc<Mutex<CoreManager>>,
+    app_data: &Path,
+) -> Result<JsonValue, String> {
+    let report = diagnostics_detached(core);
+    let export_dir = app_data.join("diagnostics");
+    ensure_dir(&export_dir)?;
+    let path = export_dir.join(format!("aegos-diagnostics-{}.txt", now_secs()));
+    let content = diagnostics_report_text(&report);
+    atomic_write_text_confined(&path, &export_dir, &content)?;
+    Ok(json!({
+        "path": path.to_string_lossy(),
+        "count": report
+            .get("checks")
+            .and_then(JsonValue::as_array)
+            .map(|items| items.len())
+            .unwrap_or(0),
+        "redacted": true,
+        "summary": report.get("summary").cloned().unwrap_or_else(|| json!({}))
     }))
 }
 
@@ -9869,6 +10014,7 @@ fn job_label(kind: &str) -> String {
         "selectBestProxy" => "切换到推荐",
         "applyRoutingDrafts" => "应用分流草稿",
         "undoRoutingApply" => "撤销分流应用",
+        "exportDiagnostics" => "导出诊断报告",
         _ => "后台任务",
     }
     .to_string()
@@ -9964,6 +10110,7 @@ fn start_job(
             | "repairSystemProxy"
             | "applyRoutingDrafts"
             | "undoRoutingApply"
+            | "exportDiagnostics"
     ) {
         return Err(format!("Unsupported job kind: {kind}"));
     }
@@ -9992,6 +10139,7 @@ fn start_job(
     let core = state.core.clone();
     let jobs = state.jobs.clone();
     let operations = state.operations.clone();
+    let app_data = state.app_data.clone();
     thread::spawn(move || {
         set_job_state(&jobs, &id, "running", 0, 3, "正在准备");
         if job_cancel_requested(&jobs, &id) {
@@ -10052,6 +10200,10 @@ fn start_job(
             "diagnostics" => {
                 set_job_state(&jobs, &id, "running", 1, 2, "diagnostics running");
                 Ok(diagnostics_detached(core.clone()))
+            }
+            "exportDiagnostics" => {
+                set_job_state(&jobs, &id, "running", 1, 2, "正在导出诊断报告");
+                export_diagnostics_report_from_state(core.clone(), &app_data)
             }
             "recoverNetwork" => {
                 let force = payload
@@ -11690,6 +11842,11 @@ fn export_logs(state: State<AppState>) -> Result<JsonValue, String> {
 }
 
 #[tauri::command]
+fn export_diagnostics_report(state: State<AppState>) -> Result<JsonValue, String> {
+    export_diagnostics_report_from_state(state.core.clone(), &state.app_data)
+}
+
+#[tauri::command]
 fn window_minimize(window: Window) -> Result<(), String> {
     window.minimize().map_err(|err| err.to_string())
 }
@@ -11765,6 +11922,7 @@ fn main() {
             diagnostics,
             clear_logs,
             export_logs,
+            export_diagnostics_report,
             window_minimize,
             window_toggle_maximize,
             window_close
