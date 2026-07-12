@@ -30,7 +30,7 @@ const commandStart = mainRs.indexOf('#[tauri::command]\nfn routing_assistant_gat
 const commandEnd = mainRs.indexOf('#[tauri::command]\nfn start_proxy_delay_test', commandStart + 1);
 const commandBody = commandStart >= 0 ? mainRs.slice(commandStart, commandEnd > commandStart ? commandEnd : undefined) : '';
 
-check('package version is 3.3.0 routing assistant gate', pkg.version === '3.3.0', pkg.version);
+check('package version remains in 3.3 routing assistant lane', /^3\.3\.\d+$/.test(pkg.version), pkg.version);
 check('routing assistant gate audit is exposed as package script', pkg.scripts?.['audit:routing-assistant-gate'] === 'node tools/routing-assistant-gate-audit.js', 'npm run audit:routing-assistant-gate');
 check('routing assistant gate command is registered', mainRs.includes('fn routing_assistant_gate') && mainRs.includes('routing_assistant_gate,'), 'routing_assistant_gate command');
 check('assistant gate command is read-only', commandBody.includes('routing_assistant_gate_contract') && !commandBody.includes('atomic_write_text_confined') && !commandBody.includes('hot_reload_profile') && !commandBody.includes('set_active_profile'), 'read-only gate command');

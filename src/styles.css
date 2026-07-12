@@ -1436,11 +1436,137 @@ h1 {
 }
 
 .routing-card {
-  gap: 14px;
+  grid-template-rows: auto auto auto minmax(96px, .72fr) minmax(140px, 1fr);
+  gap: 10px;
 }
 
 .routing-summary {
   grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.routing-assistant {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(190px, .9fr) minmax(300px, 1.1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid rgba(130, 154, 187, .14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .70);
+}
+
+.routing-assistant b,
+.routing-assistant small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.routing-assistant small,
+.routing-draft-preview {
+  color: var(--muted);
+}
+
+.routing-draft-form {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) 96px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.routing-draft-form input,
+.routing-draft-form select {
+  width: 100%;
+  height: 34px;
+  min-width: 0;
+}
+
+.routing-draft-preview {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin: -4px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.routing-draft-preview.ok {
+  color: #237447;
+}
+
+.routing-draft-preview.warn {
+  color: #b7791f;
+}
+
+.routing-table-card {
+  min-height: 0;
+  padding: 8px;
+  border: 1px solid rgba(130, 154, 187, .14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .58);
+}
+
+.routing-card .simple-list {
+  gap: 6px;
+  padding-right: 2px;
+}
+
+.routing-row {
+  display: grid;
+  gap: 10px;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .68);
+  box-shadow: inset 0 0 0 1px rgba(126, 151, 182, .08);
+}
+
+.routing-group-row {
+  grid-template-columns: minmax(150px, 1.1fr) 96px minmax(160px, 1fr) 58px minmax(160px, 1fr);
+}
+
+.routing-rule-row {
+  grid-template-columns: 92px minmax(180px, 1.3fr) minmax(150px, 1fr) 88px;
+}
+
+.routing-row-head {
+  min-height: 30px;
+  color: #7d8aa0;
+  font-size: 12px;
+  font-weight: 850;
+  background: rgba(247, 250, 255, .82);
+  box-shadow: none;
+}
+
+.routing-row.warn {
+  box-shadow: inset 3px 0 0 rgba(235, 171, 52, .55), inset 0 0 0 1px rgba(235, 171, 52, .16);
+}
+
+.routing-row > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1120px) {
+  .routing-card {
+    grid-template-rows: auto auto auto minmax(88px, .72fr) minmax(128px, 1fr);
+  }
+
+  .routing-assistant {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .routing-draft-form {
+    grid-template-columns: minmax(120px, 1fr) 88px auto;
+  }
 }
 
 .settings-grid {

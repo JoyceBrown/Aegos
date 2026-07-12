@@ -192,7 +192,7 @@ async function auditViewport(page, width, height) {
     const settingsActive = settingsPanel?.classList.contains('active') || false;
     const tunToggleVisible = Boolean(tunToggle && visible(tunToggle));
     const settingsBox = box('[data-page-panel="settings"] .page-card');
-    const settingsSummary = box('.settings-summary-grid');
+    const settingsSummary = box('[data-page-panel="settings"] .settings-summary-grid');
     const settingsSections = all('[data-page-panel="settings"] .settings-section').filter(visible).length;
     document.querySelector('[data-page="diagnostics"]').click();
     document.querySelector('#diagSummary').innerHTML = '<div class="diagnostic-status is-warn"><b>需要关注</b><span>2 项检查 / 1 项异常</span></div><div class="diagnostic-metrics"><span><b>0</b>错误</span><span><b>1</b>警告</span><span><b>1</b>通过</span></div><div class="diagnostic-actions"><small>打开日志页查看最近核心 warning。</small></div>';

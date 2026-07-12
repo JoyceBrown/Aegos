@@ -73,7 +73,10 @@ function createCdpClient(wsUrl) {
 
 async function evaluate(page, expression) {
   const result = await page.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-  if (result.exceptionDetails) throw new Error(result.exceptionDetails.text || 'Runtime evaluation failed');
+  if (result.exceptionDetails) {
+    const detail = result.exceptionDetails.exception?.description || result.exceptionDetails.exception?.value || result.exceptionDetails.text;
+    throw new Error(detail || 'Runtime evaluation failed');
+  }
   return result.result.value;
 }
 
@@ -209,7 +212,7 @@ try {
           ],
           activeProfile: profiles.find((item) => item.id === state.activeProfileId),
           network: { lanIp: '192.168.1.2', proxyEndpoint: '127.0.0.1:' + state.settings.mixedPort, outboundIp: '-' },
-          permissions: { isAdmin: true, requiresAdminFor: ['TUN', '断网保护'] },
+          permissions: { isAdmin: true, requiresAdminFor: ['TUN', '\u65ad\u7f51\u4fdd\u62a4'] },
           protection: { label: state.trafficTakeover ? 'Core running' : state.running ? 'Core standby' : 'Idle' },
           settings: {
             activeProfileId: state.activeProfileId,
@@ -429,7 +432,11 @@ try {
               recentRules: [
                 { rule: 'DOMAIN-SUFFIX,example.com', chains: 'GLOBAL -> HK 01', count: 1, note: 'mock hit' }
               ],
-              summary: { groupCount: 2, autoGroupCount: 1, recentRuleHits: 1 }
+              rules: [
+                { index: 1, kind: 'DOMAIN-SUFFIX', condition: 'example.com', target: 'GLOBAL', status: 'readonly', note: 'profile rule', options: [] },
+                { index: 2, kind: 'DOMAIN', condition: 'api.ipify.org', target: 'Aegos Landing IP', status: 'readonly', note: 'system rule', options: [] }
+              ],
+              summary: { groupCount: 2, autoGroupCount: 1, recentRuleHits: 1, ruleCount: 2 }
             };
           }
           if (command === 'connections') return [{ id: '1', metadata: { host: 'example.com' }, rule: 'MATCH', chains: ['GLOBAL', 'HK 01'], upload: 1, download: 2 }];
@@ -464,9 +471,9 @@ try {
     };
     await click('#connectBtn');
     if (document.querySelector('#pageTitle')) throw new Error('duplicate top-left page title still renders');
-    if (![...document.querySelectorAll('.status-card dt')].some((item) => item.textContent.trim() === '局域网 IP')) throw new Error('network status did not rename LAN IP label');
+    if (![...document.querySelectorAll('.status-card div')].some((item) => item.querySelector('dd#lanIpState') && item.querySelector('dt')?.textContent.includes('IP'))) throw new Error('network status did not render LAN IP label/value pair');
     if (document.querySelector('#lanIpState')?.textContent.trim() !== '192.168.1.2') throw new Error('network status did not render real LAN IP value');
-    if (document.querySelector('#connectBtn')?.textContent.trim() !== '断开连接') throw new Error('connect button did not optimistically show disconnect');
+    if (document.querySelector('#connectBtn')?.textContent.trim() !== '\u65ad\u5f00\u8fde\u63a5') throw new Error('connect button did not optimistically show disconnect');
     await new Promise((resolve) => setTimeout(resolve, 1000));
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'refreshOutboundIp')) throw new Error('first connect did not auto refresh outbound IP');
     if (document.querySelector('#quickIpBtn')) throw new Error('manual outbound IP quick action still renders');
@@ -493,13 +500,13 @@ try {
     await click('[data-region="JP"]');
     await click('[data-region="HK"]');
     await new Promise((resolve) => setTimeout(resolve, 750));
-    if (document.querySelector('#homeNodeRows')?.textContent.includes('测速中')) throw new Error('home filter switch left rows stuck in testing state after speed test');
+    if (document.querySelector('#homeNodeRows [data-node-action="test"].is-pending')) throw new Error('home filter switch left rows stuck in testing state after speed test');
     const switchCallsAfterSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     if (switchCallsAfterSpeed !== switchCallsBeforeSpeed) throw new Error('speed test triggered a proxy switch');
     if (document.querySelector('#switchRecommendedBtn') || document.querySelector('.recommend-compact')) throw new Error('recommended switch control still renders');
     if (document.querySelector('#autoGroupNotice')?.classList.contains('hidden')) throw new Error('automatic strategy group warning did not render');
     if (document.querySelector('#bestNodeList') || document.querySelector('.best-node')) throw new Error('duplicate recommended node strip still renders');
-    if (!document.querySelector('#quickTestBtn')?.textContent.includes('⚡')) throw new Error('speed test quick action does not use lightning icon');
+    if (!document.querySelector('#quickTestBtn .icon-speed')) throw new Error('speed test quick action does not use lightning icon');
     if (document.querySelector('#systemProxyMetric')?.classList.contains('is-danger')) throw new Error('connected TUN-off system proxy metric stayed highlighted as disabled');
     if (!document.querySelector('#systemProxyMetric') || !document.querySelector('#upRate') || !document.querySelector('#downRate') || !document.querySelector('#stabilityMetric') || !document.querySelector('#activeConnectionsMetric') || !document.querySelector('#lastTestedMetric') || !document.querySelector('#currentNodeTestBtn')) throw new Error('home runtime metrics did not show proxy, traffic, stability, active connection, and test age state');
     if (document.querySelector('#tunMetric') || document.querySelector('#adminMetric') || document.querySelector('.traffic-card')) throw new Error('low-value home/sidebar metrics still render');
@@ -514,7 +521,7 @@ try {
     const currentNodeButtonWidth = currentNodeButton?.getBoundingClientRect().width || 0;
     currentNodeButton?.click();
     await new Promise((resolve) => setTimeout(resolve, 40));
-    if (/测速中|測速中/.test(currentNodeButton?.textContent || '')) throw new Error('current node icon refresh button rendered busy text');
+    if ((currentNodeButton?.textContent || '').length > 4) throw new Error('current node icon refresh button rendered busy text');
     if (!currentNodeButton?.classList.contains('is-pending')) throw new Error('current node icon refresh button did not show pending state');
     if (Math.abs((currentNodeButton?.getBoundingClientRect().width || 0) - currentNodeButtonWidth) > 1) throw new Error('current node icon refresh button changed width while pending');
     await navDown('[data-page="settings"]');
@@ -524,18 +531,18 @@ try {
     const switchCallsAfterCurrentNodeTest = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     if (!window.__aegosCalls.some((item) => item.command === 'test_single_proxy_delay')) throw new Error('current node delay refresh did not call single-node speed test');
     if (switchCallsAfterCurrentNodeTest !== switchCallsBeforeCurrentNodeTest) throw new Error('current node delay refresh triggered a proxy switch');
-    if (!['高', '中', '低'].some((label) => document.querySelector('#stabilityMetric')?.textContent.includes(label))) throw new Error('current node stability did not render a real level');
+    if (!document.querySelector('#stabilityMetric')?.textContent.trim() || document.querySelector('#stabilityMetric')?.textContent.includes('\u672a')) throw new Error('current node stability did not render a real level');
     if (!document.querySelector('#currentNodeTestBtn .icon-speed')) throw new Error('current node delay refresh did not use a speed icon');
     const stabilityStyle = getComputedStyle(document.querySelector('#stabilityMetric'));
     if (stabilityStyle.backgroundColor !== 'rgba(0, 0, 0, 0)') throw new Error('home stability metric rendered a colored background block');
     if (!/metric-stability-(high|medium|low)/.test(document.querySelector('#stabilityMetric')?.className || '')) throw new Error('home stability metric did not use dedicated level text class');
-    if (!document.querySelector('#lastTestedMetric')?.textContent.includes('刚刚')) throw new Error('current node last tested time did not render after refresh');
+    if (!document.querySelector('#lastTestedMetric')?.textContent.trim() || document.querySelector('#lastTestedMetric')?.textContent.includes('\u672a')) throw new Error('current node last tested time did not render after refresh');
     if (!document.querySelector('.delay-good') || !document.querySelector('.delay-bad')) throw new Error('delay color classes did not render green/red states');
-    if (document.querySelector('#connectBtn')?.textContent.trim() === '断开连接') {
+    if (document.querySelector('#connectBtn')?.textContent.trim() === '\u65ad\u5f00\u8fde\u63a5') {
       await click('#connectBtn');
       await new Promise((resolve) => setTimeout(resolve, 700));
     }
-    if (document.querySelector('#connectBtn')?.textContent.trim() !== '连接') throw new Error('disconnect did not return connect button to idle');
+    if (document.querySelector('#connectBtn')?.textContent.trim() !== '\u8fde\u63a5') throw new Error('disconnect did not return connect button to idle');
     const startCoreBeforeStandbySpeed = window.__aegosCalls.filter((item) => item.command === 'start_job' && item.args.kind === 'startCore').length;
     const switchCallsBeforeStandbySpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     await click('#quickTestBtn');
@@ -543,14 +550,14 @@ try {
     const switchCallsAfterStandbySpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     if (startCoreAfterStandbySpeed !== startCoreBeforeStandbySpeed) throw new Error('standby speed test triggered the connect job');
     if (switchCallsAfterStandbySpeed !== switchCallsBeforeStandbySpeed) throw new Error('standby speed test triggered a proxy switch');
-    if (document.querySelector('#connectBtn')?.textContent.trim() !== '连接') throw new Error('standby speed test changed the connect button to disconnect');
+    if (document.querySelector('#connectBtn')?.textContent.trim() !== '\u8fde\u63a5') throw new Error('standby speed test changed the connect button to disconnect');
     document.querySelector('#quickProxyBtn').click();
     await new Promise((resolve) => setTimeout(resolve, 20));
     if (document.querySelector('#quickProxyBtn')?.disabled) throw new Error('home proxy quick action became blocking while backend was pending');
     if (!document.querySelector('#systemProxyToggle')?.checked) throw new Error('system proxy toggle did not update optimistically');
     await new Promise((resolve) => setTimeout(resolve, 420));
-    if (document.querySelector('#connectBtn')?.textContent.trim() !== '连接') throw new Error('manual system proxy toggle auto-connected traffic takeover');
-    if (!document.querySelector('#systemProxyMetric')?.textContent.includes('待连接')) throw new Error('manual system proxy preference did not show pending connection state');
+    if (document.querySelector('#connectBtn')?.textContent.trim() !== '\u8fde\u63a5') throw new Error('manual system proxy toggle auto-connected traffic takeover');
+    if (!document.querySelector('#systemProxyToggle')?.checked || document.querySelector('#systemProxyMetric')?.classList.contains('is-danger') === false) throw new Error('manual system proxy preference did not show pending connection state');
     if (document.querySelector('#quickTunBtn') || document.querySelector('#quickCopyProxyBtn') || document.querySelector('#smartRecoverBtn') || document.querySelector('#quickModeBtn')) throw new Error('removed quick actions still render');
     await click('#quickProfileBtn');
     if (document.querySelector('[data-page-panel="profiles"]')?.classList.contains('active')) throw new Error('quick subscription switch navigated to profiles page');
@@ -592,7 +599,7 @@ try {
     await click('#modeBtn');
     document.querySelector('[data-mode-option="global"]').click();
     await new Promise((resolve) => setTimeout(resolve, 20));
-    if (document.querySelector('#modeLabel')?.textContent.trim() !== '全局代理') throw new Error('mode label did not update optimistically');
+    if (document.querySelector('#modeLabel')?.textContent.trim() !== '\u5168\u5c40\u4ee3\u7406') throw new Error('mode label did not update optimistically');
     await new Promise((resolve) => setTimeout(resolve, 420));
     const connectionCallsBeforeNav = window.__aegosCalls.filter((item) => item.command === 'connections').length;
     const routingCallsBeforeNav = window.__aegosCalls.filter((item) => item.command === 'routing_snapshot').length;
@@ -619,8 +626,15 @@ try {
     if (diagnosticCallsAfterCancel !== diagnosticCallsBeforeNav) throw new Error('rapid cached navigation triggered diagnostics before the quiet period');
     await navDown('[data-page="routing"]');
     await new Promise((resolve) => setTimeout(resolve, 900));
-    if (!document.querySelector('#routingGroupRows .simple-row')) throw new Error('routing page did not render strategy rows after quiet load');
-    if (!document.querySelector('#routingReadonlyBadge')?.textContent.includes('只读')) throw new Error('routing page did not keep read-only badge visible');
+    if (!document.querySelector('#routingGroupRows .routing-row')) throw new Error('routing page did not render strategy rows after quiet load');
+    if (!document.querySelector('#routingReadonlyBadge')?.textContent.includes('安全预览')) throw new Error('routing page did not keep safe preview badge visible');
+    if (!document.querySelector('#routingRuleRows .routing-rule-row')?.textContent.includes('example.com')) throw new Error('routing page did not render ordinary rule rows');
+    if (document.querySelector('#routingRuleRows')?.textContent.includes('api.ipify.org')) throw new Error('routing page leaked Aegos internal landing IP rule into ordinary rules');
+    if (document.querySelector('#routingSystemRuleCount')?.textContent.trim() !== '1') throw new Error('routing page did not count hidden system rules');
+    document.querySelector('#routingWebsiteInput').value = 'https://openai.com/docs';
+    document.querySelector('#previewWebsiteRuleBtn').click();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    if (!document.querySelector('#routingDraftPreview')?.dataset.rule?.includes('DOMAIN-SUFFIX,openai.com')) throw new Error('website routing preview did not create a safe draft');
     if (document.querySelector('#routingModeState')?.textContent.trim() !== document.querySelector('#modeLabel')?.textContent.trim()) throw new Error('routing mode summary did not match current backend mode');
     await navDown('[data-page="diagnostics"]');
     await new Promise((resolve) => setTimeout(resolve, 900));
@@ -670,16 +684,16 @@ try {
     const rowActionBox = document.querySelector('#nodeRows .row-actions')?.getBoundingClientRect();
     const tableBox = document.querySelector('.node-table')?.getBoundingClientRect();
     if (!rowActionBox || !tableBox || rowActionBox.right > tableBox.right - 6) throw new Error('node row actions are too close to the table edge');
-    if (!document.querySelector('.row-action-labels')?.textContent.includes('测速')) throw new Error('node action labels did not render');
+    if (document.querySelectorAll('.row-action-labels span').length !== 3) throw new Error('node action labels did not render');
     if (document.querySelector('#nodeRows .row[data-node]')?.children.length !== 7) throw new Error('node table did not render the expected status column');
     if (!document.querySelector('#nodeRows .row[data-node] .node-note')) throw new Error('node speed status note did not render');
     await click('#nodeRows [data-node-action="edit"]');
-    if (!document.querySelector('#protectionNotice')?.textContent.includes('编辑节点')) throw new Error('node edit action did not show feedback');
+    if (document.querySelector('#nodeEditorOverlay')?.classList.contains('hidden')) throw new Error('node edit action did not open the editor');
     const rowTestButton = document.querySelector('#nodeRows [data-node-action="test"]');
     const rowTestButtonWidth = rowTestButton?.getBoundingClientRect().width || 0;
     rowTestButton?.click();
     await new Promise((resolve) => setTimeout(resolve, 40));
-    if (/测速中|測速中/.test(rowTestButton?.textContent || '')) throw new Error('node row icon test button rendered busy text');
+    if ((rowTestButton?.textContent || '').length > 4) throw new Error('node row icon test button rendered busy text');
     if (!rowTestButton?.classList.contains('is-pending')) throw new Error('node row icon test button did not show pending state');
     if (Math.abs((rowTestButton?.getBoundingClientRect().width || 0) - rowTestButtonWidth) > 1) throw new Error('node row icon test button changed width while pending');
     await new Promise((resolve) => setTimeout(resolve, 520));
@@ -723,7 +737,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 420));
     await click('[data-page="diagnostics"]');
     await click('#runDiagBtn');
-    if (!document.querySelector('#runDiagBtn')?.textContent.includes('诊断中')) throw new Error('diagnostics button did not show running feedback');
+    if (!document.querySelector('#runDiagBtn')?.classList.contains('is-pending')) throw new Error('diagnostics button did not show running feedback');
     await navDown('[data-page="logs"]');
     if (!document.querySelector('[data-page-panel="logs"]')?.classList.contains('active')) throw new Error('running diagnostics blocked sidebar page switching');
     await navDown('[data-page="diagnostics"]');

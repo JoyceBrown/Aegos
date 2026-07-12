@@ -37,6 +37,7 @@ let activeSpeedRunId = 0;
 let profilePreviewSeq = 0;
 let profileMenuAnchor = null;
 let nodeTransitionTimer = null;
+let routingAssistantReady = false;
 const speedTestButtons = new Set();
 let lastSpeedNodeRefreshAt = 0;
 let latestSpeedStatus = null;
@@ -2704,39 +2705,181 @@ function strategyTypeLabel(kind = '') {
   return kind ? String(kind) : '-';
 }
 
+function routingStrategyTypeLabel(kind = '') {
+  const value = String(kind || '').replace(/[\s_-]/g, '').toLowerCase();
+  if (value === 'select') return '\u624b\u52a8\u9009\u62e9';
+  if (value === 'urltest') return '\u81ea\u52a8\u6d4b\u901f';
+  if (value === 'fallback') return '\u6545\u969c\u5207\u6362';
+  if (value === 'loadbalance') return '\u8d1f\u8f7d\u5747\u8861';
+  return kind ? String(kind) : '-';
+}
+
+function normalizeRoutingStaticText() {
+  const panel = document.querySelector('[data-page-panel="routing"]');
+  if (!panel) return;
+  const title = panel.querySelector('.section-head h2');
+  const subtitle = panel.querySelector('.section-head p');
+  if (title) title.textContent = '\u5206\u6d41';
+  if (subtitle) subtitle.textContent = '\u770b\u61c2\u5f53\u524d\u89c4\u5219\u600e\u4e48\u8d70\uff0c\u5148\u9884\u89c8\uff0c\u518d\u51b3\u5b9a\u662f\u5426\u4fee\u6539\u3002';
+  const badge = $('#routingReadonlyBadge');
+  if (badge) badge.textContent = '\u5b89\u5168\u9884\u89c8\uff0c\u4e0d\u6539\u914d\u7f6e';
+  const refresh = $('#refreshRoutingBtn');
+  if (refresh) refresh.textContent = '\u5237\u65b0';
+  const summaryLabels = panel.querySelectorAll('.routing-summary article span');
+  ['\u5f53\u524d\u6a21\u5f0f', '\u7b56\u7565\u7ec4', '\u7528\u6237\u89c4\u5219', '\u7cfb\u7edf\u89c4\u5219'].forEach((label, index) => {
+    if (summaryLabels[index]) summaryLabels[index].textContent = label;
+  });
+  const tables = panel.querySelectorAll('.connection-table');
+  if (tables[0]) {
+    tables[0].classList.add('routing-table-card', 'routing-group-table');
+    const head = tables[0].querySelector('.simple-row.head');
+    if (head) {
+      head.className = 'routing-row routing-row-head routing-group-row';
+      replaceChildrenSafe(head, ['\u540d\u79f0', '\u7c7b\u578b', '\u5f53\u524d\u9009\u62e9', '\u6570\u91cf', '\u8bf4\u660e'].map((label) => el('span', { textContent: label })));
+    }
+  }
+  if (tables[1]) {
+    tables[1].classList.add('routing-table-card', 'routing-rule-table');
+    const head = tables[1].querySelector('.simple-row.head');
+    if (head) {
+      head.className = 'routing-row routing-row-head routing-rule-row';
+      replaceChildrenSafe(head, ['\u7c7b\u578b', '\u6761\u4ef6', '\u76ee\u6807', '\u72b6\u6001'].map((label) => el('span', { textContent: label })));
+    }
+  }
+}
+
+function ensureRoutingAssistantUi() {
+  if (routingAssistantReady) return;
+  const summary = document.querySelector('[data-page-panel="routing"] .routing-summary');
+  if (!summary) return;
+  const autoCount = $('#routingAutoCount');
+  if (autoCount) autoCount.id = 'routingSystemRuleCount';
+  normalizeRoutingStaticText();
+  const assistant = el('div', { className: 'routing-assistant', attrs: { 'aria-label': '\u7f51\u7ad9\u5206\u6d41\u9884\u89c8' } }, [
+    el('div', {}, [
+      el('b', { textContent: '\u6dfb\u52a0\u7f51\u7ad9\u5206\u6d41\uff08\u9884\u89c8\uff09' }),
+      el('small', { textContent: '\u8f93\u5165\u57df\u540d\u540e\u5148\u751f\u6210\u8349\u7a3f\uff0c\u6b64\u7248\u4e0d\u4f1a\u5199\u5165\u914d\u7f6e\u3002' })
+    ]),
+    el('div', { className: 'routing-draft-form' }, [
+      el('input', { id: 'routingWebsiteInput', attrs: { placeholder: 'example.com', autocomplete: 'off', spellcheck: 'false' } }),
+      el('select', { id: 'routingWebsiteAction' }, [
+        el('option', { textContent: '\u8d70\u4ee3\u7406', attrs: { value: 'proxy' } }),
+        el('option', { textContent: '\u76f4\u8fde', attrs: { value: 'direct' } }),
+        el('option', { textContent: '\u62d2\u7edd', attrs: { value: 'reject' } })
+      ]),
+      el('button', { id: 'previewWebsiteRuleBtn', className: 'primary compact', textContent: '\u751f\u6210\u9884\u89c8' })
+    ]),
+    el('p', { id: 'routingDraftPreview', className: 'routing-draft-preview', textContent: '\u672a\u751f\u6210\u8349\u7a3f\u3002' })
+  ]);
+  summary.after(assistant);
+  $('#previewWebsiteRuleBtn')?.addEventListener('click', previewWebsiteRoutingDraft);
+  $('#routingWebsiteInput')?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') previewWebsiteRoutingDraft();
+  });
+  routingAssistantReady = true;
+}
+
+function normalizeWebsiteRuleInput(value = '') {
+  let input = String(value || '').trim();
+  if (!input) return { ok: false, error: '\u8bf7\u5148\u8f93\u5165\u57df\u540d\u3002' };
+  input = input.replace(/^https?:\/\//i, '').split('/')[0].split('?')[0].replace(/^\*\./, '').toLowerCase();
+  const ok = /^(?!-)(?:[a-z0-9-]{1,63}\.)+[a-z]{2,63}$/.test(input);
+  if (!ok) return { ok: false, error: '\u57df\u540d\u683c\u5f0f\u4e0d\u5bf9\uff0c\u4f8b\u5982 example.com\u3002' };
+  return { ok: true, domain: input };
+}
+
+function previewWebsiteRoutingDraft() {
+  const preview = $('#routingDraftPreview');
+  const input = $('#routingWebsiteInput');
+  const action = $('#routingWebsiteAction')?.value || 'proxy';
+  if (!preview || !input) return;
+  const parsed = normalizeWebsiteRuleInput(input.value);
+  if (!parsed.ok) {
+    preview.textContent = parsed.error;
+    preview.className = 'routing-draft-preview warn';
+    return;
+  }
+  const actionMap = {
+    proxy: { label: '\u8d70\u4ee3\u7406', target: 'Proxies' },
+    direct: { label: '\u76f4\u8fde', target: 'DIRECT' },
+    reject: { label: '\u62d2\u7edd', target: 'REJECT' }
+  };
+  const next = actionMap[action] || actionMap.proxy;
+  preview.textContent = `\u8349\u7a3f\uff1a${parsed.domain} \u2192 ${next.label}\u3002\u5f53\u524d\u53ea\u9884\u89c8\uff0c\u4e0d\u4f1a\u4fee\u6539\u914d\u7f6e\u3002`;
+  preview.dataset.rule = `DOMAIN-SUFFIX,${parsed.domain},${next.target}`;
+  preview.className = 'routing-draft-preview ok';
+}
+
+function isAegosSystemRoutingRule(item = {}) {
+  const target = String(item.target || '');
+  const condition = String(item.condition || '');
+  return target === 'Aegos Landing IP' || /(?:api6?\.ipify\.org|checkip\.amazonaws\.com|ident\.me|ifconfig\.me|icanhazip\.com)/i.test(condition);
+}
+
+function routingKindLabel(kind = '') {
+  const value = String(kind || '').toUpperCase();
+  if (value === 'DOMAIN' || value === 'DOMAIN-SUFFIX' || value === 'DOMAIN-KEYWORD') return '\u7f51\u7ad9';
+  if (value === 'PROCESS-NAME' || value === 'PROCESS-PATH') return '\u5e94\u7528';
+  if (value === 'GEOIP') return '\u5730\u533a';
+  if (value.startsWith('IP-')) return 'IP';
+  if (value === 'MATCH') return '\u9ed8\u8ba4';
+  return value || '-';
+}
+
+function routingTargetLabel(target = '') {
+  const value = String(target || '');
+  if (value === 'DIRECT') return '\u76f4\u8fde';
+  if (value === 'REJECT' || value === 'REJECT-DROP') return '\u62d2\u7edd';
+  if (value === 'GLOBAL') return '\u5168\u5c40';
+  return value || '-';
+}
+
+function routingStatusLabel(item = {}) {
+  if (item.missingTarget) return '\u76ee\u6807\u7f3a\u5931';
+  if (item.orderIssue) return '\u987a\u5e8f\u98ce\u9669';
+  if (item.status === 'invalid') return '\u6709\u95ee\u9898';
+  if (item.status === 'unsupported') return '\u6682\u4e0d\u652f\u6301';
+  return '\u53ef\u67e5\u770b';
+}
+
 function renderRoutingSnapshot(data = {}) {
+  ensureRoutingAssistantUi();
   const groups = Array.isArray(data.groups) ? data.groups : [];
-  const rules = Array.isArray(data.rules) ? data.rules : [];
+  const rawRules = Array.isArray(data.rules) ? data.rules : [];
+  const systemRules = rawRules.filter(isAegosSystemRoutingRule);
+  const rules = rawRules.filter((item) => !isAegosSystemRoutingRule(item));
   const summary = data.summary || {};
   $('#routingModeState').textContent = modeLabel(data.mode || latestStatus?.mode || 'rule');
   $('#routingGroupCount').textContent = String(summary.groupCount ?? groups.length);
-  $('#routingAutoCount').textContent = String(summary.autoGroupCount ?? 0);
-  $('#routingRuleHitCount').textContent = String(summary.ruleCount ?? rules.length);
-  const groupRows = groups.slice(0, 24).map((item) => el('div', { className: 'simple-row' }, [
-    el('span', { textContent: item.name || '-' }),
-    el('span', { textContent: strategyTypeLabel(item.type) }),
-    el('span', { textContent: item.now || '-' }),
+  $('#routingRuleHitCount').textContent = String(rules.length);
+  $('#routingSystemRuleCount').textContent = String(systemRules.length);
+  const hint = $('#routingSystemRuleHint');
+  if (hint) hint.textContent = systemRules.length
+    ? `\u5df2\u6536\u8d77 ${systemRules.length} \u6761 Aegos \u5185\u7f6e\u68c0\u6d4b\u89c4\u5219\uff0c\u4e0d\u5f71\u54cd\u7528\u6237\u5206\u6d41\u3002`
+    : '\u6ca1\u6709\u9700\u8981\u6536\u8d77\u7684\u7cfb\u7edf\u89c4\u5219\u3002';
+  const groupRows = groups.slice(0, 24).map((item) => el('div', { className: 'routing-row routing-group-row' }, [
+    el('span', { textContent: item.name || '-', attrs: { title: item.name || '-' } }),
+    el('span', { textContent: routingStrategyTypeLabel(item.type) }),
+    el('span', { textContent: item.now || '-', attrs: { title: item.now || '-' } }),
     el('span', { textContent: String(item.itemCount ?? 0) }),
-    el('span', { textContent: item.automatic ? '\u81ea\u52a8\u7b56\u7565\uff0c\u6d4b\u901f\u4e0d\u5207\u6362' : '\u624b\u52a8/\u53ea\u8bfb' })
+    el('span', { textContent: item.automatic ? '\u81ea\u52a8\u9009\u62e9\uff0c\u6d4b\u901f\u4e0d\u4f1a\u624b\u52a8\u5207\u6362' : '\u624b\u52a8\u9009\u62e9' })
   ]));
   replaceChildrenSafe($('#routingGroupRows'), groupRows.length ? groupRows : [emptyState('\u6682\u65e0\u7b56\u7565\u7ec4\u6570\u636e\u3002')]);
   const ruleRows = rules.slice(0, 40).map((item) => {
     const options = Array.isArray(item.options) && item.options.length ? ` \u00b7 ${item.options.join(' / ')}` : '';
     const orderIssue = item.orderIssue?.detail ? ` \u00b7 ${item.orderIssue.detail}` : '';
-    return el('div', { className: 'simple-row' }, [
-      el('span', { textContent: `${item.index || '-'} ${item.kind || '-'}` }),
-      el('span', { textContent: item.condition || '-' }),
-      el('span', { textContent: item.target || '-' }),
-      el('span', { textContent: item.status || 'readonly' }),
-      el('span', { textContent: `${item.note || 'profile rule'}${options}${orderIssue}` })
+    return el('div', { className: `routing-row routing-rule-row ${item.missingTarget || item.orderIssue ? 'warn' : ''}` }, [
+      el('span', { textContent: `${item.index || '-'} ${routingKindLabel(item.kind)}`, attrs: { title: item.kind || '-' } }),
+      el('span', { textContent: item.condition || '-', attrs: { title: item.condition || '-' } }),
+      el('span', { textContent: routingTargetLabel(item.target), attrs: { title: `${item.target || '-'}${options}${orderIssue}` } }),
+      el('span', { textContent: routingStatusLabel(item) })
     ]);
   });
   if (!ruleRows.length && data.ruleError) {
-    ruleRows.push(el('div', { className: 'simple-row' }, [
+    ruleRows.push(el('div', { className: 'routing-row routing-rule-row warn' }, [
       el('span', { textContent: '-' }),
       el('span', { textContent: '-' }),
       el('span', { textContent: '-' }),
-      el('span', { textContent: 'unavailable' }),
       el('span', { textContent: data.ruleError })
     ]));
   }
