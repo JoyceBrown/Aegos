@@ -32,7 +32,7 @@ const schedulePageLoadBody = bodyOf('schedulePageLoad');
 const runDiagnosticsBody = bodyOf('runDiagnostics');
 const exportLogsBody = bodyOf('exportLogs');
 const diagnosticsBackendBody = sliceBetween(mainRs, 'fn diagnostics_from_snapshot', 'fn diagnostics_detached');
-const exportLogsBackendBody = sliceBetween(mainRs, 'fn export_logs(&self) -> Result<JsonValue, String>', 'fn recent_log_summary');
+const exportLogsBackendBody = sliceBetween(mainRs, 'fn export_logs_from_state', 'fn controller_request');
 const diagnosticsJobBody = sliceBetween(mainRs, '"diagnostics" => {', '"recoverNetwork" => {');
 
 check(
@@ -99,6 +99,7 @@ check(
     exportLogsBackendBody.includes('aegos-logs-') &&
     exportLogsBackendBody.includes('items.len()') &&
     exportLogsBackendBody.includes('atomic_write_text_confined(&path, &export_dir, &content)') &&
+    mainRs.includes('export_logs_from_state(&state.logs, &state.app_data)') &&
     interactionSmoke.includes('log export button did not call export_logs'),
   'support export for user support and diagnostics'
 );

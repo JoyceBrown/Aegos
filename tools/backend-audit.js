@@ -205,12 +205,30 @@ check(
 
 check(
   'active connection count uses short controller query',
-  mainRs.includes('fn active_connection_count(&self) -> JsonValue') &&
+  mainRs.includes('fn controller_request(') &&
     mainRs.includes('fn active_connection_count(state: State<AppState>)') &&
     mainRs.includes('active_connection_count,') &&
     mainRs.includes('"/connections"') &&
-    mainRs.includes('350'),
-  'home active connection metric should stay lightweight'
+    mainRs.includes('350') &&
+    !mainRs.includes('fn active_connection_count(&self) -> JsonValue'),
+  'home active connection metric should stay lightweight and avoid holding the core lock during HTTP'
+);
+
+check(
+  'volatile status commands avoid the CoreManager mutex during slow work',
+  mainRs.includes('speed_test: Arc<Mutex<SpeedTestState>>') &&
+    mainRs.includes('logs: Arc<Mutex<Vec<LogEntry>>>') &&
+    mainRs.includes('app_data: PathBuf') &&
+    mainRs.includes('fn speed_test_snapshot_from_state') &&
+    mainRs.includes('fn export_logs_from_state') &&
+    mainRs.includes('fn speed_test_status(state: State<AppState>)') &&
+    mainRs.includes('speed_test_snapshot_from_state(&state.speed_test)') &&
+    mainRs.includes('export_logs_from_state(&state.logs, &state.app_data)') &&
+    mainRs.includes('state.logs.lock().unwrap().clear()') &&
+    !mainRs.includes('fn export_logs(&self) -> Result<JsonValue, String>') &&
+    !mainRs.includes('fn connections(&self) -> JsonValue') &&
+    !mainRs.includes('fn close_connections(&self) -> Result<bool, String>'),
+  'speed polling, logs, and connection controls should not queue behind unrelated core operations'
 );
 
 check(
@@ -471,9 +489,11 @@ check(
     mainRs.includes('fn log_matches_node') &&
     mainRs.includes('"lastFailure"') &&
     mainRs.includes('classify_failure_reason(&entry.line)') &&
+    mainRs.includes('fn recovery_suggestions_from_groups') &&
+    mainRs.includes('recovery_suggestions_from_groups(&groups, 8)') &&
     mainRs.includes('node_log_matching_finds_related_failures') &&
     mainRs.includes('node_diagnostics,'),
-  'node health/log/suggestion diagnostics'
+  'node health/log/suggestion diagnostics reuse one group snapshot'
 );
 
 check(

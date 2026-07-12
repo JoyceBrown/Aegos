@@ -35,7 +35,7 @@ const applyTakeoverBody = sliceBetween(mainRs, 'fn apply_takeover_after_core_rea
 const stopBody = sliceBetween(mainRs, 'fn stop(&mut self)', 'fn shutdown_for_exit');
 const speedBody = sliceBetween(mainRs, 'fn start_proxy_delay_test', 'fn test_single_proxy_delay');
 const singleSpeedBody = sliceBetween(mainRs, 'fn test_single_proxy_delay', 'fn test_proxy_delays');
-const exportLogsBody = sliceBetween(mainRs, 'fn export_logs(&self)', 'fn recent_log_summary');
+const exportLogsBody = sliceBetween(mainRs, 'fn export_logs_from_state', 'fn controller_request');
 const startBody = sliceBetween(mainRs, 'fn start_with_takeover', 'fn terminate_core_process');
 const renderNodeBody = sliceBetween(appJs, 'function renderNodeRow', 'function renderHomeNodeRow');
 const renderLogsBody = sliceBetween(appJs, 'function renderLogs', 'function setOutboundIpText');
@@ -57,6 +57,7 @@ check(
     startBody.includes('sanitize_sensitive_text(&line)') &&
     publicProfileBody.includes('sanitize_sensitive_text(value)') &&
     exportLogsBody.includes('entry.line.replace') &&
+    mainRs.includes('export_logs_from_state(&state.logs, &state.app_data)') &&
     !publicProfileBody.includes('"source_url": &profile.source_url'),
   'subscription token/password/uuid/bearer/userinfo must not leak through logs or public profile JSON'
 );
@@ -77,7 +78,8 @@ check(
   'speed tests remain measurement-only and cannot auto-connect',
   speedBody.includes('ensure_core_for_delay_test') &&
     speedBody.includes('speed.recommended = speed_recommendation') &&
-    singleSpeedBody.includes('speed.recommended = speed_recommendation') &&
+    singleSpeedBody.includes('speed.recommended') &&
+    singleSpeedBody.includes('speed_recommendation(&targets_for_recommendation') &&
     !speedBody.includes('change_proxy') &&
     !speedBody.includes('select_best_proxy') &&
     !singleSpeedBody.includes('change_proxy') &&
@@ -93,7 +95,8 @@ check(
   speedBody.includes('build_speed_test_firewall_script(') &&
     speedBody.includes('cleanup_speed_firewall') &&
     mainRs.includes('kill-switch-speed-test-rules.marker') &&
-    mainRs.includes('Speed test firewall window opened for ports') &&
+    mainRs.includes('build_speed_test_firewall_script(') &&
+    mainRs.includes('remoteport=$portList') &&
     backendAudit.includes('disconnect protection allows speed tests without disabling protection') &&
     takeoverAudit.includes('speed tests can run under disconnect protection through scoped temporary allow rules'),
   'temporary firewall rules must not outlive speed tests'

@@ -58,6 +58,7 @@ check(
     scheduleRowsRenderBody.includes('setTimeout(run') &&
     scheduleRowsRenderBody.includes('if (!options.force && !isNodeSurfaceActive()) return') &&
     appJs.includes('const largeList = sourceItems.length > 1500') &&
+    appJs.includes('const largeNodeScanLimit = 180') &&
     appJs.includes('nodeRows.length < nodeRenderLimit') &&
     appJs.includes('homeNodeRenderLimit') &&
     appJs.includes('function renderRows') &&

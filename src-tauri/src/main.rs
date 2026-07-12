@@ -434,6 +434,94 @@ impl DelayTestResult {
     }
 }
 
+fn speed_test_snapshot_from_state(speed_test: &Arc<Mutex<SpeedTestState>>) -> JsonValue {
+    let speed = speed_test.lock().unwrap().clone();
+    let now = now_secs();
+    json!({
+        "runId": speed.run_id,
+        "running": speed.running,
+        "startedAt": speed.started_at,
+        "updatedAt": speed.updated_at,
+        "total": speed.total,
+        "completed": speed.completed,
+        "ok": speed.ok,
+        "failed": speed.failed,
+        "error": speed.error,
+        "delays": speed.delays,
+        "health": speed.health,
+        "confidence": speed_confidence_summary(&speed, now),
+        "lowLatency": speed.low_latency,
+        "recommended": speed.recommended
+    })
+}
+
+fn export_logs_from_state(
+    logs: &Arc<Mutex<Vec<LogEntry>>>,
+    app_data: &Path,
+) -> Result<JsonValue, String> {
+    let items = logs.lock().unwrap().clone();
+    let export_dir = app_data.join("diagnostics");
+    ensure_dir(&export_dir)?;
+    let path = export_dir.join(format!("aegos-logs-{}.txt", now_secs()));
+    let content = if items.is_empty() {
+        "No Aegos logs captured yet.\n".to_string()
+    } else {
+        items
+            .iter()
+            .map(|entry| {
+                let line = entry.line.replace('\r', " ").replace('\n', " ");
+                format!("{} [{}:{}] {}", entry.at, entry.level, entry.category, line)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    };
+    atomic_write_text_confined(&path, &export_dir, &content)?;
+    Ok(json!({
+        "path": path.to_string_lossy(),
+        "count": items.len()
+    }))
+}
+
+fn controller_request(
+    controller_port: u16,
+    secret: &str,
+    method: &str,
+    endpoint: &str,
+    body: Option<JsonValue>,
+    timeout_ms: u64,
+) -> Result<JsonValue, String> {
+    let client = Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_millis(timeout_ms))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let url = format!("http://127.0.0.1:{controller_port}{endpoint}");
+    let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|err| err.to_string())?;
+    let mut req = client.request(method, url).bearer_auth(secret);
+    if let Some(body) = body {
+        req = req.json(&body);
+    }
+    let res = req.send().map_err(|err| err.to_string())?;
+    let status = res.status();
+    let text = res.text().map_err(|err| err.to_string())?;
+    if !status.is_success() {
+        return Err(if text.trim().is_empty() {
+            format!("Controller HTTP {status}")
+        } else {
+            format!("Controller HTTP {status}: {}", text.trim())
+        });
+    }
+    if text.trim().is_empty() {
+        return Ok(json!({}));
+    }
+    serde_json::from_str(&text).or_else(|_| {
+        text.lines()
+            .find_map(|line| serde_json::from_str::<JsonValue>(line).ok())
+            .ok_or_else(|| "Controller response is not JSON".to_string())
+    })
+}
+
 #[derive(Clone, Copy)]
 struct DelayProbe {
     url: &'static str,
@@ -470,6 +558,9 @@ struct CoreManager {
 
 struct AppState {
     core: Arc<Mutex<CoreManager>>,
+    speed_test: Arc<Mutex<SpeedTestState>>,
+    logs: Arc<Mutex<Vec<LogEntry>>>,
+    app_data: PathBuf,
     jobs: Arc<Mutex<HashMap<String, JobRecord>>>,
     operations: Arc<Mutex<()>>,
 }
@@ -4679,14 +4770,17 @@ fn run_powershell(script: &str) -> Result<String, String> {
 }
 
 fn is_process_elevated() -> bool {
-    run_powershell(
-        r#"
+    static IS_ELEVATED: OnceLock<bool> = OnceLock::new();
+    *IS_ELEVATED.get_or_init(|| {
+        run_powershell(
+            r#"
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { 'true' } else { 'false' }
 "#,
-    )
-    .map(|output| output.trim().eq_ignore_ascii_case("true"))
-    .unwrap_or(false)
+        )
+        .map(|output| output.trim().eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    })
 }
 
 #[cfg(windows)]
@@ -5600,31 +5694,6 @@ impl CoreManager {
         items
     }
 
-    fn export_logs(&self) -> Result<JsonValue, String> {
-        let items = self.logs.lock().unwrap().clone();
-        let export_dir = self.app_data.join("diagnostics");
-        ensure_dir(&export_dir)?;
-        let path = export_dir.join(format!("aegos-logs-{}.txt", now_secs()));
-        let content = if items.is_empty() {
-            "No Aegos logs captured yet.\n".to_string()
-        } else {
-            items
-                .iter()
-                .map(|entry| {
-                    let line = entry.line.replace('\r', " ").replace('\n', " ");
-                    format!("{} [{}:{}] {}", entry.at, entry.level, entry.category, line)
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-                + "\n"
-        };
-        atomic_write_text_confined(&path, &export_dir, &content)?;
-        Ok(json!({
-            "path": path.to_string_lossy(),
-            "count": items.len()
-        }))
-    }
-
     fn recent_log_summary(&self, limit: usize) -> String {
         let items = self.recent_logs(limit);
         if items.is_empty() {
@@ -5929,41 +5998,14 @@ impl CoreManager {
         body: Option<JsonValue>,
         timeout_ms: u64,
     ) -> Result<JsonValue, String> {
-        let client = Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_millis(timeout_ms))
-            .build()
-            .map_err(|err| err.to_string())?;
-        let url = format!(
-            "http://127.0.0.1:{}{}",
-            self.settings.controller_port, endpoint
-        );
-        let method =
-            reqwest::Method::from_bytes(method.as_bytes()).map_err(|err| err.to_string())?;
-        let mut req = client
-            .request(method, url)
-            .bearer_auth(&self.settings.secret);
-        if let Some(body) = body {
-            req = req.json(&body);
-        }
-        let res = req.send().map_err(|err| err.to_string())?;
-        let status = res.status();
-        let text = res.text().map_err(|err| err.to_string())?;
-        if !status.is_success() {
-            return Err(if text.trim().is_empty() {
-                format!("Controller HTTP {status}")
-            } else {
-                format!("Controller HTTP {status}: {}", text.trim())
-            });
-        }
-        if text.trim().is_empty() {
-            return Ok(json!({}));
-        }
-        serde_json::from_str(&text).or_else(|_| {
-            text.lines()
-                .find_map(|line| serde_json::from_str::<JsonValue>(line).ok())
-                .ok_or_else(|| "Controller response is not JSON".to_string())
-        })
+        controller_request(
+            self.settings.controller_port,
+            &self.settings.secret,
+            method,
+            endpoint,
+            body,
+            timeout_ms,
+        )
     }
 
     fn traffic_snapshot(&self, timeout_ms: u64) -> Result<JsonValue, String> {
@@ -6863,24 +6905,7 @@ impl CoreManager {
     }
 
     fn speed_test_snapshot(&self) -> JsonValue {
-        let speed = self.speed_test.lock().unwrap().clone();
-        let now = now_secs();
-        json!({
-            "runId": speed.run_id,
-            "running": speed.running,
-            "startedAt": speed.started_at,
-            "updatedAt": speed.updated_at,
-            "total": speed.total,
-            "completed": speed.completed,
-            "ok": speed.ok,
-            "failed": speed.failed,
-            "error": speed.error,
-            "delays": speed.delays,
-            "health": speed.health,
-            "confidence": speed_confidence_summary(&speed, now),
-            "lowLatency": speed.low_latency,
-            "recommended": speed.recommended
-        })
+        speed_test_snapshot_from_state(&self.speed_test)
     }
 
     fn reset_speed_test_state(&self, reason: &str, clear_health: bool) {
@@ -6933,7 +6958,7 @@ impl CoreManager {
             });
         let region = infer_node_region(&target.name);
         let suggestions = self
-            .recovery_suggestions(8)
+            .recovery_suggestions_from_groups(&groups, 8)
             .into_iter()
             .filter(|item| {
                 item.get("region")
@@ -7522,8 +7547,7 @@ impl CoreManager {
         results
     }
 
-    fn recovery_suggestions(&self, limit: usize) -> Vec<JsonValue> {
-        let groups = self.proxy_groups();
+    fn recovery_suggestions_from_groups(&self, groups: &JsonValue, limit: usize) -> Vec<JsonValue> {
         let targets = Self::collect_proxy_targets(&groups);
         let speed = self.speed_test.lock().unwrap().clone();
         let now = now_secs();
@@ -7590,6 +7614,11 @@ impl CoreManager {
             .take(limit)
             .map(|(_, _, _, _, value)| value)
             .collect()
+    }
+
+    fn recovery_suggestions(&self, limit: usize) -> Vec<JsonValue> {
+        let groups = self.proxy_groups();
+        self.recovery_suggestions_from_groups(&groups, limit)
     }
 
     fn try_recover_current_profile(&mut self) -> Result<Option<JsonValue>, String> {
@@ -7768,42 +7797,6 @@ impl CoreManager {
             let _ = self.sync_outbound_ip_group_selection();
             let _ = self.controller("DELETE", "/connections", None, 1500);
         }
-        Ok(true)
-    }
-
-    fn connections(&self) -> JsonValue {
-        self.controller("GET", "/connections", None, 900)
-            .ok()
-            .and_then(|data| data.get("connections").cloned())
-            .unwrap_or_else(|| json!([]))
-    }
-
-    fn active_connection_count(&self) -> JsonValue {
-        let count = if self.process.is_some() {
-            self.controller("GET", "/connections", None, 350)
-                .ok()
-                .and_then(|data| {
-                    data.get("connections")
-                        .and_then(|value| value.as_array())
-                        .map(|items| items.len())
-                })
-                .unwrap_or(0)
-        } else {
-            0
-        };
-        json!({
-            "count": count,
-            "checkedAt": now_secs()
-        })
-    }
-
-    fn close_connection(&self, id: &str) -> Result<bool, String> {
-        self.controller("DELETE", &format!("/connections/{id}"), None, 2000)?;
-        Ok(true)
-    }
-
-    fn close_connections(&self) -> Result<bool, String> {
-        self.controller("DELETE", "/connections", None, 3000)?;
         Ok(true)
     }
 
@@ -9207,7 +9200,7 @@ fn node_diagnostics(state: State<AppState>, name: String) -> Result<JsonValue, S
 
 #[tauri::command]
 fn speed_test_status(state: State<AppState>) -> Result<JsonValue, String> {
-    Ok(state.core.lock().unwrap().speed_test_snapshot())
+    Ok(speed_test_snapshot_from_state(&state.speed_test))
 }
 
 #[tauri::command]
@@ -9243,22 +9236,99 @@ fn select_best_proxy(state: State<AppState>) -> Result<JsonValue, String> {
 
 #[tauri::command]
 fn connections(state: State<AppState>) -> Result<JsonValue, String> {
-    Ok(state.core.lock().unwrap().connections())
+    let (running, controller_port, secret) = {
+        let core = state.core.lock().unwrap();
+        (
+            core.process.is_some(),
+            core.settings.controller_port,
+            core.settings.secret.clone(),
+        )
+    };
+    if !running {
+        return Ok(json!([]));
+    }
+    Ok(
+        controller_request(controller_port, &secret, "GET", "/connections", None, 900)
+            .ok()
+            .and_then(|data| data.get("connections").cloned())
+            .unwrap_or_else(|| json!([])),
+    )
 }
 
 #[tauri::command]
 fn active_connection_count(state: State<AppState>) -> Result<JsonValue, String> {
-    Ok(state.core.lock().unwrap().active_connection_count())
+    let (running, controller_port, secret) = {
+        let core = state.core.lock().unwrap();
+        (
+            core.process.is_some(),
+            core.settings.controller_port,
+            core.settings.secret.clone(),
+        )
+    };
+    let count = if running {
+        controller_request(controller_port, &secret, "GET", "/connections", None, 350)
+            .ok()
+            .and_then(|data| {
+                data.get("connections")
+                    .and_then(|value| value.as_array())
+                    .map(|items| items.len())
+            })
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    Ok(json!({
+        "count": count,
+        "checkedAt": now_secs()
+    }))
 }
 
 #[tauri::command]
 fn close_connection(state: State<AppState>, id: String) -> Result<bool, String> {
-    state.core.lock().unwrap().close_connection(&id)
+    let (running, controller_port, secret) = {
+        let core = state.core.lock().unwrap();
+        (
+            core.process.is_some(),
+            core.settings.controller_port,
+            core.settings.secret.clone(),
+        )
+    };
+    if !running {
+        return Ok(true);
+    }
+    controller_request(
+        controller_port,
+        &secret,
+        "DELETE",
+        &format!("/connections/{id}"),
+        None,
+        2000,
+    )?;
+    Ok(true)
 }
 
 #[tauri::command]
 fn close_connections(state: State<AppState>) -> Result<bool, String> {
-    state.core.lock().unwrap().close_connections()
+    let (running, controller_port, secret) = {
+        let core = state.core.lock().unwrap();
+        (
+            core.process.is_some(),
+            core.settings.controller_port,
+            core.settings.secret.clone(),
+        )
+    };
+    if !running {
+        return Ok(true);
+    }
+    controller_request(
+        controller_port,
+        &secret,
+        "DELETE",
+        "/connections",
+        None,
+        3000,
+    )?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -9296,14 +9366,13 @@ fn diagnostics(state: State<AppState>) -> Result<JsonValue, String> {
 
 #[tauri::command]
 fn clear_logs(state: State<AppState>) -> Result<bool, String> {
-    let logs = state.core.lock().unwrap().logs.clone();
-    logs.lock().unwrap().clear();
+    state.logs.lock().unwrap().clear();
     Ok(true)
 }
 
 #[tauri::command]
 fn export_logs(state: State<AppState>) -> Result<JsonValue, String> {
-    state.core.lock().unwrap().export_logs()
+    export_logs_from_state(&state.logs, &state.app_data)
 }
 
 #[tauri::command]
@@ -9330,8 +9399,14 @@ fn main() {
     tauri::Builder::default()
         .setup(|app| {
             let core = CoreManager::new(&app.handle())?;
+            let speed_test = core.speed_test.clone();
+            let logs = core.logs.clone();
+            let app_data = core.app_data.clone();
             app.manage(AppState {
                 core: Arc::new(Mutex::new(core)),
+                speed_test,
+                logs,
+                app_data,
                 jobs: Arc::new(Mutex::new(HashMap::new())),
                 operations: Arc::new(Mutex::new(())),
             });

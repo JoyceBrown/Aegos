@@ -132,6 +132,7 @@ const defaultMixedPort = 7891;
 const defaultControllerPort = 19091;
 const speedTestPollMs = 180;
 const speedTestNodeRefreshMs = 1200;
+const largeNodeScanLimit = 180;
 const logRenderLimit = 80;
 const nodeRenderLimit = 36;
 const homeNodeRenderLimit = 8;
@@ -1386,10 +1387,10 @@ function renderRows(items = [], options = {}) {
     if (shouldRenderHomeRows && rowMatchesHomeFilter(row)) {
       rememberRankedRow(homeRows, row, compareHomeRows, homeNodeRenderLimit);
     }
-    if (largeList && shouldRenderHomeRows && !shouldRenderNodeRows && homeRows.length >= homeNodeRenderLimit && index > 420) {
+    if (largeList && shouldRenderHomeRows && !shouldRenderNodeRows && homeRows.length >= homeNodeRenderLimit && index > largeNodeScanLimit) {
       break;
     }
-    if (largeList && shouldRenderNodeRows && nodeRows.length >= nodeRenderLimit && (!shouldRenderHomeRows || homeRows.length >= homeNodeRenderLimit) && index > 420) {
+    if (largeList && shouldRenderNodeRows && nodeRows.length >= nodeRenderLimit && (!shouldRenderHomeRows || homeRows.length >= homeNodeRenderLimit) && index > largeNodeScanLimit) {
       matchingNodeCount = Math.max(matchingNodeCount, nodeRows.length + 1);
       break;
     }
