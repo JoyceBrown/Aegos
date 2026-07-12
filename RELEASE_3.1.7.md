@@ -1,6 +1,6 @@
 # Aegos 3.1.7
 
-Source checkpoint for read-only routing page acceptance.
+Installer checkpoint for read-only routing page acceptance.
 
 ## Changes
 - Added `audit:routing-acceptance` as the 3.1.x routing acceptance gate.
@@ -28,8 +28,11 @@ Source checkpoint for read-only routing page acceptance.
 - `npm run smoke:interactions`
 - `npm run smoke:perf`
 - `npm run check`
+- `npm run build`
+- `npm run audit:installer`
 - `git diff --check`
 
 ## Artifact
-- Source checkpoint: no installer built for this checkpoint.
-- SHA-256: Source-only
+- Installer: `src-tauri/target/release/bundle/nsis/Aegos_3.1.7_x64-setup.exe`
+- Size: 15,409,243 bytes
+- SHA-256: D57F43C2531C462C86DC81AD0B49BBE1C9E801C6712223D98462B6C5095187F5
