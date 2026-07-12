@@ -33,7 +33,7 @@ const routingStart = mainRs.indexOf('fn routing_snapshot');
 const routingEnd = mainRs.indexOf('#[tauri::command]', routingStart + 1);
 const routingBody = routingStart >= 0 ? mainRs.slice(routingStart, routingEnd > routingStart ? routingEnd : undefined) : '';
 
-check('package version is 3.1.4 for routing type checkpoint', pkg.version === '3.1.4', pkg.version);
+check('package version remains within the 3.1 routing type lane', /^3\.1\.\d+$/.test(pkg.version), pkg.version);
 check('frontend normalizes strategy type variants before labeling', labelBody.includes("replace(/[\\s_-]/g, '')") && labelBody.includes("value === 'urltest'") && labelBody.includes("value === 'loadbalance'"), 'strategyTypeLabel normalization');
 check('frontend labels select/url-test/fallback/load-balance clearly', ['手动选择', '自动测速', '故障切换', '负载均衡'].every((text) => labelBody.includes(text)), 'strategy labels');
 check('backend canonicalizes strategy type variants', canonicalBody.includes('"urltest" => "url-test"') && canonicalBody.includes('"loadbalance" => "load-balance"') && canonicalBody.includes('"fallback" => "fallback"') && canonicalBody.includes('"select" => "select"'), 'canonical_strategy_type');

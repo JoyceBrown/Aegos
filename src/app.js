@@ -2717,7 +2717,7 @@ function renderRoutingSnapshot(data = {}) {
     el('span', { textContent: strategyTypeLabel(item.type) }),
     el('span', { textContent: item.now || '-' }),
     el('span', { textContent: String(item.itemCount ?? 0) }),
-    el('span', { textContent: item.automatic ? '核心可能自动切换' : '只读' })
+    el('span', { textContent: item.automatic ? '自动策略，测速不切换' : '手动/只读' })
   ]));
   replaceChildrenSafe($('#routingGroupRows'), groupRows.length ? groupRows : [emptyState('暂无策略组数据。')]);
   const ruleRows = rules.slice(0, 12).map((item) => el('div', { className: 'simple-row' }, [
