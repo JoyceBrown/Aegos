@@ -4023,6 +4023,53 @@ rules:
     }
 
     #[test]
+    fn routing_rollback_plan_tracks_restore_contract_without_writes() {
+        let profile = Profile {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            profile_type: "file".to_string(),
+            path: "profiles/test.yaml".to_string(),
+            source_url: None,
+            node_count: 1,
+            proxy_group_count: 1,
+            updated_at: "now".to_string(),
+            digest: "profile-digest".to_string(),
+        };
+        let plan = routing_rollback_plan_from_parts(
+            &profile,
+            Some("profile-digest".to_string()),
+            Some("test".to_string()),
+            Some("runtime-config-digest".to_string()),
+            Some("runtime-file-digest".to_string()),
+            true,
+            true,
+            3,
+        );
+
+        assert_eq!(
+            plan.get("readOnly").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            plan.get("writesConfig").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            plan.get("rollbackReady").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            plan.get("selectedProxyMapSize").and_then(JsonValue::as_u64),
+            Some(3)
+        );
+        assert!(plan
+            .get("restoreSequence")
+            .and_then(JsonValue::as_array)
+            .map(|steps| steps.len() >= 5)
+            .unwrap_or(false));
+    }
+
+    #[test]
     fn parses_base64_tuic_subscription() {
         let uri = "tuic://00000000-0000-4000-8000-000000000000:secret@example.com:443?sni=example.com&alpn=h3&congestion_control=bbr&udp_relay_mode=native&reduce_rtt=true#HK%20TUIC";
         let encoded = general_purpose::STANDARD.encode(uri);
@@ -9746,6 +9793,56 @@ fn routing_reload_preflight(
 }
 
 #[tauri::command]
+fn routing_rollback_plan(state: State<AppState>, id: Option<String>) -> Result<JsonValue, String> {
+    let (
+        profile,
+        profile_digest,
+        runtime_profile_id,
+        runtime_config_digest,
+        runtime_digest,
+        running,
+        traffic_takeover,
+        selected_proxy_map_size,
+    ) = {
+        let core = state.core.lock().unwrap();
+        let profile = if let Some(id) = id.as_deref() {
+            core.settings
+                .profiles
+                .iter()
+                .find(|profile| profile.id == id)
+                .cloned()
+        } else {
+            core.active_profile()
+        }
+        .ok_or_else(|| "Profile not found".to_string())?;
+        let profile_path = PathBuf::from(&profile.path);
+        let profile_digest = profile_path.exists().then(|| sha256_file(&profile_path));
+        let runtime_path = core.runtime_profile_path();
+        let runtime_digest = runtime_path.exists().then(|| sha256_file(&runtime_path));
+        (
+            profile,
+            profile_digest,
+            core.runtime_profile_id.clone(),
+            core.runtime_config_digest.clone(),
+            runtime_digest,
+            core.process.is_some(),
+            core.traffic_takeover,
+            core.settings.selected_proxy_map.len(),
+        )
+    };
+    Ok(routing_rollback_plan_from_parts(
+        &profile,
+        profile_digest,
+        runtime_profile_id,
+        runtime_config_digest,
+        runtime_digest,
+        running,
+        traffic_takeover,
+        selected_proxy_map_size,
+    ))
+}
+
+#[tauri::command]
 fn start_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
     let already_running = state.speed_test.lock().unwrap().running;
     let snapshot = mark_speed_test_preparing(&state.speed_test);
@@ -10359,6 +10456,48 @@ fn routing_reload_contract_from_parts(
     })
 }
 
+fn routing_rollback_plan_from_parts(
+    profile: &Profile,
+    profile_digest: Option<String>,
+    runtime_profile_id: Option<String>,
+    runtime_config_digest: Option<String>,
+    runtime_file_digest: Option<String>,
+    running: bool,
+    traffic_takeover: bool,
+    selected_proxy_map_size: usize,
+) -> JsonValue {
+    let rollback_ready = profile_digest.is_some() && runtime_file_digest.is_some();
+    json!({
+        "profileId": profile.id,
+        "profileName": profile.name,
+        "readOnly": true,
+        "writesConfig": false,
+        "rollbackReady": rollback_ready,
+        "requiresAtomicRestore": true,
+        "profileDigest": profile_digest,
+        "runtimeProfileId": runtime_profile_id,
+        "runtimeConfigDigest": runtime_config_digest,
+        "runtimeFileDigest": runtime_file_digest,
+        "coreRunning": running,
+        "trafficTakeover": traffic_takeover,
+        "selectedProxyMapSize": selected_proxy_map_size as u64,
+        "pathPolicy": {
+            "profileWrites": "confined to profile_dir",
+            "runtimeWrites": "confined to core home_dir",
+            "writer": "atomic_write_text_confined"
+        },
+        "restoreSequence": [
+            "cancel or finish active routing mutation task",
+            "preserve current system proxy and traffic takeover flags",
+            "restore previous profile file with atomic replacement",
+            "restore previous runtime file with atomic replacement",
+            "restore selected proxy map and active profile id",
+            "hot reload previous runtime or restart core if needed",
+            "verify controller version and active profile after rollback"
+        ]
+    })
+}
+
 #[tauri::command]
 fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
     let (running, controller_port, secret, mode, groups, active_profile) = {
@@ -10646,6 +10785,7 @@ fn main() {
             preview_profile_groups,
             profile_rule_validation,
             routing_reload_preflight,
+            routing_rollback_plan,
             start_proxy_delay_test,
             test_single_proxy_delay,
             node_diagnostics,

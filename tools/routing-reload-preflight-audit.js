@@ -30,7 +30,7 @@ const commandStart = mainRs.indexOf('#[tauri::command]\nfn routing_reload_prefli
 const commandEnd = mainRs.indexOf('fn start_proxy_delay_test', commandStart + 1);
 const commandBody = commandStart >= 0 ? mainRs.slice(commandStart, commandEnd > commandStart ? commandEnd : undefined) : '';
 
-check('package version is 3.2.5 for reload preflight checkpoint', pkg.version === '3.2.5', pkg.version);
+check('package version remains in 3.2 rule foundation lane', /^3\.2\.\d+$/.test(pkg.version), pkg.version);
 check('routing reload preflight audit is exposed as package script', pkg.scripts?.['audit:routing-reload-preflight'] === 'node tools/routing-reload-preflight-audit.js', 'npm run audit:routing-reload-preflight');
 check('reload preflight contract is structured and rollback-aware', mainRs.includes('fn routing_reload_contract_from_parts') && mainRs.includes('"writesConfig": false') && mainRs.includes('"requiresRollbackPlan": true') && mainRs.includes('"rollback"') && mainRs.includes('"steps"'), 'contract fields');
 check('reload preflight command is read-only and registered', mainRs.includes('fn routing_reload_preflight') && mainRs.includes('routing_reload_preflight,') && commandBody.includes('preflight_profile_file(&profile)') && !commandBody.includes('atomic_write') && !commandBody.includes('hot_reload_profile'), 'read-only command');
