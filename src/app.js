@@ -2452,7 +2452,14 @@ async function testSingleNode(name, button) {
   try {
     await runLocalButtonAction(button, '\u6d4b\u901f\u4e2d...', async () => {
       const queued = await invoke('test_single_proxy_delay', { name });
-      const result = await waitForSingleNodeDelay(name, Number(queued?.runId || 0));
+      const runId = Number(queued?.runId || 0);
+      const result = runId > 0
+        ? await waitForSingleNodeDelay(name, runId)
+        : {
+            delay: Number(queued?.delay ?? -1),
+            reason: queued?.reason || queued?.lastFailureReason || queued?.last_failure_reason || (Number(queued?.delay ?? -1) > 0 ? '' : 'probe-failed'),
+            healthStatus: queued?.healthStatus || queued?.status || ''
+          };
       const reason = result?.reason || '';
       applyOptimisticNodeDelay(name, Number(result?.delay ?? -1), reason);
       queueNodeRefresh(activeNodeRenderTarget(), 0);
