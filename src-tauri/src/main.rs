@@ -9610,6 +9610,109 @@ fn connections(state: State<AppState>) -> Result<JsonValue, String> {
 }
 
 #[tauri::command]
+fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
+    let (running, controller_port, secret, mode, groups) = {
+        let core = state.core.lock().unwrap();
+        (
+            core.process.is_some(),
+            core.settings.controller_port,
+            core.settings.secret.clone(),
+            core.settings.mode.clone(),
+            core.proxy_groups(),
+        )
+    };
+    let group_rows = groups
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|group| {
+            let group_type = group
+                .get("type")
+                .and_then(|value| value.as_str())
+                .unwrap_or("select");
+            let item_count = group
+                .get("items")
+                .and_then(|value| value.as_array())
+                .map(|items| items.len())
+                .unwrap_or(0);
+            json!({
+                "name": group.get("name").and_then(|value| value.as_str()).unwrap_or("-"),
+                "type": group_type,
+                "now": group.get("now").and_then(|value| value.as_str()).unwrap_or("-"),
+                "itemCount": item_count,
+                "automatic": matches!(group_type, "url-test" | "fallback" | "load-balance")
+            })
+        })
+        .collect::<Vec<_>>();
+    let recent_connections = if running {
+        controller_request(controller_port, &secret, "GET", "/connections", None, 550)
+            .ok()
+            .and_then(|data| data.get("connections").cloned())
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let mut rule_counts: HashMap<String, (usize, String)> = HashMap::new();
+    for item in recent_connections {
+        let rule = item
+            .get("rule")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("MATCH")
+            .to_string();
+        let chains = item
+            .get("chains")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" > ")
+            })
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "-".to_string());
+        let entry = rule_counts.entry(rule).or_insert((0, chains));
+        entry.0 += 1;
+    }
+    let recent_rules = rule_counts
+        .into_iter()
+        .take(12)
+        .map(|(rule, (count, chains))| {
+            json!({
+                "rule": rule,
+                "chains": chains,
+                "count": count,
+                "note": "recent connection"
+            })
+        })
+        .collect::<Vec<_>>();
+    let group_count = group_rows.len();
+    let auto_group_count = group_rows
+        .iter()
+        .filter(|item| {
+            item.get("automatic")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+        })
+        .count();
+    let recent_rule_hits = recent_rules.len();
+    Ok(json!({
+        "readOnly": true,
+        "mode": mode,
+        "groups": group_rows,
+        "recentRules": recent_rules,
+        "summary": {
+            "groupCount": group_count,
+            "autoGroupCount": auto_group_count,
+            "recentRuleHits": recent_rule_hits
+        }
+    }))
+}
+
+#[tauri::command]
 fn active_connection_count(state: State<AppState>) -> Result<JsonValue, String> {
     let (running, controller_port, secret) = {
         let core = state.core.lock().unwrap();
@@ -9784,6 +9887,7 @@ fn main() {
             refresh_outbound_ip,
             select_best_proxy,
             connections,
+            routing_snapshot,
             active_connection_count,
             close_connection,
             close_connections,

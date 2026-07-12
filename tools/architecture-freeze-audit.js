@@ -65,7 +65,7 @@ check('2.9.20-2.9.29 freeze document exists', exists(docPath), docPath);
 check('freeze document contains required sections', docSections.every((section) => freezeDoc.includes(section)), docSections.join(', '));
 check('freeze document covers every freeze-lane patch version', Array.from({ length: 10 }, (_, i) => `2.9.${20 + i}`).every((version) => freezeDoc.includes(version)), '2.9.20..2.9.29');
 
-check('release version has moved to post-freeze cleanup or 3.0 maturity line', pkg.version === tauri.version && (/^2\.9\.(?:29|[3-9]\d+)$/.test(pkg.version) || pkg.version === '3.0.0'), `${pkg.version}/${tauri.version}`);
+check('release version has moved to post-freeze cleanup or guarded 3.x line', pkg.version === tauri.version && (/^2\.9\.(?:29|[3-9]\d+)$/.test(pkg.version) || /^3\.(?:0\.0|1\.0)$/.test(pkg.version)), `${pkg.version}/${tauri.version}`);
 check('release audit includes architecture gate', releaseAudit.includes('architecture freeze audit script exists') && releaseAudit.includes(docPath), 'tools/release-audit.js');
 check('package exposes audit:architecture', pkg.scripts?.['audit:architecture'] === 'node tools/architecture-freeze-audit.js', 'package.json scripts');
 check('debt-audit gate is wired for post-freeze cleanup', pkg.scripts?.['audit:debt'] === 'node tools/debt-audit.js' && releaseAudit.includes('debt audit script exists') && exists('tools/debt-audit.js'), 'debt-audit post-freeze gate');
@@ -96,7 +96,7 @@ check('PowerShell runs through single hidden launcher with escaping helpers', (m
 
 check('interaction/performance/soak stress gates exist', ['smoke:interactions', 'smoke:perf', 'smoke:soak', 'smoke:ui', 'audit:security'].every((script) => Object.prototype.hasOwnProperty.call(pkg.scripts, script)) && perfSmoke.includes('i < 420') && interactionSmoke.includes('running diagnostics blocked sidebar page switching'), 'stress scripts');
 check('layout uses stable inactive page isolation', stylesCss.includes('.page.active') && stylesCss.includes('position: absolute') && stylesCss.includes('contain: layout paint'), 'page isolation/layout containment');
-check('no routing/rule-editor feature was added after freeze', !indexHtml.includes('data-page="routing"') && !indexHtml.includes('data-page="rules"') && !appJs.includes('customRule') && !mainRs.includes('save_routing_rule'), 'feature freeze');
+check('routing page is read-only when present', (!indexHtml.includes('data-page="routing"') || (pkg.scripts?.['audit:routing-readonly'] === 'node tools/routing-readonly-audit.js' && releaseAudit.includes('routing read-only audit script exists'))) && !indexHtml.includes('data-page="rules"') && !appJs.includes('customRule') && !mainRs.includes('save_routing_rule'), 'feature freeze/read-only routing');
 
 const result = {
   ok: fail.length === 0,

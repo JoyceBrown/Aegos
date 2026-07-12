@@ -19,7 +19,7 @@
         <div class="brand-mark"><span class="aegos-icon icon-brand" aria-hidden="true"></span></div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v3.0.0</span>
+          <span id="appVersionLabel" class="brand-version">v3.1.0</span>
         </div>
       </section>
 
@@ -27,6 +27,7 @@
         <button class="active" data-page="home"><span class="aegos-icon icon-home" aria-hidden="true"></span>首页</button>
         <button data-page="nodes"><span class="aegos-icon icon-nodes" aria-hidden="true"></span>节点</button>
         <button data-page="connections"><span class="aegos-icon icon-connections" aria-hidden="true"></span>连接</button>
+        <button data-page="routing"><span class="aegos-icon icon-routing" aria-hidden="true"></span>分流</button>
         <button data-page="profiles"><span class="aegos-icon icon-profiles" aria-hidden="true"></span>订阅</button>
         <button data-page="diagnostics"><span class="aegos-icon icon-diagnostics" aria-hidden="true"></span>诊断</button>
         <button data-page="logs"><span class="aegos-icon icon-logs" aria-hidden="true"></span>日志</button>
@@ -202,6 +203,32 @@
           <div class="connection-table">
             <div class="simple-row head"><span>目标</span><span>规则</span><span>链路</span><span>流量</span><span>操作</span></div>
             <div id="connectionRows" class="simple-list"></div>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" data-page-panel="routing">
+        <section class="panel fill page-card routing-card">
+          <header class="section-head">
+            <div><h2>分流</h2><p>只读查看当前模式、策略组和最近规则命中。</p></div>
+            <div class="section-actions">
+              <span id="routingReadonlyBadge" class="readonly-badge">只读，不修改配置</span>
+              <button id="refreshRoutingBtn" class="ghost compact">刷新</button>
+            </div>
+          </header>
+          <div class="settings-summary-grid routing-summary">
+            <article><span>当前模式</span><b id="routingModeState">-</b></article>
+            <article><span>策略组</span><b id="routingGroupCount">-</b></article>
+            <article><span>自动组</span><b id="routingAutoCount">-</b></article>
+            <article><span>最近命中</span><b id="routingRuleHitCount">-</b></article>
+          </div>
+          <div class="connection-table">
+            <div class="simple-row head"><span>策略组</span><span>类型</span><span>当前选择</span><span>节点数</span><span>说明</span></div>
+            <div id="routingGroupRows" class="simple-list"></div>
+          </div>
+          <div class="connection-table">
+            <div class="simple-row head"><span>规则</span><span>链路</span><span>次数</span><span>状态</span><span>说明</span></div>
+            <div id="routingRuleRows" class="simple-list"></div>
           </div>
         </section>
       </section>

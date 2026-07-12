@@ -11,6 +11,7 @@ const pageNames = {
   home: '首页',
   nodes: '节点',
   connections: '连接管理',
+  routing: '分流',
   profiles: '订阅',
   diagnostics: '诊断',
   logs: '日志',
@@ -143,6 +144,7 @@ const freezeWarnMs = 500;
 const freezeBadMs = 1500;
 const pageCacheTtlMs = {
   connections: 15000,
+  routing: 15000,
   diagnostics: 30000,
   profiles: 15000,
   logs: 5000
@@ -158,6 +160,7 @@ let renderedNodePageFilter = null;
 let lastNavAt = 0;
 const pageCacheState = {
   connections: { loaded: false, loading: false, updatedAt: 0 },
+  routing: { loaded: false, loading: false, updatedAt: 0 },
   diagnostics: { loaded: false, loading: false, updatedAt: 0 },
   profiles: { loaded: false, loading: false, updatedAt: 0 },
   logs: { loaded: false, loading: false, updatedAt: 0 }
@@ -1320,6 +1323,7 @@ function schedulePageLoad(page) {
       if (token !== pageLoadToken || uiStore.state.page !== page) return;
       if (foregroundBusy > 0) return;
       if (page === 'connections' && shouldRefreshPageCache(page)) refreshConnections(token);
+      if (page === 'routing' && shouldRefreshPageCache(page)) refreshRoutingSnapshot(token);
       if (page === 'diagnostics' && shouldRefreshPageCache(page)) {
         renderCachedDiagnostics();
         markPageCache(page);
@@ -2681,6 +2685,59 @@ async function refreshConnections(token = null) {
   }
 }
 
+function strategyTypeLabel(kind = '') {
+  const value = String(kind || '').toLowerCase();
+  if (value === 'select') return '手动选择';
+  if (value === 'url-test') return '自动测速';
+  if (value === 'fallback') return '故障切换';
+  if (value === 'load-balance') return '负载均衡';
+  return kind ? String(kind) : '-';
+}
+
+function renderRoutingSnapshot(data = {}) {
+  const groups = Array.isArray(data.groups) ? data.groups : [];
+  const rules = Array.isArray(data.recentRules) ? data.recentRules : [];
+  const summary = data.summary || {};
+  $('#routingModeState').textContent = modeLabel(data.mode || latestStatus?.mode || 'rule');
+  $('#routingGroupCount').textContent = String(summary.groupCount ?? groups.length);
+  $('#routingAutoCount').textContent = String(summary.autoGroupCount ?? 0);
+  $('#routingRuleHitCount').textContent = String(summary.recentRuleHits ?? rules.length);
+  const groupRows = groups.slice(0, 24).map((item) => el('div', { className: 'simple-row' }, [
+    el('span', { textContent: item.name || '-' }),
+    el('span', { textContent: strategyTypeLabel(item.type) }),
+    el('span', { textContent: item.now || '-' }),
+    el('span', { textContent: String(item.itemCount ?? 0) }),
+    el('span', { textContent: item.automatic ? '核心可能自动切换' : '只读' })
+  ]));
+  replaceChildrenSafe($('#routingGroupRows'), groupRows.length ? groupRows : [emptyState('暂无策略组数据。')]);
+  const ruleRows = rules.slice(0, 12).map((item) => el('div', { className: 'simple-row' }, [
+    el('span', { textContent: item.rule || '-' }),
+    el('span', { textContent: item.chains || '-' }),
+    el('span', { textContent: String(item.count || 1) }),
+    el('span', { textContent: '只读' }),
+    el('span', { textContent: item.note || '最近连接命中' })
+  ]));
+  replaceChildrenSafe($('#routingRuleRows'), ruleRows.length ? ruleRows : [emptyState('暂无最近规则命中。')]);
+}
+
+async function refreshRoutingSnapshot(token = null) {
+  if (pageCacheState.routing.loading) return;
+  pageCacheState.routing.loading = true;
+  try {
+    const data = await invoke('routing_snapshot');
+    if (!isCurrentPageTask(token, 'routing')) return;
+    renderRoutingSnapshot(data || {});
+    markPageCache('routing');
+  } catch (err) {
+    if (!isCurrentPageTask(token, 'routing')) return;
+    replaceChildrenSafe($('#routingGroupRows'), [emptyState(`分流数据不可用：${err.message || err}`)]);
+    replaceChildrenSafe($('#routingRuleRows'), [emptyState('暂无最近规则命中。')]);
+    markPageCache('routing');
+  } finally {
+    pageCacheState.routing.loading = false;
+  }
+}
+
 function normalizeDiagnosticCheck(item = {}) {
   const ok = Boolean(item.ok);
   const severity = ok ? 'ok' : (item.severity || 'warning');
@@ -2887,6 +2944,7 @@ $('#nodeProfileBtn')?.addEventListener('click', (event) => {
 $('#quickRestartBtn').onclick = (event) => runButtonAction(event.currentTarget, '重启中...', restartCoreJob);
 $('#lockAutoGroupBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '锁定中...', lockAutoGroupJob));
 $('#refreshConnectionsBtn').onclick = refreshConnections;
+$('#refreshRoutingBtn')?.addEventListener('click', (event) => runDetachedButtonAction(event.currentTarget, '刷新中...', () => refreshRoutingSnapshot()));
 $('#closeAllConnectionsBtn').onclick = (event) => runButtonAction(event.currentTarget, '关闭中...', () => runOptimisticAction({
   apply: () => { replaceChildrenSafe($('#connectionRows'), [emptyState('\u5f53\u524d\u6ca1\u6709\u6d3b\u52a8\u8fde\u63a5\u3002')]); },
   commit: () => invoke('close_connections'),
