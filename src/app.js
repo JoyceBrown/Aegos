@@ -41,6 +41,8 @@ let nodeTransitionTimer = null;
 let routingAssistantReady = false;
 let latestRoutingSnapshot = null;
 let latestEnvironmentReadiness = null;
+let environmentReadinessBusy = false;
+let ipv6DnsSafetyBusy = false;
 let routingAssistantDrafts = [];
 let routingAssistantView = 'simple';
 const speedTestButtons = new Set();
@@ -1676,6 +1678,11 @@ function renderEnvironmentReadiness(data = latestEnvironmentReadiness) {
 }
 
 async function refreshEnvironmentReadiness(showNotice = false) {
+  if (environmentReadinessBusy) {
+    if (showNotice) setNotice('安装与安全检查正在运行。');
+    return;
+  }
+  environmentReadinessBusy = true;
   try {
     const data = await invoke('environment_readiness');
     latestEnvironmentReadiness = data;
@@ -1685,6 +1692,8 @@ async function refreshEnvironmentReadiness(showNotice = false) {
     latestEnvironmentReadiness = null;
     replaceChildrenSafe($('#environmentRows'), [emptyState(`安装与安全检查不可用：${err.message || err}`)]);
     if (showNotice) setNotice(`安装与安全检查失败：${err.message || err}`);
+  } finally {
+    environmentReadinessBusy = false;
   }
 }
 
@@ -1721,6 +1730,8 @@ function renderIpv6DnsSafety(data = latestIpv6DnsSafety) {
 }
 
 async function refreshIpv6DnsSafety() {
+  if (ipv6DnsSafetyBusy) return;
+  ipv6DnsSafetyBusy = true;
   ensureIpv6DnsSafetyUi();
   try {
     const data = await invoke('ipv6_dns_safety_snapshot');
@@ -1729,6 +1740,8 @@ async function refreshIpv6DnsSafety() {
   } catch (err) {
     latestIpv6DnsSafety = null;
     $('#ipv6PlainPrompt').textContent = `IPv6/DNS 检测暂不可用：${err.message || err}`;
+  } finally {
+    ipv6DnsSafetyBusy = false;
   }
 }
 

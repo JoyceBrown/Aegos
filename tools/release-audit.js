@@ -50,6 +50,7 @@ check('Aegis installer name is not reused', !exists(`src-tauri/target/release/bu
 check('UI smoke script exists', exists('tools/ui-smoke.js'), 'tools/ui-smoke.js');
 check('performance smoke script exists', exists('tools/perf-smoke.js') && pkg.scripts?.['smoke:perf'] === 'node tools/perf-smoke.js', 'tools/perf-smoke.js');
 check('soak smoke script exists', exists('tools/soak-smoke.js') && pkg.scripts?.['smoke:soak'] === 'node tools/soak-smoke.js', 'tools/soak-smoke.js');
+check('global interaction product gate exists', exists('tools/global-interaction-product-audit.js') && pkg.scripts?.['audit:global-interaction-product'] === 'node tools/global-interaction-product-audit.js', 'global interaction product gate');
 check('backend audit script exists', exists('tools/backend-audit.js') && pkg.scripts?.['audit:backend'] === 'node tools/backend-audit.js', 'tools/backend-audit.js');
 check('security hotfix audit script exists', exists('tools/security-hotfix-audit.js') && pkg.scripts?.['audit:security'] === 'node tools/security-hotfix-audit.js', 'tools/security-hotfix-audit.js');
 check('settings security productization gate exists', exists('tools/settings-security-product-audit.js') && pkg.scripts?.['audit:settings-security-product'] === 'node tools/settings-security-product-audit.js', 'settings security productization gate');
