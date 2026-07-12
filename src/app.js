@@ -133,6 +133,7 @@ const defaultControllerPort = 19091;
 const speedTestPollMs = 180;
 const speedTestNodeRefreshMs = 1200;
 const largeNodeScanLimit = 180;
+const eagerNodeIndexLimit = 900;
 const logRenderLimit = 80;
 const nodeRenderLimit = 36;
 const homeNodeRenderLimit = 8;
@@ -255,19 +256,38 @@ function replaceChildrenSafe(target, children = []) {
   target.replaceChildren(...children.filter(Boolean));
 }
 
-function rebuildNodeItemIndex(items = []) {
+function indexNodeItem(item, index) {
+  const name = item?.name || '';
+  const realName = item?.realProxyName || '';
+  if (name) nodeItemIndex.set(name, index);
+  if (realName) nodeItemIndex.set(realName, index);
+}
+
+function rebuildNodeItemIndex(items = [], currentName = '') {
   nodeItemIndex = new Map();
-  items.forEach((item, index) => {
-    const name = item?.name || '';
-    const realName = item?.realProxyName || '';
-    if (name) nodeItemIndex.set(name, index);
-    if (realName) nodeItemIndex.set(realName, index);
-  });
+  const eagerLimit = Math.min(items.length, eagerNodeIndexLimit);
+  for (let index = 0; index < eagerLimit; index += 1) indexNodeItem(items[index], index);
+  if (currentName && !nodeItemIndex.has(currentName)) {
+    const currentIndex = items.findIndex((item) => item?.name === currentName || item?.realProxyName === currentName);
+    if (currentIndex >= 0) indexNodeItem(items[currentIndex], currentIndex);
+  }
 }
 
 function setLatestGroup(group) {
   latestGroup = group || null;
-  rebuildNodeItemIndex(latestGroup?.items || []);
+  rebuildNodeItemIndex(latestGroup?.items || [], selectedNode || latestGroup?.now || '');
+}
+
+function nodeIndexForName(name) {
+  if (!name) return null;
+  if (nodeItemIndex.has(name)) return nodeItemIndex.get(name);
+  const items = latestGroup?.items || [];
+  const index = items.findIndex((item) => item?.name === name || item?.realProxyName === name);
+  if (index >= 0) {
+    indexNodeItem(items[index], index);
+    return index;
+  }
+  return null;
 }
 
 function formatClock() {
@@ -417,7 +437,7 @@ function applySpeedStatusToNodes(status = {}, options = {}) {
   if (latestRecommendedName) touched.add(latestRecommendedName);
 
   touched.forEach((key) => {
-    const index = nodeItemIndex.get(key);
+    const index = nodeIndexForName(key);
     if (index == null || !items[index]) return;
     const item = items[index];
     const name = item.realProxyName || item.name;
@@ -1735,7 +1755,8 @@ function applyOptimisticNode(name) {
 }
 
 function findNodeItem(name) {
-  return (latestGroup?.items || []).find((item) => item.name === name || item.realProxyName === name) || null;
+  const index = nodeIndexForName(name);
+  return index == null ? null : (latestGroup?.items || [])[index] || null;
 }
 
 function updateNodeDelayDom(name, delay, failureReason = '') {

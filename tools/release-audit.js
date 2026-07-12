@@ -53,6 +53,7 @@ check('soak smoke script exists', exists('tools/soak-smoke.js') && pkg.scripts?.
 check('backend audit script exists', exists('tools/backend-audit.js') && pkg.scripts?.['audit:backend'] === 'node tools/backend-audit.js', 'tools/backend-audit.js');
 check('security hotfix audit script exists', exists('tools/security-hotfix-audit.js') && pkg.scripts?.['audit:security'] === 'node tools/security-hotfix-audit.js', 'tools/security-hotfix-audit.js');
 check('stability regression audit script exists', exists('tools/stability-regression-audit.js') && pkg.scripts?.['audit:stability'] === 'node tools/stability-regression-audit.js', 'tools/stability-regression-audit.js');
+check('installer candidate audit script exists', exists('tools/installer-candidate-audit.js') && pkg.scripts?.['audit:installer'] === 'node tools/installer-candidate-audit.js', 'tools/installer-candidate-audit.js');
 check('node-flow audit script exists', exists('tools/node-flow-audit.js') && pkg.scripts?.['audit:node-flow'] === 'node tools/node-flow-audit.js', 'node-flow-audit.js');
 check('architecture freeze audit script exists', exists('tools/architecture-freeze-audit.js') && pkg.scripts?.['audit:architecture'] === 'node tools/architecture-freeze-audit.js' && exists('ARCHITECTURE_FREEZE_2.9.20_TO_2.9.29.md'), 'tools/architecture-freeze-audit.js / ARCHITECTURE_FREEZE_2.9.20_TO_2.9.29.md');
 check('debt audit script exists', exists('tools/debt-audit.js') && pkg.scripts?.['audit:debt'] === 'node tools/debt-audit.js', 'tools/debt-audit.js');
@@ -187,6 +188,7 @@ check('sidebar navigation is immediate and deferred-load', appJs.includes('point
 check('rapid sidebar navigation stress coverage exists', perfSmoke.includes('i < 420') && perfSmoke.includes('finalRapidPage') && perfSmoke.includes('button.click()') && perfSmoke.includes('rapid navigation triggered diagnostics before quiet period'), '420 rapid nav switches');
 check('page switching hides inactive pages from layout', pageStyleBlock.includes('position: absolute') && pageStyleBlock.includes('display: none') && stylesCss.includes('.page.active') && stylesCss.includes('display: grid') && appJs.includes('pageNavSettleMs') && appJs.includes('pageCacheState'), 'inactive pages do not participate in layout');
 check('large node lists are windowed, debounced, and row-cached', appJs.includes('nodeRenderLimit = 36') && appJs.includes('homeNodeRenderLimit = 8') && appJs.includes('rowRenderSettleMs = 320') && appJs.includes('nodeRows.length < nodeRenderLimit') && appJs.includes('matchingNodeCount') && appJs.includes('nodeRowStaticCache') && appJs.includes('function normalizeNodeItemCached'), 'windowed/cached node rendering');
+check('large node index is built lazily for first-screen responsiveness', appJs.includes('eagerNodeIndexLimit') && appJs.includes('function nodeIndexForName') && appJs.includes('rebuildNodeItemIndex(latestGroup?.items || [], selectedNode || latestGroup?.now ||') && appJs.includes('nodeIndexForName(key)'), 'lazy node index');
 check('proxy-group references are hidden from ordinary node lists', appJs.includes('function isProxyGroupReferenceItem') && appJs.includes('if (isProxyGroupReferenceItem(item)) continue') && mainRs.includes('fn is_proxy_group_reference_item') && mainRs.includes('speed_targets_skip_proxy_group_references'), 'strategy groups are kept for future routing UI but not rendered as nodes');
 check('delay UI uses 100 ms low-latency threshold', appJs.includes('Number(delay) < 100') && appJs.includes('delay-good') && appJs.includes('delay-bad') && stylesCss.includes('.delay-good') && stylesCss.includes('.delay-bad'), 'delay threshold colors');
 check('subscription URI parser is available', mainRs.includes('parse_uri_subscription') && mainRs.includes('base64'), 'URI/base64 subscriptions');
@@ -198,7 +200,7 @@ check('release notes exist for package version', exists(releaseDoc), releaseDoc)
 if (exists(releaseDoc)) {
   const notes = releaseNotes;
   check('release notes include verification and artifact hash', notes.includes('## Verification') && notes.includes('## Artifact') && notes.includes('SHA-256'), releaseDoc);
-  check('release notes hash matches installer or marks source-only', sourceOnlyRelease || (Boolean(installerSha) && notes.includes(installerSha)), installerSha || 'source-only');
+  check('release notes hash matches installer or marks source-only', sourceOnlyRelease || (Boolean(installerSha) && notes.toLowerCase().includes(installerSha.toLowerCase())), installerSha || 'source-only');
 }
 
 const result = {
