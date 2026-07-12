@@ -25,6 +25,7 @@
     "audit:security": "node tools/security-hotfix-audit.js",
     "audit:architecture": "node tools/architecture-freeze-audit.js",
     "audit:debt": "node tools/debt-audit.js",
+    "audit:opensource": "node tools/opensource-absorption-audit.js",
     "audit:installer": "node tools/installer-candidate-audit.js",
     "audit:release": "node tools/release-audit.js"
   },
