@@ -24,10 +24,12 @@ function check(name, ok, detail = '') {
 
 const standardPath = 'research/opensource-absorption-standard.md';
 const referencePath = 'research/opensource-reference.md';
+const roadmapPath = 'research/opensource-absorption-roadmap.md';
 const pkg = readJson('package.json');
 const releaseAudit = read('tools/release-audit.js');
 const standard = exists(standardPath) ? read(standardPath) : '';
 const reference = exists(referencePath) ? read(referencePath) : '';
+const roadmap = exists(roadmapPath) ? read(roadmapPath) : '';
 
 const requiredStandardSections = [
   '## 1. 总原则',
@@ -78,6 +80,7 @@ const requiredSourceUrls = [
 
 check('opensource absorption standard exists', exists(standardPath), standardPath);
 check('opensource reference exists', exists(referencePath), referencePath);
+check('opensource absorption roadmap exists', exists(roadmapPath), roadmapPath);
 check('package exposes audit:opensource', pkg.scripts?.['audit:opensource'] === 'node tools/opensource-absorption-audit.js', 'package.json');
 check('release audit knows opensource absorption gate', releaseAudit.includes('opensource absorption audit script exists'), 'tools/release-audit.js');
 check('standard contains required sections', requiredStandardSections.every((section) => standard.includes(section)), requiredStandardSections.join(', '));
@@ -91,6 +94,10 @@ check('reference records source verification date', reference.includes('来源�
 check('reference includes required source URLs', requiredSourceUrls.every((url) => reference.includes(url)), requiredSourceUrls.join(', '));
 check('reference includes priority task table', reference.includes('## 5. Aegos 近期任务表') && reference.includes('| 版本 | 任务 | 参考来源 | 验收标准 |'), 'near-term task table');
 check('reference classifies snell.sh as server script, not client dependency', reference.includes('服务端部署脚本') && reference.includes('不适合在 Aegos 客户端默认执行远程 shell'), 'snell.sh boundary');
+check('roadmap applies scoring standard to projects', requiredProjects.every((project) => roadmap.includes(project)) && ['用户价值', '技术适配', '风险', '可测性', '时机', '总分'].every((text) => roadmap.includes(text)), 'project score matrix');
+check('roadmap maps absorption into versions', ['2.9.53', '2.9.54', '2.9.55', '2.9.56', '3.1.0', '3.2.0', '3.3.0', '3.4.0', '3.5.0', '4.0.0'].every((version) => roadmap.includes(version)), 'version route');
+check('roadmap preserves no-copy and validation gates', ['不复制', '融合方式', '验收', '停止条件', '测速仍会自动切节点'].every((text) => roadmap.includes(text)), 'fusion and stop gates');
+check('roadmap keeps sing-box and snell out of the immediate mainline', roadmap.includes('不进 3.0 主线') && roadmap.includes('不执行服务端 shell'), 'deferred high-risk projects');
 
 const result = {
   ok: fail.length === 0,
