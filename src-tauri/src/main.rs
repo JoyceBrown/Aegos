@@ -3792,6 +3792,52 @@ mod tests {
     }
 
     #[test]
+    fn routing_rule_parser_structures_common_rules() {
+        let domain = parse_routing_rule_text(1, "DOMAIN-SUFFIX,example.com,Proxy");
+        assert_eq!(
+            domain.get("kind").and_then(JsonValue::as_str),
+            Some("DOMAIN-SUFFIX")
+        );
+        assert_eq!(
+            domain.get("category").and_then(JsonValue::as_str),
+            Some("domain")
+        );
+        assert_eq!(
+            domain.get("condition").and_then(JsonValue::as_str),
+            Some("example.com")
+        );
+        assert_eq!(
+            domain.get("target").and_then(JsonValue::as_str),
+            Some("Proxy")
+        );
+
+        let geo = parse_routing_rule_text(2, "GEOIP,CN,DIRECT,no-resolve");
+        assert_eq!(geo.get("kind").and_then(JsonValue::as_str), Some("GEOIP"));
+        assert_eq!(
+            geo.get("target").and_then(JsonValue::as_str),
+            Some("DIRECT")
+        );
+        assert_eq!(
+            geo.get("options")
+                .and_then(JsonValue::as_array)
+                .and_then(|items| items.first())
+                .and_then(JsonValue::as_str),
+            Some("no-resolve")
+        );
+
+        let logical =
+            parse_routing_rule_text(3, "AND,((DOMAIN-SUFFIX,example.com),(NETWORK,TCP)),Proxy");
+        assert_eq!(
+            logical.get("condition").and_then(JsonValue::as_str),
+            Some("((DOMAIN-SUFFIX,example.com),(NETWORK,TCP))")
+        );
+        assert_eq!(
+            logical.get("target").and_then(JsonValue::as_str),
+            Some("Proxy")
+        );
+    }
+
+    #[test]
     fn parses_base64_tuic_subscription() {
         let uri = "tuic://00000000-0000-4000-8000-000000000000:secret@example.com:443?sni=example.com&alpn=h3&congestion_control=bbr&udp_relay_mode=native&reduce_rtt=true#HK%20TUIC";
         let encoded = general_purpose::STANDARD.encode(uri);
@@ -9625,9 +9671,209 @@ fn canonical_strategy_type(value: &str) -> String {
     }
 }
 
+fn split_rule_segments(rule: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for ch in rule.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            current.push(ch);
+            escaped = true;
+            continue;
+        }
+        if let Some(quote_ch) = quote {
+            current.push(ch);
+            if ch == quote_ch {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => {
+                quote = Some(ch);
+                current.push(ch);
+            }
+            '(' | '[' | '{' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' | ']' | '}' => {
+                depth = depth.saturating_sub(1);
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                segments.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() || rule.ends_with(',') {
+        segments.push(current.trim().to_string());
+    }
+    segments
+}
+
+fn is_rule_option_segment(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "no-resolve" | "resolve" | "src" | "dst" | "tcp" | "udp"
+    ) || normalized.starts_with("interval=")
+        || normalized.starts_with("udp=")
+        || normalized.starts_with("tcp=")
+}
+
+fn rule_category(kind: &str) -> &'static str {
+    match kind {
+        "DOMAIN" | "DOMAIN-SUFFIX" | "DOMAIN-KEYWORD" | "DOMAIN-REGEX" | "GEOSITE" => "domain",
+        "IP-CIDR" | "IP-CIDR6" | "IP-ASN" | "GEOIP" | "SRC-IP-CIDR" => "ip",
+        "PROCESS-NAME" | "PROCESS-PATH" | "PROCESS-PATH-REGEX" => "process",
+        "RULE-SET" => "provider",
+        "NETWORK" | "DST-PORT" | "SRC-PORT" | "IN-PORT" | "IN-TYPE" => "network",
+        "MATCH" => "match",
+        "AND" | "OR" | "NOT" | "SUB-RULE" => "logical",
+        _ => "other",
+    }
+}
+
+fn parse_routing_rule_text(index: usize, rule: &str) -> JsonValue {
+    let segments = split_rule_segments(rule);
+    let sanitized = sanitize_sensitive_text(rule);
+    if segments.is_empty() || segments[0].trim().is_empty() {
+        return json!({
+            "index": index,
+            "raw": sanitized,
+            "kind": "INVALID",
+            "category": "invalid",
+            "condition": "-",
+            "target": "-",
+            "options": [],
+            "status": "invalid",
+            "note": "empty rule"
+        });
+    }
+    let kind = segments[0].trim().to_ascii_uppercase();
+    let mut target_index = if segments.len() <= 1 {
+        None
+    } else if kind == "MATCH" {
+        Some(1)
+    } else {
+        Some(segments.len() - 1)
+    };
+    while let Some(index) = target_index {
+        if index > 1 && is_rule_option_segment(&segments[index]) {
+            target_index = Some(index - 1);
+        } else {
+            break;
+        }
+    }
+    let target_index = target_index.unwrap_or(segments.len().saturating_sub(1));
+    let condition = if kind == "MATCH" {
+        "all traffic".to_string()
+    } else if target_index > 1 {
+        segments[1..target_index].join(",")
+    } else {
+        segments.get(1).cloned().unwrap_or_else(|| "-".to_string())
+    };
+    let target = segments
+        .get(target_index)
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| "-".to_string());
+    let options = if target_index + 1 < segments.len() {
+        segments[target_index + 1..]
+            .iter()
+            .map(|value| sanitize_sensitive_text(value))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let status = if target == "-" { "invalid" } else { "readonly" };
+    let note = if options.is_empty() {
+        "profile rule"
+    } else {
+        "profile rule with options"
+    };
+    json!({
+        "index": index,
+        "raw": sanitized,
+        "kind": kind,
+        "category": rule_category(&kind),
+        "condition": sanitize_sensitive_text(&condition),
+        "target": sanitize_sensitive_text(&target),
+        "options": options,
+        "status": status,
+        "note": note
+    })
+}
+
+fn parse_routing_rule_value(index: usize, value: &YamlValue) -> JsonValue {
+    if let Some(rule) = value.as_str() {
+        return parse_routing_rule_text(index, rule);
+    }
+    let raw = serde_yaml::to_string(value).unwrap_or_else(|_| "unsupported yaml rule".to_string());
+    json!({
+        "index": index,
+        "raw": sanitize_sensitive_text(raw.trim()),
+        "kind": "YAML",
+        "category": "structured",
+        "condition": "-",
+        "target": "-",
+        "options": [],
+        "status": "unsupported",
+        "note": "structured YAML rule is read-only and not editable yet"
+    })
+}
+
+fn routing_rules_for_profile(profile: Option<&Profile>) -> (Vec<JsonValue>, Option<String>) {
+    let Some(profile) = profile else {
+        return (Vec::new(), Some("no active profile".to_string()));
+    };
+    let path = Path::new(&profile.path);
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(err) => {
+            return (
+                Vec::new(),
+                Some(format!(
+                    "profile config read failed {}: {err}",
+                    path.display()
+                )),
+            );
+        }
+    };
+    let config: YamlValue = match serde_yaml::from_str(&raw) {
+        Ok(config) => config,
+        Err(err) => {
+            return (
+                Vec::new(),
+                Some(format!("profile YAML parse failed: {err}")),
+            )
+        }
+    };
+    let rules = yaml_sequence(&config, "rules")
+        .map(|items| {
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, value)| parse_routing_rule_value(index + 1, value))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    (rules, None)
+}
+
 #[tauri::command]
 fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
-    let (running, controller_port, secret, mode, groups) = {
+    let (running, controller_port, secret, mode, groups, active_profile) = {
         let core = state.core.lock().unwrap();
         (
             core.process.is_some(),
@@ -9635,6 +9881,7 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
             core.settings.secret.clone(),
             core.settings.mode.clone(),
             core.proxy_groups(),
+            core.active_profile(),
         )
     };
     let group_rows = groups
@@ -9673,24 +9920,26 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
     };
     let mut rule_counts: HashMap<String, (usize, String)> = HashMap::new();
     for item in recent_connections {
-        let rule = sanitize_sensitive_text(item
-            .get("rule")
-            .and_then(|value| value.as_str())
-            .filter(|value| !value.is_empty())
-            .unwrap_or("MATCH")
+        let rule = sanitize_sensitive_text(
+            item.get("rule")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .unwrap_or("MATCH"),
         );
-        let chains = sanitize_sensitive_text(&item
-            .get("chains")
-            .and_then(|value| value.as_array())
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(|value| value.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" > ")
-            })
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "-".to_string()));
+        let chains = sanitize_sensitive_text(
+            &item
+                .get("chains")
+                .and_then(|value| value.as_array())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" > ")
+                })
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "-".to_string()),
+        );
         let entry = rule_counts.entry(rule).or_insert((0, chains));
         entry.0 += 1;
     }
@@ -9706,6 +9955,7 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
             })
         })
         .collect::<Vec<_>>();
+    let (static_rules, rule_error) = routing_rules_for_profile(active_profile.as_ref());
     let group_count = group_rows.len();
     let auto_group_count = group_rows
         .iter()
@@ -9716,15 +9966,19 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
         })
         .count();
     let recent_rule_hits = recent_rules.len();
+    let rule_count = static_rules.len();
     Ok(json!({
         "readOnly": true,
         "mode": mode,
         "groups": group_rows,
+        "rules": static_rules,
+        "ruleError": rule_error,
         "recentRules": recent_rules,
         "summary": {
             "groupCount": group_count,
             "autoGroupCount": auto_group_count,
-            "recentRuleHits": recent_rule_hits
+            "recentRuleHits": recent_rule_hits,
+            "ruleCount": rule_count
         }
     }))
 }

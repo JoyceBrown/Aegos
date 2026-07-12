@@ -2706,30 +2706,41 @@ function strategyTypeLabel(kind = '') {
 
 function renderRoutingSnapshot(data = {}) {
   const groups = Array.isArray(data.groups) ? data.groups : [];
-  const rules = Array.isArray(data.recentRules) ? data.recentRules : [];
+  const rules = Array.isArray(data.rules) ? data.rules : [];
   const summary = data.summary || {};
   $('#routingModeState').textContent = modeLabel(data.mode || latestStatus?.mode || 'rule');
   $('#routingGroupCount').textContent = String(summary.groupCount ?? groups.length);
   $('#routingAutoCount').textContent = String(summary.autoGroupCount ?? 0);
-  $('#routingRuleHitCount').textContent = String(summary.recentRuleHits ?? rules.length);
+  $('#routingRuleHitCount').textContent = String(summary.ruleCount ?? rules.length);
   const groupRows = groups.slice(0, 24).map((item) => el('div', { className: 'simple-row' }, [
     el('span', { textContent: item.name || '-' }),
     el('span', { textContent: strategyTypeLabel(item.type) }),
     el('span', { textContent: item.now || '-' }),
     el('span', { textContent: String(item.itemCount ?? 0) }),
-    el('span', { textContent: item.automatic ? '自动策略，测速不切换' : '手动/只读' })
+    el('span', { textContent: item.automatic ? '\u81ea\u52a8\u7b56\u7565\uff0c\u6d4b\u901f\u4e0d\u5207\u6362' : '\u624b\u52a8/\u53ea\u8bfb' })
   ]));
-  replaceChildrenSafe($('#routingGroupRows'), groupRows.length ? groupRows : [emptyState('暂无策略组数据。')]);
-  const ruleRows = rules.slice(0, 12).map((item) => el('div', { className: 'simple-row' }, [
-    el('span', { textContent: item.rule || '-' }),
-    el('span', { textContent: item.chains || '-' }),
-    el('span', { textContent: String(item.count || 1) }),
-    el('span', { textContent: '只读' }),
-    el('span', { textContent: item.note || '最近连接命中' })
-  ]));
-  replaceChildrenSafe($('#routingRuleRows'), ruleRows.length ? ruleRows : [emptyState('暂无最近规则命中。')]);
+  replaceChildrenSafe($('#routingGroupRows'), groupRows.length ? groupRows : [emptyState('\u6682\u65e0\u7b56\u7565\u7ec4\u6570\u636e\u3002')]);
+  const ruleRows = rules.slice(0, 40).map((item) => {
+    const options = Array.isArray(item.options) && item.options.length ? ` \u00b7 ${item.options.join(' / ')}` : '';
+    return el('div', { className: 'simple-row' }, [
+      el('span', { textContent: `${item.index || '-'} ${item.kind || '-'}` }),
+      el('span', { textContent: item.condition || '-' }),
+      el('span', { textContent: item.target || '-' }),
+      el('span', { textContent: item.status || 'readonly' }),
+      el('span', { textContent: `${item.note || 'profile rule'}${options}` })
+    ]);
+  });
+  if (!ruleRows.length && data.ruleError) {
+    ruleRows.push(el('div', { className: 'simple-row' }, [
+      el('span', { textContent: '-' }),
+      el('span', { textContent: '-' }),
+      el('span', { textContent: '-' }),
+      el('span', { textContent: 'unavailable' }),
+      el('span', { textContent: data.ruleError })
+    ]));
+  }
+  replaceChildrenSafe($('#routingRuleRows'), ruleRows.length ? ruleRows : [emptyState('\u6682\u65e0\u914d\u7f6e\u89c4\u5219\u3002')]);
 }
-
 async function refreshRoutingSnapshot(token = null) {
   if (pageCacheState.routing.loading) return;
   pageCacheState.routing.loading = true;
