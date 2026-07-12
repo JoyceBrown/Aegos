@@ -500,16 +500,18 @@ check(
 
 check(
   'node-level diagnostics link health, logs, and suggestions',
-  mainRs.includes('fn node_diagnostics') &&
-    mainRs.includes('fn recent_node_logs') &&
+  mainRs.includes('fn node_diagnostics_from_snapshot') &&
+    mainRs.includes('fn recent_node_logs_from_snapshot') &&
     mainRs.includes('fn log_matches_node') &&
     mainRs.includes('"lastFailure"') &&
     mainRs.includes('classify_failure_reason(&entry.line)') &&
-    mainRs.includes('fn recovery_suggestions_from_groups') &&
-    mainRs.includes('recovery_suggestions_from_groups(&groups, 8)') &&
+    mainRs.includes('fn recovery_suggestions_from_snapshot') &&
+    mainRs.includes('recovery_suggestions_from_snapshot(groups, speed, max_delay_ms, 8)') &&
+    mainRs.includes('node_diagnostics_from_snapshot(name, &groups, &speed, &logs, max_delay_ms)') &&
+    !mainRs.includes('state.core.lock().unwrap().node_diagnostics(name)') &&
     mainRs.includes('node_log_matching_finds_related_failures') &&
     mainRs.includes('node_diagnostics,'),
-  'node health/log/suggestion diagnostics reuse one group snapshot'
+  'node health/log/suggestion diagnostics reuse one group snapshot without holding the core mutex'
 );
 
 check(

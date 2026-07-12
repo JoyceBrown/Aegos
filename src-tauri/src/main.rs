@@ -6057,19 +6057,6 @@ impl CoreManager {
         items
     }
 
-    fn recent_node_logs(&self, node: &str, limit: usize) -> Vec<LogEntry> {
-        let logs = self.logs.lock().unwrap();
-        let mut items = logs
-            .iter()
-            .rev()
-            .filter(|entry| log_matches_node(entry, node))
-            .take(limit)
-            .cloned()
-            .collect::<Vec<_>>();
-        items.reverse();
-        items
-    }
-
     fn recent_log_summary(&self, limit: usize) -> String {
         let items = self.recent_logs(limit);
         if items.is_empty() {
@@ -6967,57 +6954,6 @@ impl CoreManager {
         speed_recommendation(&targets, &speed.health, now_secs())
     }
 
-    fn node_diagnostics(&self, name: String) -> Result<JsonValue, String> {
-        let groups = self.proxy_groups();
-        let targets = Self::collect_proxy_targets(&groups);
-        let target = targets
-            .iter()
-            .find(|target| target.name == name || target.select_name == name)
-            .cloned()
-            .ok_or_else(|| format!("Node not found: {name}"))?;
-        let speed = self.speed_test.lock().unwrap().clone();
-        let health = speed.health.get(&target.name).cloned();
-        let logs = self.recent_node_logs(&target.name, 20);
-        let last_failure = logs
-            .iter()
-            .rev()
-            .find(|entry| entry.level == "warn" || entry.level == "error")
-            .map(|entry| {
-                json!({
-                    "level": entry.level,
-                    "category": entry.category,
-                    "line": entry.line,
-                    "classification": classify_failure_reason(&entry.line)
-                })
-            });
-        let region = infer_node_region(&target.name);
-        let suggestions = self
-            .recovery_suggestions_from_groups(&groups, 8)
-            .into_iter()
-            .filter(|item| {
-                item.get("region")
-                    .and_then(|value| value.as_str())
-                    .map(|value| value == region)
-                    .unwrap_or(false)
-            })
-            .take(5)
-            .collect::<Vec<_>>();
-        Ok(json!({
-            "node": {
-                "group": target.group_name,
-                "proxy": target.select_name,
-                "realProxyName": target.name,
-                "protocol": target.protocol,
-                "region": region
-            },
-            "health": health,
-            "logs": logs,
-            "lastFailure": last_failure,
-            "suggestions": suggestions,
-            "generatedAt": now_secs()
-        }))
-    }
-
     fn select_best_proxy(&mut self) -> Result<JsonValue, String> {
         let candidate = self.best_proxy_candidate().ok_or_else(|| {
             "No low-latency candidate below 100 ms is available; run speed test first".to_string()
@@ -7582,72 +7518,13 @@ impl CoreManager {
     }
 
     fn recovery_suggestions_from_groups(&self, groups: &JsonValue, limit: usize) -> Vec<JsonValue> {
-        let targets = Self::collect_proxy_targets(&groups);
         let speed = self.speed_test.lock().unwrap().clone();
-        let now = now_secs();
-        let current_node = groups
-            .as_array()
-            .and_then(|items| {
-                items
-                    .iter()
-                    .find_map(|group| group.get("now").and_then(|value| value.as_str()))
-            })
-            .unwrap_or("");
-        let current_region = infer_node_region(current_node);
-        let max_delay = self.settings.reliability_max_delay_ms as i64;
-        let mut suggestions = targets
-            .into_iter()
-            .filter_map(|target| {
-                if target.name == current_node || target.select_name == current_node {
-                    return None;
-                }
-                let health = speed.health.get(&target.name)?;
-                if health.last_delay <= 0 || health.last_delay > max_delay {
-                    return None;
-                }
-                let confidence = speed_result_confidence(
-                    health.last_delay,
-                    health.failure_streak,
-                    health.last_success_at,
-                    health.last_tested_at,
-                    health.cooldown_until,
-                    now,
-                );
-                if confidence == "failed" || confidence == "cooldown" {
-                    return None;
-                }
-                let region = infer_node_region(&target.name);
-                let same_region = region == current_region && region != "GL";
-                Some((
-                    if same_region { 0usize } else { 1usize },
-                    recovery_confidence_rank(&confidence),
-                    health.score,
-                    health.last_delay,
-                    json!({
-                        "group": target.group_name,
-                        "proxy": target.select_name,
-                        "realProxyName": target.name,
-                        "region": region,
-                        "sameRegion": same_region,
-                        "delay": health.last_delay,
-                        "medianDelay": health.median_delay,
-                        "jitter": health.jitter,
-                        "confidence": confidence,
-                        "score": health.score,
-                        "requiresConfirmation": true,
-                        "reason": if same_region { "same-region low-latency fallback" } else { "low-latency fallback" }
-                    }),
-                ))
-            })
-            .collect::<Vec<_>>();
-        suggestions.sort_by_key(|(same_region_rank, confidence_rank, score, delay, _)| {
-            (*same_region_rank, *confidence_rank, *score, *delay)
-        });
-        suggestions
-            .into_iter()
-            .take(limit)
-            .map(|(_, _, _, _, value)| value)
-            .collect()
+        recovery_suggestions_from_snapshot(
+            groups,
+            &speed,
+            self.settings.reliability_max_delay_ms,
+            limit,
+        )
     }
 
     fn recovery_suggestions(&self, limit: usize) -> Vec<JsonValue> {
@@ -8024,6 +7901,150 @@ impl CoreManager {
             "settings": self.public_settings()
         }))
     }
+}
+
+fn recent_node_logs_from_snapshot(
+    logs: &Arc<Mutex<Vec<LogEntry>>>,
+    node: &str,
+    limit: usize,
+) -> Vec<LogEntry> {
+    let logs = logs.lock().unwrap();
+    let mut items = logs
+        .iter()
+        .rev()
+        .filter(|entry| log_matches_node(entry, node))
+        .take(limit)
+        .cloned()
+        .collect::<Vec<_>>();
+    items.reverse();
+    items
+}
+
+fn recovery_suggestions_from_snapshot(
+    groups: &JsonValue,
+    speed: &SpeedTestState,
+    max_delay_ms: u64,
+    limit: usize,
+) -> Vec<JsonValue> {
+    let targets = CoreManager::collect_proxy_targets(groups);
+    let now = now_secs();
+    let current_node = groups
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .find_map(|group| group.get("now").and_then(|value| value.as_str()))
+        })
+        .unwrap_or("");
+    let current_region = infer_node_region(current_node);
+    let max_delay = max_delay_ms as i64;
+    let mut suggestions = targets
+        .into_iter()
+        .filter_map(|target| {
+            if target.name == current_node || target.select_name == current_node {
+                return None;
+            }
+            let health = speed.health.get(&target.name)?;
+            if health.last_delay <= 0 || health.last_delay > max_delay {
+                return None;
+            }
+            let confidence = speed_result_confidence(
+                health.last_delay,
+                health.failure_streak,
+                health.last_success_at,
+                health.last_tested_at,
+                health.cooldown_until,
+                now,
+            );
+            if confidence == "failed" || confidence == "cooldown" {
+                return None;
+            }
+            let region = infer_node_region(&target.name);
+            let same_region = region == current_region && region != "GL";
+            Some((
+                if same_region { 0usize } else { 1usize },
+                recovery_confidence_rank(&confidence),
+                health.score,
+                health.last_delay,
+                json!({
+                    "group": target.group_name,
+                    "proxy": target.select_name,
+                    "realProxyName": target.name,
+                    "region": region,
+                    "sameRegion": same_region,
+                    "delay": health.last_delay,
+                    "medianDelay": health.median_delay,
+                    "jitter": health.jitter,
+                    "confidence": confidence,
+                    "score": health.score,
+                    "requiresConfirmation": true,
+                    "reason": if same_region { "same-region low-latency fallback" } else { "low-latency fallback" }
+                }),
+            ))
+        })
+        .collect::<Vec<_>>();
+    suggestions.sort_by_key(|(same_region_rank, confidence_rank, score, delay, _)| {
+        (*same_region_rank, *confidence_rank, *score, *delay)
+    });
+    suggestions
+        .into_iter()
+        .take(limit)
+        .map(|(_, _, _, _, value)| value)
+        .collect()
+}
+
+fn node_diagnostics_from_snapshot(
+    name: String,
+    groups: &JsonValue,
+    speed: &SpeedTestState,
+    logs: &Arc<Mutex<Vec<LogEntry>>>,
+    max_delay_ms: u64,
+) -> Result<JsonValue, String> {
+    let targets = CoreManager::collect_proxy_targets(groups);
+    let target = targets
+        .iter()
+        .find(|target| target.name == name || target.select_name == name)
+        .cloned()
+        .ok_or_else(|| format!("Node not found: {name}"))?;
+    let health = speed.health.get(&target.name).cloned();
+    let logs = recent_node_logs_from_snapshot(logs, &target.name, 20);
+    let last_failure = logs
+        .iter()
+        .rev()
+        .find(|entry| entry.level == "warn" || entry.level == "error")
+        .map(|entry| {
+            json!({
+                "level": entry.level,
+                "category": entry.category,
+                "line": entry.line,
+                "classification": classify_failure_reason(&entry.line)
+            })
+        });
+    let region = infer_node_region(&target.name);
+    let suggestions = recovery_suggestions_from_snapshot(groups, speed, max_delay_ms, 8)
+        .into_iter()
+        .filter(|item| {
+            item.get("region")
+                .and_then(|value| value.as_str())
+                .map(|value| value == region)
+                .unwrap_or(false)
+        })
+        .take(5)
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "node": {
+            "group": target.group_name,
+            "proxy": target.select_name,
+            "realProxyName": target.name,
+            "protocol": target.protocol,
+            "region": region
+        },
+        "health": health,
+        "logs": logs,
+        "lastFailure": last_failure,
+        "suggestions": suggestions,
+        "generatedAt": now_secs()
+    }))
 }
 
 fn take_diagnostics_snapshot(core: Arc<Mutex<CoreManager>>) -> DiagnosticsSnapshot {
@@ -9271,7 +9292,46 @@ fn test_single_proxy_delay(state: State<AppState>, name: String) -> Result<JsonV
 
 #[tauri::command]
 fn node_diagnostics(state: State<AppState>, name: String) -> Result<JsonValue, String> {
-    state.core.lock().unwrap().node_diagnostics(name)
+    let logs = state.logs.clone();
+    let (
+        running,
+        controller_port,
+        secret,
+        active_profile,
+        selected_map,
+        manual_names,
+        speed,
+        max_delay_ms,
+    ) = {
+        let core = state.core.lock().unwrap();
+        let active_profile = core.active_profile();
+        let manual_names = active_profile
+            .as_ref()
+            .and_then(|profile| core.settings.manual_nodes.get(&profile.id).cloned())
+            .map(|nodes| nodes.keys().cloned().collect::<HashSet<_>>())
+            .unwrap_or_default();
+        let speed = core.speed_test.lock().unwrap().clone();
+        (
+            core.process.is_some(),
+            core.settings.controller_port,
+            core.settings.secret.clone(),
+            active_profile,
+            core.settings.selected_proxy_map.clone(),
+            manual_names,
+            speed,
+            core.settings.reliability_max_delay_ms,
+        )
+    };
+    let groups = assemble_proxy_groups_snapshot(
+        running,
+        controller_port,
+        &secret,
+        active_profile,
+        selected_map,
+        manual_names,
+        speed.clone(),
+    );
+    node_diagnostics_from_snapshot(name, &groups, &speed, &logs, max_delay_ms)
 }
 
 #[tauri::command]
