@@ -65,7 +65,7 @@ check('2.9.20-2.9.29 freeze document exists', exists(docPath), docPath);
 check('freeze document contains required sections', docSections.every((section) => freezeDoc.includes(section)), docSections.join(', '));
 check('freeze document covers every freeze-lane patch version', Array.from({ length: 10 }, (_, i) => `2.9.${20 + i}`).every((version) => freezeDoc.includes(version)), '2.9.20..2.9.29');
 
-check('release version has moved to post-freeze cleanup line', pkg.version === tauri.version && /^2\.9\.(?:29|3\d+)$/.test(pkg.version), `${pkg.version}/${tauri.version}`);
+check('release version has moved to post-freeze cleanup line', pkg.version === tauri.version && /^2\.9\.(?:29|[3-9]\d+)$/.test(pkg.version), `${pkg.version}/${tauri.version}`);
 check('release audit includes architecture gate', releaseAudit.includes('architecture freeze audit script exists') && releaseAudit.includes(docPath), 'tools/release-audit.js');
 check('package exposes audit:architecture', pkg.scripts?.['audit:architecture'] === 'node tools/architecture-freeze-audit.js', 'package.json scripts');
 check('debt-audit gate is wired for post-freeze cleanup', pkg.scripts?.['audit:debt'] === 'node tools/debt-audit.js' && releaseAudit.includes('debt audit script exists') && exists('tools/debt-audit.js'), 'debt-audit post-freeze gate');
@@ -79,7 +79,7 @@ check('sidebar navigation stays deferred and token guarded', ['pointerdown', 'sc
 
 check('connection state closure is the shared truth surface', ['fn connection_closure', '"coreRunning"', '"trafficTakeover"', '"systemProxyApplied"', '"currentNode"', '"outboundIpKnown"'].every((token) => mainRs.includes(token)), 'connection_closure');
 check('system proxy takeover is verified and recoverable', ['verify_system_proxy_points_to_aegos', 'capture_proxy_snapshot_before_takeover', 'write_windows_proxy_snapshot', 'repairSystemProxy'].every((token) => mainRs.includes(token) || appJs.includes(token)), 'system proxy transaction');
-check('disconnect protection firewall is wrapped and verifiable', ['build_speed_test_firewall_script', 'Invoke-AegosNetsh', 'Disconnect protection enable failed', 'set_speed_test_firewall_rules'].every((token) => mainRs.includes(token)), 'firewall wrapper');
+check('disconnect protection firewall is wrapped and verifiable', ['build_speed_test_firewall_script', 'Invoke-AegosNetsh', 'Disconnect protection enable failed', 'cleanup_speed_firewall'].every((token) => mainRs.includes(token)), 'firewall wrapper');
 check('speed tests are measurement-only and use standby core path', ['fn start_standby', 'fn ensure_core_for_delay_test', 'Speed test starting mihomo in standby without traffic takeover'].every((token) => mainRs.includes(token)) && testNodesBody.includes("invoke('start_proxy_delay_test'") && !testNodesBody.includes("runBackgroundJob('changeProxy'") && !speedTestBody.includes('change_proxy') && interactionSmoke.includes('speed test triggered a proxy switch') && interactionSmoke.includes('batch speed test triggered a proxy switch'), 'standby speed test');
 check('outbound IP lookup has current-node smart-mode routing', ['AEGOS_OUTBOUND_IP_GROUP', 'OUTBOUND_IP_RULE_DOMAINS', 'upsert_outbound_ip_group', 'sync_outbound_ip_group_selection'].every((token) => mainRs.includes(token)), 'outbound IP group');
 

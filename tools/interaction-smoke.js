@@ -352,19 +352,26 @@ try {
             return speedStatusSnapshot(true, 0);
           }
           if (command === 'test_single_proxy_delay') {
-            await new Promise((resolve) => setTimeout(resolve, 320));
             const item = groups[0].items.find((item) => item.name === args.name);
             if (item) {
-              item.delay = 42;
+              item.delay = 0;
               item.alive = true;
-              item.healthStatus = 'low';
-              item.healthScore = 42;
-              item.medianDelay = 42;
+              item.healthStatus = 'testing';
+              item.healthScore = 999999;
+              item.medianDelay = -1;
               item.jitter = 0;
-              item.healthConfidence = 'high';
-              item.lastTestedAt = Math.floor(Date.now() / 1000);
+              item.healthConfidence = 'testing';
+              setTimeout(() => {
+                item.delay = 42;
+                item.alive = true;
+                item.healthStatus = 'low';
+                item.healthScore = 42;
+                item.medianDelay = 42;
+                item.healthConfidence = 'high';
+                item.lastTestedAt = Math.floor(Date.now() / 1000);
+              }, 180);
             }
-            return { ok: true, proxy: args.name, realProxyName: args.name, delay: 42, healthStatus: 'low' };
+            return { ok: true, queued: true, runId: 77, proxy: args.name, realProxyName: args.name, delay: 0, healthStatus: 'testing' };
           }
           if (command === 'node_diagnostics') {
             return {

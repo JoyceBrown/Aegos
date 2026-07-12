@@ -49,8 +49,6 @@ check(
   'disconnect protection allows speed tests without disabling protection',
   mainRs.includes('fn build_speed_test_firewall_script') &&
     mainRs.includes('fn speed_test_firewall_ports') &&
-    mainRs.includes('fn set_speed_test_firewall_rules') &&
-    mainRs.includes('Speed test firewall window opened for ports') &&
     mainRs.includes('"name=$rulePrefix DNS UDP"') &&
     mainRs.includes('"name=$rulePrefix DNS TCP"') &&
     mainRs.includes('remoteport=$portList') &&

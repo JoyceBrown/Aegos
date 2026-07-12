@@ -87,10 +87,11 @@ check(
 check(
   'slow single-node speed test is not global foreground busy',
   singleNodeBody.includes('runLocalButtonAction') &&
+    singleNodeBody.includes('waitForSingleNodeDelay') &&
     !singleNodeBody.includes('runButtonAction') &&
     singleNodeBody.includes('queueNodeRefresh(activeNodeRenderTarget(), 0)') &&
     interactionSmoke.includes('single node speed test blocked sidebar page switching'),
-  'a slow failed node may busy its own icon, but not the whole app'
+  'a slow failed node may busy its own icon while the result is polled from shared speed state'
 );
 
 check(

@@ -5489,30 +5489,6 @@ impl CoreManager {
         ports
     }
 
-    fn set_speed_test_firewall_rules(&self, enable: bool, ports: &[u16]) -> Result<(), String> {
-        if !self.settings.kill_switch_enabled {
-            return Ok(());
-        }
-        run_powershell(&build_speed_test_firewall_script(
-            enable,
-            &self.app_data,
-            &self.core_path,
-            ports,
-        ))?;
-        self.add_log(
-            if enable {
-                format!(
-                    "Speed test firewall window opened for ports: {}",
-                    ps_port_list(ports)
-                )
-            } else {
-                "Speed test firewall window closed".to_string()
-            },
-            "info",
-        );
-        Ok(())
-    }
-
     fn runtime_profile_path(&self) -> PathBuf {
         self.home_dir.join("aegos-runtime-profile.yaml")
     }
@@ -7231,83 +7207,149 @@ impl CoreManager {
             .find(|target| target.name == name || target.select_name == name)
             .cloned()
             .ok_or_else(|| format!("Node not found: {name}"))?;
-        {
-            let mut speed = self.speed_test.lock().unwrap();
-            speed.delays.insert(target.name.clone(), 0);
-            speed.error = None;
-            speed.updated_at = now_secs();
-        }
-        let client = Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_millis(6500))
-            .build()
-            .map_err(|err| err.to_string())?;
-        let speed_firewall_ports = if self.settings.kill_switch_enabled {
+        let controller_port = self.settings.controller_port;
+        let secret = self.settings.secret.clone();
+        let speed_test = self.speed_test.clone();
+        let targets_for_recommendation = targets.clone();
+        let speed_firewall_enabled = self.settings.kill_switch_enabled;
+        let speed_firewall_ports = if speed_firewall_enabled {
             self.speed_test_firewall_ports()
         } else {
             Vec::new()
         };
-        self.set_speed_test_firewall_rules(true, &speed_firewall_ports)?;
-        let result = test_proxy_delay_with_retry(
-            &client,
-            self.settings.controller_port,
-            &self.settings.secret,
-            &target.name,
-            &target.protocol,
-        );
-        if let Err(err) = self.set_speed_test_firewall_rules(false, &speed_firewall_ports) {
-            self.add_log(
-                format!("Speed test firewall cleanup failed after single test: {err}"),
-                "warn",
-            );
+        let speed_firewall_app_data = self.app_data.clone();
+        let speed_firewall_core_path = self.core_path.clone();
+        let run_id;
+        {
+            let mut speed = speed_test.lock().unwrap();
+            run_id = speed.run_id.saturating_add(1);
+            speed.run_id = run_id;
+            speed.running = true;
+            speed.started_at = now_secs();
+            speed.completed = 0;
+            speed.total = 1;
+            speed.ok = 0;
+            speed.failed = 0;
+            speed.delays.insert(target.name.clone(), 0);
+            speed.error = None;
+            speed.updated_at = now_secs();
         }
-        let now = now_secs();
-        let health = {
-            let mut speed = self.speed_test.lock().unwrap();
-            let health = update_node_health(
-                speed.health.get(&target.name),
+        let queued_group = target.group_name.clone();
+        let queued_proxy = target.select_name.clone();
+        let queued_real_proxy = target.name.clone();
+        let queued_protocol = target.protocol.clone();
+        thread::spawn(move || {
+            let fail_single = |message: String| {
+                let now = now_secs();
+                let mut speed = speed_test.lock().unwrap();
+                if speed.run_id != run_id {
+                    return;
+                }
+                let health = update_node_health(
+                    speed.health.get(&target.name),
+                    &target.name,
+                    &target.protocol,
+                    -1,
+                    &message,
+                    now,
+                );
+                speed.delays.insert(target.name.clone(), -1);
+                speed.health.insert(target.name.clone(), health);
+                speed.failed = 1;
+                speed.completed = 1;
+                speed.running = false;
+                speed.error = Some(message);
+                speed.low_latency = low_latency_names(&speed.health, now);
+                speed.recommended =
+                    speed_recommendation(&targets_for_recommendation, &speed.health, now);
+                speed.updated_at = now;
+            };
+            if speed_firewall_enabled {
+                if let Err(err) = run_powershell(&build_speed_test_firewall_script(
+                    true,
+                    &speed_firewall_app_data,
+                    &speed_firewall_core_path,
+                    &speed_firewall_ports,
+                )) {
+                    fail_single(format!("protection-blocked: {err}"));
+                    return;
+                }
+            }
+            let cleanup_speed_firewall = || {
+                if speed_firewall_enabled {
+                    let _ = run_powershell(&build_speed_test_firewall_script(
+                        false,
+                        &speed_firewall_app_data,
+                        &speed_firewall_core_path,
+                        &speed_firewall_ports,
+                    ));
+                }
+            };
+            let client = match Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_millis(6500))
+                .build()
+            {
+                Ok(client) => client,
+                Err(err) => {
+                    fail_single(err.to_string());
+                    cleanup_speed_firewall();
+                    return;
+                }
+            };
+            let result = test_proxy_delay_with_retry(
+                &client,
+                controller_port,
+                &secret,
                 &target.name,
                 &target.protocol,
-                result.delay,
-                &result.failure_reason,
-                now,
             );
-            speed.delays.insert(target.name.clone(), result.delay);
-            speed.health.insert(target.name.clone(), health.clone());
-            speed.low_latency = low_latency_names(&speed.health, now);
-            speed.recommended = speed_recommendation(&targets, &speed.health, now);
-            speed.updated_at = now;
-            health
-        };
-        self.add_log(
-            format!(
-                "Single node delay tested: {} = {} ms{}",
-                target.name,
-                result.delay,
+            let now = now_secs();
+            let mut speed = speed_test.lock().unwrap();
+            if speed.run_id == run_id {
+                let health = update_node_health(
+                    speed.health.get(&target.name),
+                    &target.name,
+                    &target.protocol,
+                    result.delay,
+                    &result.failure_reason,
+                    now,
+                );
+                speed.delays.insert(target.name.clone(), result.delay);
+                speed.health.insert(target.name.clone(), health);
+                speed.completed = 1;
                 if result.delay > 0 {
-                    String::new()
+                    speed.ok = 1;
+                    speed.failed = 0;
                 } else {
-                    format!(" ({})", result.failure_reason)
+                    speed.ok = 0;
+                    speed.failed = 1;
                 }
-            ),
-            if result.delay > 0 { "info" } else { "warn" },
-        );
+                speed.running = false;
+                speed.error = if result.delay > 0 {
+                    None
+                } else {
+                    Some(result.failure_reason.clone())
+                };
+                speed.low_latency = low_latency_names(&speed.health, now);
+                speed.recommended =
+                    speed_recommendation(&targets_for_recommendation, &speed.health, now);
+                speed.updated_at = now;
+            }
+            drop(speed);
+            cleanup_speed_firewall();
+        });
         Ok(json!({
-            "ok": result.delay > 0,
-            "group": target.group_name,
-            "proxy": target.select_name,
-            "realProxyName": target.name,
-            "protocol": target.protocol,
-            "delay": result.delay,
-            "failureReason": health.last_failure_reason,
-            "medianDelay": health.median_delay,
-            "jitter": health.jitter,
-            "healthStatus": health.status,
-            "healthConfidence": health.confidence,
-            "lastTestedAt": health.last_tested_at,
-            "lastSuccessAt": health.last_success_at,
-            "resultAgeSecs": if health.last_success_at > 0 { now.saturating_sub(health.last_success_at) } else { 0 },
-            "score": health.score
+            "ok": true,
+            "queued": true,
+            "runId": run_id,
+            "group": queued_group,
+            "proxy": queued_proxy,
+            "realProxyName": queued_real_proxy,
+            "protocol": queued_protocol,
+            "delay": 0,
+            "healthStatus": "testing",
+            "healthConfidence": "testing"
         }))
     }
 

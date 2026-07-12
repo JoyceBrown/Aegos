@@ -74,10 +74,9 @@ check(
 
 check(
   'speed tests can run under disconnect protection through scoped temporary allow rules',
-  speedFirewallBody.includes('Speed test firewall rules require administrator permission') &&
+    speedFirewallBody.includes('Speed test firewall rules require administrator permission') &&
     speedFirewallBody.includes('kill-switch-speed-test-rules.marker') &&
     speedFirewallBody.includes('remoteport=$portList') &&
-    mainRs.includes('fn set_speed_test_firewall_rules') &&
     mainRs.includes('cleanup_speed_firewall') &&
     speedAudit.includes('disconnect protection speed-test allow rules open and clean up inside worker') &&
     backendAudit.includes('disconnect protection allows speed tests without disabling protection'),

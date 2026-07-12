@@ -51,11 +51,13 @@ check(
 check(
   'single-node speed test does not switch proxies',
   singleBody.includes('test_proxy_delay_with_retry') &&
+    singleBody.includes('thread::spawn(move ||') &&
+    singleBody.includes('"queued": true') &&
     singleBody.includes('speed.delays.insert') &&
-    singleBody.includes('speed.recommended = speed_recommendation') &&
+    singleBody.includes('speed_recommendation(&targets_for_recommendation') &&
     !singleBody.includes('change_proxy') &&
     !singleBody.includes('select_best_proxy'),
-  'single test only updates one node health'
+  'single test queues background deep retry and only updates one node health'
 );
 
 check(
@@ -92,12 +94,17 @@ check(
 check(
   'disconnect protection speed-test allow rules open and clean up inside worker',
   speedBody.includes('build_speed_test_firewall_script(') &&
+    singleBody.includes('build_speed_test_firewall_script(') &&
     speedBody.includes('true,') &&
+    singleBody.includes('true,') &&
     speedBody.includes('cleanup_speed_firewall') &&
+    singleBody.includes('cleanup_speed_firewall') &&
     speedBody.includes('false,') &&
-    mainRs.includes('Speed test firewall window opened for ports') &&
+    singleBody.includes('false,') &&
+    singleBody.includes('fail_single(format!("protection-blocked: {err}"))') &&
+    singleBody.includes('cleanup_speed_firewall();') &&
     mainRs.includes('remoteport=$portList'),
-  'temporary firewall window is scoped to active speed test'
+  'temporary firewall window is scoped to active batch and single-node speed workers'
 );
 
 check(

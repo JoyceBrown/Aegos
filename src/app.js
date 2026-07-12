@@ -2407,13 +2407,46 @@ async function captureNodeDiagnostics(name) {
   }
 }
 
+function singleNodeResultFromSpeedStatus(status = {}, name = '') {
+  const item = findNodeItem(name) || {};
+  const realName = item.realProxyName || name;
+  const delays = status.delays || {};
+  const health = status.health || {};
+  const itemHealth = health[realName] || health[name] || {};
+  const hasDelay = Object.prototype.hasOwnProperty.call(delays, realName)
+    || Object.prototype.hasOwnProperty.call(delays, name);
+  const rawDelay = hasDelay ? (delays[realName] ?? delays[name]) : speedHealthValue(itemHealth, 'lastDelay', 'last_delay');
+  const delay = rawDelay == null ? Number(item.delay ?? -1) : Number(rawDelay);
+  const reason = speedHealthValue(itemHealth, 'lastFailureReason', 'last_failure_reason')
+    || status.error
+    || '';
+  const healthStatus = speedHealthValue(itemHealth, 'status') || '';
+  return { delay, reason, healthStatus };
+}
+
+async function waitForSingleNodeDelay(name, runId, timeoutMs = 12000) {
+  const startedAt = Date.now();
+  let lastResult = { delay: 0, reason: '', healthStatus: 'testing' };
+  while (Date.now() - startedAt < timeoutMs) {
+    const status = await invoke('speed_test_status');
+    if (runId && status.runId && Number(status.runId) !== Number(runId)) break;
+    applySpeedStatusToNodes(status);
+    lastResult = singleNodeResultFromSpeedStatus(status, name);
+    const finished = !status.running && (lastResult.delay !== 0 || lastResult.reason || status.error);
+    if (finished) return lastResult;
+    await sleep(speedTestPollMs);
+  }
+  return { ...lastResult, delay: -1, reason: lastResult.reason || 'timeout' };
+}
+
 async function testSingleNode(name, button) {
   if (!name) return;
   applyOptimisticNodeDelay(name, 0);
   try {
     await runLocalButtonAction(button, '\u6d4b\u901f\u4e2d...', async () => {
-      const result = await invoke('test_single_proxy_delay', { name });
-      const reason = result?.failureReason || result?.lastFailureReason || '';
+      const queued = await invoke('test_single_proxy_delay', { name });
+      const result = await waitForSingleNodeDelay(name, Number(queued?.runId || 0));
+      const reason = result?.reason || '';
       applyOptimisticNodeDelay(name, Number(result?.delay ?? -1), reason);
       queueNodeRefresh(activeNodeRenderTarget(), 0);
       const delay = Number(result?.delay ?? -1);
