@@ -324,10 +324,11 @@ function normalizeRows(items = []) {
           isFixedNodeItem(item),
           Number(nodeUsageCounts.get(item.name) || 0),
           healthConfidence,
-          Number(item.lastTestedAt ?? 0)
+          Number(item.lastTestedAt ?? 0),
+          item.lastFailureReason || item.last_failure_reason || ''
         ];
       })
-    : fallbackNodes.map((row, index) => [...row, -1, true, index === 0, 'direct', 'unknown', -1, 0, 999999, false, 0, false, false, index === 0 ? 1 : 0, 'unknown', 0]);
+    : fallbackNodes.map((row, index) => [...row, -1, true, index === 0, 'direct', 'unknown', -1, 0, 999999, false, 0, false, false, index === 0 ? 1 : 0, 'unknown', 0, '']);
 }
 
 function filterRows(rows, filter) {
@@ -438,12 +439,16 @@ function applySpeedStatusToNodes(status = {}, options = {}) {
       jitter: Number(speedHealthValue(itemHealth, 'jitter') ?? item.jitter ?? 0),
       healthScore: Number(speedHealthValue(itemHealth, 'score') ?? item.healthScore ?? (nextDelay > 0 ? nextDelay : 999999)),
       failureStreak: Number(speedHealthValue(itemHealth, 'failureStreak', 'failure_streak') ?? item.failureStreak ?? 0),
+      lastFailureReason: speedHealthValue(itemHealth, 'lastFailureReason', 'last_failure_reason') || item.lastFailureReason || item.last_failure_reason || '',
       lastTestedAt,
       recommended: isRecommended
     };
     const itemChanged = next.delay !== item.delay
       || next.healthStatus !== item.healthStatus
       || next.healthConfidence !== item.healthConfidence
+      || next.failureStreak !== item.failureStreak
+      || next.lastFailureReason !== (item.lastFailureReason || item.last_failure_reason || '')
+      || next.lastTestedAt !== item.lastTestedAt
       || next.recommended !== item.recommended;
     if (!itemChanged) return;
     if (nextItems === items) nextItems = items.slice();
@@ -483,7 +488,8 @@ function normalizeNodeItem(item = {}, index = 0) {
     isFixedNodeItem(item),
     Number(nodeUsageCounts.get(name) || 0),
     healthConfidence,
-    Number(item.lastTestedAt ?? 0)
+    Number(item.lastTestedAt ?? 0),
+    item.lastFailureReason || item.last_failure_reason || ''
   ];
 }
 
@@ -526,7 +532,8 @@ function normalizeNodeItemCached(item = {}, index = 0) {
     cached.fixed,
     Number(nodeUsageCounts.get(cached.name) || 0),
     healthConfidence,
-    Number(item.lastTestedAt ?? 0)
+    Number(item.lastTestedAt ?? 0),
+    item.lastFailureReason || item.last_failure_reason || ''
   ];
 }
 
@@ -601,6 +608,30 @@ function delayText(value) {
   return '-';
 }
 
+function speedFailureReasonLabel(reason = '') {
+  const key = String(reason || '').toLowerCase();
+  if (!key) return '测速失败';
+  if (key.includes('timeout')) return '超时';
+  if (key.includes('dns')) return 'DNS 失败';
+  if (key.includes('tls')) return 'TLS 失败';
+  if (key.includes('auth')) return '认证失败';
+  if (key.includes('controller')) return '核心未响应';
+  if (key.includes('unsupported')) return '协议不支持';
+  if (key.includes('config')) return '配置错误';
+  if (key.includes('network')) return '连接失败';
+  return '测速失败';
+}
+
+function nodeDelayText(row) {
+  const delay = Number(row?.[3] ?? -1);
+  if (delay > 0) return `${Math.round(delay)} ms`;
+  if (delay === 0) return '\u6d4b\u901f\u4e2d';
+  if (Number(row?.[17] || 0) > 0 || Number(row?.[12] || 0) > 0) {
+    return speedFailureReasonLabel(row?.[18]);
+  }
+  return '-';
+}
+
 function confidenceLabel(value) {
   const labels = {
     high: '\u9ad8',
@@ -637,8 +668,12 @@ function stabilityInfo(row, rows = []) {
   const jitter = Number(row[9] || 0);
   const failureStreak = Number(row[12] || 0);
   const confidence = String(row[16] || 'unknown');
+  const failureReason = String(row[18] || '');
   if (delay === 0 || healthStatus === 'testing' || confidence === 'testing') {
     return { label: '\u6d4b\u901f\u4e2d', level: 'testing', className: 'confidence-muted', metricClassName: 'metric-stability-muted' };
+  }
+  if (delay <= 0 && (failureStreak > 0 || Number(row[17] || 0) > 0)) {
+    return { label: speedFailureReasonLabel(failureReason), level: 'failed', className: 'confidence-bad', metricClassName: 'metric-stability-low' };
   }
   if (delay <= 0 || healthStatus === 'unknown') {
     return { label: '\u672a\u6d4b\u901f', level: 'unknown', className: 'confidence-muted', metricClassName: 'metric-stability-muted' };
@@ -713,7 +748,7 @@ function renderHomeNodeSummary(rows = []) {
     ? rows
     : summaryRowsFromLatestGroup();
   const currentRow = currentNodeRow(sourceRows);
-  const currentDelay = delayText(currentRow?.[3]);
+  const currentDelay = nodeDelayText(currentRow);
   const currentDelayClass = delayClass(currentRow?.[3]);
   const stability = stabilityInfo(currentRow, sourceRows);
 
@@ -738,7 +773,7 @@ function renderHomeNodeSummary(rows = []) {
 function renderNodeRow(row, stabilityRows = []) {
   const [region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak, favorite] = row;
   const delayValue = Number(delay);
-  const delayText = delayValue > 0 ? `${Math.round(delayValue)} ms` : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : '-');
+  const delayText = nodeDelayText(row);
   const delayState = delayClass(delayValue);
   const stability = stabilityInfo(row, stabilityRows);
   const title = el('strong', {}, [
@@ -769,7 +804,7 @@ function renderNodeRow(row, stabilityRows = []) {
 function renderHomeNodeRow(row, stabilityRows = []) {
   const [region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak, favorite] = row;
   const delayValue = Number(delay);
-  const delayText = delayValue > 0 ? `${Math.round(delayValue)} ms` : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : '-');
+  const delayText = nodeDelayText(row);
   const delayState = delayClass(delayValue);
   const stability = stabilityInfo(row, stabilityRows);
   const title = el('strong', {}, [
@@ -1648,25 +1683,29 @@ function findNodeItem(name) {
   return (latestGroup?.items || []).find((item) => item.name === name || item.realProxyName === name) || null;
 }
 
-function updateNodeDelayDom(name, delay) {
+function updateNodeDelayDom(name, delay, failureReason = '') {
   const value = Number(delay);
   $all('.row[data-node]').forEach((row) => {
     if (row.dataset.node !== name) return;
     const delayCell = row.children?.[4];
     if (delayCell) {
       delayCell.className = delayClass(value);
-      delayCell.textContent = delayText(value);
+      delayCell.textContent = value < 0 ? speedFailureReasonLabel(failureReason) : delayText(value);
     }
     const stabilityCell = row.children?.[5];
     if (stabilityCell) {
       stabilityCell.className = value === 0 ? 'confidence-pill confidence-muted' : stabilityCell.className;
       if (value === 0) stabilityCell.textContent = '\u6d4b\u901f\u4e2d';
+      if (value < 0) {
+        stabilityCell.className = 'confidence-pill confidence-bad';
+        stabilityCell.textContent = speedFailureReasonLabel(failureReason);
+      }
     }
   });
   renderHomeNodeSummary(summaryRowsFromLatestGroup());
 }
 
-function applyOptimisticNodeDelay(name, delay) {
+function applyOptimisticNodeDelay(name, delay, failureReason = '') {
   if (!latestGroup?.items) return;
   setLatestGroup({
     ...latestGroup,
@@ -1678,11 +1717,15 @@ function applyOptimisticNodeDelay(name, delay) {
         delay: nextDelay,
         medianDelay: nextDelay > 0 ? nextDelay : item.medianDelay,
         alive: nextDelay >= 0 || item.alive !== false,
-        healthStatus: nextDelay === 0 ? 'testing' : nextDelay > 0 && nextDelay < 100 ? 'low' : nextDelay >= 100 ? 'available' : item.healthStatus
+        healthStatus: nextDelay === 0 ? 'testing' : nextDelay > 0 && nextDelay < 100 ? 'low' : nextDelay >= 100 ? 'available' : 'unstable',
+        healthConfidence: nextDelay === 0 ? 'testing' : nextDelay > 0 ? item.healthConfidence : 'failed',
+        failureStreak: nextDelay < 0 ? Math.max(1, Number(item.failureStreak || 0)) : item.failureStreak,
+        lastFailureReason: nextDelay < 0 ? (failureReason || 'timeout') : '',
+        lastTestedAt: nextDelay === 0 ? item.lastTestedAt : Math.floor(Date.now() / 1000)
       };
     })
   });
-  updateNodeDelayDom(name, delay);
+  updateNodeDelayDom(name, delay, failureReason);
 }
 
 function applyOptimisticSetting(key, value) {
@@ -2324,18 +2367,19 @@ async function testSingleNode(name, button) {
   try {
     await runLocalButtonAction(button, '\u6d4b\u901f\u4e2d...', async () => {
       const result = await invoke('test_single_proxy_delay', { name });
-      applyOptimisticNodeDelay(name, Number(result?.delay ?? -1));
+      const reason = result?.failureReason || result?.lastFailureReason || '';
+      applyOptimisticNodeDelay(name, Number(result?.delay ?? -1), reason);
       queueNodeRefresh(activeNodeRenderTarget(), 0);
       const delay = Number(result?.delay ?? -1);
       if (delay > 0) {
         setNotice(`\u8282\u70b9\u6d4b\u901f\u5b8c\u6210\uff1a${name} / ${Math.round(delay)} ms`);
       } else {
-        setNotice(`\u8282\u70b9\u6d4b\u901f\u5931\u8d25\uff1a${name}`);
+        setNotice(`\u8282\u70b9\u6d4b\u901f\u5931\u8d25\uff1a${name} / ${speedFailureReasonLabel(reason)}`);
         void captureNodeDiagnostics(name);
       }
     });
   } catch (err) {
-    applyOptimisticNodeDelay(name, -1);
+    applyOptimisticNodeDelay(name, -1, 'network');
     setNotice(`\u8282\u70b9\u6d4b\u901f\u5931\u8d25\uff1a${name} / ${err.message || err}`);
     void captureNodeDiagnostics(name);
   }

@@ -347,6 +347,7 @@ struct NodeHealth {
     cooldown_until: u64,
     status: String,
     confidence: String,
+    last_failure_reason: String,
     score: i64,
 }
 
@@ -364,6 +365,28 @@ struct SpeedTestTarget {
     select_name: String,
     group_name: String,
     protocol: String,
+}
+
+#[derive(Clone)]
+struct DelayTestResult {
+    delay: i64,
+    failure_reason: String,
+}
+
+impl DelayTestResult {
+    fn ok(delay: i64) -> Self {
+        Self {
+            delay,
+            failure_reason: String::new(),
+        }
+    }
+
+    fn failed(reason: &str) -> Self {
+        Self {
+            delay: -1,
+            failure_reason: reason.to_string(),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -791,7 +814,7 @@ fn test_proxy_delay_request(
     name: &str,
     test_url: &str,
     timeout_ms: u64,
-) -> i64 {
+) -> DelayTestResult {
     let url = format!(
         "http://127.0.0.1:{}/proxies/{}/delay?timeout={}&url={}",
         controller_port,
@@ -799,15 +822,44 @@ fn test_proxy_delay_request(
         timeout_ms,
         url_path_encode(test_url)
     );
-    client
-        .get(url)
-        .bearer_auth(secret)
-        .send()
-        .ok()
-        .and_then(|res| res.error_for_status().ok())
-        .and_then(|res| res.json::<JsonValue>().ok())
-        .and_then(|data| data.get("delay").and_then(|value| value.as_i64()))
-        .unwrap_or(-1)
+    let response = match client.get(url).bearer_auth(secret).send() {
+        Ok(response) => response,
+        Err(err) => {
+            return DelayTestResult::failed(classify_failure_reason(&err.to_string()));
+        }
+    };
+    let status = response.status();
+    if !status.is_success() {
+        let reason = if status.as_u16() == 408 || status.as_u16() == 504 {
+            "timeout"
+        } else if status.as_u16() == 401 || status.as_u16() == 403 {
+            "auth"
+        } else {
+            "network"
+        };
+        return DelayTestResult::failed(reason);
+    }
+    let data = match response.json::<JsonValue>() {
+        Ok(data) => data,
+        Err(err) => {
+            return DelayTestResult::failed(classify_failure_reason(&err.to_string()));
+        }
+    };
+    let delay = data
+        .get("delay")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(-1);
+    if delay >= 0 {
+        DelayTestResult::ok(delay)
+    } else {
+        let reason = data
+            .get("message")
+            .or_else(|| data.get("error"))
+            .and_then(|value| value.as_str())
+            .map(classify_failure_reason)
+            .unwrap_or("timeout");
+        DelayTestResult::failed(reason)
+    }
 }
 
 fn protocol_family(protocol: &str) -> &'static str {
@@ -1132,6 +1184,7 @@ fn update_node_health(
     name: &str,
     protocol: &str,
     delay: i64,
+    failure_reason: &str,
     now: u64,
 ) -> NodeHealth {
     let mut health = previous.cloned().unwrap_or_else(|| NodeHealth {
@@ -1148,6 +1201,7 @@ fn update_node_health(
         cooldown_until: 0,
         status: "unknown".to_string(),
         confidence: "unknown".to_string(),
+        last_failure_reason: String::new(),
         score: i64::MAX / 4,
     });
     let previous_delay = health.last_delay;
@@ -1170,9 +1224,15 @@ fn update_node_health(
         } else {
             0
         };
+        health.last_failure_reason.clear();
     } else {
         health.failure_count = health.failure_count.saturating_add(1);
         health.failure_streak = health.failure_streak.saturating_add(1);
+        health.last_failure_reason = if failure_reason.trim().is_empty() {
+            "timeout".to_string()
+        } else {
+            failure_reason.to_string()
+        };
         health.cooldown_until = if health.failure_streak >= 2 {
             now.saturating_add(180)
         } else {
@@ -1390,44 +1450,94 @@ fn recovery_confidence_rank(confidence: &str) -> usize {
     }
 }
 
+fn delay_failure_reason_rank(reason: &str) -> usize {
+    match reason {
+        "auth" | "config" | "unsupported-protocol" => 0,
+        "controller-unavailable" => 1,
+        "dns" | "tls" => 2,
+        "network" => 3,
+        "timeout" => 4,
+        _ => 5,
+    }
+}
+
+fn merge_delay_failure_reason(current: &mut String, candidate: &str) {
+    let candidate = candidate.trim();
+    if candidate.is_empty() {
+        return;
+    }
+    if current.is_empty()
+        || delay_failure_reason_rank(candidate) < delay_failure_reason_rank(current)
+    {
+        *current = candidate.to_string();
+    }
+}
+
+fn test_proxy_delay_plan(
+    client: &Client,
+    controller_port: u16,
+    secret: &str,
+    name: &str,
+    protocol: &str,
+    depth: DelayProbeDepth,
+) -> DelayTestResult {
+    let mut failure_reason = String::new();
+    for probe in delay_probe_plan(protocol, depth) {
+        let result = test_proxy_delay_request(
+            client,
+            controller_port,
+            secret,
+            name,
+            probe.url,
+            probe.timeout_ms,
+        );
+        if result.delay >= 0 {
+            return result;
+        }
+        merge_delay_failure_reason(&mut failure_reason, &result.failure_reason);
+    }
+    if failure_reason.is_empty() {
+        DelayTestResult::failed("timeout")
+    } else {
+        DelayTestResult::failed(&failure_reason)
+    }
+}
+
 fn test_proxy_delay_with_retry(
     client: &Client,
     controller_port: u16,
     secret: &str,
     name: &str,
     protocol: &str,
-) -> i64 {
-    let fast_delay = delay_probe_plan(protocol, DelayProbeDepth::Fast)
-        .iter()
-        .map(|probe| {
-            test_proxy_delay_request(
-                client,
-                controller_port,
-                secret,
-                name,
-                probe.url,
-                probe.timeout_ms,
-            )
-        })
-        .find(|delay| *delay >= 0)
-        .unwrap_or(-1);
-    if fast_delay >= 0 {
-        return fast_delay;
+) -> DelayTestResult {
+    let fast_result = test_proxy_delay_plan(
+        client,
+        controller_port,
+        secret,
+        name,
+        protocol,
+        DelayProbeDepth::Fast,
+    );
+    if fast_result.delay >= 0 {
+        return fast_result;
     }
-    delay_probe_plan(protocol, DelayProbeDepth::Full)
-        .iter()
-        .map(|probe| {
-            test_proxy_delay_request(
-                client,
-                controller_port,
-                secret,
-                name,
-                probe.url,
-                probe.timeout_ms,
-            )
-        })
-        .find(|delay| *delay >= 0)
-        .unwrap_or(-1)
+    let full_result = test_proxy_delay_plan(
+        client,
+        controller_port,
+        secret,
+        name,
+        protocol,
+        DelayProbeDepth::Full,
+    );
+    if full_result.delay >= 0 {
+        full_result
+    } else if delay_failure_reason_rank(&full_result.failure_reason)
+        < delay_failure_reason_rank(&fast_result.failure_reason)
+    {
+        full_result
+    } else {
+        fast_result
+    }
 }
 
 fn test_proxy_delay_fast(
@@ -1436,21 +1546,15 @@ fn test_proxy_delay_fast(
     secret: &str,
     name: &str,
     protocol: &str,
-) -> i64 {
-    delay_probe_plan(protocol, DelayProbeDepth::Fast)
-        .iter()
-        .map(|probe| {
-            test_proxy_delay_request(
-                client,
-                controller_port,
-                secret,
-                name,
-                probe.url,
-                probe.timeout_ms,
-            )
-        })
-        .find(|delay| *delay >= 0)
-        .unwrap_or(-1)
+) -> DelayTestResult {
+    test_proxy_delay_plan(
+        client,
+        controller_port,
+        secret,
+        name,
+        protocol,
+        DelayProbeDepth::Fast,
+    )
 }
 
 fn b64_decode_text(input: &str) -> Option<String> {
@@ -3519,22 +3623,44 @@ rules:
 
     #[test]
     fn node_health_tracks_success_failure_and_cooldown() {
-        let first = update_node_health(None, "HK 02", "trojan", 48, 100);
+        let first = update_node_health(None, "HK 02", "trojan", 48, "", 100);
         assert_eq!(first.status, "low");
         assert_eq!(first.confidence, "high");
         assert_eq!(first.failure_streak, 0);
         assert!(first.score < 100);
 
-        let failed_once = update_node_health(Some(&first), "HK 02", "trojan", -1, 110);
+        let failed_once = update_node_health(Some(&first), "HK 02", "trojan", -1, "timeout", 110);
         assert_eq!(failed_once.failure_streak, 1);
         assert_eq!(failed_once.status, "unstable");
         assert_eq!(failed_once.confidence, "low");
+        assert_eq!(failed_once.last_failure_reason, "timeout");
 
-        let failed_twice = update_node_health(Some(&failed_once), "HK 02", "trojan", -1, 120);
+        let failed_twice =
+            update_node_health(Some(&failed_once), "HK 02", "trojan", -1, "dns", 120);
         assert_eq!(failed_twice.failure_streak, 2);
         assert!(failed_twice.cooldown_until > 120);
         assert_eq!(failed_twice.status, "cooldown");
         assert_eq!(failed_twice.confidence, "cooldown");
+        assert_eq!(failed_twice.last_failure_reason, "dns");
+    }
+
+    #[test]
+    fn delay_failure_reason_keeps_more_actionable_errors() {
+        let mut reason = String::new();
+        merge_delay_failure_reason(&mut reason, "timeout");
+        assert_eq!(reason, "timeout");
+
+        merge_delay_failure_reason(&mut reason, "network");
+        assert_eq!(reason, "network");
+
+        merge_delay_failure_reason(&mut reason, "dns");
+        assert_eq!(reason, "dns");
+
+        merge_delay_failure_reason(&mut reason, "auth");
+        assert_eq!(reason, "auth");
+
+        merge_delay_failure_reason(&mut reason, "timeout");
+        assert_eq!(reason, "auth");
     }
 
     #[test]
@@ -3755,11 +3881,11 @@ rules:
         let mut health = HashMap::new();
         health.insert(
             "Fast".to_string(),
-            update_node_health(None, "Fast", "trojan", 48, 100),
+            update_node_health(None, "Fast", "trojan", 48, "", 100),
         );
         health.insert(
             "Slow".to_string(),
-            update_node_health(None, "Slow", "ss", 120, 100),
+            update_node_health(None, "Slow", "ss", 120, "", 100),
         );
         let best = speed_recommendation(&targets, &health, 100).expect("best candidate");
         assert_eq!(best.get("proxy").and_then(JsonValue::as_str), Some("Fast"));
@@ -6155,6 +6281,10 @@ impl CoreManager {
                                         "failureStreak".to_string(),
                                         json!(health.failure_streak),
                                     );
+                                    map.insert(
+                                        "lastFailureReason".to_string(),
+                                        json!(health.last_failure_reason),
+                                    );
                                     map.insert("healthScore".to_string(), json!(health.score));
                                     map.insert(
                                         "cooldownUntil".to_string(),
@@ -6501,36 +6631,37 @@ impl CoreManager {
                         let secret = secret.clone();
                         let client = client.clone();
                         handles.push(thread::spawn(move || {
-                            let delay = test_proxy_delay_fast(
+                            let result = test_proxy_delay_fast(
                                 &client,
                                 controller_port,
                                 &secret,
                                 &target.name,
                                 &target.protocol,
                             );
-                            let _ = tx.send((target, delay));
+                            let _ = tx.send((target, result));
                         }));
                     }
                     drop(tx);
-                    for (target, delay) in rx {
+                    for (target, result) in rx {
                         let mut speed = speed_test.lock().unwrap();
                         if !speed.running || speed.run_id != run_id {
                             cleanup_speed_firewall();
                             return;
                         }
                         speed.completed += 1;
-                        if delay > 0 {
+                        if result.delay > 0 {
                             speed.ok += 1;
                         } else {
                             speed.failed += 1;
                         }
-                        speed.delays.insert(target.name.clone(), delay);
+                        speed.delays.insert(target.name.clone(), result.delay);
                         let now = now_secs();
                         let health = update_node_health(
                             speed.health.get(&target.name),
                             &target.name,
                             &target.protocol,
-                            delay,
+                            result.delay,
+                            &result.failure_reason,
                             now,
                         );
                         speed.health.insert(target.name.clone(), health);
@@ -6580,7 +6711,7 @@ impl CoreManager {
             Vec::new()
         };
         self.set_speed_test_firewall_rules(true, &speed_firewall_ports)?;
-        let delay = test_proxy_delay_with_retry(
+        let result = test_proxy_delay_with_retry(
             &client,
             self.settings.controller_port,
             &self.settings.secret,
@@ -6600,10 +6731,11 @@ impl CoreManager {
                 speed.health.get(&target.name),
                 &target.name,
                 &target.protocol,
-                delay,
+                result.delay,
+                &result.failure_reason,
                 now,
             );
-            speed.delays.insert(target.name.clone(), delay);
+            speed.delays.insert(target.name.clone(), result.delay);
             speed.health.insert(target.name.clone(), health.clone());
             speed.low_latency = low_latency_names(&speed.health, now);
             speed.recommended = speed_recommendation(&targets, &speed.health, now);
@@ -6611,16 +6743,26 @@ impl CoreManager {
             health
         };
         self.add_log(
-            format!("Single node delay tested: {} = {} ms", target.name, delay),
-            if delay > 0 { "info" } else { "warn" },
+            format!(
+                "Single node delay tested: {} = {} ms{}",
+                target.name,
+                result.delay,
+                if result.delay > 0 {
+                    String::new()
+                } else {
+                    format!(" ({})", result.failure_reason)
+                }
+            ),
+            if result.delay > 0 { "info" } else { "warn" },
         );
         Ok(json!({
-            "ok": delay > 0,
+            "ok": result.delay > 0,
             "group": target.group_name,
             "proxy": target.select_name,
             "realProxyName": target.name,
             "protocol": target.protocol,
-            "delay": delay,
+            "delay": result.delay,
+            "failureReason": health.last_failure_reason,
             "medianDelay": health.median_delay,
             "jitter": health.jitter,
             "healthStatus": health.status,
@@ -6784,13 +6926,14 @@ impl CoreManager {
                     continue;
                 }
                 tested += 1;
-                let delay = test_proxy_delay_with_retry(
+                let result = test_proxy_delay_with_retry(
                     &client,
                     self.settings.controller_port,
                     &self.settings.secret,
                     name,
                     protocol,
                 );
+                let delay = result.delay;
                 if delay > 0 && delay <= max_delay {
                     results.push((group_name.clone(), name.to_string(), delay));
                 }

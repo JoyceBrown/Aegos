@@ -123,6 +123,19 @@ check(
 );
 
 check(
+  'failed speed tests keep a visible structured reason',
+  mainRs.includes('last_failure_reason') &&
+    mainRs.includes('lastFailureReason') &&
+    mainRs.includes('DelayTestResult') &&
+    mainRs.includes('classify_failure_reason(&err.to_string())') &&
+    appJs.includes('function speedFailureReasonLabel') &&
+    appJs.includes('return \'超时\'') &&
+    appJs.includes('nodeDelayText(row)') &&
+    appJs.includes('speedFailureReasonLabel(row?.[18])'),
+  'tested failed nodes must show timeout/DNS/TLS/auth/etc. instead of reverting to untested'
+);
+
+check(
   'advanced protocols have explicit adaptive scheduling',
   mainRs.includes('protocol_family("hysteria2")') &&
     mainRs.includes('protocol_concurrency("tuic")') &&

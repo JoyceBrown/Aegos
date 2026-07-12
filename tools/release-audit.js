@@ -67,6 +67,7 @@ const capabilitiesJson = readText('src-tauri/capabilities/default.json');
 const interactionSmoke = readText('tools/interaction-smoke.js');
 const perfSmoke = readText('tools/perf-smoke.js');
 const soakSmoke = readText('tools/soak-smoke.js');
+const speedAudit = readText('tools/speed-closure-audit.js');
 const uiText = `${indexHtml}\n${appJs}`;
 const pageStyleBlock = stylesCss.match(/\.page\s*\{([\s\S]*?)\n\}/)?.[1] || '';
 const statusBody = mainRs.match(/fn status\(&mut self\) -> JsonValue \{([\s\S]*?)\n    \}/)?.[1] || '';
@@ -125,6 +126,7 @@ check('node-level diagnostics are linked from failed node tests', mainRs.include
 check('soak smoke covers failed node diagnostics', soakSmoke.includes("command === 'node_diagnostics'") && soakSmoke.includes('failed single node test did not capture node diagnostics') && soakSmoke.includes("command === 'test_single_proxy_delay'"), 'soak node diagnostics coverage');
 const speedPollMs = Number(appJs.match(/const speedTestPollMs = (\d+);/)?.[1] || 0);
 check('speed tests stream completed nodes quickly', mainRs.includes('mpsc::channel') && mainRs.includes('speed_test_phases') && mainRs.includes('Arc::new(client)') && mainRs.includes('speed.recommended = speed_recommendation') && speedPollMs > 0 && speedPollMs <= 300, `incremental speed test results; poll=${speedPollMs}ms`);
+check('failed speed tests show structured reasons', mainRs.includes('last_failure_reason') && mainRs.includes('lastFailureReason') && mainRs.includes('DelayTestResult') && appJs.includes('function speedFailureReasonLabel') && appJs.includes('nodeDelayText(row)') && appJs.includes("return '超时'") && speedAudit.includes('failed speed tests keep a visible structured reason'), 'timeout/DNS/TLS/auth labels');
 check('speed test polling streams shared results to home and nodes', appJs.includes('async function refreshVisibleNodesForSpeed') && appJs.includes('function applySpeedStatusToNodes') && appJs.includes("target: 'all'") && appJs.includes('applySpeedStatusToNodes(status)') && appJs.includes('await refreshVisibleNodesForSpeed(true)') && interactionSmoke.includes('node page did not receive quick home speed results') && interactionSmoke.includes('home page did not receive node batch speed results'), 'shared home/nodes speed refresh');
 check('speed tests use protocol-aware adaptive scheduling', mainRs.includes('fn protocol_concurrency') && mainRs.includes('fn speed_test_phases') && mainRs.includes('protocol_primary_timeout_ms') && mainRs.includes('"tuic" => 8') && mainRs.includes('collect_proxy_targets'), 'protocol-aware speed path');
 check('Reality/Hysteria2/TUIC scheduler coverage exists', mainRs.includes('text.contains("reality")') && mainRs.includes('protocol_scheduler_handles_reality_hysteria2_and_tuic_explicitly') && mainRs.includes('protocol_concurrency("hysteria2")') && mainRs.includes('protocol_concurrency("tuic")'), 'advanced protocol scheduler tests');
