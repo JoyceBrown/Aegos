@@ -38,12 +38,13 @@ check(
 );
 
 check(
-  'UI never leaves landing IP stuck on querying after failure',
+  'UI never leaves landing IP stuck or disguised as valid after failure',
   refreshUiBody.includes("setOutboundIpText('\\u67e5\\u8be2\\u4e2d')") &&
     refreshUiBody.includes('outboundIpPendingSeq = 0') &&
-    refreshUiBody.includes("outboundIpLastStable && outboundIpLastStable !== '\\u67e5\\u8be2\\u4e2d'") &&
-    refreshUiBody.includes("setOutboundIpText(outboundIpLastStable"),
-  'failed current lookup falls back to last stable value or dash'
+    refreshUiBody.includes("outboundIpLastStable = '-'") &&
+    refreshUiBody.includes("setOutboundIpText('\\u67e5\\u8be2\\u5931\\u8d25'") &&
+    refreshUiBody.includes('lastBackgroundJobError'),
+  'failed current lookup shows a visible failure state instead of a stale IP'
 );
 
 check(

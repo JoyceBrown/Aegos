@@ -1723,10 +1723,12 @@ function warmStaticPageCaches() {
   }
 }
 
-function setOutboundIpText(value) {
+function setOutboundIpText(value, title = '') {
   const text = value || '-';
   $('#outboundIpState').textContent = text;
   $('#outboundMetric').textContent = text;
+  $('#outboundIpState').setAttribute('title', title || text);
+  $('#outboundMetric').setAttribute('title', title || text);
 }
 
 function renderOutboundIpFromStatus(value) {
@@ -2244,7 +2246,8 @@ async function refreshOutboundIpAfterNodeChange(options = {}) {
   if (seq !== outboundIpRequestSeq) return null;
   if (!result) {
     outboundIpPendingSeq = 0;
-    setOutboundIpText(outboundIpLastStable && outboundIpLastStable !== '\u67e5\u8be2\u4e2d' ? outboundIpLastStable : '-');
+    outboundIpLastStable = '-';
+    setOutboundIpText('\u67e5\u8be2\u5931\u8d25', lastBackgroundJobError || '\u65e0\u6cd5\u83b7\u53d6\u843d\u5730 IP');
   }
   return result;
 }

@@ -68,6 +68,7 @@ check('product maturity audit script exists', exists('tools/product-maturity-aud
 check('connection closure audit script exists', exists('tools/connection-closure-audit.js') && pkg.scripts?.['audit:connection-closure'] === 'node tools/connection-closure-audit.js', 'tools/connection-closure-audit.js');
 check('node speed product audit script exists', exists('tools/node-speed-product-audit.js') && pkg.scripts?.['audit:node-speed-product'] === 'node tools/node-speed-product-audit.js', 'tools/node-speed-product-audit.js');
 check('subscription product audit script exists', exists('tools/subscription-product-audit.js') && pkg.scripts?.['audit:subscription-product'] === 'node tools/subscription-product-audit.js', 'tools/subscription-product-audit.js');
+check('home product audit script exists', exists('tools/home-product-audit.js') && pkg.scripts?.['audit:home-product'] === 'node tools/home-product-audit.js', 'tools/home-product-audit.js');
 check('routing read-only audit script exists', exists('tools/routing-readonly-audit.js') && pkg.scripts?.['audit:routing-readonly'] === 'node tools/routing-readonly-audit.js', 'tools/routing-readonly-audit.js');
 check('routing navigation audit script exists', exists('tools/routing-navigation-audit.js') && pkg.scripts?.['audit:routing-navigation'] === 'node tools/routing-navigation-audit.js', 'tools/routing-navigation-audit.js');
 check('routing mode audit script exists', exists('tools/routing-mode-audit.js') && pkg.scripts?.['audit:routing-mode'] === 'node tools/routing-mode-audit.js', 'tools/routing-mode-audit.js');
