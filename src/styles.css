@@ -1512,6 +1512,27 @@ h1 {
   margin-bottom: 6px;
 }
 
+.node-profile-switch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 14px;
+  color: #30415e;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .78);
+  box-shadow: 0 9px 22px rgba(65, 91, 125, .08);
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.node-profile-switch:hover {
+  color: var(--blue);
+  background: #fff;
+  box-shadow: 0 10px 24px rgba(54, 140, 255, .13);
+}
+
 .tabs {
   display: flex;
   gap: 10px;
@@ -1606,6 +1627,7 @@ h1 {
   color: #30415e;
   border-radius: 12px;
   cursor: pointer;
+  transition: background-color .18s ease, box-shadow .18s ease, opacity .18s ease;
 }
 
 .row:not(.head):hover, .row.selected {
@@ -1755,6 +1777,17 @@ h1 {
 .row-actions button:hover {
   color: var(--blue);
   box-shadow: 0 8px 18px rgba(54, 140, 255, .14);
+}
+
+#homeNodeRows,
+#nodeRows {
+  transition: opacity .18s ease, filter .18s ease;
+}
+
+#homeNodeRows.node-list-transitioning,
+#nodeRows.node-list-transitioning {
+  opacity: .64;
+  filter: saturate(.92);
 }
 
 @media (max-height: 760px) {

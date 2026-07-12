@@ -130,23 +130,28 @@ check(
     mainRs.includes('protocol_scheduler_handles_reality_hysteria2_and_tuic_explicitly') &&
     mainRs.includes('"tuic" => 8') &&
     mainRs.includes('"hysteria" | "wireguard" => 10') &&
+    mainRs.includes('FLCLASH_STYLE_SPEED_BATCH_SIZE: usize = 100') &&
     mainRs.includes('text.contains("reality")'),
   'TUIC/Reality/Hysteria2 have tested scheduler branches'
 );
 
 check(
-  'speed probes align with FlClash delay-test defaults',
+  'batch speed probes align with FlClash delay-test defaults',
   mainRs.includes('fn delay_probe_plan') &&
     mainRs.includes('enum DelayProbeDepth') &&
     mainRs.includes('DelayProbeDepth::Fast') &&
     mainRs.includes('DelayProbeDepth::Full') &&
     mainRs.includes('fn protocol_fast_timeout_ms') &&
+    mainRs.includes('const FLCLASH_STYLE_TEST_URL') &&
+    mainRs.includes('https://www.gstatic.com/generate_204') &&
+    mainRs.includes('assert_eq!(fast_tuic_probes.len(), 1)') &&
+    mainRs.includes('assert_eq!(fast_tuic_probes[0].timeout_ms, 5000)') &&
     mainRs.includes('"https://www.gstatic.com/generate_204"') &&
     mainRs.includes('assert!(tuic_probes.iter().all(|probe| probe.timeout_ms == 5000))') &&
     mainRs.includes('"https://cp.cloudflare.com/generate_204"') &&
     mainRs.includes('set_yaml(&mut config, "unified-delay", YamlValue::Bool(true))') &&
     mainRs.includes('set_yaml(&mut config, "tcp-concurrent", YamlValue::Bool(true))'),
-  'fast probe accelerates good nodes while full probe preserves the FlClash measurement baseline'
+  'batch uses FlClash-style single URL; full probe is kept for single-node diagnostics'
 );
 
 check(

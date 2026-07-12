@@ -499,6 +499,9 @@ try {
     if (/测速中|測速中/.test(currentNodeButton?.textContent || '')) throw new Error('current node icon refresh button rendered busy text');
     if (!currentNodeButton?.classList.contains('is-pending')) throw new Error('current node icon refresh button did not show pending state');
     if (Math.abs((currentNodeButton?.getBoundingClientRect().width || 0) - currentNodeButtonWidth) > 1) throw new Error('current node icon refresh button changed width while pending');
+    await navDown('[data-page="settings"]');
+    if (!document.querySelector('[data-page-panel="settings"]')?.classList.contains('active')) throw new Error('single node speed test blocked sidebar page switching');
+    await navDown('[data-page="nodes"]');
     await new Promise((resolve) => setTimeout(resolve, 520));
     const switchCallsAfterCurrentNodeTest = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     if (!window.__aegosCalls.some((item) => item.command === 'test_single_proxy_delay')) throw new Error('current node delay refresh did not call single-node speed test');
@@ -557,6 +560,16 @@ try {
       const hkRowsAfterSelect = [...document.querySelectorAll('#homeNodeRows .row[data-node]')].map((row) => row.dataset.node);
       if (hkRowsAfterSelect.join('\\n') !== hkRows.join('\\n')) throw new Error('home node row order changed after selection');
     }
+    await navDown('[data-page="nodes"]');
+    document.querySelector('#nodeProfileBtn')?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    if (document.querySelector('#profileMenu')?.classList.contains('hidden')) throw new Error('node page subscription button did not open the shared menu');
+    const nodeProfileMenuBox = document.querySelector('#profileMenu')?.getBoundingClientRect();
+    const nodeProfileMenuTop = nodeProfileMenuBox ? document.elementFromPoint(nodeProfileMenuBox.left + nodeProfileMenuBox.width / 2, nodeProfileMenuBox.top + Math.min(28, nodeProfileMenuBox.height / 2)) : null;
+    if (!nodeProfileMenuTop?.closest('#profileMenu')) throw new Error('node page subscription menu was covered by another layer');
+    document.querySelector('#nodeProfileBtn')?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    if (!document.querySelector('#profileMenu')?.classList.contains('hidden')) throw new Error('node page subscription button did not close the shared menu');
     await click('[data-region="HK"]');
     await click('#modeBtn');
     document.querySelector('[data-mode-option="global"]').click();

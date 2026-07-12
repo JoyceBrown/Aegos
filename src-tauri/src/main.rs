@@ -29,6 +29,8 @@ const AEGOS_DEFAULT_MIXED_PORT: u16 = 7891;
 const AEGOS_DEFAULT_CONTROLLER_PORT: u16 = 19091;
 const RESERVED_MIXED_PORTS: &[u16] = &[7890];
 const AEGOS_OUTBOUND_IP_GROUP: &str = "Aegos Landing IP";
+const FLCLASH_STYLE_TEST_URL: &str = "https://www.gstatic.com/generate_204";
+const FLCLASH_STYLE_SPEED_BATCH_SIZE: usize = 100;
 const SPEED_RESULT_HIGH_CONFIDENCE_SECS: u64 = 600;
 const SPEED_RESULT_MEDIUM_CONFIDENCE_SECS: u64 = 1800;
 const OUTBOUND_IP_RULE_DOMAINS: &[&str] = &[
@@ -854,35 +856,17 @@ fn protocol_primary_timeout_ms(protocol: &str) -> u64 {
 
 fn protocol_fast_timeout_ms(protocol: &str) -> u64 {
     match protocol_family(protocol) {
-        "tuic" | "hysteria" | "wireguard" => 2800,
-        "anytls" => 2600,
-        "reality" => 2400,
-        "ss-obfs" => 2800,
-        "vmess" | "trojan" | "ss" => 2200,
-        _ => 2600,
+        "tuic" | "hysteria" | "wireguard" | "anytls" => 5000,
+        "reality" | "vmess" | "trojan" | "ss" | "ss-obfs" => 5000,
+        _ => 5000,
     }
 }
 
 fn delay_probe_plan(protocol: &str, depth: DelayProbeDepth) -> Vec<DelayProbe> {
     if matches!(depth, DelayProbeDepth::Fast) {
         let timeout_ms = protocol_fast_timeout_ms(protocol);
-        if matches!(
-            protocol_family(protocol),
-            "tuic" | "hysteria" | "wireguard" | "anytls" | "ss-obfs"
-        ) {
-            return vec![
-                DelayProbe {
-                    url: "http://www.gstatic.com/generate_204",
-                    timeout_ms,
-                },
-                DelayProbe {
-                    url: "http://cp.cloudflare.com/generate_204",
-                    timeout_ms,
-                },
-            ];
-        }
         return vec![DelayProbe {
-            url: "http://www.gstatic.com/generate_204",
+            url: FLCLASH_STYLE_TEST_URL,
             timeout_ms,
         }];
     }
@@ -1237,31 +1221,25 @@ fn speed_test_phases(
         let score = current.map(|item| item.score).unwrap_or(800);
         (cooldown, family_rank, score)
     });
-    let (slow, fast): (Vec<_>, Vec<_>) = ordered.into_iter().partition(|target| {
-        let family = protocol_family(&target.protocol);
-        let cooldown = health
-            .get(&target.name)
-            .map(|item| item.cooldown_until > now)
-            .unwrap_or(false);
-        cooldown || matches!(family, "tuic" | "hysteria" | "wireguard" | "ss-obfs")
-    });
-    let first_count = fast.len().min(16);
-    let first = fast.iter().take(first_count).cloned().collect::<Vec<_>>();
-    let rest = fast.into_iter().skip(first_count).collect::<Vec<_>>();
+    let first_count = ordered.len().min(24);
+    let first = ordered
+        .iter()
+        .take(first_count)
+        .cloned()
+        .collect::<Vec<_>>();
+    let rest = ordered.into_iter().skip(first_count).collect::<Vec<_>>();
     let mut phases = Vec::new();
     if !first.is_empty() {
-        phases.push((first, 16usize));
+        phases.push((first, 24usize));
     }
     if !rest.is_empty() {
-        phases.push((rest, 32usize));
-    }
-    if !slow.is_empty() {
-        let chunk_size = slow
+        let chunk_size = rest
             .iter()
             .map(|target| protocol_concurrency(&target.protocol))
-            .min()
-            .unwrap_or(8);
-        phases.push((slow, chunk_size));
+            .max()
+            .unwrap_or(FLCLASH_STYLE_SPEED_BATCH_SIZE)
+            .max(FLCLASH_STYLE_SPEED_BATCH_SIZE);
+        phases.push((rest, chunk_size));
     }
     phases
 }
@@ -3638,7 +3616,7 @@ rules:
         let phases = speed_test_phases(targets, &HashMap::new(), 1);
         assert_eq!(phases.first().unwrap().0[0].name, "Trojan");
         assert!(phases
-            .last()
+            .first()
             .unwrap()
             .0
             .iter()
@@ -3662,21 +3640,17 @@ rules:
         assert_eq!(protocol_primary_timeout_ms("anytls"), 5000);
         assert_eq!(protocol_primary_timeout_ms("tuic"), 5000);
         let fast_tuic_probes = delay_probe_plan("tuic", DelayProbeDepth::Fast);
-        assert_eq!(fast_tuic_probes.len(), 2);
+        assert_eq!(fast_tuic_probes.len(), 1);
         assert_eq!(
             fast_tuic_probes[0].url,
-            "http://www.gstatic.com/generate_204"
+            "https://www.gstatic.com/generate_204"
         );
-        assert_eq!(
-            fast_tuic_probes[1].url,
-            "http://cp.cloudflare.com/generate_204"
-        );
-        assert_eq!(fast_tuic_probes[0].timeout_ms, 2800);
+        assert_eq!(fast_tuic_probes[0].timeout_ms, 5000);
         let fast_anytls_probes = delay_probe_plan("anytls", DelayProbeDepth::Fast);
-        assert_eq!(fast_anytls_probes.len(), 2);
+        assert_eq!(fast_anytls_probes.len(), 1);
         assert_eq!(
             fast_anytls_probes[0].url,
-            "http://www.gstatic.com/generate_204"
+            "https://www.gstatic.com/generate_204"
         );
         let tuic_probes = delay_probe_plan("tuic", DelayProbeDepth::Full);
         assert_eq!(tuic_probes[0].url, "http://www.gstatic.com/generate_204");
@@ -3685,13 +3659,13 @@ rules:
             .any(|probe| probe.url == "https://cp.cloudflare.com/generate_204"));
         assert!(tuic_probes.iter().all(|probe| probe.timeout_ms == 5000));
         let trojan_fast_probes = delay_probe_plan("trojan", DelayProbeDepth::Fast);
-        assert_eq!(trojan_fast_probes[0].timeout_ms, 2200);
+        assert_eq!(trojan_fast_probes[0].timeout_ms, 5000);
         let ss_obfs_fast_probes = delay_probe_plan("ss-obfs", DelayProbeDepth::Fast);
         assert_eq!(
             ss_obfs_fast_probes[0].url,
-            "http://www.gstatic.com/generate_204"
+            "https://www.gstatic.com/generate_204"
         );
-        assert_eq!(ss_obfs_fast_probes[0].timeout_ms, 2800);
+        assert_eq!(ss_obfs_fast_probes[0].timeout_ms, 5000);
 
         let targets = vec![
             SpeedTestTarget {
@@ -3721,16 +3695,14 @@ rules:
         ];
         let phases = speed_test_phases(targets, &HashMap::new(), 1);
         assert_eq!(phases.first().unwrap().0[0].name, "Reality");
-        let slow_names = phases
-            .last()
-            .unwrap()
-            .0
+        let phase_names = phases
             .iter()
+            .flat_map(|phase| phase.0.iter())
             .map(|item| item.name.as_str())
             .collect::<Vec<_>>();
-        assert!(slow_names.contains(&"Hysteria2"));
-        assert!(slow_names.contains(&"TUIC"));
-        assert!(slow_names.contains(&"SS Obfs"));
+        assert!(phase_names.contains(&"Hysteria2"));
+        assert!(phase_names.contains(&"TUIC"));
+        assert!(phase_names.contains(&"SS Obfs"));
     }
 
     #[test]
@@ -6451,10 +6423,7 @@ impl CoreManager {
                 completed: 0,
                 ok: 0,
                 failed: 0,
-                delays: targets
-                    .iter()
-                    .map(|target| (target.name.clone(), 0))
-                    .collect(),
+                delays: HashMap::new(),
                 health: previous_health,
                 low_latency: Vec::new(),
                 recommended: None,

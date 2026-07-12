@@ -34,10 +34,13 @@ let speedTestTimer = null;
 let speedTestStarting = false;
 let activeSpeedRunId = 0;
 let profilePreviewSeq = 0;
+let profileMenuAnchor = null;
+let nodeTransitionTimer = null;
 const speedTestButtons = new Set();
 let lastSpeedNodeRefreshAt = 0;
 let latestSpeedStatus = null;
 let lastAppliedSpeedSignature = '';
+let latestRecommendedName = '';
 let outboundIpRequestSeq = 0;
 let outboundIpPendingSeq = 0;
 let outboundIpLastStable = '-';
@@ -127,7 +130,7 @@ function $all(selector) {
 const defaultAppVersion = ($('#appVersionLabel')?.textContent || 'v0.0.0').replace(/^v/i, '').trim() || '0.0.0';
 const defaultMixedPort = 7891;
 const defaultControllerPort = 19091;
-const speedTestPollMs = 300;
+const speedTestPollMs = 180;
 const speedTestNodeRefreshMs = 1200;
 const logRenderLimit = 80;
 const nodeRenderLimit = 36;
@@ -145,6 +148,7 @@ const pageCacheTtlMs = {
 const navButtons = new Map($all('.nav button').map((button) => [button.dataset.page, button]));
 const pagePanels = new Map($all('.page').map((panel) => [panel.dataset.pagePanel, panel]));
 let nodeRowStaticCache = new Map();
+let nodeItemIndex = new Map();
 let renderedPage = '';
 let renderedHomeRegionFilter = null;
 let renderedHomeNodeMode = null;
@@ -250,6 +254,21 @@ function replaceChildrenSafe(target, children = []) {
   target.replaceChildren(...children.filter(Boolean));
 }
 
+function rebuildNodeItemIndex(items = []) {
+  nodeItemIndex = new Map();
+  items.forEach((item, index) => {
+    const name = item?.name || '';
+    const realName = item?.realProxyName || '';
+    if (name) nodeItemIndex.set(name, index);
+    if (realName) nodeItemIndex.set(realName, index);
+  });
+}
+
+function setLatestGroup(group) {
+  latestGroup = group || null;
+  rebuildNodeItemIndex(latestGroup?.items || []);
+}
+
 function formatClock() {
   const total = latestStatus?.trafficTakeover ? Math.floor((Date.now() - startedAt) / 1000) : 0;
   const h = String(Math.floor(total / 3600)).padStart(2, '0');
@@ -348,16 +367,14 @@ function queueNodeRefresh(target = activeNodeRenderTarget(), delay = 0) {
 }
 
 async function refreshVisibleNodesForSpeed(finalRefresh = false) {
+  let changed = false;
   if (latestSpeedStatus) {
-    applySpeedStatusToNodes(latestSpeedStatus);
+    changed = applySpeedStatusToNodes(latestSpeedStatus);
   }
   const now = Date.now();
   if (!finalRefresh && now - lastSpeedNodeRefreshAt < speedTestNodeRefreshMs) return;
   lastSpeedNodeRefreshAt = now;
-  try {
-    if (finalRefresh && !nodeBusy) await refreshNodes(true, { target: 'all' });
-  } catch {}
-  if (finalRefresh) queueNodeRefresh('all', 180);
+  if (finalRefresh && changed) queueNodeRefresh('all', 900);
 }
 
 function isSpeedTestActive() {
@@ -373,6 +390,8 @@ function applySpeedStatusToNodes(status = {}, options = {}) {
   if (!latestGroup?.items?.length || !status) return false;
   const delays = status.delays || {};
   const health = status.health || {};
+  const delayKeys = Object.keys(delays);
+  const healthKeys = Object.keys(health);
   const recommendedName = status.recommended?.realProxyName || status.recommended?.proxy || status.recommended?.name || '';
   const signature = [
     status.running ? '1' : '0',
@@ -380,43 +399,59 @@ function applySpeedStatusToNodes(status = {}, options = {}) {
     status.ok || 0,
     status.failed || 0,
     status.updatedAt || 0,
-    Object.keys(delays).length
+    delayKeys.length,
+    healthKeys.length,
+    recommendedName
   ].join(':');
   if (!options.force && signature === lastAppliedSpeedSignature) return false;
   lastAppliedSpeedSignature = signature;
+  if (!delayKeys.length && !healthKeys.length && !recommendedName) return false;
 
   let changed = false;
-  latestGroup = {
-    ...latestGroup,
-    items: latestGroup.items.map((item) => {
-      const name = item.realProxyName || item.name;
-      const itemHealth = health[name] || health[item.name] || {};
-      const hasDelay = Object.prototype.hasOwnProperty.call(delays, name)
-        || Object.prototype.hasOwnProperty.call(delays, item.name);
-      const rawDelay = hasDelay ? (delays[name] ?? delays[item.name]) : speedHealthValue(itemHealth, 'lastDelay', 'last_delay');
-      if (rawDelay == null && !Object.keys(itemHealth).length && !recommendedName) return item;
-      const nextDelay = rawDelay != null ? Number(rawDelay) : Number(item.delay ?? -1);
-      const lastTestedAt = Number(speedHealthValue(itemHealth, 'lastTestedAt', 'last_tested_at') ?? item.lastTestedAt ?? 0);
-      const next = {
-        ...item,
-        delay: nextDelay,
-        alive: nextDelay >= 0 || item.alive !== false,
-        healthStatus: speedHealthValue(itemHealth, 'status') || (nextDelay === 0 ? 'testing' : nextDelay > 0 && nextDelay < 100 ? 'low' : nextDelay > 0 ? 'available' : item.healthStatus),
-        healthConfidence: speedHealthValue(itemHealth, 'confidence') || item.healthConfidence || (nextDelay === 0 ? 'testing' : nextDelay > 0 ? 'medium' : item.healthConfidence),
-        medianDelay: Number(speedHealthValue(itemHealth, 'medianDelay', 'median_delay') ?? item.medianDelay ?? nextDelay),
-        jitter: Number(speedHealthValue(itemHealth, 'jitter') ?? item.jitter ?? 0),
-        healthScore: Number(speedHealthValue(itemHealth, 'score') ?? item.healthScore ?? (nextDelay > 0 ? nextDelay : 999999)),
-        failureStreak: Number(speedHealthValue(itemHealth, 'failureStreak', 'failure_streak') ?? item.failureStreak ?? 0),
-        lastTestedAt,
-        recommended: recommendedName ? recommendedName === name || recommendedName === item.name : Boolean(item.recommended)
-      };
-      changed = changed || next.delay !== item.delay
-        || next.healthStatus !== item.healthStatus
-        || next.healthConfidence !== item.healthConfidence
-        || next.recommended !== item.recommended;
-      return next;
-    })
-  };
+  const items = latestGroup.items;
+  let nextItems = items;
+  const touched = new Set([...delayKeys, ...healthKeys]);
+  if (recommendedName) touched.add(recommendedName);
+  if (latestRecommendedName) touched.add(latestRecommendedName);
+
+  touched.forEach((key) => {
+    const index = nodeItemIndex.get(key);
+    if (index == null || !items[index]) return;
+    const item = items[index];
+    const name = item.realProxyName || item.name;
+    const itemHealth = health[name] || health[item.name] || health[key] || {};
+    const hasDelay = Object.prototype.hasOwnProperty.call(delays, name)
+      || Object.prototype.hasOwnProperty.call(delays, item.name)
+      || Object.prototype.hasOwnProperty.call(delays, key);
+    const rawDelay = hasDelay ? (delays[name] ?? delays[item.name] ?? delays[key]) : speedHealthValue(itemHealth, 'lastDelay', 'last_delay');
+    const isRecommended = recommendedName ? recommendedName === name || recommendedName === item.name : Boolean(item.recommended);
+    if (rawDelay == null && !Object.keys(itemHealth).length && isRecommended === Boolean(item.recommended)) return;
+    const nextDelay = rawDelay != null ? Number(rawDelay) : Number(item.delay ?? -1);
+    const lastTestedAt = Number(speedHealthValue(itemHealth, 'lastTestedAt', 'last_tested_at') ?? item.lastTestedAt ?? 0);
+    const next = {
+      ...item,
+      delay: nextDelay,
+      alive: nextDelay >= 0 || item.alive !== false,
+      healthStatus: speedHealthValue(itemHealth, 'status') || (nextDelay === 0 ? 'testing' : nextDelay > 0 && nextDelay < 100 ? 'low' : nextDelay > 0 ? 'available' : item.healthStatus),
+      healthConfidence: speedHealthValue(itemHealth, 'confidence') || item.healthConfidence || (nextDelay === 0 ? 'testing' : nextDelay > 0 ? 'medium' : item.healthConfidence),
+      medianDelay: Number(speedHealthValue(itemHealth, 'medianDelay', 'median_delay') ?? item.medianDelay ?? nextDelay),
+      jitter: Number(speedHealthValue(itemHealth, 'jitter') ?? item.jitter ?? 0),
+      healthScore: Number(speedHealthValue(itemHealth, 'score') ?? item.healthScore ?? (nextDelay > 0 ? nextDelay : 999999)),
+      failureStreak: Number(speedHealthValue(itemHealth, 'failureStreak', 'failure_streak') ?? item.failureStreak ?? 0),
+      lastTestedAt,
+      recommended: isRecommended
+    };
+    const itemChanged = next.delay !== item.delay
+      || next.healthStatus !== item.healthStatus
+      || next.healthConfidence !== item.healthConfidence
+      || next.recommended !== item.recommended;
+    if (!itemChanged) return;
+    if (nextItems === items) nextItems = items.slice();
+    nextItems[index] = next;
+    changed = true;
+  });
+  if (recommendedName) latestRecommendedName = recommendedName;
+  if (changed) setLatestGroup({ ...latestGroup, items: nextItems });
   if (changed || options.force) {
     scheduleRowsRender(latestGroup.items, { force: true, target: 'all', delay: 0 });
     renderHomeNodeSummary(summaryRowsFromLatestGroup());
@@ -1062,7 +1097,7 @@ function snapshotUiState() {
 function restoreUiState(snapshot) {
   profilePreviewSeq += 1;
   latestStatus = cloneUiValue(snapshot.latestStatus);
-  latestGroup = cloneUiValue(snapshot.latestGroup);
+  setLatestGroup(cloneUiValue(snapshot.latestGroup));
   selectedNode = snapshot.selectedNode || '';
   uiStore.set(snapshot.uiState || {
     page: uiStore.state.page,
@@ -1195,21 +1230,45 @@ function schedulePageLoad(page) {
 let rowRenderFrame = null;
 let pendingRowItems = null;
 let pendingRowTarget = null;
+let pendingRowTransition = false;
 const rowRenderSettleMs = 320;
+
+function setNodeListTransition(active) {
+  ['#homeNodeRows', '#nodeRows'].forEach((selector) => {
+    const element = $(selector);
+    if (element) element.classList.toggle('node-list-transitioning', Boolean(active));
+  });
+}
+
+function beginNodeListTransition() {
+  if (nodeTransitionTimer) clearTimeout(nodeTransitionTimer);
+  setNodeListTransition(true);
+}
+
+function finishNodeListTransition() {
+  if (nodeTransitionTimer) clearTimeout(nodeTransitionTimer);
+  nodeTransitionTimer = setTimeout(() => {
+    setNodeListTransition(false);
+    nodeTransitionTimer = null;
+  }, 90);
+}
 
 function scheduleRowsRender(items = latestGroup?.items || [], options = {}) {
   pendingRowItems = items;
   const nextTarget = options.target || 'all';
   pendingRowTarget = pendingRowTarget && pendingRowTarget !== nextTarget ? 'all' : nextTarget;
+  pendingRowTransition = Boolean(pendingRowTransition || options.transition);
   if (!options.force && !isNodeSurfaceActive()) return;
   if (rowRenderFrame) clearTimeout(rowRenderFrame);
   const run = () => {
     rowRenderFrame = null;
     const nextItems = pendingRowItems || [];
     const target = pendingRowTarget || 'all';
+    const transition = pendingRowTransition;
     pendingRowItems = null;
     pendingRowTarget = null;
-    renderRows(nextItems, { target });
+    pendingRowTransition = false;
+    renderRows(nextItems, { target, transition });
   };
   rowRenderFrame = setTimeout(run, options.delay ?? rowRenderSettleMs);
 }
@@ -1286,6 +1345,7 @@ function renderRows(items = [], options = {}) {
     ? [activeRow, ...stabilityRows.filter((row) => row !== activeRow)]
     : stabilityRows;
   renderHomeNodeSummary(summaryRows);
+  if (options.transition) finishNodeListTransition();
 }
 
 function updateSelectedNodeDom(name) {
@@ -1385,7 +1445,7 @@ function renderQuickProfileMenu(options = {}) {
 
 function positionQuickProfileMenu() {
   const menu = $('#profileMenu');
-  const button = $('#quickProfileBtn');
+  const button = profileMenuAnchor || $('#quickProfileBtn') || $('#nodeProfileBtn');
   if (!menu || !button || menu.classList.contains('hidden')) return;
   const buttonBox = button.getBoundingClientRect();
   const menuWidth = Math.min(320, Math.max(240, window.innerWidth - 28));
@@ -1580,7 +1640,7 @@ function applyOptimisticNode(name) {
     nodeUsageCounts.set(name, Number(nodeUsageCounts.get(name) || 0) + 1);
     saveNodeUsageCounts();
   }
-  if (latestGroup) latestGroup = { ...latestGroup, now: name };
+  if (latestGroup) setLatestGroup({ ...latestGroup, now: name });
   updateSelectedNodeDom(name);
 }
 
@@ -1608,7 +1668,7 @@ function updateNodeDelayDom(name, delay) {
 
 function applyOptimisticNodeDelay(name, delay) {
   if (!latestGroup?.items) return;
-  latestGroup = {
+  setLatestGroup({
     ...latestGroup,
     items: latestGroup.items.map((item) => {
       if (item.name !== name && item.realProxyName !== name) return item;
@@ -1621,7 +1681,7 @@ function applyOptimisticNodeDelay(name, delay) {
         healthStatus: nextDelay === 0 ? 'testing' : nextDelay > 0 && nextDelay < 100 ? 'low' : nextDelay >= 100 ? 'available' : item.healthStatus
       };
     })
-  };
+  });
   updateNodeDelayDom(name, delay);
 }
 
@@ -1839,11 +1899,11 @@ async function refreshNodes(force = false, options = {}) {
   nodeBusy = true;
   try {
     const groups = await invoke('proxy_groups');
-    latestGroup = Array.isArray(groups) ? (groups.find((group) => group.name === 'GLOBAL') || groups[0]) : null;
+    setLatestGroup(Array.isArray(groups) ? (groups.find((group) => group.name === 'GLOBAL') || groups[0]) : null);
     selectedNode = latestGroup?.now || selectedNode;
     scheduleRowsRender(latestGroup?.items || [], { force, target: options.target || 'all' });
   } catch {
-    latestGroup = null;
+    setLatestGroup(null);
     if (isNodeSurfaceActive()) renderRows();
     else pendingRowItems = [];
   } finally {
@@ -1859,14 +1919,21 @@ async function previewProfileNodes(profileId) {
     if (previewSeq !== profilePreviewSeq || !stillActive) return;
     const group = Array.isArray(groups) ? (groups.find((item) => item.name === 'GLOBAL') || groups[0]) : null;
     if (!group || !Array.isArray(group.items) || !group.items.length) return;
-    latestGroup = group;
+    setLatestGroup(group);
     selectedNode = group.now || '';
     pendingRowItems = group.items;
-    scheduleRowsRender(group.items, { force: true, target: 'all', delay: 0 });
+    scheduleRowsRender(group.items, { force: true, target: 'all', delay: 40, transition: true });
     renderHomeNodeSummary(summaryRowsFromLatestGroup());
   } catch {
     // Preview is an opportunistic UI fast path; the verified refresh still follows the real profile switch.
   }
+}
+
+async function initializeAppData() {
+  await refreshStatus(true);
+  const activeProfileId = latestStatus?.settings?.activeProfileId;
+  if (activeProfileId) void previewProfileNodes(activeProfileId);
+  await refreshNodes(true);
 }
 
 function stopSpeedTestPolling() {
@@ -1885,13 +1952,12 @@ function resetSpeedUiForProfileSwitch() {
   lastAppliedSpeedSignature = '';
   lastSpeedNodeRefreshAt = 0;
   selectedNode = '';
-  latestGroup = latestGroup ? { ...latestGroup, now: '', items: [] } : null;
+  beginNodeListTransition();
   if (rowRenderFrame) clearTimeout(rowRenderFrame);
   rowRenderFrame = null;
-  pendingRowItems = [];
+  pendingRowItems = latestGroup?.items || [];
   pendingRowTarget = null;
-  renderRows([]);
-  renderHomeNodeSummary([]);
+  pendingRowTransition = false;
 }
 
 async function pollSpeedTest() {
@@ -1930,9 +1996,7 @@ async function testNodes(button = null) {
     activeSpeedRunId = Number(status.runId || 0);
     applySpeedStatusToNodes(status, { force: true });
     lastSpeedNodeRefreshAt = 0;
-    refreshNodes(true, { target: 'all' }).then(() => {
-      if (latestSpeedStatus) applySpeedStatusToNodes(latestSpeedStatus, { force: true });
-    }).catch(() => {});
+    if (!latestGroup?.items?.length) queueNodeRefresh('all', 0);
     setNotice(`\u6d4b\u901f\u5df2\u5728\u540e\u53f0\u5f00\u59cb\uff1a0/${status.total || 0}`);
     speedTestTimer = setInterval(pollSpeedTest, speedTestPollMs);
     await pollSpeedTest();
@@ -2174,16 +2238,18 @@ function toggleModeMenu() {
   $('#modeMenu').classList.toggle('hidden');
 }
 
-function toggleProfileMenu() {
+function toggleProfileMenu(anchor = $('#quickProfileBtn')) {
   const menu = $('#profileMenu');
   if (!menu) return;
   if (menu.classList.contains('hidden')) {
+    profileMenuAnchor = anchor || $('#quickProfileBtn') || $('#nodeProfileBtn');
     $('#modeMenu')?.classList.add('hidden');
     renderQuickProfileMenu({ force: true });
     menu.classList.remove('hidden');
     positionQuickProfileMenu();
   } else {
     menu.classList.add('hidden');
+    profileMenuAnchor = null;
   }
 }
 
@@ -2256,10 +2322,10 @@ async function testSingleNode(name, button) {
   if (!name) return;
   applyOptimisticNodeDelay(name, 0);
   try {
-    await runButtonAction(button, '\u6d4b\u901f\u4e2d...', async () => {
+    await runLocalButtonAction(button, '\u6d4b\u901f\u4e2d...', async () => {
       const result = await invoke('test_single_proxy_delay', { name });
       applyOptimisticNodeDelay(name, Number(result?.delay ?? -1));
-      await refreshNodes(true);
+      queueNodeRefresh(activeNodeRenderTarget(), 0);
       const delay = Number(result?.delay ?? -1);
       if (delay > 0) {
         setNotice(`\u8282\u70b9\u6d4b\u901f\u5b8c\u6210\uff1a${name} / ${Math.round(delay)} ms`);
@@ -2348,12 +2414,12 @@ async function saveNodeEditor(event) {
       const originalName = payload.originalName || savedNode.name;
       const items = latestGroup.items || [];
       const replaced = items.some((item) => item.name === originalName || item.name === savedNode.name);
-      latestGroup = {
+      setLatestGroup({
         ...latestGroup,
         items: replaced
           ? items.map((item) => (item.name === originalName || item.name === savedNode.name ? { ...item, ...savedNode } : item))
           : [...items, savedNode]
-      };
+      });
       renderRows(latestGroup.items);
     }
     closeNodeEditor();
@@ -2642,12 +2708,23 @@ $('#quickProfileBtn')?.addEventListener('pointerdown', (event) => {
   if (event.button !== 0) return;
   event.preventDefault();
   event.stopPropagation();
-  toggleProfileMenu();
+  toggleProfileMenu(event.currentTarget);
 });
 $('#quickProfileBtn')?.addEventListener('click', (event) => {
   event.preventDefault();
   event.stopPropagation();
-  if (event.detail === 0) toggleProfileMenu();
+  if (event.detail === 0) toggleProfileMenu(event.currentTarget);
+});
+$('#nodeProfileBtn')?.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  toggleProfileMenu(event.currentTarget);
+});
+$('#nodeProfileBtn')?.addEventListener('click', (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.detail === 0) toggleProfileMenu(event.currentTarget);
 });
 $('#quickRestartBtn').onclick = (event) => runButtonAction(event.currentTarget, '重启中...', restartCoreJob);
 $('#lockAutoGroupBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '锁定中...', lockAutoGroupJob));
@@ -2863,8 +2940,9 @@ document.body.addEventListener('click', async (event) => {
     if (!event.target.closest('.mode-box')) {
       $('#modeMenu')?.classList.add('hidden');
     }
-    if (!event.target.closest('#profileMenu') && !event.target.closest('#quickProfileBtn')) {
+    if (!event.target.closest('#profileMenu') && !event.target.closest('#quickProfileBtn') && !event.target.closest('#nodeProfileBtn')) {
       $('#profileMenu')?.classList.add('hidden');
+      profileMenuAnchor = null;
     }
     const cancelJobId = event.target.closest('[data-job-cancel]')?.dataset.jobCancel;
     if (cancelJobId) {
@@ -2895,6 +2973,7 @@ document.body.addEventListener('click', async (event) => {
     const profileTarget = profileSwitch || (event.target.closest('.card-actions') ? '' : profileRow);
     if (profileTarget) {
       $('#profileMenu')?.classList.add('hidden');
+      profileMenuAnchor = null;
       await runOptimisticAction({
         apply: () => applyOptimisticProfile(profileTarget),
         commit: () => setActiveProfileJob(profileTarget),
@@ -2982,8 +3061,10 @@ renderJobCenter();
 renderRows();
 wireWindowControls();
 startUiFreezeWatchdog();
-refreshStatus(true);
-refreshNodes();
+initializeAppData().catch(() => {
+  refreshStatus(true);
+  refreshNodes();
+});
 tick();
 setInterval(tick, 1000);
 setInterval(() => syncJobCenter(false), 2500);
