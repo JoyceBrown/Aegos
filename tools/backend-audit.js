@@ -92,6 +92,18 @@ check(
   'proxy server domains must not resolve through 127.0.0.1:1053 or 198.18/198.19 fake-ip DNS'
 );
 check(
+  'runtime outbound interface avoids nested virtual adapter routing',
+  mainRs.includes('fn detect_windows_primary_interface_name') &&
+    mainRs.includes('fn apply_runtime_interface_binding_name') &&
+    mainRs.includes('"interface-name"') &&
+    mainRs.includes('flclash|clash|mihomo|aegos|tun|tap|wintun') &&
+    mainRs.includes('Get-NetRoute -DestinationPrefix') &&
+    mainRs.includes('Get-NetAdapter -InterfaceIndex') &&
+    mainRs.includes('outbound interface') &&
+    mainRs.includes('runtime_interface_binding_sets_mihomo_interface_name'),
+  'Aegos mihomo outbound must bind to a real adapter instead of nesting into FlClash/Wintun/TUN routes'
+);
+check(
   'airport metadata pseudo nodes are removed before runtime and speed tests',
   mainRs.includes('fn is_subscription_metadata_node_name') &&
     mainRs.includes('fn sanitize_subscription_metadata_nodes') &&
@@ -276,10 +288,11 @@ check(
 
 check(
   'profile switch validates, hot-reloads, and rolls back on failure',
-  mainRs.includes('fn preflight_profile_file') &&
+    mainRs.includes('fn preflight_profile_file') &&
     mainRs.includes('fn hot_reload_profile') &&
     mainRs.includes('fn patch_profile_file') &&
-    mainRs.includes('atomic_write_text_confined(&runtime_path, &self.home_dir, &rendered.yaml)') &&
+    mainRs.includes('fn launch_runtime_yaml') &&
+    mainRs.includes('atomic_write_text_confined(&runtime_path, &self.home_dir, &runtime_yaml)') &&
     mainRs.includes('proxy_group_name_set') &&
     mainRs.includes('/configs?force=true') &&
     mainRs.includes('Profile hot reload failed; falling back to restart') &&

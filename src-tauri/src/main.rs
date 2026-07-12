@@ -14,7 +14,7 @@ use std::{
     net::{IpAddr, TcpListener, UdpSocket},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{mpsc, Arc, Mutex},
+    sync::{mpsc, Arc, Mutex, OnceLock},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -3875,6 +3875,30 @@ rules:
     }
 
     #[test]
+    fn runtime_interface_binding_sets_mihomo_interface_name() {
+        let mut config: YamlValue = serde_yaml::from_str(
+            r#"
+mixed-port: 7891
+proxies: []
+proxy-groups: []
+rules:
+  - MATCH,DIRECT
+"#,
+        )
+        .expect("yaml");
+        assert!(apply_runtime_interface_binding_name(
+            &mut config,
+            "Ethernet 2"
+        ));
+        assert_eq!(
+            config
+                .get(yaml_key("interface-name"))
+                .and_then(|value| value.as_str()),
+            Some("Ethernet 2")
+        );
+    }
+
+    #[test]
     fn outbound_ip_lookup_rules_use_internal_current_node_group() {
         let mut settings = default_settings();
         settings
@@ -4665,6 +4689,62 @@ if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
     .unwrap_or(false)
 }
 
+#[cfg(windows)]
+fn detect_windows_primary_interface_name() -> Option<String> {
+    static INTERFACE_NAME: OnceLock<String> = OnceLock::new();
+    if let Some(name) = INTERFACE_NAME.get() {
+        return Some(name.clone());
+    }
+    let detected = run_powershell(
+        r#"
+$deny = '(?i)(flclash|clash|mihomo|aegos|tun|tap|wintun|wireguard|loopback|virtual|vmware|hyper-v|tailscale|zerotier|docker)'
+$routes = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
+  Sort-Object RouteMetric, InterfaceMetric
+foreach ($route in $routes) {
+  $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue
+  if (-not $adapter) { continue }
+  $text = "$($adapter.Name) $($adapter.InterfaceDescription)"
+  if ($adapter.Status -ne 'Up') { continue }
+  if ($text -match $deny) { continue }
+  if ($adapter.Name) { $adapter.Name; exit 0 }
+}
+foreach ($route in $routes) {
+  $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue
+  if ($adapter -and $adapter.Status -eq 'Up' -and $adapter.Name) { $adapter.Name; exit 0 }
+}
+"#,
+    )
+    .ok()
+    .and_then(|output| {
+        output
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(|line| line.to_string())
+    });
+    if let Some(name) = detected.as_ref() {
+        let _ = INTERFACE_NAME.set(name.clone());
+    }
+    detected
+}
+
+#[cfg(not(windows))]
+fn detect_windows_primary_interface_name() -> Option<String> {
+    None
+}
+
+fn apply_runtime_interface_binding_name(config: &mut YamlValue, interface_name: &str) -> bool {
+    let name = interface_name.trim();
+    if name.is_empty() {
+        return false;
+    }
+    if let Some(map) = config.as_mapping_mut() {
+        set_yaml(map, "interface-name", yaml_str(name));
+        return true;
+    }
+    false
+}
+
 fn is_private_lan_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(value) => {
@@ -5334,19 +5414,34 @@ impl CoreManager {
         })
     }
 
+    fn launch_runtime_yaml(
+        &self,
+        rendered: &RenderedProfile,
+    ) -> Result<(String, String, Option<String>), String> {
+        let mut config: YamlValue = serde_yaml::from_str(&rendered.yaml)
+            .map_err(|err| format!("runtime YAML reparse failed: {err}"))?;
+        let outbound_interface = detect_windows_primary_interface_name()
+            .filter(|name| apply_runtime_interface_binding_name(&mut config, name));
+        let yaml = serde_yaml::to_string(&config).map_err(|err| err.to_string())?;
+        let digest = sha256_text(&yaml);
+        Ok((yaml, digest, outbound_interface))
+    }
+
     fn patch_profile_file(&mut self, profile: &Profile) -> Result<String, String> {
         let path = PathBuf::from(&profile.path);
         let rendered = self.render_runtime_profile(profile)?;
+        let (runtime_yaml, runtime_digest, outbound_interface) =
+            self.launch_runtime_yaml(&rendered)?;
         let current_digest = sha256_file(&path);
         if current_digest != rendered.digest {
             atomic_write_text_confined(&path, &self.profile_dir, &rendered.yaml)?;
         }
         ensure_dir(&self.home_dir)?;
         let runtime_path = self.runtime_profile_path();
-        atomic_write_text_confined(&runtime_path, &self.home_dir, &rendered.yaml)?;
+        atomic_write_text_confined(&runtime_path, &self.home_dir, &runtime_yaml)?;
         self.add_log(
             format!(
-                "Config preflight passed: {} proxies, {} groups, digest {}{}",
+                "Config preflight passed: {} proxies, {} groups, digest {}{}{}",
                 rendered
                     .report
                     .get("proxies")
@@ -5357,16 +5452,20 @@ impl CoreManager {
                     .get("proxyGroups")
                     .and_then(|value| value.as_u64())
                     .unwrap_or(0),
-                &rendered.digest[..12.min(rendered.digest.len())],
+                &runtime_digest[..12.min(runtime_digest.len())],
                 if current_digest == rendered.digest {
                     " (unchanged)"
                 } else {
                     ""
-                }
+                },
+                outbound_interface
+                    .as_ref()
+                    .map(|name| format!(", outbound interface {name}"))
+                    .unwrap_or_else(|| ", outbound interface auto".to_string())
             ),
             "info",
         );
-        Ok(rendered.digest)
+        Ok(runtime_digest)
     }
 
     fn speed_test_firewall_ports(&self) -> Vec<u16> {
@@ -5586,12 +5685,14 @@ impl CoreManager {
         }
         let settings = self.standby_settings();
         let rendered = self.render_runtime_profile_with_settings(profile, &settings)?;
+        let (runtime_yaml, runtime_digest, outbound_interface) =
+            self.launch_runtime_yaml(&rendered)?;
         ensure_dir(&self.home_dir)?;
         let runtime_path = self.runtime_profile_path();
-        atomic_write_text_confined(&runtime_path, &self.home_dir, &rendered.yaml)?;
+        atomic_write_text_confined(&runtime_path, &self.home_dir, &runtime_yaml)?;
         self.add_log(
             format!(
-                "Standby config preflight passed: {} proxies, {} groups, digest {}",
+                "Standby config preflight passed: {} proxies, {} groups, digest {}{}",
                 rendered
                     .report
                     .get("proxies")
@@ -5602,11 +5703,15 @@ impl CoreManager {
                     .get("proxyGroups")
                     .and_then(|value| value.as_u64())
                     .unwrap_or(0),
-                &rendered.digest[..12.min(rendered.digest.len())]
+                &runtime_digest[..12.min(runtime_digest.len())],
+                outbound_interface
+                    .as_ref()
+                    .map(|name| format!(", outbound interface {name}"))
+                    .unwrap_or_else(|| ", outbound interface auto".to_string())
             ),
             "info",
         );
-        Ok(rendered.digest)
+        Ok(runtime_digest)
     }
 
     fn apply_takeover_after_core_ready(&mut self, enable_takeover: bool) {

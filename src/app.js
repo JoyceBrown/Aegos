@@ -816,14 +816,13 @@ function renderHomeNodeSummary(rows = []) {
   if (notice) notice.classList.toggle('hidden', !autoGroup);
 }
 
-function renderNodeRow(row, stabilityRows = []) {
+function renderNodeRow(row) {
   const [region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak, favorite] = row;
   const delayValue = Number(delay);
   const delayText = nodeDelayText(row);
   const delayState = delayClass(delayValue);
   const address = nodeAddressInfo(row);
   const note = nodeSpeedNoteInfo(row);
-  const stability = stabilityInfo(row, stabilityRows);
   const title = el('strong', {}, [
     el('span', { className: 'node-badge', textContent: region }),
     text(name)
@@ -845,19 +844,17 @@ function renderNodeRow(row, stabilityRows = []) {
     el('span', { className: 'node-address', textContent: address.label, attrs: { title: address.title } }),
     el('span', { className: `node-delay ${delayState}`, textContent: delayText }),
     el('span', { className: note.className, textContent: note.label, attrs: { title: note.title } }),
-    el('span', { className: `confidence-pill ${stability.className}`, textContent: stability.label }),
     actions
   ]);
 }
 
-function renderHomeNodeRow(row, stabilityRows = []) {
+function renderHomeNodeRow(row) {
   const [region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak, favorite] = row;
   const delayValue = Number(delay);
   const delayText = nodeDelayText(row);
   const delayState = delayClass(delayValue);
   const address = nodeAddressInfo(row);
   const note = nodeSpeedNoteInfo(row);
-  const stability = stabilityInfo(row, stabilityRows);
   const title = el('strong', {}, [
     el('span', { className: 'node-badge', textContent: region }),
     text(name)
@@ -873,8 +870,7 @@ function renderHomeNodeRow(row, stabilityRows = []) {
     title,
     el('span', { className: 'node-address', textContent: address.label, attrs: { title: address.title } }),
     el('span', { className: `node-delay ${delayState}`, textContent: delayText }),
-    el('span', { className: note.className, textContent: note.label, attrs: { title: note.title } }),
-    el('span', { className: `confidence-pill ${stability.className}`, textContent: stability.label })
+    el('span', { className: note.className, textContent: note.label, attrs: { title: note.title } })
   ]);
 }
 
@@ -1407,7 +1403,7 @@ function renderRows(items = [], options = {}) {
   if (activeRow?.[1]) $('#nodeName').textContent = activeRow[1];
 
   if (shouldRenderNodeRows) {
-    const nodeChildren = nodeRows.map((row) => renderNodeRow(row, stabilityRows));
+    const nodeChildren = nodeRows.map((row) => renderNodeRow(row));
     if (matchingNodeCount > nodeRows.length) {
       nodeChildren.push(emptyState(`\u5df2\u663e\u793a\u524d ${nodeRows.length} \u4e2a\u8282\u70b9\uff0c\u8bf7\u641c\u7d22\u6216\u7b5b\u9009\u7f29\u5c0f\u8303\u56f4\u3002`));
     }
@@ -1425,7 +1421,7 @@ function renderRows(items = [], options = {}) {
   if (shouldRenderHomeRows) {
     const homeChildren = (sortedHomeRows.length ? sortedHomeRows : homeFallbackRows)
       .slice(0, homeNodeRenderLimit)
-      .map((row) => renderHomeNodeRow(row, stabilityRows));
+      .map((row) => renderHomeNodeRow(row));
     replaceChildrenSafe($('#homeNodeRows'), homeChildren.length ? homeChildren : [emptyState(homeEmptyText)]);
   }
   const summaryRows = activeRow
@@ -1750,15 +1746,6 @@ function updateNodeDelayDom(name, delay, failureReason = '') {
       noteCell.className = note.className;
       noteCell.textContent = note.label;
       noteCell.setAttribute('title', note.title);
-    }
-    const stabilityCell = row.querySelector('.confidence-pill');
-    if (stabilityCell) {
-      stabilityCell.className = value === 0 ? 'confidence-pill confidence-muted' : stabilityCell.className;
-      if (value === 0) stabilityCell.textContent = '\u6d4b\u901f\u4e2d';
-      if (value < 0) {
-        stabilityCell.className = 'confidence-pill confidence-bad';
-        stabilityCell.textContent = speedFailureReasonLabel(failureReason);
-      }
     }
   });
   renderHomeNodeSummary(summaryRowsFromLatestGroup());

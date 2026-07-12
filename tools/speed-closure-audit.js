@@ -170,6 +170,15 @@ check(
     mainRs.includes('runtime_dns_is_isolated_from_local_fake_ip_resolvers'),
   'proxy server domain lookup must use direct upstream resolvers, not 127.0.0.1:1053 or fake-ip DNS'
 );
+check(
+  'runtime outbound avoids FlClash virtual adapter route nesting',
+  mainRs.includes('fn detect_windows_primary_interface_name') &&
+    mainRs.includes('fn apply_runtime_interface_binding_name') &&
+    mainRs.includes('"interface-name"') &&
+    mainRs.includes('flclash|clash|mihomo|aegos|tun|tap|wintun') &&
+    mainRs.includes('runtime_interface_binding_sets_mihomo_interface_name'),
+  'SS/TUIC/AnyTLS/Trojan delay probes must leave through the physical default adapter when another client TUN is enabled'
+);
 
 check(
   'advanced protocols have explicit adaptive scheduling',
