@@ -424,7 +424,9 @@ function applySpeedStatusToNodes(status = {}, options = {}) {
   const healthKeys = Object.keys(health);
   const recommendedName = status.recommended?.realProxyName || status.recommended?.proxy || status.recommended?.name || '';
   const signature = [
+    status.resultSignature || '',
     status.running ? '1' : '0',
+    status.runId || 0,
     status.completed || 0,
     status.ok || 0,
     status.failed || 0,
@@ -670,6 +672,8 @@ function speedFailureReasonLabel(reason = '') {
   if (!key) return '测速失败';
   if (key.includes('fake-ip') || key.includes('fake ip')) return 'DNS 污染';
   if (key.includes('protection') || key.includes('firewall') || key.includes('kill')) return '保护拦截';
+  if (key.includes('blocked')) return '被拦截';
+  if (key.includes('unreachable')) return '不可达';
   if (key.includes('node-not-found')) return '节点缺失';
   if (key.includes('node-connect')) return '节点不通';
   if (key.includes('controller-delay')) return '核心测速失败';
@@ -2532,7 +2536,9 @@ async function waitForSingleNodeDelay(name, runId, timeoutMs = 12000) {
     if (finished) return lastResult;
     await sleep(speedTestPollMs);
   }
-  return { ...lastResult, delay: -1, reason: lastResult.reason || 'timeout' };
+  const timeoutResult = { ...lastResult, delay: -1, reason: lastResult.reason || 'timeout' };
+  applyOptimisticNodeDelay(name, -1, timeoutResult.reason);
+  return timeoutResult;
 }
 
 async function testSingleNode(name, button) {

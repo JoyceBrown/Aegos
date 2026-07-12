@@ -169,11 +169,13 @@ fn classify_failure_reason(reason: &str) -> &'static str {
         || text.contains("kill switch")
     {
         "protection-blocked"
+    } else if text.contains("blocked") || text.contains("reject") || text.contains("denied by rule") {
+        "blocked"
     } else if text.contains("no route to host")
         || text.contains("network unreachable")
         || text.contains("host unreachable")
     {
-        "node-connect"
+        "unreachable"
     } else if text.contains("timeout") || text.contains("timed out") || text.contains("i/o timeout")
     {
         "timeout"
@@ -449,6 +451,7 @@ fn speed_test_snapshot_from_state(speed_test: &Arc<Mutex<SpeedTestState>>) -> Js
         "error": speed.error,
         "delays": speed.delays,
         "health": speed.health,
+        "resultSignature": speed_result_signature(&speed),
         "confidence": speed_confidence_summary(&speed, now),
         "lowLatency": speed.low_latency,
         "recommended": speed.recommended
@@ -2068,8 +2071,8 @@ fn delay_failure_reason_rank(reason: &str) -> usize {
     match reason {
         "auth" | "config" | "unsupported-protocol" => 0,
         "controller-unavailable" => 1,
-        "dns" | "tls" => 2,
-        "network" => 3,
+        "dns" | "tls" | "blocked" => 2,
+        "network" | "unreachable" | "node-connect" => 3,
         "timeout" => 4,
         _ => 5,
     }
@@ -3767,6 +3770,37 @@ fn query_outbound_ip(mixed_port: u16) -> Result<String, String> {
     } else {
         Err(format!("无法获取落地 IP: {last_error}"))
     }
+}
+
+fn speed_result_signature(speed: &SpeedTestState) -> String {
+    let mut parts = speed
+        .health
+        .iter()
+        .map(|(name, item)| {
+            format!(
+                "{}:{}:{}:{}:{}:{}",
+                name,
+                item.last_delay,
+                item.last_failure_reason,
+                item.last_tested_at,
+                item.failure_streak,
+                item.confidence
+            )
+        })
+        .collect::<Vec<_>>();
+    for (name, delay) in &speed.delays {
+        parts.push(format!("{name}:{delay}"));
+    }
+    parts.sort();
+    format!(
+        "{}:{}:{}:{}:{}:{}",
+        speed.run_id,
+        speed.running,
+        speed.completed,
+        speed.ok,
+        speed.failed,
+        parts.join("|")
+    )
 }
 
 fn query_outbound_ip_family(mixed_port: u16, family: &str) -> Result<String, String> {
