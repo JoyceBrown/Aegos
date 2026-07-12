@@ -4263,6 +4263,37 @@ rules:
     }
 
     #[test]
+    fn speed_targets_skip_proxy_group_references() {
+        let groups = json!([
+            {
+                "name": "GLOBAL",
+                "type": "Selector",
+                "items": [
+                    { "name": "HK", "type": "Group", "group": true, "realProxyName": "HK 01" },
+                    { "name": "JP", "type": "Group", "group": true, "realProxyName": "JP 01" },
+                    { "name": "HK 01", "type": "ss", "server": "hk.example.com" },
+                    { "name": "JP 01", "type": "ss", "server": "jp.example.com" }
+                ]
+            },
+            {
+                "name": "HK",
+                "type": "Selector",
+                "items": [{ "name": "HK 01", "type": "ss", "server": "hk.example.com" }]
+            }
+        ]);
+
+        let targets = CoreManager::collect_proxy_targets(&groups);
+        let names = targets
+            .iter()
+            .map(|target| target.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(!names.contains(&"HK"));
+        assert!(!names.contains(&"JP"));
+        assert!(names.contains(&"HK 01"));
+        assert!(names.contains(&"JP 01"));
+    }
+
+    #[test]
     fn node_switch_preflight_validates_group_and_proxy() {
         let groups = json!([
             {
@@ -5080,6 +5111,22 @@ fn resolve_group_leaf(
         return name.to_string();
     }
     resolve_group_leaf(groups, selected_map, &selected, depth + 1)
+}
+
+fn is_proxy_group_reference_item(item: &JsonValue) -> bool {
+    item.get("group")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false)
+        || item
+            .get("isGroup")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false)
+        || item
+            .get("type")
+            .or_else(|| item.get("protocol"))
+            .and_then(JsonValue::as_str)
+            .map(|value| value.eq_ignore_ascii_case("group"))
+            .unwrap_or(false)
 }
 
 fn validate_proxy_selection_from_groups(
@@ -6897,6 +6944,9 @@ impl CoreManager {
                     })
                     .flat_map(|(group_name, items)| {
                         items.iter().filter_map(move |item| {
+                            if is_proxy_group_reference_item(item) {
+                                return None;
+                            }
                             let select_name = item.get("name").and_then(|value| value.as_str())?;
                             let name = item
                                 .get("realProxyName")

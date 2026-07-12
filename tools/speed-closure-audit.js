@@ -167,6 +167,14 @@ check(
 );
 
 check(
+  'speed-test targets exclude proxy-group references',
+  mainRs.includes('fn is_proxy_group_reference_item') &&
+    mainRs.includes('if is_proxy_group_reference_item(item)') &&
+    mainRs.includes('speed_targets_skip_proxy_group_references'),
+  'HK/JP/SG/TW/US strategy group references must not be measured as ordinary proxy nodes'
+);
+
+check(
   'runtime DNS avoids FlClash local fake-ip resolver contamination',
   mainRs.includes('fn harden_runtime_dns') &&
     mainRs.includes('const AEGOS_DNS_LISTEN: &str = "127.0.0.1:1054"') &&

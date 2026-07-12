@@ -538,6 +538,11 @@ function normalizeNodeItemCached(item = {}, index = 0) {
   ];
 }
 
+function isProxyGroupReferenceItem(item = {}) {
+  const type = String(item.type || item.protocol || '').toLowerCase();
+  return Boolean(item.group || item.isGroup || type === 'group');
+}
+
 function isFixedNodeItem(item = {}) {
   const text = `${item.name || ''} ${item.server || ''} ${item.source || ''} ${item.profileType || ''} ${item.type || ''}`.toLowerCase();
   return Boolean(item.manual || item.fixed || item.static || item.residential || /固定|住宅|静态|自建|manual|fixed|static|residential/.test(text));
@@ -1375,6 +1380,7 @@ function renderRows(items = [], options = {}) {
 
   for (let index = 0; index < sourceItems.length; index += 1) {
     const item = sourceItems[index];
+    if (isProxyGroupReferenceItem(item)) continue;
     const row = normalizeNodeItemCached(item, index);
     if (Number(row[3]) > 0) stabilityRows.push(row);
     rememberBestRow(bestRows, row);
