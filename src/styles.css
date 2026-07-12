@@ -765,6 +765,10 @@ h1 {
   color: #d94343;
 }
 
+.status-card dd.is-danger {
+  color: #d94343;
+}
+
 #stabilityMetric,
 .metric-grid strong.metric-stability-high,
 .metric-grid strong.metric-stability-medium,

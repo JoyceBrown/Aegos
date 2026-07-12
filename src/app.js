@@ -1739,7 +1739,9 @@ function renderStatus(status) {
   const traffic = status.traffic || {};
   const coreReady = Boolean(status.coreReady ?? status.running);
   const trafficTakeover = Boolean(status.trafficTakeover || settings.proxyTakeover?.active);
-  const systemProxyApplied = trafficTakeover && Boolean(settings.systemProxy);
+  const connection = status.connection || {};
+  const systemProxyApplied = Boolean(connection.systemProxyApplied ?? (trafficTakeover && Boolean(settings.systemProxy)));
+  const systemProxyWanted = Boolean(connection.systemProxyWanted ?? settings.systemProxy);
   if (trafficTakeover && !wasTakeover) startedAt = Date.now();
   if (!trafficTakeover) startedAt = Date.now();
   const modeText = modeLabel(status.mode);
@@ -1759,8 +1761,9 @@ function renderStatus(status) {
   $('#tunState').textContent = settings.tunEnabled ? '已开启' : '未开启';
   $('#killState').textContent = settings.killSwitchEnabled ? '已开启' : '未开启';
   $('#quickKillBtn')?.classList.toggle('active', Boolean(settings.killSwitchEnabled));
-  $('#proxyState').textContent = systemProxyApplied ? '已开启' : settings.systemProxy ? '待连接' : '未开启';
-  $('#proxyStateRow').classList.toggle('hidden', !settings.systemProxy);
+  $('#proxyState').textContent = systemProxyApplied ? '已开启' : systemProxyWanted ? '待连接' : '未开启';
+  $('#proxyState').classList.toggle('is-danger', !systemProxyApplied);
+  $('#proxyStateRow').classList.remove('hidden');
   $('#protocolState').textContent = currentProtocol;
   $('#protocolMetric').textContent = currentProtocol;
   $('#tunHomeToggle').checked = Boolean(settings.tunEnabled);
@@ -1769,7 +1772,7 @@ function renderStatus(status) {
   $('#proxyPortState').textContent = formatProxyPort(status.network?.proxyEndpoint);
   renderOutboundIpFromStatus(status.network?.outboundIp || '-');
   $('#proxyMetric').textContent = formatProxyPort(status.network?.proxyEndpoint);
-  $('#systemProxyMetric').textContent = systemProxyApplied ? '已开启' : settings.systemProxy ? '待连接' : '未开启';
+  $('#systemProxyMetric').textContent = systemProxyApplied ? '已开启' : systemProxyWanted ? '待连接' : '未开启';
   $('#systemProxyMetric').classList.toggle('is-danger', !systemProxyApplied);
 
   const up = formatRate(traffic.up);

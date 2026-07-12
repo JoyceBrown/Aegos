@@ -7154,6 +7154,7 @@ impl CoreManager {
             },
             "speedTest": self.speed_test_snapshot(),
             "settings": self.public_settings(),
+            "connection": self.connection_status_summary(),
             "protection": self.protection_status(),
             "logs": self.recent_logs(120)
         })
@@ -7177,25 +7178,72 @@ impl CoreManager {
         }
     }
 
+    fn connection_phase(&self) -> (&'static str, &'static str, &'static str) {
+        if self.process.is_none() {
+            return ("disconnected", "Disconnected", "Connect");
+        }
+        if !self.traffic_takeover {
+            return ("standby", "Core standby", "Connect");
+        }
+        if self.settings.tun_enabled {
+            return ("connected-tun", "Connected by TUN", "Disconnect");
+        }
+        if self.settings.system_proxy {
+            return (
+                "connected-system-proxy",
+                "Connected by system proxy",
+                "Disconnect",
+            );
+        }
+        (
+            "connected-core",
+            "Core running without system takeover",
+            "Enable system proxy or TUN",
+        )
+    }
+
+    fn connection_status_summary(&self) -> JsonValue {
+        let (phase, label, next_action) = self.connection_phase();
+        let system_proxy_applied = self.traffic_takeover && self.settings.system_proxy;
+        json!({
+            "phase": phase,
+            "label": label,
+            "nextAction": next_action,
+            "coreRunning": self.process.is_some(),
+            "trafficTakeover": self.traffic_takeover,
+            "systemProxyWanted": self.settings.system_proxy,
+            "systemProxyApplied": system_proxy_applied,
+            "tunEnabled": self.settings.tun_enabled,
+            "takeoverComplete": self.traffic_takeover && (self.settings.tun_enabled || system_proxy_applied || !self.settings.system_proxy)
+        })
+    }
+
     fn connection_closure(&self) -> JsonValue {
         let groups = self.proxy_groups();
         let current_node = self
             .current_outbound_ip_proxy_name(&groups)
             .unwrap_or_else(|| "-".to_string());
         let outbound_ip = self.cached_outbound_ip();
-        json!({
-            "coreRunning": self.process.is_some(),
-            "trafficTakeover": self.traffic_takeover,
-            "systemProxyWanted": self.settings.system_proxy,
-            "systemProxyApplied": self.traffic_takeover && self.settings.system_proxy,
-            "tunEnabled": self.settings.tun_enabled,
-            "mode": self.settings.mode,
-            "activeProfileId": self.settings.active_profile_id,
-            "currentNode": current_node,
-            "outboundIp": outbound_ip,
-            "outboundIpKnown": outbound_ip != "-",
-            "checkedAt": now_secs()
-        })
+        let mut summary = self.connection_status_summary();
+        if let Some(map) = summary.as_object_mut() {
+            map.insert("mode".to_string(), json!(self.settings.mode));
+            map.insert(
+                "activeProfileId".to_string(),
+                json!(self.settings.active_profile_id),
+            );
+            map.insert("currentNode".to_string(), json!(current_node));
+            map.insert("outboundIp".to_string(), json!(outbound_ip));
+            map.insert(
+                "outboundIpKnown".to_string(),
+                json!(map
+                    .get("outboundIp")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value != "-")
+                    .unwrap_or(false)),
+            );
+            map.insert("checkedAt".to_string(), json!(now_secs()));
+        }
+        summary
     }
 
     fn public_settings(&self) -> JsonValue {
