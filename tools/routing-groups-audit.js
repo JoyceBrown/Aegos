@@ -36,7 +36,7 @@ const renderBody = renderStart >= 0
   ? appJs.slice(renderStart, renderEnd > renderStart ? renderEnd : undefined)
   : '';
 
-check('package version is 3.1.3 for routing group separation checkpoint', pkg.version === '3.1.3', pkg.version);
+check('package version remains within the 3.1 routing group lane', /^3\.1\.\d+$/.test(pkg.version), pkg.version);
 check('routing page labels strategy groups as separate from nodes', indexHtml.includes('aria-label="策略组列表，不是普通节点列表"') && indexHtml.includes('<span>不是节点</span>'), 'routing group table copy');
 check('routing snapshot groups come from proxy groups, not ordinary node rows', routingBody.includes('core.proxy_groups()') && routingBody.includes('"itemCount"') && routingBody.includes('"automatic"'), 'proxy_groups snapshot');
 check('routing group renderer only renders group rows in routing table', renderBody.includes('const groups = Array.isArray(data.groups)') && renderBody.includes("replaceChildrenSafe($('#routingGroupRows')") && !renderBody.includes("replaceChildrenSafe($('#nodeRows')"), 'routingGroupRows only');

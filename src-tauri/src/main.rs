@@ -9609,6 +9609,22 @@ fn connections(state: State<AppState>) -> Result<JsonValue, String> {
     )
 }
 
+fn canonical_strategy_type(value: &str) -> String {
+    match value
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace() && *ch != '-' && *ch != '_')
+        .collect::<String>()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "urltest" => "url-test".to_string(),
+        "loadbalance" => "load-balance".to_string(),
+        "fallback" => "fallback".to_string(),
+        "select" => "select".to_string(),
+        _ => value.to_string(),
+    }
+}
+
 #[tauri::command]
 fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
     let (running, controller_port, secret, mode, groups) = {
@@ -9627,10 +9643,11 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
         .unwrap_or_default()
         .into_iter()
         .map(|group| {
-            let group_type = group
+            let group_type_raw = group
                 .get("type")
                 .and_then(|value| value.as_str())
                 .unwrap_or("select");
+            let group_type = canonical_strategy_type(group_type_raw);
             let item_count = group
                 .get("items")
                 .and_then(|value| value.as_array())
@@ -9641,7 +9658,7 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
                 "type": group_type,
                 "now": group.get("now").and_then(|value| value.as_str()).unwrap_or("-"),
                 "itemCount": item_count,
-                "automatic": matches!(group_type, "url-test" | "fallback" | "load-balance")
+                "automatic": matches!(group_type.as_str(), "url-test" | "fallback" | "load-balance")
             })
         })
         .collect::<Vec<_>>();

@@ -2696,11 +2696,11 @@ async function refreshConnections(token = null) {
 }
 
 function strategyTypeLabel(kind = '') {
-  const value = String(kind || '').toLowerCase();
+  const value = String(kind || '').replace(/[\s_-]/g, '').toLowerCase();
   if (value === 'select') return '手动选择';
-  if (value === 'url-test') return '自动测速';
+  if (value === 'urltest') return '自动测速';
   if (value === 'fallback') return '故障切换';
-  if (value === 'load-balance') return '负载均衡';
+  if (value === 'loadbalance') return '负载均衡';
   return kind ? String(kind) : '-';
 }
 
