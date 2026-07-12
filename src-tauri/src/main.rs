@@ -4159,6 +4159,29 @@ rules:
     }
 
     #[test]
+    fn routing_assistant_gate_defers_writes_until_wizard_steps_are_built() {
+        let gate = routing_assistant_gate_contract();
+
+        assert_eq!(
+            gate.get("readOnly").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            gate.get("writesConfig").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            gate.get("startsAt").and_then(JsonValue::as_str),
+            Some("3.3.1")
+        );
+        assert!(gate
+            .get("wizardSteps")
+            .and_then(JsonValue::as_array)
+            .map(|steps| steps.len() >= 8)
+            .unwrap_or(false));
+    }
+
+    #[test]
     fn parses_base64_tuic_subscription() {
         let uri = "tuic://00000000-0000-4000-8000-000000000000:secret@example.com:443?sni=example.com&alpn=h3&congestion_control=bbr&udp_relay_mode=native&reduce_rtt=true#HK%20TUIC";
         let encoded = general_purpose::STANDARD.encode(uri);
@@ -10006,6 +10029,11 @@ fn routing_foundation_acceptance(state: State<AppState>) -> Result<JsonValue, St
 }
 
 #[tauri::command]
+fn routing_assistant_gate() -> Result<JsonValue, String> {
+    Ok(routing_assistant_gate_contract())
+}
+
+#[tauri::command]
 fn start_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
     let already_running = state.speed_test.lock().unwrap().running;
     let snapshot = mark_speed_test_preparing(&state.speed_test);
@@ -10778,6 +10806,35 @@ fn routing_foundation_acceptance_contract(active_profile_id: Option<String>) -> 
     })
 }
 
+fn routing_assistant_gate_contract() -> JsonValue {
+    json!({
+        "lane": "3.3 routing assistant",
+        "readOnly": true,
+        "writesConfig": false,
+        "startsAt": "3.3.1",
+        "dependsOn": "3.2 routing foundation acceptance",
+        "ordinaryUserGoal": "users can create website, app, region, and strategy routing without YAML",
+        "wizardSteps": [
+            { "version": "3.3.1", "name": "Website routing wizard", "writeEnabled": false },
+            { "version": "3.3.2", "name": "App routing wizard", "writeEnabled": false },
+            { "version": "3.3.3", "name": "Generate rule from connection", "writeEnabled": false },
+            { "version": "3.3.4", "name": "Region and strategy target wizard", "writeEnabled": false },
+            { "version": "3.3.5", "name": "Rule conflict prompts", "writeEnabled": false },
+            { "version": "3.3.6", "name": "One-click undo", "writeEnabled": false },
+            { "version": "3.3.7", "name": "Rule effectiveness verification", "writeEnabled": false },
+            { "version": "3.3.8", "name": "Simple and advanced rule separation", "writeEnabled": false },
+            { "version": "3.3.9", "name": "Routing assistant acceptance", "writeEnabled": false }
+        ],
+        "writeEnableGate": [
+            "draft model exists",
+            "preflight passes",
+            "rollback plan is ready",
+            "diagnostics can explain failure",
+            "release and smoke audits pass"
+        ]
+    })
+}
+
 #[tauri::command]
 fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
     let (running, controller_port, secret, mode, groups, active_profile) = {
@@ -11068,6 +11125,7 @@ fn main() {
             routing_rollback_plan,
             routing_diagnostics_report,
             routing_foundation_acceptance,
+            routing_assistant_gate,
             start_proxy_delay_test,
             test_single_proxy_delay,
             node_diagnostics,

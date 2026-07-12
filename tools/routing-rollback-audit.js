@@ -30,7 +30,7 @@ const commandStart = mainRs.indexOf('#[tauri::command]\nfn routing_rollback_plan
 const commandEnd = mainRs.indexOf('#[tauri::command]\nfn start_proxy_delay_test', commandStart + 1);
 const commandBody = commandStart >= 0 ? mainRs.slice(commandStart, commandEnd > commandStart ? commandEnd : undefined) : '';
 
-check('package version remains in 3.2 rule foundation lane', /^3\.2\.\d+$/.test(pkg.version), pkg.version);
+check('package version keeps 3.x routing foundation active', /^3\.\d+\.\d+$/.test(pkg.version), pkg.version);
 check('routing rollback audit is exposed as package script', pkg.scripts?.['audit:routing-rollback'] === 'node tools/routing-rollback-audit.js', 'npm run audit:routing-rollback');
 check('rollback plan command is registered', mainRs.includes('fn routing_rollback_plan') && mainRs.includes('routing_rollback_plan,'), 'routing_rollback_plan command');
 check('rollback plan command is read-only', commandBody.includes('sha256_file(&profile_path)') && commandBody.includes('runtime_profile_path()') && !commandBody.includes('atomic_write_text_confined') && !commandBody.includes('hot_reload_profile') && !commandBody.includes('set_active_profile'), 'read-only digest snapshot');

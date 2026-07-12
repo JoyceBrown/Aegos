@@ -35,7 +35,7 @@ const renderStart = appJs.indexOf('function renderRoutingSnapshot');
 const renderEnd = appJs.indexOf('async function refreshRoutingSnapshot', renderStart);
 const renderBody = renderStart >= 0 ? appJs.slice(renderStart, renderEnd > renderStart ? renderEnd : undefined) : '';
 
-check('package version remains in 3.2 rule foundation lane', /^3\.2\.\d+$/.test(pkg.version), pkg.version);
+check('package version keeps 3.x routing foundation active', /^3\.\d+\.\d+$/.test(pkg.version), pkg.version);
 check('routing rules audit is exposed as package script', pkg.scripts?.['audit:routing-rules'] === 'node tools/routing-rules-audit.js', 'npm run audit:routing-rules');
 check('backend parses profile rules into structured records', mainRs.includes('fn split_rule_segments') && mainRs.includes('fn parse_routing_rule_text') && mainRs.includes('fn routing_rules_for_profile') && mainRs.includes('"condition"') && mainRs.includes('"target"') && mainRs.includes('"options"'), 'rule parser functions');
 check('rule parser handles nested logical commas and no-resolve options', mainRs.includes('routing_rule_parser_structures_common_rules') && mainRs.includes('AND,((DOMAIN-SUFFIX,example.com),(NETWORK,TCP)),Proxy') && mainRs.includes('GEOIP,CN,DIRECT,no-resolve'), 'parser unit coverage');

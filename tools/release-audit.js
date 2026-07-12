@@ -80,6 +80,7 @@ check('routing reload preflight audit script exists', exists('tools/routing-relo
 check('routing rollback audit script exists', exists('tools/routing-rollback-audit.js') && pkg.scripts?.['audit:routing-rollback'] === 'node tools/routing-rollback-audit.js', 'tools/routing-rollback-audit.js');
 check('routing diagnostics audit script exists', exists('tools/routing-diagnostics-audit.js') && pkg.scripts?.['audit:routing-diagnostics'] === 'node tools/routing-diagnostics-audit.js', 'tools/routing-diagnostics-audit.js');
 check('routing foundation audit script exists', exists('tools/routing-foundation-audit.js') && pkg.scripts?.['audit:routing-foundation'] === 'node tools/routing-foundation-audit.js', 'tools/routing-foundation-audit.js');
+check('routing assistant gate audit script exists', exists('tools/routing-assistant-gate-audit.js') && pkg.scripts?.['audit:routing-assistant-gate'] === 'node tools/routing-assistant-gate-audit.js', 'tools/routing-assistant-gate-audit.js');
 
 const mainRs = readText('src-tauri/src/main.rs');
 const powershellCalls = (mainRs.match(/Command::new\("powershell\.exe"\)/g) || []).length;

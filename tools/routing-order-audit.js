@@ -34,7 +34,7 @@ const renderStart = appJs.indexOf('function renderRoutingSnapshot');
 const renderEnd = appJs.indexOf('async function refreshRoutingSnapshot', renderStart);
 const renderBody = renderStart >= 0 ? appJs.slice(renderStart, renderEnd > renderStart ? renderEnd : undefined) : '';
 
-check('package version remains in 3.2 rule foundation lane', /^3\.2\.\d+$/.test(pkg.version), pkg.version);
+check('package version keeps 3.x routing foundation active', /^3\.\d+\.\d+$/.test(pkg.version), pkg.version);
 check('routing order audit is exposed as package script', pkg.scripts?.['audit:routing-order'] === 'node tools/routing-order-audit.js', 'npm run audit:routing-order');
 check('backend detects duplicate, conflicting, and unreachable rules', mainRs.includes('fn detect_routing_rule_order_issues') && mainRs.includes('"duplicate-rule"') && mainRs.includes('"conflicting-target"') && mainRs.includes('"unreachable-after-match"'), 'order detector');
 check('rule records carry order issue metadata', mainRs.includes('fn set_routing_rule_order_issue') && mainRs.includes('"orderIssue"') && mainRs.includes('"firstIndex"'), 'order issue metadata');

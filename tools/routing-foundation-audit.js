@@ -41,7 +41,7 @@ const commandStart = mainRs.indexOf('#[tauri::command]\nfn routing_foundation_ac
 const commandEnd = mainRs.indexOf('#[tauri::command]\nfn start_proxy_delay_test', commandStart + 1);
 const commandBody = commandStart >= 0 ? mainRs.slice(commandStart, commandEnd > commandStart ? commandEnd : undefined) : '';
 
-check('package version is 3.2.8 acceptance checkpoint', pkg.version === '3.2.8', pkg.version);
+check('package version keeps 3.x routing foundation active', /^3\.\d+\.\d+$/.test(pkg.version), pkg.version);
 check('routing foundation audit is exposed as package script', pkg.scripts?.['audit:routing-foundation'] === 'node tools/routing-foundation-audit.js', 'npm run audit:routing-foundation');
 check('all routing foundation scripts are present', requiredScripts.every((script) => Boolean(pkg.scripts?.[script])), requiredScripts.join(', '));
 check('routing foundation acceptance command is registered', mainRs.includes('fn routing_foundation_acceptance') && mainRs.includes('routing_foundation_acceptance,'), 'routing_foundation_acceptance command');
