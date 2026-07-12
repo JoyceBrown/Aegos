@@ -635,6 +635,12 @@ try {
     document.querySelector('#previewWebsiteRuleBtn').click();
     await new Promise((resolve) => setTimeout(resolve, 40));
     if (!document.querySelector('#routingDraftPreview')?.dataset.rule?.includes('DOMAIN-SUFFIX,openai.com')) throw new Error('website routing preview did not create a safe draft');
+    const callsBeforeAppDraft = window.__aegosCalls.length;
+    document.querySelector('#routingAppInput').value = 'Telegram';
+    document.querySelector('#previewAppRuleBtn').click();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    if (!document.querySelector('#routingAppDraftPreview')?.dataset.rule?.includes('PROCESS-NAME,Telegram.exe')) throw new Error('app routing preview did not create a process-name draft');
+    if (window.__aegosCalls.length !== callsBeforeAppDraft) throw new Error('app routing preview triggered a backend command');
     if (document.querySelector('#routingModeState')?.textContent.trim() !== document.querySelector('#modeLabel')?.textContent.trim()) throw new Error('routing mode summary did not match current backend mode');
     await navDown('[data-page="diagnostics"]');
     await new Promise((resolve) => setTimeout(resolve, 900));

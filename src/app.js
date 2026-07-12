@@ -2755,28 +2755,56 @@ function ensureRoutingAssistantUi() {
   const autoCount = $('#routingAutoCount');
   if (autoCount) autoCount.id = 'routingSystemRuleCount';
   normalizeRoutingStaticText();
-  const assistant = el('div', { className: 'routing-assistant', attrs: { 'aria-label': '\u7f51\u7ad9\u5206\u6d41\u9884\u89c8' } }, [
-    el('div', {}, [
-      el('b', { textContent: '\u6dfb\u52a0\u7f51\u7ad9\u5206\u6d41\uff08\u9884\u89c8\uff09' }),
-      el('small', { textContent: '\u8f93\u5165\u57df\u540d\u540e\u5148\u751f\u6210\u8349\u7a3f\uff0c\u6b64\u7248\u4e0d\u4f1a\u5199\u5165\u914d\u7f6e\u3002' })
-    ]),
-    el('div', { className: 'routing-draft-form' }, [
-      el('input', { id: 'routingWebsiteInput', attrs: { placeholder: 'example.com', autocomplete: 'off', spellcheck: 'false' } }),
-      el('select', { id: 'routingWebsiteAction' }, [
-        el('option', { textContent: '\u8d70\u4ee3\u7406', attrs: { value: 'proxy' } }),
-        el('option', { textContent: '\u76f4\u8fde', attrs: { value: 'direct' } }),
-        el('option', { textContent: '\u62d2\u7edd', attrs: { value: 'reject' } })
+  const actionOptions = () => [
+    el('option', { textContent: '\u8d70\u4ee3\u7406', attrs: { value: 'proxy' } }),
+    el('option', { textContent: '\u76f4\u8fde', attrs: { value: 'direct' } }),
+    el('option', { textContent: '\u62d2\u7edd', attrs: { value: 'reject' } })
+  ];
+  const assistant = el('div', { className: 'routing-assistant', attrs: { 'aria-label': '\u5206\u6d41\u89c4\u5219\u8349\u7a3f\u9884\u89c8' } }, [
+    el('section', { className: 'routing-draft-card' }, [
+      el('div', {}, [
+        el('b', { textContent: '\u7f51\u7ad9\u5206\u6d41\uff08\u9884\u89c8\uff09' }),
+        el('small', { textContent: '\u8f93\u5165\u57df\u540d\uff0c\u5148\u751f\u6210\u8349\u7a3f\uff0c\u4e0d\u5199\u914d\u7f6e\u3002' })
       ]),
-      el('button', { id: 'previewWebsiteRuleBtn', className: 'primary compact', textContent: '\u751f\u6210\u9884\u89c8' })
+      el('div', { className: 'routing-draft-form' }, [
+        el('input', { id: 'routingWebsiteInput', attrs: { placeholder: 'example.com', autocomplete: 'off', spellcheck: 'false' } }),
+        el('select', { id: 'routingWebsiteAction' }, actionOptions()),
+        el('button', { id: 'previewWebsiteRuleBtn', className: 'primary compact', textContent: '\u9884\u89c8' })
+      ]),
+      el('p', { id: 'routingDraftPreview', className: 'routing-draft-preview', textContent: '\u7b49\u5f85\u8f93\u5165\u7f51\u7ad9\u3002' })
     ]),
-    el('p', { id: 'routingDraftPreview', className: 'routing-draft-preview', textContent: '\u672a\u751f\u6210\u8349\u7a3f\u3002' })
+    el('section', { className: 'routing-draft-card' }, [
+      el('div', {}, [
+        el('b', { textContent: '\u5e94\u7528\u5206\u6d41\uff08\u9884\u89c8\uff09' }),
+        el('small', { textContent: '\u8f93\u5165\u8fdb\u7a0b\u540d\u6216\u5b8c\u6574\u8def\u5f84\uff0c\u4f8b\u5982 Telegram.exe\u3002' })
+      ]),
+      el('div', { className: 'routing-draft-form' }, [
+        el('input', { id: 'routingAppInput', attrs: { placeholder: 'Telegram.exe', autocomplete: 'off', spellcheck: 'false' } }),
+        el('select', { id: 'routingAppAction' }, actionOptions()),
+        el('button', { id: 'previewAppRuleBtn', className: 'primary compact', textContent: '\u9884\u89c8' })
+      ]),
+      el('p', { id: 'routingAppDraftPreview', className: 'routing-draft-preview', textContent: '\u7b49\u5f85\u8f93\u5165\u5e94\u7528\u3002' })
+    ])
   ]);
   summary.after(assistant);
   $('#previewWebsiteRuleBtn')?.addEventListener('click', previewWebsiteRoutingDraft);
+  $('#previewAppRuleBtn')?.addEventListener('click', previewAppRoutingDraft);
   $('#routingWebsiteInput')?.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') previewWebsiteRoutingDraft();
   });
+  $('#routingAppInput')?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') previewAppRoutingDraft();
+  });
   routingAssistantReady = true;
+}
+
+function routingDraftAction(action = 'proxy') {
+  const actionMap = {
+    proxy: { label: '\u8d70\u4ee3\u7406', target: 'Proxies' },
+    direct: { label: '\u76f4\u8fde', target: 'DIRECT' },
+    reject: { label: '\u62d2\u7edd', target: 'REJECT' }
+  };
+  return actionMap[action] || actionMap.proxy;
 }
 
 function normalizeWebsiteRuleInput(value = '') {
@@ -2799,14 +2827,42 @@ function previewWebsiteRoutingDraft() {
     preview.className = 'routing-draft-preview warn';
     return;
   }
-  const actionMap = {
-    proxy: { label: '\u8d70\u4ee3\u7406', target: 'Proxies' },
-    direct: { label: '\u76f4\u8fde', target: 'DIRECT' },
-    reject: { label: '\u62d2\u7edd', target: 'REJECT' }
-  };
-  const next = actionMap[action] || actionMap.proxy;
+  const next = routingDraftAction(action);
   preview.textContent = `\u8349\u7a3f\uff1a${parsed.domain} \u2192 ${next.label}\u3002\u5f53\u524d\u53ea\u9884\u89c8\uff0c\u4e0d\u4f1a\u4fee\u6539\u914d\u7f6e\u3002`;
   preview.dataset.rule = `DOMAIN-SUFFIX,${parsed.domain},${next.target}`;
+  preview.className = 'routing-draft-preview ok';
+}
+
+function normalizeAppRuleInput(value = '') {
+  const raw = String(value || '').trim().replace(/^"|"$/g, '');
+  if (!raw) return { ok: false, error: '\u8bf7\u5148\u8f93\u5165\u5e94\u7528\u8fdb\u7a0b\u540d\u3002' };
+  if (/[\r\n<>|?*]/.test(raw) || raw.length > 180) return { ok: false, error: '\u5e94\u7528\u540d\u6216\u8def\u5f84\u683c\u5f0f\u4e0d\u5bf9\u3002' };
+  const isPath = /^[a-z]:\\/i.test(raw) || raw.includes('\\') || raw.includes('/');
+  if (isPath) {
+    const normalizedPath = raw.replace(/\//g, '\\');
+    const leaf = normalizedPath.split('\\').filter(Boolean).pop() || '';
+    if (!/\.exe$/i.test(leaf)) return { ok: false, error: '\u8def\u5f84\u9700\u8981\u6307\u5411 .exe \u5e94\u7528\u3002' };
+    return { ok: true, kind: 'PROCESS-PATH', value: normalizedPath };
+  }
+  const processName = /\.exe$/i.test(raw) ? raw : `${raw}.exe`;
+  if (!/^[\w .()+#-]{2,80}\.exe$/i.test(processName)) return { ok: false, error: '\u8bf7\u8f93\u5165\u8fdb\u7a0b\u540d\uff0c\u4f8b\u5982 Telegram.exe\u3002' };
+  return { ok: true, kind: 'PROCESS-NAME', value: processName };
+}
+
+function previewAppRoutingDraft() {
+  const preview = $('#routingAppDraftPreview');
+  const input = $('#routingAppInput');
+  const action = $('#routingAppAction')?.value || 'proxy';
+  if (!preview || !input) return;
+  const parsed = normalizeAppRuleInput(input.value);
+  if (!parsed.ok) {
+    preview.textContent = parsed.error;
+    preview.className = 'routing-draft-preview warn';
+    return;
+  }
+  const next = routingDraftAction(action);
+  preview.textContent = `\u8349\u7a3f\uff1a${parsed.value} \u2192 ${next.label}\u3002\u5f53\u524d\u53ea\u9884\u89c8\uff0c\u4e0d\u4f1a\u4fee\u6539\u914d\u7f6e\u3002`;
+  preview.dataset.rule = `${parsed.kind},${parsed.value},${next.target}`;
   preview.className = 'routing-draft-preview ok';
 }
 
