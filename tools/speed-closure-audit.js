@@ -25,7 +25,7 @@ function bodyBetween(source, startNeedle, endNeedle) {
 
 const testNodesBody = appJs.match(/async function testNodes\([^)]*\) \{([\s\S]*?)\n\}/)?.[1] || '';
 const speedBody = bodyBetween(mainRs, 'fn start_proxy_delay_test_for_run', 'fn test_single_proxy_delay_for_run');
-const singleBody = bodyBetween(mainRs, 'fn test_single_proxy_delay_for_run', 'fn test_proxy_delays');
+const singleBody = bodyBetween(mainRs, 'fn test_single_proxy_delay_for_run', 'fn probe_proxy_network');
 const singleCommandBody = mainRs.match(/fn test_single_proxy_delay\(state: State<AppState>, name: String\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 const ensureBody = bodyBetween(mainRs, 'fn ensure_core_for_delay_test', 'fn start_proxy_delay_test');
 const profileSwitchBody = bodyBetween(mainRs, 'fn set_active_profile', 'fn rename_profile');

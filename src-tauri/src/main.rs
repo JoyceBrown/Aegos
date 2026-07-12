@@ -530,6 +530,28 @@ fn fail_speed_test_if_current(
     }
 }
 
+fn reset_speed_test_state_from_state(
+    speed_test: &Arc<Mutex<SpeedTestState>>,
+    reason: &str,
+    clear_health: bool,
+) {
+    let mut speed = speed_test.lock().unwrap();
+    let run_id = speed.run_id.saturating_add(1);
+    let health = if clear_health {
+        HashMap::new()
+    } else {
+        speed.health.clone()
+    };
+    *speed = SpeedTestState {
+        run_id,
+        running: false,
+        updated_at: now_secs(),
+        health,
+        error: Some(reason.to_string()),
+        ..SpeedTestState::default()
+    };
+}
+
 fn export_logs_from_state(
     logs: &Arc<Mutex<Vec<LogEntry>>>,
     app_data: &Path,
@@ -6992,11 +7014,6 @@ impl CoreManager {
             .unwrap_or_default()
     }
 
-    fn apply_speed_test_delays(&self, groups: &mut JsonValue) {
-        let speed = self.speed_test.lock().unwrap().clone();
-        apply_speed_test_delays_from_state(groups, &speed);
-    }
-
     fn current_outbound_ip_proxy_name(&self, groups: &JsonValue) -> Option<String> {
         let snapshot = groups.as_array()?;
         let group_names = snapshot
@@ -7055,21 +7072,7 @@ impl CoreManager {
     }
 
     fn reset_speed_test_state(&self, reason: &str, clear_health: bool) {
-        let mut speed = self.speed_test.lock().unwrap();
-        let run_id = speed.run_id.saturating_add(1);
-        let health = if clear_health {
-            HashMap::new()
-        } else {
-            speed.health.clone()
-        };
-        *speed = SpeedTestState {
-            run_id,
-            running: false,
-            updated_at: now_secs(),
-            health,
-            error: Some(reason.to_string()),
-            ..SpeedTestState::default()
-        };
+        reset_speed_test_state_from_state(&self.speed_test, reason, clear_health);
     }
 
     fn best_proxy_candidate(&self) -> Option<JsonValue> {
@@ -7134,10 +7137,6 @@ impl CoreManager {
             self.start_standby()?;
         }
         Ok(())
-    }
-
-    fn start_proxy_delay_test(&mut self) -> Result<JsonValue, String> {
-        self.start_proxy_delay_test_for_run(None)
     }
 
     fn start_proxy_delay_test_for_run(
@@ -7532,18 +7531,6 @@ impl CoreManager {
             "healthStatus": "testing",
             "healthConfidence": "testing"
         }))
-    }
-
-    fn test_proxy_delays(&mut self) -> JsonValue {
-        let _ = self.start_proxy_delay_test();
-        let mut groups = self.proxy_groups();
-        self.apply_speed_test_delays(&mut groups);
-        groups
-    }
-
-    fn cancel_proxy_delay_test(&mut self) -> JsonValue {
-        self.reset_speed_test_state("cancelled", false);
-        json!({ "ok": true })
     }
 
     fn probe_proxy_network(&self, timeout_ms: u64) -> JsonValue {
@@ -9576,7 +9563,8 @@ fn speed_test_status(state: State<AppState>) -> Result<JsonValue, String> {
 
 #[tauri::command]
 fn cancel_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
-    Ok(state.core.lock().unwrap().cancel_proxy_delay_test())
+    reset_speed_test_state_from_state(&state.speed_test, "cancelled", false);
+    Ok(json!({ "ok": true }))
 }
 
 #[tauri::command]
@@ -9587,11 +9575,6 @@ fn recover_network(state: State<AppState>, force: Option<bool>) -> Result<JsonVa
         .lock()
         .unwrap()
         .recover_network(force.unwrap_or(false))
-}
-
-#[tauri::command]
-fn test_proxy_delays(state: State<AppState>) -> Result<JsonValue, String> {
-    Ok(state.core.lock().unwrap().test_proxy_delays())
 }
 
 #[tauri::command]
@@ -9798,7 +9781,6 @@ fn main() {
             speed_test_status,
             cancel_proxy_delay_test,
             recover_network,
-            test_proxy_delays,
             refresh_outbound_ip,
             select_best_proxy,
             connections,

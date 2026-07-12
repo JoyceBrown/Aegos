@@ -401,10 +401,6 @@ try {
             }
             return speedStatusSnapshot(false, groups[0].items.length);
           }
-          if (command === 'test_proxy_delays') {
-            groups[0].items.forEach((item, index) => { item.delay = [31, 48, 116, 132, 99][index]; item.alive = true; });
-            return groups;
-          }
           if (command === 'recover_network') {
             state.running = true;
             groups[0].now = 'HK 02';
