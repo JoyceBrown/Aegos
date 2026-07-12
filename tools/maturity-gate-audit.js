@@ -86,6 +86,16 @@ const requiredRoadmapVersions = [
   '3.4.8',
   '3.4.9',
   '3.4.10',
+  '3.4.11',
+  '3.4.12',
+  '3.4.13',
+  '3.4.14',
+  '3.4.15',
+  '3.4.16',
+  '3.4.17',
+  '3.4.18',
+  '3.4.19',
+  '3.4.20',
   '3.5.1',
   '3.5.2',
   '3.5.3',
@@ -115,6 +125,7 @@ check(
   'stop gates'
 );
 check('required maturity scripts are exposed', requiredScripts.every((name) => packageJson.includes(`"${name}"`)), requiredScripts.join(', '));
+check('product maturity recovery plans exist and gate 3.5.x', exists('PRODUCT_MATURITY_RECOVERY_PLAN.md') && exists('PRODUCT_MATURITY_3.4.11_TO_3.4.20_DETAILED.md') && roadmap.includes('3.5.x 在 3.4.20 通过前暂停推进') && packageJson.includes('"audit:product-maturity"'), '3.4.11..3.4.20 product maturity lane');
 check('release audit knows maturity gate', releaseAudit.includes('maturity gate audit script exists'), 'tools/release-audit.js');
 check(
   'speed tests remain measurement-only',
