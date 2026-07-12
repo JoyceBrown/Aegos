@@ -112,9 +112,25 @@ check(
 );
 check('absorption roadmap resolves 3.3 manual-node conflict', absorptionRoadmap.includes('3.3.x remains the routing-assistant lane') && absorptionRoadmap.includes('Manual-node and protocol-field maturity moves to 3.6.x'), '3.3 conflict resolved');
 check('absorption roadmap keeps sing-box and snell out of the immediate mainline', absorptionRoadmap.includes('sing-box runtime experiments require a separate architecture') && absorptionRoadmap.includes('no remote shell execution by default'), 'deferred high-risk projects');
-check('canonical roadmap declares single source of truth', canonicalRoadmap.includes('Canonical Planning Rule') && canonicalRoadmap.includes('single source of truth for version execution'), canonicalRoadmapPath);
-check('canonical roadmap keeps 3.3 as routing assistant', canonicalRoadmap.includes('3.3.x lane is the routing-assistant lane') && canonicalRoadmap.includes('| 3.3.4 | Region/strategy target wizard |'), '3.3.x route');
-check('canonical roadmap moves manual node maturity to 3.6.x', canonicalRoadmap.includes('Manual-node and protocol-field maturity') && canonicalRoadmap.includes('| 3.6.3 | Fixed node protocol fields |') && canonicalRoadmap.includes('| 3.6.4 | Fixed node CRUD/import/export acceptance |'), '3.6.x route');
+check(
+  'canonical roadmap declares single source of truth',
+  canonicalRoadmap.includes('\u552f\u4e00\u4e3b\u89c4\u5212\u89c4\u5219') &&
+    canonicalRoadmap.includes('\u672c\u6587\u4ef6\u662f\u7248\u672c\u6267\u884c\u7684\u552f\u4e00\u4e8b\u5b9e\u6765\u6e90'),
+  canonicalRoadmapPath
+);
+check(
+  'canonical roadmap keeps 3.3 as routing assistant',
+  canonicalRoadmap.includes('3.3.x \u56fa\u5b9a\u4e3a\u5206\u6d41\u52a9\u624b\u8def\u7ebf') &&
+    canonicalRoadmap.includes('| 3.3.4 | \u5730\u533a/\u7b56\u7565\u76ee\u6807\u5411\u5bfc |'),
+  '3.3.x route'
+);
+check(
+  'canonical roadmap moves manual node maturity to 3.6.x',
+  canonicalRoadmap.includes('\u624b\u52a8\u8282\u70b9\u548c\u534f\u8bae\u5b57\u6bb5\u6210\u719f\u5316') &&
+    canonicalRoadmap.includes('| 3.6.3 | \u56fa\u5b9a\u8282\u70b9\u534f\u8bae\u5b57\u6bb5 |') &&
+    canonicalRoadmap.includes('| 3.6.4 | \u56fa\u5b9a\u8282\u70b9\u589e\u5220\u6539\u67e5/\u5bfc\u5165\u5bfc\u51fa\u9a8c\u6536 |'),
+  '3.6.x route'
+);
 check('canonical roadmap has no conflicting 3.3 manual-node route', !/3\.3\.[0-9][^\n]*(manual node|Manual node|Fixed node|protocol field|URI import)/.test(canonicalRoadmap), 'no 3.3 manual-node conflict');
 check('core API contract records current mihomo controller envelope', ['controller_request', 'CoreManager::controller', '127.0.0.1', 'bearer auth', 'no_proxy'].every((text) => coreApiContract.includes(text)), 'controller envelope');
 check('core API contract classifies read, measurement, and mutating APIs', ['GET /proxies', 'GET /proxies/{name}/delay', 'PUT /proxies/{group}', 'PATCH /configs', 'GET /traffic', 'GET /connections', 'DELETE /connections'].every((text) => coreApiContract.includes(text)), 'API matrix');

@@ -1,124 +1,109 @@
-# Aegos 3.0.0 To 3.6.4 Execution Roadmap
+# Aegos 3.0.0 到 3.6.4 执行主规划
 
-This roadmap is the execution contract for the 3.x foundation lane. It keeps the
-user's main requirement explicit: no skipped small versions, no vague "done"
-claims, and every checkpoint must have a deliverable, verification, and commit.
+这份规划是 Aegos 3.x 地基阶段的执行合同。它把你的核心要求写死：
+小版本不能跳过，不能用模糊的“已完成”糊弄，每个检查点都必须有对应产物、验证记录和 git 提交。
 
-## Canonical Planning Rule
+## 唯一主规划规则
 
-This file is the single source of truth for version execution.
+本文件是版本执行的唯一事实来源。
 
-- Research documents under `research/` are absorption notes and reference
-  material. They must not define a conflicting version route.
-- If a research document discovers a useful capability, it must be merged into
-  this roadmap before implementation starts.
-- The 3.3.x lane is the routing-assistant lane because 3.3.0 opened that gate
-  and 3.3.1-3.3.3 have already shipped as source checkpoints.
-- Manual-node and protocol-field maturity from the open-source absorption plan
-  is preserved in 3.6.x and later migration lanes, not in 3.3.x.
+- `research/` 目录下的文档是开源吸收笔记和参考资料，不能另行定义冲突的版本路线。
+- 如果研究文档发现有价值的能力，必须先合并进本主规划，再开始实现。
+- 3.3.x 固定为分流助手路线，因为 3.3.0 已经打开这个阶段，且 3.3.1 到 3.3.3 已作为源码检查点交付。
+- 开源吸收规划里的手动节点和协议字段成熟化保留，但移到 3.6.x 和后续迁移路线，不放在 3.3.x。
 
-## Non-Negotiable Rules
+## 不可破坏规则
 
-- Speed tests never connect, switch nodes, switch mode, or take over traffic.
-- Current node, recommended node, outbound IP, system proxy, TUN, and protection
-  state must remain consistent after every operation.
-- Heavy work must run in background jobs or non-blocking polling; navigation and
-  normal buttons must remain usable.
-- User/core/subscription text must render through safe text nodes or
-  `textContent`; no production `innerHTML`.
-- Subscription URLs, tokens, passwords, UUIDs, real IPs, and local paths must be
-  redacted in logs and exported diagnostics.
-- New rules, routing, IPv6, system proxy, firewall, file writes, and Tauri
-  commands must add matching security checks.
-- Open-source projects may be absorbed as contracts, strategies, adapter
-  patterns, or validation fixtures. Do not copy GPL code, icons, UI assets, or
-  protected implementation.
+- 测速绝不连接节点、切换节点、切换模式或接管流量。
+- 当前节点、推荐节点、落地 IP、系统代理、TUN、断网保护状态在每次操作后必须一致。
+- 重任务必须走后台任务或非阻塞轮询；导航和普通按钮必须保持可用。
+- 用户文本、核心文本、订阅文本必须通过安全文本节点或 `textContent` 渲染；生产代码不能使用危险 `innerHTML`。
+- 订阅 URL、token、密码、UUID、真实 IP、本地路径必须在日志和诊断导出中脱敏。
+- 新增规则、分流、IPv6、系统代理、防火墙、文件写入、Tauri 命令时，必须同步增加安全检查。
+- 开源项目可以吸收契约、策略、适配层模式、验证样例；不能复制 GPL 代码、图标、UI 资产或受保护实现。
 
-## Version Route
+## 版本路线
 
-| Version | Goal | Required Acceptance |
+| 版本 | 目标 | 必须验收 |
 |---|---|---|
-| 3.0.0 | Mature proxy-client foundation gate | Existing release, security, speed, stability, responsiveness, installer-regression, copy, and open-source absorption gates pass together. |
-| 3.1.0 | Read-only routing page skeleton | Route/rule page exists as read-only, with no config writes. |
-| 3.1.1 | Routing page entry | Navigation, deferred loading, and page cache are wired without slowing existing pages. |
-| 3.1.2 | Current mode summary | Smart/global/direct mode summary is visible and matches backend status. |
-| 3.1.3 | Strategy group list | Strategy groups are listed separately from ordinary nodes. |
-| 3.1.4 | Strategy type classification | select/url-test/fallback/load-balance are labeled clearly. |
-| 3.1.5 | Current strategy selections | Current selection/automatic behavior is shown without implying a speed test connected. |
-| 3.1.6 | Recent rule hits | Recent connection rule hits are summarized with sensitive data redacted. |
-| 3.1.7 | Read-only routing acceptance | Routing page performance, layout, and security gates pass. |
-| 3.2.1 | Rule list parser | Current rules are parsed into structured records. |
-| 3.2.2 | Rule target validation | Rules pointing to missing strategy groups are reported. |
-| 3.2.3 | Rule order/conflict detection | Risky order and obvious conflicts are diagnosed. |
-| 3.2.4 | Profile-switch rule validation | Subscription switch validates rules before trusting runtime config. |
-| 3.2.5 | Rule hot-reload preflight | Future rule writes have preflight contract and rollback plan. |
-| 3.2.6 | Rule rollback mechanism | Failed rule changes restore previous working config. |
-| 3.2.7 | Rule diagnostics report | Diagnostics page can explain routing-rule problems. |
-| 3.2.8 | Rule foundation acceptance | Parser, validation, diagnostics, and security gates pass. |
-| 3.3.1 | Website routing wizard | Ordinary users can express website proxy/direct without YAML. |
-| 3.3.2 | App routing wizard | Ordinary users can express app/process proxy/direct with validation. |
-| 3.3.3 | Generate rule from connection | Connection records can seed a draft rule safely. |
-| 3.3.4 | Region/strategy target wizard | Region or strategy target can be selected without editing raw YAML. |
-| 3.3.5 | Rule conflict prompts | Conflicts are visible before applying. |
-| 3.3.6 | One-click undo | User-created rules can be undone. |
-| 3.3.7 | Rule effectiveness verification | Applied rules can be verified without disrupting connection. |
-| 3.3.8 | Simple/advanced rule separation | Ordinary and advanced rule surfaces are separated. |
-| 3.3.9 | Routing assistant acceptance | Wizard, rollback, diagnostics, and smoke tests pass. |
-| 3.4.1 | Local IPv6 capability | Local IPv6 capability is detected and displayed. |
-| 3.4.2 | Current-node IPv4 outlet | IPv4 outlet check represents the current node. |
-| 3.4.3 | Current-node IPv6 outlet | IPv6 outlet check represents the current node when supported. |
-| 3.4.4 | Node IPv6 support | Node IPv6 support is classified without changing connection. |
-| 3.4.5 | IPv6 leak detection | IPv6 leak risk is separated from "node unsupported". |
-| 3.4.6 | DNS leak detection | DNS leak risk is classified and user-actionable. |
-| 3.4.7 | IPv6 automatic mode | User-facing IPv6 mode becomes automatic, not manual confusion. |
-| 3.4.8 | IPv4 fallback or block | Unsupported IPv6 falls back or blocks leakage safely. |
-| 3.4.9 | Plain user prompt | User sees a plain explanation when IPv6 falls back. |
-| 3.4.10 | IPv6/DNS acceptance | Leak checks, fallback, diagnostics, and safety gates pass. |
-| 3.5.1 | Connection failure classifier | Connection failures are categorized with next actions. |
-| 3.5.2 | Subscription failure classifier | Subscription failures are categorized with next actions. |
-| 3.5.3 | Speed failure classifier | Speed failures remain visible and never hang the UI. |
-| 3.5.4 | Outbound IP anomaly prompt | Stale or failed outbound IP lookups are canceled and explained. |
-| 3.5.5 | System proxy repair | Repair is transaction-safe and reversible. |
-| 3.5.6 | Port conflict suggestion | Port conflicts show occupying process when available. |
-| 3.5.7 | Same-region recovery suggestion | Unavailable nodes suggest same-region alternatives only. |
-| 3.5.8 | Airport-wide failure prompt | Whole-provider failure suggests subscription switch but requires user confirmation. |
-| 3.5.9 | Smart recovery acceptance | Recovery is explainable, cancelable, non-invasive, and audited. |
-| 3.6.1 | Favorite node persistence | Favorite nodes survive restart/profile refresh safely. |
-| 3.6.2 | Frequent node statistics | Frequent nodes use real connection history, not fake metrics. |
-| 3.6.3 | Fixed node protocol fields | Manual fixed nodes expose validated Reality, uTLS, SNI, ALPN, fingerprint, flow, obfs, ShadowTLS, Snell, HY2, and TUIC fields where supported. |
-| 3.6.4 | Fixed node CRUD/import/export acceptance | Manual fixed nodes support edit/delete/import/export, aliases, fixture coverage, clear unsupported-field prompts, and no corruption of real proxy names. |
+| 3.0.0 | 成熟代理客户端地基门 | release、安全、测速、稳定性、响应性、安装回归、文案编码、开源吸收门禁同时通过。 |
+| 3.1.0 | 只读分流页骨架 | 分流/规则页存在且只读，不写配置。 |
+| 3.1.1 | 分流页入口 | 导航、延迟加载、页面缓存接入，不拖慢已有页面。 |
+| 3.1.2 | 当前模式摘要 | 智能/全局/直连模式摘要可见，并与后端状态一致。 |
+| 3.1.3 | 策略组列表 | 策略组与普通节点分开显示。 |
+| 3.1.4 | 策略类型分类 | select/url-test/fallback/load-balance 标签清晰。 |
+| 3.1.5 | 当前策略选择 | 显示当前选择和自动行为，但不能让用户误以为测速已连接。 |
+| 3.1.6 | 最近规则命中 | 最近连接的规则命中摘要可见，敏感信息已脱敏。 |
+| 3.1.7 | 只读分流验收 | 分流页性能、布局、安全门禁通过。 |
+| 3.2.1 | 规则列表解析器 | 当前规则被解析为结构化记录。 |
+| 3.2.2 | 规则目标校验 | 指向缺失策略组的规则会被报告。 |
+| 3.2.3 | 规则顺序/冲突检测 | 高风险顺序和明显冲突可诊断。 |
+| 3.2.4 | 订阅切换规则校验 | 切换订阅前校验规则，再信任运行时配置。 |
+| 3.2.5 | 规则热重载预检 | 未来规则写入具备预检契约和回滚计划。 |
+| 3.2.6 | 规则回滚机制 | 规则变更失败时恢复上一份可用配置。 |
+| 3.2.7 | 规则诊断报告 | 诊断页能解释分流规则问题。 |
+| 3.2.8 | 规则地基验收 | 解析、校验、诊断、安全门禁通过。 |
+| 3.3.1 | 网站分流向导 | 普通用户无需 YAML 即可表达网站走代理/直连。 |
+| 3.3.2 | 应用分流向导 | 普通用户可按应用/进程表达代理/直连，并带校验。 |
+| 3.3.3 | 从连接生成规则 | 连接记录可以安全生成规则草稿。 |
+| 3.3.4 | 地区/策略目标向导 | 用户无需编辑原始 YAML 即可选择地区或策略目标。 |
+| 3.3.5 | 规则冲突提示 | 应用前能看到冲突。 |
+| 3.3.6 | 一键撤销 | 用户创建的规则可以撤销。 |
+| 3.3.7 | 规则生效验证 | 已应用规则可验证，且不打断当前连接。 |
+| 3.3.8 | 简单/高级规则分层 | 普通用户界面和高级规则界面分开。 |
+| 3.3.9 | 分流助手验收 | 向导、回滚、诊断、smoke 测试通过。 |
+| 3.4.1 | 本机 IPv6 能力 | 检测并显示本机 IPv6 能力。 |
+| 3.4.2 | 当前节点 IPv4 出口 | IPv4 出口检测代表当前节点。 |
+| 3.4.3 | 当前节点 IPv6 出口 | 节点支持时，IPv6 出口检测代表当前节点。 |
+| 3.4.4 | 节点 IPv6 支持 | 不改变连接的前提下判断节点 IPv6 支持情况。 |
+| 3.4.5 | IPv6 泄漏检测 | 区分 IPv6 泄漏风险和“节点不支持”。 |
+| 3.4.6 | DNS 泄漏检测 | DNS 泄漏风险可分类，并给用户可执行建议。 |
+| 3.4.7 | IPv6 自动模式 | 面向用户的 IPv6 模式变成自动，避免手动开关困扰。 |
+| 3.4.8 | IPv4 回退或阻断 | IPv6 不支持时安全回退 IPv4 或阻断泄漏。 |
+| 3.4.9 | 普通用户提示 | IPv6 回退时给出普通用户能理解的解释。 |
+| 3.4.10 | IPv6/DNS 验收 | 泄漏检测、回退、诊断、安全门禁通过。 |
+| 3.5.1 | 连接失败分类器 | 连接失败按原因分类，并给下一步动作。 |
+| 3.5.2 | 订阅失败分类器 | 订阅失败按原因分类，并给下一步动作。 |
+| 3.5.3 | 测速失败分类器 | 测速失败原因保持可见，且 UI 永不挂起。 |
+| 3.5.4 | 落地 IP 异常提示 | 过期或失败的落地 IP 查询会被取消并解释。 |
+| 3.5.5 | 系统代理修复 | 修复动作事务安全且可回滚。 |
+| 3.5.6 | 端口冲突建议 | 端口冲突时尽量显示占用进程。 |
+| 3.5.7 | 同地区恢复建议 | 节点不可用时只建议同地区替代节点。 |
+| 3.5.8 | 机场级故障提示 | 整个订阅源故障时建议切换订阅，但必须用户确认。 |
+| 3.5.9 | 智能恢复验收 | 恢复动作可解释、可取消、不侵入，并通过审计。 |
+| 3.6.1 | 收藏节点持久化 | 收藏节点重启和刷新订阅后仍安全保留。 |
+| 3.6.2 | 常用节点统计 | 常用节点使用真实连接历史，不使用假指标。 |
+| 3.6.3 | 固定节点协议字段 | 手动固定节点暴露并校验 Reality、uTLS、SNI、ALPN、fingerprint、flow、obfs、ShadowTLS、Snell、HY2、TUIC 等受支持字段。 |
+| 3.6.4 | 固定节点增删改查/导入导出验收 | 手动固定节点支持编辑、删除、导入、导出、别名、fixture 覆盖、清晰的不支持字段提示，并且不污染真实代理名称。 |
 
-## Absorption Alignment
+## 开源吸收对齐
 
-The open-source absorption plan is merged into this route as follows:
+开源吸收继续做，但它必须并入这条主路线，而不是单独开一条版本线。
 
-- MetaCubeXD and mihomo rule visibility map to 3.1.x and 3.2.x.
-- Hiddify-style ordinary-user routing expression maps to 3.3.x.
-- v2rayN and NekoBox/NekoRay protocol/manual-node lessons map to 3.6.x.
-- v2rayN migration research is deferred to the 4.x migration lane.
-- Snell/ShadowTLS server-side material stays reference-only until a later
-  template/documentation lane; Aegos must not execute server shell scripts.
-- sing-box/CoreAdapter work is deferred until after the current mihomo-based
-  Windows lane remains stable.
+- MetaCubeXD 和 mihomo 的规则可见性经验映射到 3.1.x 和 3.2.x。
+- Hiddify 的普通用户分流表达映射到 3.3.x。
+- v2rayN 和 NekoBox/NekoRay 的协议/手动节点经验映射到 3.6.x。
+- v2rayN 迁移研究延后到 4.x 迁移路线。
+- Snell/ShadowTLS 服务端材料先保持参考状态，未来只进入模板/说明路线；Aegos 不执行服务端 shell 脚本。
+- sing-box/CoreAdapter 工作延后到当前 mihomo Windows 主线稳定之后。
 
-## Checkpoint Discipline
+## 检查点纪律
 
-Each version must include:
+每个版本必须包含：
 
-- A release note for that exact version.
-- A version bump across package, lockfile, Tauri config, Cargo, and sidebar.
-- Either code, audit, smoke, or documentation that matches the version goal.
-- Verification commands recorded in the release note.
-- A git commit for that version before moving to the next one.
+- 对应精确版本的 release note。
+- package、lockfile、Tauri 配置、Cargo、侧边栏版本号同步提升。
+- 与版本目标匹配的代码、审计、smoke 或文档产物。
+- release note 中记录验证命令。
+- 进入下一个版本前完成当前版本 git 提交。
 
-## Stop Gates
+## 停止门禁
 
-Stop and fix before moving forward if any of these occur:
+出现以下任一情况，必须先停止并修复，不能继续往后推进：
 
-- Speed test switches or connects a node.
-- Diagnostics, speed test, subscription switch, or logs block navigation.
-- Subscription token or node secret appears in logs/export.
-- Rule/routing work writes config before the read-only and rule-foundation gates
-  are complete.
-- IPv6/DNS checks change the user's connection, mode, or current node.
-- Release, security, speed, stability, or responsiveness audit fails.
+- 测速切换或连接了节点。
+- 诊断、测速、订阅切换或日志阻塞导航。
+- 订阅 token 或节点密钥出现在日志/导出文件中。
+- 只读分流和规则地基门禁完成前，规则/分流工作写入配置。
+- IPv6/DNS 检测改变了用户连接、模式或当前节点。
+- release、安全、测速、稳定性或响应性审计失败。

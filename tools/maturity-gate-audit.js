@@ -104,7 +104,16 @@ const requiredRoadmapVersions = [
 check('package version stays in the 3.0.0 to 3.6.4 maturity roadmap', /^3\.(?:[0-6])\.\d+$/.test(pkg.version), pkg.version);
 check('3.0 to 3.6.4 execution roadmap exists', exists('ROADMAP_3.0.0_TO_3.6.4.md'), 'ROADMAP_3.0.0_TO_3.6.4.md');
 check('roadmap includes every required small version through 3.6.4', requiredRoadmapVersions.every((version) => roadmap.includes(version)), '3.0.0..3.6.4');
-check('roadmap preserves critical stop gates', ['Speed test switches or connects a node', 'block navigation', 'Subscription token', 'IPv6/DNS checks change'].every((text) => roadmap.includes(text)), 'stop gates');
+check(
+  'roadmap preserves critical stop gates',
+  [
+    '\u6d4b\u901f\u5207\u6362\u6216\u8fde\u63a5\u4e86\u8282\u70b9',
+    '\u963b\u585e\u5bfc\u822a',
+    '\u8ba2\u9605 token',
+    'IPv6/DNS \u68c0\u6d4b\u6539\u53d8\u4e86\u7528\u6237\u8fde\u63a5',
+  ].every((text) => roadmap.includes(text)),
+  'stop gates'
+);
 check('required maturity scripts are exposed', requiredScripts.every((name) => packageJson.includes(`"${name}"`)), requiredScripts.join(', '));
 check('release audit knows maturity gate', releaseAudit.includes('maturity gate audit script exists'), 'tools/release-audit.js');
 check(
