@@ -157,7 +157,25 @@ fn protocol_capability_summary() -> String {
 
 fn classify_failure_reason(reason: &str) -> &'static str {
     let text = reason.to_ascii_lowercase();
-    if text.contains("timeout") || text.contains("timed out") || text.contains("i/o timeout") {
+    if text.contains("198.18.")
+        || text.contains("198.19.")
+        || text.contains("fake-ip")
+        || text.contains("fake ip")
+    {
+        "dns-fake-ip"
+    } else if text.contains("firewall")
+        || text.contains("blocked by protection")
+        || text.contains("disconnect protection")
+        || text.contains("kill switch")
+    {
+        "protection-blocked"
+    } else if text.contains("no route to host")
+        || text.contains("network unreachable")
+        || text.contains("host unreachable")
+    {
+        "node-connect"
+    } else if text.contains("timeout") || text.contains("timed out") || text.contains("i/o timeout")
+    {
         "timeout"
     } else if text.contains("dns")
         || text.contains("lookup")
@@ -188,9 +206,15 @@ fn classify_failure_reason(reason: &str) -> &'static str {
         && (text.contains("in use") || text.contains("conflict") || text.contains("占用"))
     {
         "port-conflict"
+    } else if text.contains("node not found") || text.contains("not found") || text.contains("404")
+    {
+        "node-not-found"
+    } else if text.contains("503") || text.contains("504") {
+        "controller-delay-error"
     } else if text.contains("controller")
         || text.contains("/proxies")
         || text.contains("/configs")
+        || text.contains("127.0.0.1")
         || text.contains("connection refused")
     {
         "controller-unavailable"
@@ -200,10 +224,30 @@ fn classify_failure_reason(reason: &str) -> &'static str {
         || text.contains("配置")
     {
         "config"
+    } else if text.contains("delay test")
+        || text.contains("test url")
+        || text.contains("generate delay")
+        || text.contains("an error occurred")
+    {
+        "probe-failed"
     } else if text.contains("network") || text.contains("connect") || text.contains("proxy") {
         "network"
     } else {
         "unknown"
+    }
+}
+
+fn classify_delay_http_failure(status: u16, body: &str) -> &'static str {
+    let body_class = classify_failure_reason(body);
+    if body_class != "unknown" && body_class != "network" {
+        return body_class;
+    }
+    match status {
+        401 | 403 => "auth",
+        404 => "node-not-found",
+        408 | 504 => "timeout",
+        500 | 502 | 503 => "controller-delay-error",
+        _ => "network",
     }
 }
 
@@ -365,6 +409,7 @@ struct SpeedTestTarget {
     select_name: String,
     group_name: String,
     protocol: String,
+    server: String,
 }
 
 #[derive(Clone)]
@@ -839,13 +884,9 @@ fn test_proxy_delay_request(
     };
     let status = response.status();
     if !status.is_success() {
-        let reason = if status.as_u16() == 408 || status.as_u16() == 504 {
-            "timeout"
-        } else if status.as_u16() == 401 || status.as_u16() == 403 {
-            "auth"
-        } else {
-            "network"
-        };
+        let status_code = status.as_u16();
+        let body = response.text().unwrap_or_default();
+        let reason = classify_delay_http_failure(status_code, &body);
         return DelayTestResult::failed(reason);
     }
     let data = match response.json::<JsonValue>() {
@@ -1480,6 +1521,33 @@ fn merge_delay_failure_reason(current: &mut String, candidate: &str) {
     {
         *current = candidate.to_string();
     }
+}
+
+fn speed_test_preflight(targets: &[SpeedTestTarget]) -> Result<(), String> {
+    if targets.is_empty() {
+        return Err(
+            "Speed test preflight failed [node-not-found]: no measurable proxy nodes".to_string(),
+        );
+    }
+    let metadata = targets
+        .iter()
+        .find(|target| is_subscription_metadata_node_name(&target.name));
+    if let Some(target) = metadata {
+        return Err(format!(
+            "Speed test preflight failed [config]: subscription metadata row entered speed targets: {}",
+            target.name
+        ));
+    }
+    let fake_ip = targets
+        .iter()
+        .find(|target| is_fake_ip_address(&target.server));
+    if let Some(target) = fake_ip {
+        return Err(format!(
+            "Speed test preflight failed [dns-fake-ip]: {} resolved to fake-ip {} before probing",
+            target.name, target.server
+        ));
+    }
+    Ok(())
 }
 
 fn test_proxy_delay_plan(
@@ -2294,6 +2362,17 @@ const AEGOS_DIRECT_NAMESERVERS: [&str; 3] = [
     "tls://8.8.8.8:853",
 ];
 
+fn yaml_value_strings(value: Option<&YamlValue>) -> Vec<String> {
+    match value {
+        Some(YamlValue::Sequence(items)) => items
+            .iter()
+            .filter_map(|item| item.as_str().map(str::to_string))
+            .collect(),
+        Some(YamlValue::String(item)) => vec![item.to_string()],
+        _ => Vec::new(),
+    }
+}
+
 fn is_fake_ip_address(value: &str) -> bool {
     let text = value.trim();
     text.starts_with("198.18.") || text.starts_with("198.19.")
@@ -2306,6 +2385,50 @@ fn is_local_or_fake_nameserver(value: &str) -> bool {
         || text.contains("localhost")
         || text.contains("198.18.")
         || text.contains("198.19.")
+}
+
+fn runtime_dns_safety_report(config: &YamlValue) -> Result<String, String> {
+    let dns = config
+        .get(yaml_key("dns"))
+        .and_then(YamlValue::as_mapping)
+        .ok_or_else(|| "runtime DNS block missing".to_string())?;
+    let listen = dns
+        .get(yaml_key("listen"))
+        .and_then(YamlValue::as_str)
+        .unwrap_or("");
+    if listen != AEGOS_DNS_LISTEN {
+        return Err(format!(
+            "runtime DNS listen should be {AEGOS_DNS_LISTEN}, got {listen}"
+        ));
+    }
+    let proxy_nameservers = yaml_value_strings(dns.get(yaml_key("proxy-server-nameserver")));
+    if proxy_nameservers.is_empty() {
+        return Err("proxy-server-nameserver is empty".to_string());
+    }
+    if proxy_nameservers
+        .iter()
+        .any(|value| is_local_or_fake_nameserver(value))
+    {
+        return Err(format!(
+            "proxy-server-nameserver contains unsafe local/fake-ip resolver: {}",
+            proxy_nameservers.join(", ")
+        ));
+    }
+    let nameservers = yaml_value_strings(dns.get(yaml_key("nameserver")));
+    let has_direct_upstream = AEGOS_DIRECT_NAMESERVERS
+        .iter()
+        .all(|expected| nameservers.iter().any(|value| value == expected));
+    if !has_direct_upstream {
+        return Err(format!(
+            "direct upstream DNS set is incomplete: {}",
+            nameservers.join(", ")
+        ));
+    }
+    Ok(format!(
+        "listen={}, proxy-server-nameserver={}",
+        listen,
+        proxy_nameservers.join(", ")
+    ))
 }
 
 fn is_subscription_metadata_node_name(name: &str) -> bool {
@@ -3637,8 +3760,20 @@ rules:
     fn failure_reason_classifier_covers_common_connection_failures() {
         assert_eq!(classify_failure_reason("dial tcp: i/o timeout"), "timeout");
         assert_eq!(classify_failure_reason("dns lookup failed"), "dns");
+        assert_eq!(
+            classify_failure_reason("server resolved to 198.18.0.1 fake-ip"),
+            "dns-fake-ip"
+        );
         assert_eq!(classify_failure_reason("tls handshake failed"), "tls");
         assert_eq!(classify_failure_reason("HTTP 401 unauthorized"), "auth");
+        assert_eq!(
+            classify_failure_reason("blocked by disconnect protection firewall"),
+            "protection-blocked"
+        );
+        assert_eq!(
+            classify_failure_reason("connect: network unreachable"),
+            "node-connect"
+        );
         assert_eq!(
             classify_failure_reason("Config preflight failed: unsupported proxy type"),
             "unsupported-protocol"
@@ -3649,6 +3784,46 @@ rules:
         );
         assert!(classified_error("Node switch", "connection refused")
             .contains("Node switch failed [controller-unavailable]"));
+        assert_eq!(
+            classify_delay_http_failure(503, ""),
+            "controller-delay-error"
+        );
+        assert_eq!(classify_delay_http_failure(404, ""), "node-not-found");
+        assert_eq!(classify_delay_http_failure(503, "lookup failed"), "dns");
+    }
+
+    #[test]
+    fn speed_test_preflight_blocks_fake_ip_targets() {
+        let targets = vec![SpeedTestTarget {
+            name: "HK 01".to_string(),
+            select_name: "HK 01".to_string(),
+            group_name: "GLOBAL".to_string(),
+            protocol: "ss".to_string(),
+            server: "198.18.0.12".to_string(),
+        }];
+        let err = speed_test_preflight(&targets).expect_err("fake-ip target should fail");
+        assert!(err.contains("dns-fake-ip"));
+    }
+
+    #[test]
+    fn runtime_dns_safety_rejects_local_proxy_nameserver() {
+        let config: YamlValue = serde_yaml::from_str(
+            r#"
+dns:
+  enable: true
+  listen: 127.0.0.1:1054
+  enhanced-mode: fake-ip
+  nameserver:
+    - https://223.5.5.5/dns-query
+    - https://1.1.1.1/dns-query
+    - tls://8.8.8.8:853
+  proxy-server-nameserver:
+    - udp://127.0.0.1:1053
+"#,
+        )
+        .unwrap();
+        let err = runtime_dns_safety_report(&config).expect_err("local resolver should fail");
+        assert!(err.contains("unsafe"));
     }
 
     #[test]
@@ -3953,12 +4128,14 @@ rules:
                 select_name: "TUIC".to_string(),
                 group_name: "GLOBAL".to_string(),
                 protocol: "tuic".to_string(),
+                server: "tuic.example.com".to_string(),
             },
             SpeedTestTarget {
                 name: "Trojan".to_string(),
                 select_name: "Trojan".to_string(),
                 group_name: "GLOBAL".to_string(),
                 protocol: "trojan".to_string(),
+                server: "trojan.example.com".to_string(),
             },
         ];
         let phases = speed_test_phases(targets, &HashMap::new(), 1);
@@ -4021,24 +4198,28 @@ rules:
                 select_name: "Hysteria2".to_string(),
                 group_name: "GLOBAL".to_string(),
                 protocol: "hysteria2".to_string(),
+                server: "hy2.example.com".to_string(),
             },
             SpeedTestTarget {
                 name: "Reality".to_string(),
                 select_name: "Reality".to_string(),
                 group_name: "GLOBAL".to_string(),
                 protocol: "vless-reality".to_string(),
+                server: "reality.example.com".to_string(),
             },
             SpeedTestTarget {
                 name: "TUIC".to_string(),
                 select_name: "TUIC".to_string(),
                 group_name: "GLOBAL".to_string(),
                 protocol: "tuic".to_string(),
+                server: "tuic.example.com".to_string(),
             },
             SpeedTestTarget {
                 name: "SS Obfs".to_string(),
                 select_name: "SS Obfs".to_string(),
                 group_name: "GLOBAL".to_string(),
                 protocol: "ss-obfs".to_string(),
+                server: "ss.example.com".to_string(),
             },
         ];
         let phases = speed_test_phases(targets, &HashMap::new(), 1);
@@ -4092,12 +4273,14 @@ rules:
                 select_name: "Fast".to_string(),
                 group_name: "GLOBAL".to_string(),
                 protocol: "trojan".to_string(),
+                server: "fast.example.com".to_string(),
             },
             SpeedTestTarget {
                 name: "Slow".to_string(),
                 select_name: "Slow".to_string(),
                 group_name: "GLOBAL".to_string(),
                 protocol: "ss".to_string(),
+                server: "slow.example.com".to_string(),
             },
         ];
         let mut health = HashMap::new();
@@ -6366,11 +6549,18 @@ impl CoreManager {
                                 .and_then(|value| value.as_str())
                                 .unwrap_or("unknown")
                                 .to_string();
+                            let server = item
+                                .get("server")
+                                .or_else(|| item.get("host"))
+                                .and_then(|value| value.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             Some(SpeedTestTarget {
                                 name: name.to_string(),
                                 select_name: select_name.to_string(),
                                 group_name: group_name.clone(),
                                 protocol,
+                                server,
                             })
                         })
                     })
@@ -6756,6 +6946,16 @@ impl CoreManager {
         }
         let groups = self.proxy_groups();
         let targets = Self::collect_proxy_targets(&groups);
+        if let Err(err) = speed_test_preflight(&targets) {
+            {
+                let mut speed = self.speed_test.lock().unwrap();
+                speed.running = false;
+                speed.error = Some(err.clone());
+                speed.updated_at = now_secs();
+            }
+            self.add_log(err.clone(), "warn");
+            return Err(err);
+        }
         let total = targets.len();
         if total == 0 {
             return Ok(self.speed_test_snapshot());
@@ -6920,6 +7120,7 @@ impl CoreManager {
         self.ensure_core_for_delay_test()?;
         let groups = self.proxy_groups();
         let targets = Self::collect_proxy_targets(&groups);
+        speed_test_preflight(&targets)?;
         let target = targets
             .iter()
             .find(|target| target.name == name || target.select_name == name)
@@ -7845,6 +8046,23 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
         });
     let profile_preflight_ok = profile_preflight.is_ok();
     let profile_preflight_detail = profile_preflight.unwrap_or_else(|err| err);
+    let runtime_dns_safety = snapshot
+        .active_profile
+        .as_ref()
+        .ok_or_else(|| "no active profile".to_string())
+        .and_then(|profile| {
+            let path = PathBuf::from(&profile.path);
+            let raw = fs::read_to_string(&path)
+                .map_err(|err| format!("DNS preflight read failed {}: {err}", path.display()))?;
+            let source: YamlValue = serde_yaml::from_str(&raw).map_err(|err| {
+                format!("DNS preflight YAML parse failed {}: {err}", path.display())
+            })?;
+            let patched =
+                patch_config_with_settings(source, &snapshot.settings, Some(&profile.id))?;
+            runtime_dns_safety_report(&patched)
+        });
+    let runtime_dns_safety_ok = runtime_dns_safety.is_ok();
+    let runtime_dns_safety_detail = runtime_dns_safety.unwrap_or_else(|err| err);
     let recent_error = snapshot.recent_logs.iter().rev().find(|entry| {
         matches!(entry.level.as_str(), "error" | "warn")
             || entry.line.to_ascii_lowercase().contains("error")
@@ -7919,6 +8137,14 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             "error",
             "profile",
             "订阅预检失败，请优先检查订阅内容、代理组引用和端口配置。",
+        ),
+        check(
+            "Speed test DNS isolation",
+            runtime_dns_safety_ok,
+            runtime_dns_safety_detail,
+            "error",
+            "speed",
+            "测速 DNS 隔离异常。请重启 Aegos 让运行配置重新生成；如果仍失败，检查是否有其他代理占用 DNS 1053/1054。",
         ),
         check("Tauri shell", true, "Aegos".to_string(), "warning", "app", ""),
         check(

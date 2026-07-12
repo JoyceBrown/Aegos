@@ -136,7 +136,9 @@ check(
     appJs.includes('function el(tag') &&
     appJs.includes('function replaceChildrenSafe') &&
     renderNodeBody.includes('text(name)') &&
-    renderNodeBody.includes('textContent: `${protocolLabel(protocol)} / ${host || \'\'}') &&
+    appJs.includes('function nodeAddressInfo') &&
+    renderNodeBody.includes('textContent: address.label') &&
+    renderNodeBody.includes('attrs: { title: address.title }') &&
     renderLogsBody.includes('textContent: entry.line') &&
     appJs.includes('textContent: item.detail') &&
     appJs.includes('emptyState(`\\u8bca\\u65ad\\u5931\\u8d25') &&

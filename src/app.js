@@ -634,6 +634,12 @@ function nodeAddressInfo(row = []) {
 function speedFailureReasonLabel(reason = '') {
   const key = String(reason || '').toLowerCase();
   if (!key) return '测速失败';
+  if (key.includes('fake-ip') || key.includes('fake ip')) return 'DNS 污染';
+  if (key.includes('protection') || key.includes('firewall') || key.includes('kill')) return '保护拦截';
+  if (key.includes('node-not-found')) return '节点缺失';
+  if (key.includes('node-connect')) return '节点不通';
+  if (key.includes('controller-delay')) return '核心测速失败';
+  if (key.includes('probe-failed')) return '探测失败';
   if (key.includes('timeout')) return '超时';
   if (key.includes('dns')) return 'DNS 失败';
   if (key.includes('tls')) return 'TLS 失败';

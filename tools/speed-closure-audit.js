@@ -129,12 +129,23 @@ check(
     mainRs.includes('lastFailureReason') &&
     mainRs.includes('DelayTestResult') &&
     mainRs.includes('classify_failure_reason(&err.to_string())') &&
+    mainRs.includes('fn classify_delay_http_failure') &&
+    mainRs.includes('controller-delay-error') &&
     appJs.includes('function speedFailureReasonLabel') &&
     appJs.includes('function nodeSpeedNoteInfo') &&
     appJs.includes('speedFailureReasonLabel(failureReason)') &&
     appJs.includes('className: \'node-note note-bad\'') &&
     indexHtml.includes('<span>状态</span>'),
   'tested failed nodes must show timeout/DNS/TLS/auth/etc. in a dedicated status column instead of reverting to untested'
+);
+
+check(
+  'speed preflight fails fast on unsafe targets',
+  mainRs.includes('fn speed_test_preflight') &&
+    mainRs.includes('dns-fake-ip') &&
+    mainRs.includes('speed_test_preflight(&targets)?') &&
+    mainRs.includes('speed_test_preflight_blocks_fake_ip_targets'),
+  'fake-ip and metadata targets should fail before slow batch probing'
 );
 
 check(
@@ -151,6 +162,8 @@ check(
   'runtime DNS avoids FlClash local fake-ip resolver contamination',
   mainRs.includes('fn harden_runtime_dns') &&
     mainRs.includes('const AEGOS_DNS_LISTEN: &str = "127.0.0.1:1054"') &&
+    mainRs.includes('fn runtime_dns_safety_report') &&
+    mainRs.includes('"Speed test DNS isolation"') &&
     mainRs.includes('proxy-server-nameserver') &&
     mainRs.includes('https://223.5.5.5/dns-query') &&
     mainRs.includes('https://1.1.1.1/dns-query') &&
