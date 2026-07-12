@@ -315,6 +315,7 @@ struct LogEntry {
 
 #[derive(Clone, Default)]
 struct SpeedTestState {
+    run_id: u64,
     running: bool,
     started_at: u64,
     updated_at: u64,
@@ -864,25 +865,35 @@ fn protocol_fast_timeout_ms(protocol: &str) -> u64 {
 
 fn delay_probe_plan(protocol: &str, depth: DelayProbeDepth) -> Vec<DelayProbe> {
     if matches!(depth, DelayProbeDepth::Fast) {
-        if protocol_family(protocol) == "ss-obfs" {
-            return vec![DelayProbe {
-                url: "http://www.gstatic.com/generate_204",
-                timeout_ms: protocol_fast_timeout_ms(protocol),
-            }];
+        let timeout_ms = protocol_fast_timeout_ms(protocol);
+        if matches!(
+            protocol_family(protocol),
+            "tuic" | "hysteria" | "wireguard" | "anytls" | "ss-obfs"
+        ) {
+            return vec![
+                DelayProbe {
+                    url: "http://www.gstatic.com/generate_204",
+                    timeout_ms,
+                },
+                DelayProbe {
+                    url: "http://cp.cloudflare.com/generate_204",
+                    timeout_ms,
+                },
+            ];
         }
         return vec![DelayProbe {
-            url: "https://www.gstatic.com/generate_204",
-            timeout_ms: protocol_fast_timeout_ms(protocol),
+            url: "http://www.gstatic.com/generate_204",
+            timeout_ms,
         }];
     }
     let timeout_ms = protocol_primary_timeout_ms(protocol);
     let mut probes = vec![
         DelayProbe {
-            url: "https://www.gstatic.com/generate_204",
+            url: "http://www.gstatic.com/generate_204",
             timeout_ms,
         },
         DelayProbe {
-            url: "http://www.gstatic.com/generate_204",
+            url: "https://www.gstatic.com/generate_204",
             timeout_ms,
         },
         DelayProbe {
@@ -1426,6 +1437,29 @@ fn test_proxy_delay_with_retry(
         return fast_delay;
     }
     delay_probe_plan(protocol, DelayProbeDepth::Full)
+        .iter()
+        .map(|probe| {
+            test_proxy_delay_request(
+                client,
+                controller_port,
+                secret,
+                name,
+                probe.url,
+                probe.timeout_ms,
+            )
+        })
+        .find(|delay| *delay >= 0)
+        .unwrap_or(-1)
+}
+
+fn test_proxy_delay_fast(
+    client: &Client,
+    controller_port: u16,
+    secret: &str,
+    name: &str,
+    protocol: &str,
+) -> i64 {
+    delay_probe_plan(protocol, DelayProbeDepth::Fast)
         .iter()
         .map(|probe| {
             test_proxy_delay_request(
@@ -3628,14 +3662,24 @@ rules:
         assert_eq!(protocol_primary_timeout_ms("anytls"), 5000);
         assert_eq!(protocol_primary_timeout_ms("tuic"), 5000);
         let fast_tuic_probes = delay_probe_plan("tuic", DelayProbeDepth::Fast);
-        assert_eq!(fast_tuic_probes.len(), 1);
+        assert_eq!(fast_tuic_probes.len(), 2);
         assert_eq!(
             fast_tuic_probes[0].url,
-            "https://www.gstatic.com/generate_204"
+            "http://www.gstatic.com/generate_204"
+        );
+        assert_eq!(
+            fast_tuic_probes[1].url,
+            "http://cp.cloudflare.com/generate_204"
         );
         assert_eq!(fast_tuic_probes[0].timeout_ms, 2800);
+        let fast_anytls_probes = delay_probe_plan("anytls", DelayProbeDepth::Fast);
+        assert_eq!(fast_anytls_probes.len(), 2);
+        assert_eq!(
+            fast_anytls_probes[0].url,
+            "http://www.gstatic.com/generate_204"
+        );
         let tuic_probes = delay_probe_plan("tuic", DelayProbeDepth::Full);
-        assert_eq!(tuic_probes[0].url, "https://www.gstatic.com/generate_204");
+        assert_eq!(tuic_probes[0].url, "http://www.gstatic.com/generate_204");
         assert!(tuic_probes
             .iter()
             .any(|probe| probe.url == "https://cp.cloudflare.com/generate_204"));
@@ -6199,6 +6243,7 @@ impl CoreManager {
         let speed = self.speed_test.lock().unwrap().clone();
         let now = now_secs();
         json!({
+            "runId": speed.run_id,
             "running": speed.running,
             "startedAt": speed.started_at,
             "updatedAt": speed.updated_at,
@@ -6213,6 +6258,24 @@ impl CoreManager {
             "lowLatency": speed.low_latency,
             "recommended": speed.recommended
         })
+    }
+
+    fn reset_speed_test_state(&self, reason: &str, clear_health: bool) {
+        let mut speed = self.speed_test.lock().unwrap();
+        let run_id = speed.run_id.saturating_add(1);
+        let health = if clear_health {
+            HashMap::new()
+        } else {
+            speed.health.clone()
+        };
+        *speed = SpeedTestState {
+            run_id,
+            running: false,
+            updated_at: now_secs(),
+            health,
+            error: Some(reason.to_string()),
+            ..SpeedTestState::default()
+        };
     }
 
     fn best_proxy_candidate(&self) -> Option<JsonValue> {
@@ -6351,6 +6414,7 @@ impl CoreManager {
         let speed_test = self.speed_test.clone();
         let previous_health = speed_test.lock().unwrap().health.clone();
         let phases = speed_test_phases(targets.clone(), &previous_health, now_secs());
+        let run_id;
         {
             let mut speed = speed_test.lock().unwrap();
             if speed.running {
@@ -6358,7 +6422,9 @@ impl CoreManager {
                 return Ok(self.speed_test_snapshot());
             }
             let now = now_secs();
+            run_id = speed.run_id.saturating_add(1);
             *speed = SpeedTestState {
+                run_id,
                 running: true,
                 started_at: now,
                 updated_at: now,
@@ -6396,9 +6462,11 @@ impl CoreManager {
                 )) {
                     let message = format!("断网保护测速放行失败：{err}");
                     let mut speed = speed_test.lock().unwrap();
-                    speed.running = false;
-                    speed.error = Some(message);
-                    speed.updated_at = now_secs();
+                    if speed.run_id == run_id {
+                        speed.running = false;
+                        speed.error = Some(message);
+                        speed.updated_at = now_secs();
+                    }
                     return;
                 }
             }
@@ -6420,18 +6488,23 @@ impl CoreManager {
                 Ok(client) => Arc::new(client),
                 Err(err) => {
                     let mut speed = speed_test.lock().unwrap();
-                    speed.running = false;
-                    speed.error = Some(err.to_string());
-                    speed.updated_at = now_secs();
+                    if speed.run_id == run_id {
+                        speed.running = false;
+                        speed.error = Some(err.to_string());
+                        speed.updated_at = now_secs();
+                    }
                     cleanup_speed_firewall();
                     return;
                 }
             };
             for (phase_targets, chunk_size) in phases {
                 for chunk in phase_targets.chunks(chunk_size) {
-                    if !speed_test.lock().unwrap().running {
-                        cleanup_speed_firewall();
-                        return;
+                    {
+                        let speed = speed_test.lock().unwrap();
+                        if !speed.running || speed.run_id != run_id {
+                            cleanup_speed_firewall();
+                            return;
+                        }
                     }
                     let (tx, rx) = mpsc::channel();
                     let mut handles = Vec::with_capacity(chunk.len());
@@ -6440,7 +6513,7 @@ impl CoreManager {
                         let secret = secret.clone();
                         let client = client.clone();
                         handles.push(thread::spawn(move || {
-                            let delay = test_proxy_delay_with_retry(
+                            let delay = test_proxy_delay_fast(
                                 &client,
                                 controller_port,
                                 &secret,
@@ -6453,7 +6526,7 @@ impl CoreManager {
                     drop(tx);
                     for (target, delay) in rx {
                         let mut speed = speed_test.lock().unwrap();
-                        if !speed.running {
+                        if !speed.running || speed.run_id != run_id {
                             cleanup_speed_firewall();
                             return;
                         }
@@ -6483,8 +6556,10 @@ impl CoreManager {
                 }
             }
             let mut speed = speed_test.lock().unwrap();
-            speed.running = false;
-            speed.updated_at = now_secs();
+            if speed.run_id == run_id {
+                speed.running = false;
+                speed.updated_at = now_secs();
+            }
             drop(speed);
             cleanup_speed_firewall();
         });
@@ -6577,12 +6652,7 @@ impl CoreManager {
     }
 
     fn cancel_proxy_delay_test(&mut self) -> JsonValue {
-        let mut speed = self.speed_test.lock().unwrap();
-        if speed.running {
-            speed.running = false;
-            speed.error = Some("cancelled".to_string());
-            speed.updated_at = now_secs();
-        }
+        self.reset_speed_test_state("cancelled", false);
         json!({ "ok": true })
     }
 
@@ -7044,6 +7114,9 @@ impl CoreManager {
             ),
             "info",
         );
+        if previous_profile_id != id {
+            self.reset_speed_test_state("profile switched; previous speed test cancelled", true);
+        }
         self.preflight_profile_file(&profile).map_err(|err| {
             let message = format!(
                 "Profile switch preflight failed for {} at {}: {err}",

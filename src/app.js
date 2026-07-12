@@ -32,6 +32,7 @@ let nodeSearchKeyword = '';
 let logFilter = 'all';
 let speedTestTimer = null;
 let speedTestStarting = false;
+let activeSpeedRunId = 0;
 const speedTestButtons = new Set();
 let lastSpeedNodeRefreshAt = 0;
 let latestSpeedStatus = null;
@@ -1558,6 +1559,7 @@ function applyOptimisticMode(mode) {
 
 function applyOptimisticProfile(profileId) {
   if (!latestStatus?.settings) return;
+  resetSpeedUiForProfileSwitch();
   const profiles = latestStatus.settings.profiles || [];
   const profile = profiles.find((item) => item.id === profileId);
   latestStatus = {
@@ -1849,13 +1851,30 @@ function stopSpeedTestPolling() {
   if (speedTestTimer) clearInterval(speedTestTimer);
   speedTestTimer = null;
   speedTestStarting = false;
+  activeSpeedRunId = 0;
   speedTestButtons.forEach((button) => setButtonBusy(button, false, '', { preserveContent: true }));
   speedTestButtons.clear();
+}
+
+function resetSpeedUiForProfileSwitch() {
+  stopSpeedTestPolling();
+  latestSpeedStatus = null;
+  lastAppliedSpeedSignature = '';
+  lastSpeedNodeRefreshAt = 0;
+  selectedNode = '';
+  latestGroup = latestGroup ? { ...latestGroup, now: '', items: [] } : null;
+  pendingRowItems = [];
+  renderRows([]);
+  renderHomeNodeSummary([]);
 }
 
 async function pollSpeedTest() {
   try {
     const status = await invoke('speed_test_status');
+    if (activeSpeedRunId && status.runId && status.runId !== activeSpeedRunId) {
+      stopSpeedTestPolling();
+      return;
+    }
     applySpeedStatusToNodes(status);
     if (status.running) {
       setNotice(`正在测速：${status.completed || 0}/${status.total || 0}，成功 ${status.ok || 0}，失败 ${status.failed || 0}`);
@@ -1882,6 +1901,7 @@ async function testNodes(button = null) {
   setNotice('\u6d4b\u901f\u5df2\u53d1\u9001\u5230\u540e\u53f0\uff0c\u754c\u9762\u53ef\u7ee7\u7eed\u64cd\u4f5c\u3002');
   try {
     const status = await invoke('start_proxy_delay_test');
+    activeSpeedRunId = Number(status.runId || 0);
     applySpeedStatusToNodes(status, { force: true });
     lastSpeedNodeRefreshAt = 0;
     refreshNodes(true, { target: 'all' }).then(() => {

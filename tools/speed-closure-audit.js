@@ -26,6 +26,7 @@ const testNodesBody = appJs.match(/async function testNodes\([^)]*\) \{([\s\S]*?
 const speedBody = bodyBetween(mainRs, 'fn start_proxy_delay_test', 'fn test_single_proxy_delay');
 const singleBody = bodyBetween(mainRs, 'fn test_single_proxy_delay', 'fn test_proxy_delays');
 const ensureBody = bodyBetween(mainRs, 'fn ensure_core_for_delay_test', 'fn start_proxy_delay_test');
+const profileSwitchBody = bodyBetween(mainRs, 'fn set_active_profile', 'fn rename_profile');
 
 check(
   'batch speed tests start only the delay-test command from UI',
@@ -54,6 +55,27 @@ check(
     !singleBody.includes('change_proxy') &&
     !singleBody.includes('select_best_proxy'),
   'single test only updates one node health'
+);
+
+check(
+  'batch speed test uses fast pass only while single-node keeps deep retry',
+  speedBody.includes('test_proxy_delay_fast') &&
+    !speedBody.includes('test_proxy_delay_with_retry') &&
+    singleBody.includes('test_proxy_delay_with_retry') &&
+    mainRs.includes('fn test_proxy_delay_fast'),
+  'batch speed should return quickly; single node can probe deeper'
+);
+
+check(
+  'profile switching cancels stale speed tests and clears visible speed state',
+  mainRs.includes('run_id: u64') &&
+    mainRs.includes('"runId": speed.run_id') &&
+    profileSwitchBody.includes('reset_speed_test_state("profile switched; previous speed test cancelled", true)') &&
+    speedBody.includes('speed.run_id != run_id') &&
+    appJs.includes('function resetSpeedUiForProfileSwitch') &&
+    appJs.includes('resetSpeedUiForProfileSwitch();') &&
+    appJs.includes('status.runId !== activeSpeedRunId'),
+  'old subscription speed results must not write into the new subscription'
 );
 
 check(
