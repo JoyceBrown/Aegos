@@ -40,6 +40,7 @@ let profileMenuAnchor = null;
 let nodeTransitionTimer = null;
 let routingAssistantReady = false;
 let latestRoutingSnapshot = null;
+let latestEnvironmentReadiness = null;
 let routingAssistantDrafts = [];
 let routingAssistantView = 'simple';
 const speedTestButtons = new Set();
@@ -1353,7 +1354,10 @@ function schedulePageLoad(page) {
         renderProfiles();
         markPageCache(page);
       }
-      if (page === 'settings') refreshIpv6DnsSafety();
+      if (page === 'settings') {
+        refreshIpv6DnsSafety();
+        refreshEnvironmentReadiness(false);
+      }
     });
   }, pageNavSettleMs);
 }
@@ -1638,6 +1642,50 @@ function renderSettings(status) {
   $('#profileFailoverToggle').checked = reliability.profileFailover !== false;
   $('#reliabilityMaxDelayInput').value = reliability.maxDelayMs || 800;
   $('#reliabilityCandidateLimitInput').value = reliability.candidateLimit || 24;
+  renderEnvironmentReadiness();
+}
+
+function readinessLevelLabel(level = '') {
+  if (level === 'error') return '需处理';
+  if (level === 'warn') return '可优化';
+  if (level === 'ok') return '正常';
+  return '提示';
+}
+
+function renderEnvironmentReadiness(data = latestEnvironmentReadiness) {
+  const summaryEl = $('#environmentSummary');
+  const rowsEl = $('#environmentRows');
+  if (!summaryEl || !rowsEl) return;
+  if (!data) {
+    summaryEl.textContent = '等待检查';
+    replaceChildrenSafe(rowsEl, [emptyState('点击刷新检查，确认安装环境、端口、权限和安全暴露面。')]);
+    return;
+  }
+  const summary = data.summary || {};
+  summaryEl.textContent = `${summary.label || '环境状态'} · ${summary.errors || 0} 错误 / ${summary.warnings || 0} 提醒`;
+  summaryEl.className = summary.errors ? 'bad' : summary.warnings ? 'warn' : 'ok';
+  const rows = (data.checks || []).map((item) => el('article', { className: `environment-row level-${item.level || 'info'}` }, [
+    el('div', {}, [
+      el('b', { textContent: item.label || '-' }),
+      el('small', { textContent: item.detail || '-' }),
+      el('small', { className: 'environment-action', textContent: item.action || '' })
+    ]),
+    el('span', { textContent: readinessLevelLabel(item.level) })
+  ]));
+  replaceChildrenSafe(rowsEl, rows.length ? rows : [emptyState('暂无环境检查结果。')]);
+}
+
+async function refreshEnvironmentReadiness(showNotice = false) {
+  try {
+    const data = await invoke('environment_readiness');
+    latestEnvironmentReadiness = data;
+    renderEnvironmentReadiness(data);
+    if (showNotice) setNotice(`安装与安全检查完成：${data.summary?.label || '已完成'}`);
+  } catch (err) {
+    latestEnvironmentReadiness = null;
+    replaceChildrenSafe($('#environmentRows'), [emptyState(`安装与安全检查不可用：${err.message || err}`)]);
+    if (showNotice) setNotice(`安装与安全检查失败：${err.message || err}`);
+  }
 }
 
 function ensureIpv6DnsSafetyUi() {
@@ -3595,6 +3643,8 @@ const exportLogsBtn = $('#exportLogsBtn');
 if (exportLogsBtn) exportLogsBtn.onclick = (event) => runButtonAction(event.currentTarget, '导出中...', exportLogs);
 const exportDiagBtn = $('#exportDiagBtn');
 if (exportDiagBtn) exportDiagBtn.onclick = (event) => runDetachedButtonAction(event.currentTarget, '导出中...', exportDiagnosticReport);
+const refreshEnvironmentBtn = $('#refreshEnvironmentBtn');
+if (refreshEnvironmentBtn) refreshEnvironmentBtn.onclick = (event) => runDetachedButtonAction(event.currentTarget, '检查中...', () => refreshEnvironmentReadiness(true));
 $('#clearLogsBtn').onclick = () => runOptimisticAction({
   apply: () => applyOptimisticLogsClear(),
   commit: () => invoke('clear_logs'),

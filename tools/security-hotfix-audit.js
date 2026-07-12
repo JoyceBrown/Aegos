@@ -56,7 +56,7 @@ check(
     addLogBody.includes('sanitize_sensitive_text(line.as_ref())') &&
     startBody.includes('sanitize_sensitive_text(&line)') &&
     publicProfileBody.includes('sanitize_sensitive_text(value)') &&
-    exportLogsBody.includes('entry.line.replace') &&
+    (exportLogsBody.includes('entry.line.replace') || exportLogsBody.includes('sanitize_sensitive_text(&entry.line)')) &&
     mainRs.includes('export_logs_from_state(&state.logs, &state.app_data)') &&
     !publicProfileBody.includes('"source_url": &profile.source_url'),
   'subscription token/password/uuid/bearer/userinfo must not leak through logs or public profile JSON'

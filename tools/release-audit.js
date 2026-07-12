@@ -52,6 +52,7 @@ check('performance smoke script exists', exists('tools/perf-smoke.js') && pkg.sc
 check('soak smoke script exists', exists('tools/soak-smoke.js') && pkg.scripts?.['smoke:soak'] === 'node tools/soak-smoke.js', 'tools/soak-smoke.js');
 check('backend audit script exists', exists('tools/backend-audit.js') && pkg.scripts?.['audit:backend'] === 'node tools/backend-audit.js', 'tools/backend-audit.js');
 check('security hotfix audit script exists', exists('tools/security-hotfix-audit.js') && pkg.scripts?.['audit:security'] === 'node tools/security-hotfix-audit.js', 'tools/security-hotfix-audit.js');
+check('settings security productization gate exists', exists('tools/settings-security-product-audit.js') && pkg.scripts?.['audit:settings-security-product'] === 'node tools/settings-security-product-audit.js', 'settings security productization gate');
 check('diagnostics productization gate exists', exists('tools/diagnostics-product-audit.js') && pkg.scripts?.['audit:diagnostics-product'] === 'node tools/diagnostics-product-audit.js', 'diagnostics productization gate');
 check('stability regression audit script exists', exists('tools/stability-regression-audit.js') && pkg.scripts?.['audit:stability'] === 'node tools/stability-regression-audit.js', 'tools/stability-regression-audit.js');
 check('installer candidate audit script exists', exists('tools/installer-candidate-audit.js') && pkg.scripts?.['audit:installer'] === 'node tools/installer-candidate-audit.js', 'tools/installer-candidate-audit.js');

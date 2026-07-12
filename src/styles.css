@@ -1439,6 +1439,73 @@ h1 {
   white-space: nowrap;
 }
 
+.environment-section {
+  gap: 8px;
+}
+
+.environment-list {
+  min-height: 92px;
+  max-height: 186px;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+  scrollbar-gutter: stable;
+}
+
+.environment-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .7);
+  box-shadow: inset 0 0 0 1px rgba(126, 151, 182, .10);
+}
+
+.environment-row > div,
+.environment-row b,
+.environment-row small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.environment-row b {
+  display: block;
+  font-size: 13px;
+}
+
+.environment-row small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.environment-row span {
+  justify-self: end;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.environment-row.level-error span,
+.environment-row.level-error .environment-action {
+  color: #d94343;
+}
+
+.environment-row.level-warn span,
+.environment-row.level-warn .environment-action {
+  color: #b77912;
+}
+
+.environment-row.level-ok span {
+  color: #1a9f62;
+}
+
 .routing-card {
   grid-template-rows: auto auto auto minmax(96px, .72fr) minmax(140px, 1fr);
   gap: 10px;

@@ -10856,6 +10856,114 @@ fn ipv6_dns_safety_snapshot(state: State<AppState>) -> Result<JsonValue, String>
 }
 
 #[tauri::command]
+fn environment_readiness(state: State<AppState>) -> Result<JsonValue, String> {
+    let (running, core_path, settings, traffic_takeover, proxy_snapshot_exists) = {
+        let core = state.core.lock().unwrap();
+        (
+            core.process.is_some(),
+            core.core_path.clone(),
+            core.settings.clone(),
+            core.traffic_takeover,
+            core.proxy_snapshot_path.exists(),
+        )
+    };
+    let is_admin = is_process_elevated();
+    let mixed_port_ok = running || is_port_free(settings.mixed_port);
+    let controller_port_ok = running || is_port_free(settings.controller_port);
+    let mut checks = vec![
+        json!({
+            "id": "webview2",
+            "label": "WebView2",
+            "ok": true,
+            "level": "ok",
+            "detail": "当前界面已运行；安装包会在缺失时显示 WebView2 bootstrapper。",
+            "action": "其他 Windows 设备可直接运行安装包，缺 WebView2 时按安装器提示处理。"
+        }),
+        json!({
+            "id": "admin",
+            "label": "管理员权限",
+            "ok": is_admin || (!settings.tun_enabled && !settings.kill_switch_enabled),
+            "level": if is_admin { "ok" } else if settings.tun_enabled || settings.kill_switch_enabled { "warn" } else { "info" },
+            "detail": if is_admin { "管理员运行中" } else { "普通权限运行中" },
+            "action": if is_admin { "无需处理。" } else { "只有 TUN 或断网保护需要管理员权限；普通系统代理可继续使用。" }
+        }),
+        json!({
+            "id": "mixed-port",
+            "label": "代理端口",
+            "ok": mixed_port_ok,
+            "level": if mixed_port_ok { "ok" } else { "error" },
+            "detail": port_owner_detail(settings.mixed_port),
+            "action": if mixed_port_ok { "端口可用。" } else { "修改代理端口或关闭占用程序。" }
+        }),
+        json!({
+            "id": "controller-port",
+            "label": "控制端口",
+            "ok": controller_port_ok,
+            "level": if controller_port_ok { "ok" } else { "error" },
+            "detail": port_owner_detail(settings.controller_port),
+            "action": if controller_port_ok { "端口可用。" } else { "修改控制端口或关闭占用程序。" }
+        }),
+        json!({
+            "id": "controller-bind",
+            "label": "控制接口",
+            "ok": !settings.allow_lan,
+            "level": if settings.allow_lan { "warn" } else { "ok" },
+            "detail": if settings.allow_lan { "allow-lan 开启时会扩大监听面。" } else { "默认仅 127.0.0.1 本机访问。" },
+            "action": if settings.allow_lan { "不需要局域网访问时请关闭允许局域网。" } else { "保持默认更安全。" }
+        }),
+        json!({
+            "id": "allow-lan",
+            "label": "局域网访问",
+            "ok": !settings.allow_lan,
+            "level": if settings.allow_lan { "warn" } else { "ok" },
+            "detail": if settings.allow_lan { "已允许局域网设备访问代理。" } else { "已关闭局域网访问。" },
+            "action": if settings.allow_lan { "只在明确需要其他设备连接时开启。" } else { "无需处理。" }
+        }),
+        json!({
+            "id": "core-resource",
+            "label": "内核文件",
+            "ok": core_path.exists(),
+            "level": if core_path.exists() { "ok" } else { "error" },
+            "detail": core_path.to_string_lossy(),
+            "action": if core_path.exists() { "内核资源存在。" } else { "重新安装或检查 resources/core/mihomo.exe。" }
+        }),
+        json!({
+            "id": "proxy-restore",
+            "label": "系统代理恢复",
+            "ok": proxy_snapshot_exists || !traffic_takeover,
+            "level": if proxy_snapshot_exists || !traffic_takeover { "ok" } else { "warn" },
+            "detail": if proxy_snapshot_exists { "已保存接管前快照。" } else if traffic_takeover { "接管中但暂无快照。" } else { "当前未接管系统代理。" },
+            "action": if proxy_snapshot_exists || !traffic_takeover { "无需处理。" } else { "如系统代理异常，请使用修复接管或断开连接。" }
+        }),
+    ];
+    checks.sort_by_key(|item| match item.get("level").and_then(JsonValue::as_str).unwrap_or("info") {
+        "error" => 0,
+        "warn" => 1,
+        "ok" => 2,
+        _ => 3,
+    });
+    let errors = checks
+        .iter()
+        .filter(|item| item.get("level").and_then(JsonValue::as_str) == Some("error"))
+        .count();
+    let warnings = checks
+        .iter()
+        .filter(|item| item.get("level").and_then(JsonValue::as_str) == Some("warn"))
+        .count();
+    Ok(json!({
+        "generatedAt": now_iso(),
+        "ok": errors == 0,
+        "summary": {
+            "errors": errors,
+            "warnings": warnings,
+            "total": checks.len(),
+            "label": if errors > 0 { "需要处理" } else if warnings > 0 { "可优化" } else { "环境正常" }
+        },
+        "checks": checks
+    }))
+}
+
+#[tauri::command]
 fn select_best_proxy(state: State<AppState>) -> Result<JsonValue, String> {
     let _operation = lock_operation_queue(&state.operations, "select_best_proxy command")?;
     state.core.lock().unwrap().select_best_proxy()
@@ -11908,6 +12016,7 @@ fn main() {
             recover_network,
             refresh_outbound_ip,
             ipv6_dns_safety_snapshot,
+            environment_readiness,
             select_best_proxy,
             connections,
             routing_snapshot,
