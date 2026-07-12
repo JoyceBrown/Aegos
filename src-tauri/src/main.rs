@@ -3922,6 +3922,55 @@ rules:
     }
 
     #[test]
+    fn profile_rule_validation_summary_counts_switch_warnings() {
+        let dir = std::env::temp_dir().join(format!("aegos-profile-validation-{}", hex_random(6)));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("profile.yaml");
+        fs::write(
+            &path,
+            r#"
+proxies:
+  - name: Node A
+    type: ss
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies:
+      - Node A
+rules:
+  - DOMAIN-SUFFIX,example.com,Proxy
+  - DOMAIN-SUFFIX,missing.example,MissingGroup
+  - MATCH,DIRECT
+  - DOMAIN-SUFFIX,later.example,Proxy
+"#,
+        )
+        .expect("profile write");
+        let profile = Profile {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            profile_type: "file".to_string(),
+            path: path.to_string_lossy().to_string(),
+            source_url: None,
+            node_count: 1,
+            proxy_group_count: 1,
+            updated_at: "now".to_string(),
+            digest: "digest".to_string(),
+        };
+        let summary = routing_rule_validation_summary_for_profile(&profile);
+        assert_eq!(
+            summary.get("ruleCount").and_then(JsonValue::as_u64),
+            Some(4)
+        );
+        assert_eq!(
+            summary.get("warningCount").and_then(JsonValue::as_u64),
+            Some(2)
+        );
+        assert_eq!(summary.get("ok").and_then(JsonValue::as_bool), Some(false));
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir(dir);
+    }
+
+    #[test]
     fn parses_base64_tuic_subscription() {
         let uri = "tuic://00000000-0000-4000-8000-000000000000:secret@example.com:443?sni=example.com&alpn=h3&congestion_control=bbr&udp_relay_mode=native&reduce_rtt=true#HK%20TUIC";
         let encoded = general_purpose::STANDARD.encode(uri);
@@ -8042,6 +8091,25 @@ impl CoreManager {
             self.add_log(&message, "error");
             message
         })?;
+        let rule_validation = routing_rule_validation_summary_for_profile(&profile);
+        let warning_count = rule_validation
+            .get("warningCount")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(0);
+        if warning_count > 0 {
+            self.add_log(
+                format!(
+                    "Profile switch rule validation warning: {} issue(s) in {}",
+                    warning_count, profile.name
+                ),
+                "warn",
+            );
+        } else {
+            self.add_log(
+                format!("Profile switch rule validation passed: {}", profile.name),
+                "info",
+            );
+        }
         self.settings.active_profile_id = id.to_string();
         self.save_settings()?;
         if was_running {
@@ -9584,6 +9652,20 @@ fn preview_profile_groups(state: State<AppState>, id: String) -> Result<JsonValu
 }
 
 #[tauri::command]
+fn profile_rule_validation(state: State<AppState>, id: String) -> Result<JsonValue, String> {
+    let profile = {
+        let core = state.core.lock().unwrap();
+        core.settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == id)
+            .cloned()
+            .ok_or_else(|| "Profile not found".to_string())?
+    };
+    Ok(routing_rule_validation_summary_for_profile(&profile))
+}
+
+#[tauri::command]
 fn start_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
     let already_running = state.speed_test.lock().unwrap().running;
     let snapshot = mark_speed_test_preparing(&state.speed_test);
@@ -10143,6 +10225,21 @@ fn routing_rules_for_profile(
     (rules, missing_targets, order_issues, None)
 }
 
+fn routing_rule_validation_summary_for_profile(profile: &Profile) -> JsonValue {
+    let (rules, missing_targets, order_issues, error) = routing_rules_for_profile(Some(profile));
+    let warning_count = missing_targets.len() + order_issues.len();
+    json!({
+        "profileId": profile.id,
+        "profileName": profile.name,
+        "ok": error.is_none() && warning_count == 0,
+        "ruleCount": rules.len(),
+        "missingRuleTargets": missing_targets,
+        "ruleOrderIssues": order_issues,
+        "warningCount": warning_count,
+        "error": error
+    })
+}
+
 #[tauri::command]
 fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
     let (running, controller_port, secret, mode, groups, active_profile) = {
@@ -10428,6 +10525,7 @@ fn main() {
             relaunch_as_admin,
             proxy_groups,
             preview_profile_groups,
+            profile_rule_validation,
             start_proxy_delay_test,
             test_single_proxy_delay,
             node_diagnostics,
