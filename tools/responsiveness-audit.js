@@ -71,8 +71,9 @@ check(
     testNodesBody.includes("invoke('start_proxy_delay_test'") &&
     !testNodesBody.includes('runForegroundAction') &&
     !testNodesBody.includes('foregroundBusy') &&
-    pollSpeedBody.includes('refreshVisibleNodesForSpeed') &&
-    appJs.includes('if (!isNodeSurfaceActive()) return'),
+    pollSpeedBody.includes('applySpeedStatusToNodes(status)') &&
+    appJs.includes('function applySpeedStatusToNodes') &&
+    appJs.includes("scheduleRowsRender(latestGroup.items, { force: true, target: 'all', delay: 0 })"),
   'measurement can run while the user continues using the app'
 );
 

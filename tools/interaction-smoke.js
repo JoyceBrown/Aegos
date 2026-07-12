@@ -138,6 +138,44 @@ try {
           ]
         }];
         let speedTestPollsRemaining = 0;
+        const speedStatusSnapshot = (running, completed) => {
+          const delays = Object.fromEntries(groups[0].items.map((item) => [item.name, item.delay]));
+          const health = Object.fromEntries(groups[0].items.map((item) => [item.name, {
+            status: item.healthStatus,
+            confidence: item.healthConfidence,
+            last_delay: item.delay,
+            median_delay: item.medianDelay,
+            jitter: item.jitter,
+            score: item.healthScore,
+            failure_streak: item.failureStreak || 0,
+            last_tested_at: item.lastTestedAt || 0
+          }]));
+          return {
+            running,
+            total: groups[0].items.length,
+            completed,
+            ok: groups[0].items.filter((item) => item.delay > 0).length,
+            failed: 0,
+            updatedAt: Math.floor(Date.now() / 1000),
+            delays,
+            health,
+            recommended: { realProxyName: 'HK 02', proxy: 'HK 02' }
+          };
+        };
+        const applyPartialDelayResults = () => {
+          const testedAt = Math.floor(Date.now() / 1000);
+          groups[0].items.slice(0, 2).forEach((item, index) => {
+            item.delay = [31, 48][index];
+            item.alive = true;
+            item.healthStatus = 'low';
+            item.healthScore = item.delay;
+            item.medianDelay = item.delay;
+            item.jitter = index;
+            item.healthConfidence = 'high';
+            item.lastTestedAt = testedAt;
+            item.recommended = item.name === 'HK 02';
+          });
+        };
         const applyDelayResults = () => {
           const testedAt = Math.floor(Date.now() / 1000);
           groups[0].items.forEach((item, index) => {
@@ -310,7 +348,7 @@ try {
               item.recommended = false;
             });
             speedTestPollsRemaining = 2;
-            return { running: true, total: groups[0].items.length, completed: 0, ok: 0, failed: 0 };
+            return speedStatusSnapshot(true, 0);
           }
           if (command === 'test_single_proxy_delay') {
             await new Promise((resolve) => setTimeout(resolve, 320));
@@ -347,10 +385,13 @@ try {
           if (command === 'speed_test_status') {
             if (speedTestPollsRemaining > 0) {
               speedTestPollsRemaining -= 1;
-              if (speedTestPollsRemaining > 0) return { running: true, total: groups[0].items.length, completed: 2, ok: 1, failed: 0 };
+              if (speedTestPollsRemaining > 0) {
+                applyPartialDelayResults();
+                return speedStatusSnapshot(true, 2);
+              }
               applyDelayResults();
             }
-            return { running: false, total: groups[0].items.length, completed: groups[0].items.length, ok: groups[0].items.length, failed: 0 };
+            return speedStatusSnapshot(false, groups[0].items.length);
           }
           if (command === 'test_proxy_delays') {
             groups[0].items.forEach((item, index) => { item.delay = [31, 48, 116, 132, 99][index]; item.alive = true; });
@@ -421,6 +462,9 @@ try {
     if (document.querySelector('[data-page-jump="nodes"]')) throw new Error('all nodes shortcut still renders on home');
     const switchCallsBeforeSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     await click('#quickTestBtn');
+    await navDown('[data-page="nodes"]');
+    await new Promise((resolve) => setTimeout(resolve, 380));
+    if (!document.querySelector('#nodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('node page did not receive quick home speed results');
     await navDown('[data-page="settings"]');
     if (!document.querySelector('[data-page-panel="settings"]')?.classList.contains('active')) throw new Error('speed test blocked sidebar page switching');
     await navDown('[data-page="home"]');
@@ -562,6 +606,12 @@ try {
     const switchCallsAfterBatchSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     if (switchCallsAfterBatchSpeed !== switchCallsBeforeBatchSpeed) throw new Error('batch speed test triggered a proxy switch');
     if (!document.querySelector('#nodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('node page delays did not update after batch speed test');
+    await navDown('[data-page="home"]');
+    await click('[data-home-mode="region"]');
+    await click('[data-region="HK"]');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    if (!document.querySelector('#homeNodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('home page did not receive node batch speed results');
+    await navDown('[data-page="nodes"]');
     const lowRows = [...document.querySelectorAll('#nodeRows .row[data-node]')];
     const lowDelayValues = lowRows.map((row) => Number(row.querySelector('.delay-good')?.textContent.replace(/[^0-9]/g, '')));
     if (!lowRows.length || lowDelayValues.some((value) => !Number.isFinite(value) || value >= 100)) throw new Error('low latency filter included nodes at or above 100 ms');

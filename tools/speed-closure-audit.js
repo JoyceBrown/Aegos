@@ -81,11 +81,12 @@ check(
   'speed-test UI remains non-blocking',
   appJs.includes('speedTestStarting') &&
     appJs.includes('speedTestButtons') &&
+    appJs.includes('function applySpeedStatusToNodes') &&
+    appJs.includes("scheduleRowsRender(latestGroup.items, { force: true, target: 'all', delay: 0 })") &&
     appJs.includes('function refreshVisibleNodesForSpeed') &&
-    appJs.includes('if (!isNodeSurfaceActive()) return') &&
     appJs.includes('queueNodeRefresh') &&
     !appJs.includes("$('#quickTestBtn').onclick = (event) => runButtonAction"),
-  'foreground UI is not marked busy for speed tests'
+  'foreground UI is not marked busy and speed results update home/nodes together'
 );
 
 check(
@@ -131,6 +132,8 @@ check(
   interactionSmoke.includes('speed test triggered a proxy switch') &&
     interactionSmoke.includes('batch speed test triggered a proxy switch') &&
     interactionSmoke.includes('speed test blocked sidebar page switching') &&
+    interactionSmoke.includes('node page did not receive quick home speed results') &&
+    interactionSmoke.includes('home page did not receive node batch speed results') &&
     interactionSmoke.includes('home filter switch left rows stuck in testing state after speed test'),
   'runtime UI regressions are covered by interaction smoke'
 );

@@ -34,6 +34,8 @@ let speedTestTimer = null;
 let speedTestStarting = false;
 const speedTestButtons = new Set();
 let lastSpeedNodeRefreshAt = 0;
+let latestSpeedStatus = null;
+let lastAppliedSpeedSignature = '';
 let outboundIpRequestSeq = 0;
 let outboundIpPendingSeq = 0;
 let outboundIpLastStable = '-';
@@ -330,25 +332,94 @@ function activeNodeRenderTarget(page = uiStore.state.page) {
 }
 
 function queueNodeRefresh(target = activeNodeRenderTarget(), delay = 0) {
-  const run = () => refreshNodes(true, { target }).catch(() => {});
+  const run = () => {
+    if (nodeBusy) {
+      setTimeout(run, 120);
+      return;
+    }
+    refreshNodes(true, { target }).then(() => {
+      if (latestSpeedStatus) applySpeedStatusToNodes(latestSpeedStatus, { force: true });
+    }).catch(() => {});
+  };
   if (delay > 0) setTimeout(run, delay);
   else run();
 }
 
 async function refreshVisibleNodesForSpeed(finalRefresh = false) {
-  if (!isNodeSurfaceActive()) return;
+  if (latestSpeedStatus) {
+    applySpeedStatusToNodes(latestSpeedStatus);
+  }
   const now = Date.now();
   if (!finalRefresh && now - lastSpeedNodeRefreshAt < speedTestNodeRefreshMs) return;
   lastSpeedNodeRefreshAt = now;
-  const target = activeNodeRenderTarget();
   try {
-    if (!nodeBusy) await refreshNodes(true, { target });
+    if (finalRefresh && !nodeBusy) await refreshNodes(true, { target: 'all' });
   } catch {}
-  if (finalRefresh) queueNodeRefresh(target, 180);
+  if (finalRefresh) queueNodeRefresh('all', 180);
 }
 
 function isSpeedTestActive() {
   return Boolean(speedTestTimer || speedTestStarting);
+}
+
+function speedHealthValue(health = {}, camelKey, snakeKey = camelKey) {
+  return health?.[camelKey] ?? health?.[snakeKey];
+}
+
+function applySpeedStatusToNodes(status = {}, options = {}) {
+  latestSpeedStatus = status || latestSpeedStatus;
+  if (!latestGroup?.items?.length || !status) return false;
+  const delays = status.delays || {};
+  const health = status.health || {};
+  const recommendedName = status.recommended?.realProxyName || status.recommended?.proxy || status.recommended?.name || '';
+  const signature = [
+    status.running ? '1' : '0',
+    status.completed || 0,
+    status.ok || 0,
+    status.failed || 0,
+    status.updatedAt || 0,
+    Object.keys(delays).length
+  ].join(':');
+  if (!options.force && signature === lastAppliedSpeedSignature) return false;
+  lastAppliedSpeedSignature = signature;
+
+  let changed = false;
+  latestGroup = {
+    ...latestGroup,
+    items: latestGroup.items.map((item) => {
+      const name = item.realProxyName || item.name;
+      const itemHealth = health[name] || health[item.name] || {};
+      const hasDelay = Object.prototype.hasOwnProperty.call(delays, name)
+        || Object.prototype.hasOwnProperty.call(delays, item.name);
+      const rawDelay = hasDelay ? (delays[name] ?? delays[item.name]) : speedHealthValue(itemHealth, 'lastDelay', 'last_delay');
+      if (rawDelay == null && !Object.keys(itemHealth).length && !recommendedName) return item;
+      const nextDelay = rawDelay != null ? Number(rawDelay) : Number(item.delay ?? -1);
+      const lastTestedAt = Number(speedHealthValue(itemHealth, 'lastTestedAt', 'last_tested_at') ?? item.lastTestedAt ?? 0);
+      const next = {
+        ...item,
+        delay: nextDelay,
+        alive: nextDelay >= 0 || item.alive !== false,
+        healthStatus: speedHealthValue(itemHealth, 'status') || (nextDelay === 0 ? 'testing' : nextDelay > 0 && nextDelay < 100 ? 'low' : nextDelay > 0 ? 'available' : item.healthStatus),
+        healthConfidence: speedHealthValue(itemHealth, 'confidence') || item.healthConfidence || (nextDelay === 0 ? 'testing' : nextDelay > 0 ? 'medium' : item.healthConfidence),
+        medianDelay: Number(speedHealthValue(itemHealth, 'medianDelay', 'median_delay') ?? item.medianDelay ?? nextDelay),
+        jitter: Number(speedHealthValue(itemHealth, 'jitter') ?? item.jitter ?? 0),
+        healthScore: Number(speedHealthValue(itemHealth, 'score') ?? item.healthScore ?? (nextDelay > 0 ? nextDelay : 999999)),
+        failureStreak: Number(speedHealthValue(itemHealth, 'failureStreak', 'failure_streak') ?? item.failureStreak ?? 0),
+        lastTestedAt,
+        recommended: recommendedName ? recommendedName === name || recommendedName === item.name : Boolean(item.recommended)
+      };
+      changed = changed || next.delay !== item.delay
+        || next.healthStatus !== item.healthStatus
+        || next.healthConfidence !== item.healthConfidence
+        || next.recommended !== item.recommended;
+      return next;
+    })
+  };
+  if (changed || options.force) {
+    scheduleRowsRender(latestGroup.items, { force: true, target: 'all', delay: 0 });
+    renderHomeNodeSummary(summaryRowsFromLatestGroup());
+  }
+  return changed;
 }
 
 function normalizeNodeItem(item = {}, index = 0) {
@@ -1785,8 +1856,8 @@ function stopSpeedTestPolling() {
 async function pollSpeedTest() {
   try {
     const status = await invoke('speed_test_status');
+    applySpeedStatusToNodes(status);
     if (status.running) {
-      await refreshVisibleNodesForSpeed(false);
       setNotice(`正在测速：${status.completed || 0}/${status.total || 0}，成功 ${status.ok || 0}，失败 ${status.failed || 0}`);
       return;
     }
@@ -1802,6 +1873,8 @@ async function pollSpeedTest() {
 async function testNodes(button = null) {
   if (speedTestTimer || speedTestStarting) return;
   speedTestStarting = true;
+  latestSpeedStatus = null;
+  lastAppliedSpeedSignature = '';
   if (button) {
     speedTestButtons.add(button);
     setButtonBusy(button, true, '\u6d4b\u901f\u4e2d...', { preserveContent: true });
@@ -1809,8 +1882,11 @@ async function testNodes(button = null) {
   setNotice('\u6d4b\u901f\u5df2\u53d1\u9001\u5230\u540e\u53f0\uff0c\u754c\u9762\u53ef\u7ee7\u7eed\u64cd\u4f5c\u3002');
   try {
     const status = await invoke('start_proxy_delay_test');
+    applySpeedStatusToNodes(status, { force: true });
     lastSpeedNodeRefreshAt = 0;
-    refreshNodes(true, { target: activeNodeRenderTarget() }).catch(() => {});
+    refreshNodes(true, { target: 'all' }).then(() => {
+      if (latestSpeedStatus) applySpeedStatusToNodes(latestSpeedStatus, { force: true });
+    }).catch(() => {});
     setNotice(`\u6d4b\u901f\u5df2\u5728\u540e\u53f0\u5f00\u59cb\uff1a0/${status.total || 0}`);
     speedTestTimer = setInterval(pollSpeedTest, speedTestPollMs);
     await pollSpeedTest();
