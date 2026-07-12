@@ -2901,7 +2901,12 @@ function ensureRoutingAssistantUi() {
     el('section', { id: 'routingDraftListCard', className: 'routing-draft-card routing-draft-list-card' }, [
       el('div', {}, [
         el('b', { textContent: '\u8349\u7a3f\u4e0e\u9a8c\u8bc1' }),
-        el('small', { id: 'routingDraftListHint', textContent: '\u8349\u7a3f\u4ec5\u4fdd\u5b58\u5728\u5f53\u524d\u9875\u9762\uff0c\u9a8c\u8bc1\u4e0d\u4f1a\u4fee\u6539\u8fde\u63a5\u3002' })
+        el('small', { id: 'routingDraftListHint', textContent: '\u8349\u7a3f\u672a\u5e94\u7528\u524d\u4e0d\u4f1a\u6539\u914d\u7f6e\uff1b\u5e94\u7528\u524d\u4f1a\u5148\u9884\u68c0\uff0c\u5931\u8d25\u4f1a\u56de\u6eda\u3002' })
+      ]),
+      el('div', { className: 'routing-draft-actions' }, [
+        el('button', { id: 'verifyAllRoutingDraftsBtn', className: 'ghost compact', textContent: '\u9a8c\u8bc1\u5168\u90e8' }),
+        el('button', { id: 'applyRoutingDraftsBtn', className: 'primary compact', textContent: '\u5e94\u7528\u8349\u7a3f' }),
+        el('button', { id: 'undoRoutingApplyBtn', className: 'ghost compact', textContent: '\u64a4\u9500\u6700\u8fd1\u5e94\u7528' })
       ]),
       el('div', { id: 'routingDraftList', className: 'routing-draft-list' }, []),
       el('p', { id: 'routingConflictSummary', className: 'routing-draft-preview', textContent: '\u6682\u65e0\u8349\u7a3f\u3002' })
@@ -2912,6 +2917,9 @@ function ensureRoutingAssistantUi() {
   $('#previewAppRuleBtn')?.addEventListener('click', previewAppRoutingDraft);
   $('#previewRegionRuleBtn')?.addEventListener('click', previewRegionRoutingDraft);
   $('#undoRoutingDraftBtn')?.addEventListener('click', undoLastRoutingDraft);
+  $('#verifyAllRoutingDraftsBtn')?.addEventListener('click', verifyAllRoutingDrafts);
+  $('#applyRoutingDraftsBtn')?.addEventListener('click', (event) => runDetachedButtonAction(event.currentTarget, '\u5e94\u7528\u4e2d...', applyRoutingDrafts));
+  $('#undoRoutingApplyBtn')?.addEventListener('click', (event) => runDetachedButtonAction(event.currentTarget, '\u64a4\u9500\u4e2d...', undoLastRoutingApply));
   $('#routingSimpleViewBtn')?.addEventListener('click', () => setRoutingAssistantView('simple'));
   $('#routingAdvancedViewBtn')?.addEventListener('click', () => setRoutingAssistantView('advanced'));
   $('#routingWebsiteInput')?.addEventListener('keydown', (event) => {
@@ -3017,6 +3025,58 @@ function undoLastRoutingDraft() {
   renderRoutingDraftList();
 }
 
+function verifyAllRoutingDrafts() {
+  routingAssistantDrafts = routingAssistantDrafts.map((item) => ({
+    ...item,
+    verified: true,
+    classification: classifyRoutingDraft(item),
+    verifiedAt: Date.now()
+  }));
+  renderRoutingDraftList();
+  setNotice(routingAssistantDrafts.length ? '\u5206\u6d41\u8349\u7a3f\u5df2\u9a8c\u8bc1\u3002' : '\u6682\u65e0\u5206\u6d41\u8349\u7a3f\u9700\u8981\u9a8c\u8bc1\u3002');
+}
+
+function routingDraftPayload(item = {}) {
+  return {
+    kind: item.kind || '',
+    condition: item.condition || '',
+    target: item.target || '',
+    option: item.option || '',
+    label: item.label || '',
+    source: item.source || 'draft'
+  };
+}
+
+async function applyRoutingDrafts() {
+  if (!routingAssistantDrafts.length) {
+    setNotice('\u8bf7\u5148\u751f\u6210\u5206\u6d41\u8349\u7a3f\u3002');
+    return null;
+  }
+  verifyAllRoutingDrafts();
+  const result = await runBackgroundJob('applyRoutingDrafts', {
+    drafts: routingAssistantDrafts.map(routingDraftPayload)
+  }, {
+    pendingNotice: '\u6b63\u5728\u540e\u53f0\u9884\u68c0\u5e76\u5e94\u7528\u5206\u6d41\u8349\u7a3f...',
+    successNotice: (value) => `\u5206\u6d41\u89c4\u5219\u5df2\u5e94\u7528\uff1a${value?.appliedCount || 0} \u6761`,
+    failureNotice: (err) => `\u5206\u6d41\u5e94\u7528\u5931\u8d25\uff1a${err.message || err}`
+  });
+  if (!result) return null;
+  routingAssistantDrafts = [];
+  renderRoutingDraftList();
+  await refreshRoutingSnapshot();
+  return result;
+}
+
+async function undoLastRoutingApply() {
+  const result = await runBackgroundJob('undoRoutingApply', {}, {
+    pendingNotice: '\u6b63\u5728\u540e\u53f0\u64a4\u9500\u6700\u8fd1\u4e00\u6b21\u5206\u6d41\u5e94\u7528...',
+    successNotice: '\u5df2\u64a4\u9500\u6700\u8fd1\u4e00\u6b21\u5206\u6d41\u5e94\u7528\u3002',
+    failureNotice: (err) => `\u5206\u6d41\u64a4\u9500\u5931\u8d25\uff1a${err.message || err}`
+  });
+  if (result) await refreshRoutingSnapshot();
+  return result;
+}
+
 function setRoutingAssistantView(view) {
   routingAssistantView = view === 'advanced' ? 'advanced' : 'simple';
   const assistant = document.querySelector('.routing-assistant');
@@ -3033,12 +3093,23 @@ function renderRoutingDraftList() {
   const rows = routingAssistantDrafts.map((item) => {
     const classification = classifyRoutingDraft(item);
     const advancedText = routingAssistantView === 'advanced' ? ` \u00b7 ${item.rule}` : '';
+    const sourceLabel = {
+      website: '\u7f51\u7ad9',
+      app: '\u5e94\u7528',
+      region: '\u573a\u666f',
+      connection: '\u8fde\u63a5\u8bb0\u5f55'
+    }[item.source] || '\u8349\u7a3f';
+    const nextStep = classification.level === 'warn'
+      ? '\u4e0b\u4e00\u6b65\uff1a\u5904\u7406\u98ce\u9669\u540e\u518d\u5e94\u7528'
+      : item.verified
+        ? '\u4e0b\u4e00\u6b65\uff1a\u53ef\u5e94\u7528'
+        : '\u4e0b\u4e00\u6b65\uff1a\u5148\u9a8c\u8bc1';
     return el('div', { className: `routing-draft-row ${classification.level === 'warn' ? 'warn' : ''}` }, [
       el('div', {}, [
         el('b', { textContent: item.label || `${routingKindLabel(item.kind)} ${item.condition}` }),
-        el('small', { textContent: `${classification.text}${advancedText}` })
+        el('small', { textContent: `${sourceLabel} \u00b7 ${classification.text} \u00b7 ${nextStep}${advancedText}` })
       ]),
-      el('span', { className: item.verified ? 'ok' : 'muted', textContent: item.verified ? '\u5df2\u9a8c\u8bc1' : '\u8349\u7a3f' }),
+      el('span', { className: item.verified ? 'ok' : 'muted', textContent: item.verified ? '\u5df2\u9a8c\u8bc1' : '\u672a\u751f\u6548' }),
       el('button', { className: 'ghost compact', dataset: { verifyRoutingDraft: item.id }, textContent: '\u9a8c\u8bc1' }),
       el('button', { className: 'ghost compact', dataset: { removeRoutingDraft: item.id }, textContent: '\u64a4\u9500' })
     ]);

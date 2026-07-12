@@ -1530,7 +1530,20 @@ h1 {
 .routing-draft-list-card {
   grid-column: 1 / -1;
   min-height: 118px;
-  grid-template-rows: auto minmax(42px, 1fr) 18px;
+  grid-template-rows: auto 34px minmax(42px, 1fr) 18px;
+}
+
+.routing-draft-actions {
+  min-width: 0;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.routing-draft-actions button {
+  height: 30px;
+  min-width: 82px;
 }
 
 .routing-draft-list {

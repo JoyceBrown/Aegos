@@ -1074,6 +1074,16 @@ struct JobRecord {
     cancel_requested: bool,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+struct RoutingDraftInput {
+    kind: String,
+    condition: String,
+    target: String,
+    option: Option<String>,
+    label: Option<String>,
+    source: Option<String>,
+}
+
 fn now_iso() -> String {
     format!("{}", now_secs())
 }
@@ -6605,6 +6615,186 @@ impl CoreManager {
             .or_else(|| self.settings.profiles.first().cloned())
     }
 
+    fn routing_apply_backup_paths(&self) -> (PathBuf, PathBuf) {
+        (
+            self.app_data.join("routing-last-apply-backup.yaml"),
+            self.app_data.join("routing-last-apply-backup.json"),
+        )
+    }
+
+    fn apply_routing_drafts(&mut self, drafts: Vec<RoutingDraftInput>) -> Result<JsonValue, String> {
+        if drafts.is_empty() {
+            return Err("没有可应用的分流草稿。".to_string());
+        }
+        if drafts.len() > 24 {
+            return Err("一次最多应用 24 条分流草稿，请分批处理。".to_string());
+        }
+        let profile = self
+            .active_profile()
+            .ok_or_else(|| "没有活动订阅，无法应用分流规则。".to_string())?;
+        if profile.profile_type == "builtin" {
+            return Err("内置直连配置不能写入分流规则，请先导入订阅。".to_string());
+        }
+        let profile_path = PathBuf::from(&profile.path);
+        let previous_raw = fs::read_to_string(&profile_path)
+            .map_err(|err| format!("分流规则应用失败：读取当前配置失败：{err}"))?;
+        let mut source: YamlValue = serde_yaml::from_str(&previous_raw)
+            .map_err(|err| format!("分流规则应用失败：当前配置 YAML 无法解析：{err}"))?;
+        let targets = routing_rule_target_catalog(&source);
+        let mut applied_rules = Vec::new();
+        let mut applied_details = Vec::new();
+        for draft in drafts {
+            let (rule, detail) = normalize_routing_draft_rule(&draft, &targets)?;
+            applied_rules.push(rule);
+            applied_details.push(detail);
+        }
+        let Some(config) = source.as_mapping_mut() else {
+            return Err("分流规则应用失败：配置根节点不是 YAML 对象。".to_string());
+        };
+        let rules = ensure_yaml_sequence(config, "rules");
+        for rule in &applied_rules {
+            let duplicate = rules
+                .iter()
+                .filter_map(YamlValue::as_str)
+                .any(|existing| existing.trim() == rule);
+            if duplicate {
+                return Err(format!("分流规则已存在，未重复写入：{rule}"));
+            }
+        }
+        let insert_at = rules
+            .iter()
+            .position(|value| {
+                value
+                    .as_str()
+                    .map(|rule| rule.trim_start().to_ascii_uppercase().starts_with("MATCH,"))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(rules.len());
+        for (offset, rule) in applied_rules.iter().enumerate() {
+            rules.insert(insert_at + offset, yaml_str(rule));
+        }
+        let settings = self.settings.clone();
+        let patched = patch_config_with_settings(source.clone(), &settings, Some(&profile.id))
+            .map_err(|err| format!("分流规则预检失败：{err}"))?;
+        let runtime_preflight = preflight_runtime_config(&patched, &profile, &settings)
+            .map_err(|err| format!("分流规则预检失败：{err}"))?;
+        let next_raw = serde_yaml::to_string(&source)
+            .map_err(|err| format!("分流规则序列化失败：{err}"))?;
+        let (backup_path, backup_meta_path) = self.routing_apply_backup_paths();
+        atomic_write_text_confined(&backup_path, &self.app_data, &previous_raw)?;
+        let previous_digest = sha256_text(&previous_raw);
+        let next_digest = sha256_text(&next_raw);
+        let metadata = json!({
+            "profileId": profile.id,
+            "profileName": profile.name,
+            "createdAt": now_iso(),
+            "previousDigest": previous_digest,
+            "nextDigest": next_digest,
+            "appliedRules": applied_rules,
+            "appliedCount": applied_details.len()
+        });
+        atomic_write_text_confined(
+            &backup_meta_path,
+            &self.app_data,
+            &serde_json::to_string_pretty(&metadata).map_err(|err| err.to_string())?,
+        )?;
+        atomic_write_text_confined(&profile_path, &self.profile_dir, &next_raw)?;
+        let was_running = self.process.is_some();
+        let reload_result = if was_running {
+            self.hot_reload_profile(&profile)
+        } else {
+            Ok(json!({ "ok": true, "skipped": true, "reason": "core is not running" }))
+        };
+        if let Err(err) = reload_result {
+            let restore_file = atomic_write_text_confined(&profile_path, &self.profile_dir, &previous_raw);
+            let restore_runtime = if was_running && restore_file.is_ok() {
+                self.hot_reload_profile(&profile).map(|_| ())
+            } else {
+                restore_file.map(|_| ())
+            };
+            return Err(match restore_runtime {
+                Ok(_) => format!("分流规则热重载失败，已回滚当前配置：{err}"),
+                Err(rollback_err) => format!(
+                    "分流规则热重载失败：{err}；回滚也失败：{rollback_err}"
+                ),
+            });
+        }
+        self.add_log(
+            format!(
+                "Routing drafts applied: {} rule(s), profile {}, digest {}",
+                applied_details.len(),
+                sanitize_sensitive_text(&profile.name),
+                &next_digest[..12.min(next_digest.len())]
+            ),
+            "info",
+        );
+        Ok(json!({
+            "ok": true,
+            "profileId": profile.id,
+            "profileName": profile.name,
+            "appliedCount": applied_details.len(),
+            "rules": applied_details,
+            "runtimePreflight": runtime_preflight,
+            "rollbackAvailable": true,
+            "nextStep": "已应用，可在分流页撤销最近一次应用。"
+        }))
+    }
+
+    fn undo_last_routing_apply(&mut self) -> Result<JsonValue, String> {
+        let (backup_path, backup_meta_path) = self.routing_apply_backup_paths();
+        let backup_raw = fs::read_to_string(&backup_path)
+            .map_err(|_| "没有可撤销的分流应用记录。".to_string())?;
+        let metadata: JsonValue = fs::read_to_string(&backup_meta_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_else(|| json!({}));
+        let profile_id = metadata
+            .get("profileId")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| "分流撤销记录不完整，缺少订阅 ID。".to_string())?;
+        if self.settings.active_profile_id != profile_id {
+            return Err("请先切回创建分流规则时的订阅，再撤销最近应用。".to_string());
+        }
+        let profile = self
+            .settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .cloned()
+            .ok_or_else(|| "分流撤销失败：原订阅不存在。".to_string())?;
+        let restored_config: YamlValue = serde_yaml::from_str(&backup_raw)
+            .map_err(|err| format!("分流撤销失败：备份 YAML 无法解析：{err}"))?;
+        let settings = self.settings.clone();
+        let patched = patch_config_with_settings(restored_config, &settings, Some(&profile.id))
+            .map_err(|err| format!("分流撤销预检失败：{err}"))?;
+        let runtime_preflight = preflight_runtime_config(&patched, &profile, &settings)
+            .map_err(|err| format!("分流撤销预检失败：{err}"))?;
+        let profile_path = PathBuf::from(&profile.path);
+        atomic_write_text_confined(&profile_path, &self.profile_dir, &backup_raw)?;
+        if self.process.is_some() {
+            self.hot_reload_profile(&profile)
+                .map_err(|err| format!("分流撤销已恢复文件，但热重载失败：{err}"))?;
+        }
+        let _ = remove_file_confined(&backup_path, &self.app_data);
+        let _ = remove_file_confined(&backup_meta_path, &self.app_data);
+        self.add_log(
+            format!(
+                "Routing apply undone: profile {}, restored digest {}",
+                sanitize_sensitive_text(&profile.name),
+                &sha256_text(&backup_raw)[..12]
+            ),
+            "info",
+        );
+        Ok(json!({
+            "ok": true,
+            "profileId": profile.id,
+            "profileName": profile.name,
+            "runtimePreflight": runtime_preflight,
+            "rollbackAvailable": false,
+            "nextStep": "已撤销最近一次分流应用。"
+        }))
+    }
+
     fn standby_settings(&self) -> Settings {
         let mut settings = self.settings.clone();
         settings.tun_enabled = false;
@@ -9677,6 +9867,8 @@ fn job_label(kind: &str) -> String {
         "setMode" => "切换模式",
         "changeProxy" => "切换节点",
         "selectBestProxy" => "切换到推荐",
+        "applyRoutingDrafts" => "应用分流草稿",
+        "undoRoutingApply" => "撤销分流应用",
         _ => "后台任务",
     }
     .to_string()
@@ -9770,6 +9962,8 @@ fn start_job(
             | "changeProxy"
             | "selectBestProxy"
             | "repairSystemProxy"
+            | "applyRoutingDrafts"
+            | "undoRoutingApply"
     ) {
         return Err(format!("Unsupported job kind: {kind}"));
     }
@@ -10003,6 +10197,22 @@ fn start_job(
                 );
                 let _operation = lock_operation_queue(&operations, "repairSystemProxy")?;
                 core.lock().unwrap().repair_system_proxy_takeover()
+            })(),
+            "applyRoutingDrafts" => (|| -> Result<JsonValue, String> {
+                let drafts_value = payload
+                    .get("drafts")
+                    .cloned()
+                    .ok_or_else(|| "Missing routing drafts".to_string())?;
+                let drafts = serde_json::from_value::<Vec<RoutingDraftInput>>(drafts_value)
+                    .map_err(|err| format!("Invalid routing drafts: {err}"))?;
+                set_job_state(&jobs, &id, "running", 1, 4, "正在预检分流草稿");
+                let _operation = lock_operation_queue(&operations, "applyRoutingDrafts")?;
+                core.lock().unwrap().apply_routing_drafts(drafts)
+            })(),
+            "undoRoutingApply" => (|| -> Result<JsonValue, String> {
+                set_job_state(&jobs, &id, "running", 1, 3, "正在撤销分流应用");
+                let _operation = lock_operation_queue(&operations, "undoRoutingApply")?;
+                core.lock().unwrap().undo_last_routing_apply()
             })(),
             _ => Err("Unsupported job kind".to_string()),
         };
@@ -10302,6 +10512,21 @@ fn routing_foundation_acceptance(state: State<AppState>) -> Result<JsonValue, St
 #[tauri::command]
 fn routing_assistant_gate() -> Result<JsonValue, String> {
     Ok(routing_assistant_gate_contract())
+}
+
+#[tauri::command]
+fn apply_routing_drafts(
+    state: State<AppState>,
+    drafts: Vec<RoutingDraftInput>,
+) -> Result<JsonValue, String> {
+    let _operation = lock_operation_queue(&state.operations, "apply_routing_drafts command")?;
+    state.core.lock().unwrap().apply_routing_drafts(drafts)
+}
+
+#[tauri::command]
+fn undo_last_routing_apply(state: State<AppState>) -> Result<JsonValue, String> {
+    let _operation = lock_operation_queue(&state.operations, "undo_last_routing_apply command")?;
+    state.core.lock().unwrap().undo_last_routing_apply()
 }
 
 #[tauri::command]
@@ -10720,6 +10945,80 @@ fn routing_rule_target_catalog(config: &YamlValue) -> HashSet<String> {
 
 fn routing_rule_target_exists(targets: &HashSet<String>, target: &str) -> bool {
     targets.contains(target) || targets.contains(&target.to_ascii_uppercase())
+}
+
+fn validate_routing_rule_part(label: &str, value: &str, max_len: usize) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{label}不能为空。"));
+    }
+    if trimmed.len() > max_len {
+        return Err(format!("{label}太长，请缩短后再应用。"));
+    }
+    if trimmed.contains('\r')
+        || trimmed.contains('\n')
+        || trimmed.contains('\0')
+        || trimmed.contains(',')
+    {
+        return Err(format!("{label}包含不支持的字符。"));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn normalize_routing_draft_rule(
+    draft: &RoutingDraftInput,
+    targets: &HashSet<String>,
+) -> Result<(String, JsonValue), String> {
+    let kind = draft.kind.trim().to_ascii_uppercase();
+    let allowed = [
+        "DOMAIN",
+        "DOMAIN-SUFFIX",
+        "DOMAIN-KEYWORD",
+        "PROCESS-NAME",
+        "PROCESS-PATH",
+        "GEOIP",
+        "GEOSITE",
+        "IP-CIDR",
+    ];
+    if !allowed.contains(&kind.as_str()) {
+        return Err(format!("暂不支持这种分流规则类型：{kind}"));
+    }
+    let condition = validate_routing_rule_part("分流条件", &draft.condition, 220)?;
+    let target = validate_routing_rule_part("分流目标", &draft.target, 140)?;
+    if !routing_rule_target_exists(targets, &target) {
+        return Err(format!("分流目标不存在：{target}"));
+    }
+    let option = draft
+        .option
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(option) = option {
+        if option != "no-resolve" {
+            return Err(format!("暂不支持这个规则选项：{option}"));
+        }
+        if !matches!(kind.as_str(), "GEOIP" | "IP-CIDR") {
+            return Err("no-resolve 只适用于 GEOIP 或 IP-CIDR 规则。".to_string());
+        }
+    }
+    let rule = if let Some(option) = option {
+        format!("{kind},{condition},{target},{option}")
+    } else {
+        format!("{kind},{condition},{target}")
+    };
+    Ok((
+        rule.clone(),
+        json!({
+            "kind": kind,
+            "condition": sanitize_sensitive_text(&condition),
+            "target": sanitize_sensitive_text(&target),
+            "option": option,
+            "label": draft.label.as_deref().map(sanitize_sensitive_text).unwrap_or_else(|| rule.clone()),
+            "source": draft.source.as_deref().unwrap_or("draft"),
+            "rule": sanitize_sensitive_text(&rule),
+            "status": "applied"
+        }),
+    ))
 }
 
 fn validate_routing_rule_targets(
@@ -11442,6 +11741,8 @@ fn main() {
             routing_diagnostics_report,
             routing_foundation_acceptance,
             routing_assistant_gate,
+            apply_routing_drafts,
+            undo_last_routing_apply,
             start_proxy_delay_test,
             test_single_proxy_delay,
             node_diagnostics,
