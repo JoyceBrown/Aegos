@@ -564,6 +564,15 @@ fn yaml_str(value: impl Into<String>) -> YamlValue {
     YamlValue::String(value.into())
 }
 
+fn yaml_string_sequence(values: &[&str]) -> YamlValue {
+    YamlValue::Sequence(
+        values
+            .iter()
+            .map(|value| YamlValue::String((*value).to_string()))
+            .collect(),
+    )
+}
+
 fn yaml_num(value: u64) -> YamlValue {
     YamlValue::Number(value.into())
 }
@@ -2278,6 +2287,111 @@ fn download_profile_source_url_diagnostic(url: &str) -> Result<ProfileSource, St
     parse_profile_source_text_diagnostic(&text)
 }
 
+const AEGOS_DNS_LISTEN: &str = "127.0.0.1:1054";
+const AEGOS_DIRECT_NAMESERVERS: [&str; 3] = [
+    "https://223.5.5.5/dns-query",
+    "https://1.1.1.1/dns-query",
+    "tls://8.8.8.8:853",
+];
+
+fn is_fake_ip_address(value: &str) -> bool {
+    let text = value.trim();
+    text.starts_with("198.18.") || text.starts_with("198.19.")
+}
+
+fn is_local_or_fake_nameserver(value: &str) -> bool {
+    let text = value.trim().to_ascii_lowercase();
+    text.is_empty()
+        || text.contains("127.0.0.1")
+        || text.contains("localhost")
+        || text.contains("198.18.")
+        || text.contains("198.19.")
+}
+
+fn is_subscription_metadata_node_name(name: &str) -> bool {
+    let text = name.trim();
+    if text.is_empty() {
+        return true;
+    }
+    let lower = text.to_ascii_lowercase();
+    lower.starts_with("traffic:")
+        || lower.starts_with("expire:")
+        || lower.starts_with("expiry:")
+        || lower.starts_with("remaining:")
+        || lower.contains(" gb |")
+        || lower.contains("traffic:")
+        || lower.contains("expire:")
+        || text.contains("流量")
+        || text.contains("剩余")
+        || text.contains("到期")
+        || text.contains("过期")
+        || text.contains("套餐")
+}
+
+fn harden_runtime_dns(config: &mut Mapping) {
+    let nameservers = AEGOS_DIRECT_NAMESERVERS
+        .iter()
+        .copied()
+        .filter(|value| !is_local_or_fake_nameserver(value))
+        .collect::<Vec<_>>();
+    let dns = config
+        .entry(yaml_key("dns"))
+        .or_insert_with(|| YamlValue::Mapping(Mapping::new()));
+    let dns_map = get_mapping_mut(dns);
+    set_yaml(dns_map, "enable", YamlValue::Bool(true));
+    set_yaml(dns_map, "ipv6", YamlValue::Bool(false));
+    set_yaml(dns_map, "listen", yaml_str(AEGOS_DNS_LISTEN));
+    set_yaml(dns_map, "enhanced-mode", yaml_str("fake-ip"));
+    set_yaml(dns_map, "nameserver", yaml_string_sequence(&nameservers));
+    set_yaml(
+        dns_map,
+        "proxy-server-nameserver",
+        yaml_string_sequence(&nameservers),
+    );
+}
+
+fn sanitize_subscription_metadata_nodes(config: &mut Mapping) -> usize {
+    let mut removed = HashSet::new();
+    if let Some(YamlValue::Sequence(proxies)) = config.get_mut(yaml_key("proxies")) {
+        proxies.retain(|proxy| {
+            let keep = proxy
+                .as_mapping()
+                .and_then(|map| map.get(yaml_key("name")))
+                .and_then(|value| value.as_str())
+                .map(|name| !is_subscription_metadata_node_name(name))
+                .unwrap_or(true);
+            if !keep {
+                if let Some(name) = proxy
+                    .as_mapping()
+                    .and_then(|map| map.get(yaml_key("name")))
+                    .and_then(|value| value.as_str())
+                {
+                    removed.insert(name.to_string());
+                }
+            }
+            keep
+        });
+    }
+    if removed.is_empty() {
+        return 0;
+    }
+    if let Some(YamlValue::Sequence(groups)) = config.get_mut(yaml_key("proxy-groups")) {
+        for group in groups {
+            let Some(map) = group.as_mapping_mut() else {
+                continue;
+            };
+            if let Some(YamlValue::Sequence(items)) = map.get_mut(yaml_key("proxies")) {
+                items.retain(|item| {
+                    item.as_str()
+                        .map(|name| !removed.contains(name))
+                        .unwrap_or(true)
+                });
+            }
+        }
+    }
+    removed.len()
+}
+
 fn patch_config_with_settings(
     source: YamlValue,
     settings: &Settings,
@@ -2339,6 +2453,8 @@ fn patch_config_with_settings(
     );
     set_yaml(&mut config, "unified-delay", YamlValue::Bool(true));
     set_yaml(&mut config, "tcp-concurrent", YamlValue::Bool(true));
+    harden_runtime_dns(&mut config);
+    sanitize_subscription_metadata_nodes(&mut config);
 
     if settings.tun_enabled {
         let tun = config
@@ -3352,6 +3468,112 @@ rules:
     }
 
     #[test]
+    fn runtime_dns_is_isolated_from_local_fake_ip_resolvers() {
+        let source: YamlValue = serde_yaml::from_str(
+            r#"
+mixed-port: 7890
+dns:
+  enable: true
+  listen: 127.0.0.1:1053
+  enhanced-mode: fake-ip
+  nameserver:
+    - 198.18.0.2
+  proxy-server-nameserver:
+    - udp://127.0.0.1:1053
+proxies:
+  - name: Node A
+    type: ss
+    server: node-a.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: GLOBAL
+    type: select
+    proxies:
+      - Node A
+rules:
+  - MATCH,GLOBAL
+"#,
+        )
+        .expect("source");
+        let settings = default_settings();
+        let patched = patch_config_with_settings(source, &settings, Some("test")).expect("patch");
+        let dns = patched
+            .get(yaml_key("dns"))
+            .and_then(YamlValue::as_mapping)
+            .expect("dns");
+        assert_eq!(
+            dns.get(yaml_key("listen")).and_then(YamlValue::as_str),
+            Some(AEGOS_DNS_LISTEN)
+        );
+        let proxy_nameservers = dns
+            .get(yaml_key("proxy-server-nameserver"))
+            .and_then(YamlValue::as_sequence)
+            .expect("proxy nameserver");
+        assert!(proxy_nameservers.iter().all(|item| item
+            .as_str()
+            .map(|value| !is_local_or_fake_nameserver(value))
+            .unwrap_or(false)));
+    }
+
+    #[test]
+    fn subscription_metadata_nodes_are_removed_before_runtime_and_speed() {
+        let source: YamlValue = serde_yaml::from_str(
+            r#"
+proxies:
+  - name: "Traffic: 35.75 GB | 150 GB"
+    type: ss
+    server: fake.example.com
+    port: 10015
+    cipher: aes-128-gcm
+    password: secret
+  - name: "Expire: 2026-07-17"
+    type: ss
+    server: fake.example.com
+    port: 10015
+    cipher: aes-128-gcm
+    password: secret
+  - name: Real HK
+    type: ss
+    server: real.example.com
+    port: 10015
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: GLOBAL
+    type: select
+    proxies:
+      - "Traffic: 35.75 GB | 150 GB"
+      - "Expire: 2026-07-17"
+      - Real HK
+rules:
+  - MATCH,GLOBAL
+"#,
+        )
+        .expect("source");
+        let settings = default_settings();
+        let patched = patch_config_with_settings(source, &settings, Some("test")).expect("patch");
+        let proxy_names = yaml_sequence(&patched, "proxies")
+            .expect("proxies")
+            .iter()
+            .filter_map(|item| item.get(yaml_key("name")).and_then(YamlValue::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(proxy_names, vec!["Real HK"]);
+
+        let group_names = yaml_sequence(&patched, "proxy-groups")
+            .expect("groups")
+            .first()
+            .and_then(|group| group.get(yaml_key("proxies")))
+            .and_then(YamlValue::as_sequence)
+            .expect("group proxies")
+            .iter()
+            .filter_map(YamlValue::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(group_names, vec!["Real HK"]);
+    }
+
+    #[test]
     fn resolves_proxy_group_references_to_leaf_proxy() {
         let groups = vec![
             json!({
@@ -4045,10 +4267,16 @@ fn yaml_proxy_to_json(proxy: &YamlValue) -> Option<JsonValue> {
         .get(yaml_key("name"))
         .and_then(|value| value.as_str())
         .unwrap_or("Proxy");
+    if is_subscription_metadata_node_name(name) {
+        return None;
+    }
     let server = map
         .get(yaml_key("server"))
         .and_then(|value| value.as_str())
         .unwrap_or(name);
+    if is_fake_ip_address(server) {
+        return None;
+    }
     let protocol = map
         .get(yaml_key("type"))
         .and_then(|value| value.as_str())
@@ -6126,6 +6354,9 @@ impl CoreManager {
                                 .or_else(|| item.get("name"))
                                 .and_then(|value| value.as_str())?;
                             if matches!(name, "DIRECT" | "REJECT" | "PASS" | "COMPATIBLE") {
+                                return None;
+                            }
+                            if is_subscription_metadata_node_name(name) {
                                 return None;
                             }
                             let protocol = item

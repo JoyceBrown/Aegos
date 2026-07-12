@@ -80,6 +80,27 @@ check(
   'VLESS, Hysteria2/Hy2, and AnyTLS URI subscriptions'
 );
 check(
+  'runtime DNS is isolated from local fake-ip resolvers',
+  mainRs.includes('const AEGOS_DNS_LISTEN: &str = "127.0.0.1:1054"') &&
+    mainRs.includes('const AEGOS_DIRECT_NAMESERVERS') &&
+    mainRs.includes('https://223.5.5.5/dns-query') &&
+    mainRs.includes('https://1.1.1.1/dns-query') &&
+    mainRs.includes('fn harden_runtime_dns') &&
+    mainRs.includes('proxy-server-nameserver') &&
+    mainRs.includes('fn is_local_or_fake_nameserver') &&
+    mainRs.includes('runtime_dns_is_isolated_from_local_fake_ip_resolvers'),
+  'proxy server domains must not resolve through 127.0.0.1:1053 or 198.18/198.19 fake-ip DNS'
+);
+check(
+  'airport metadata pseudo nodes are removed before runtime and speed tests',
+  mainRs.includes('fn is_subscription_metadata_node_name') &&
+    mainRs.includes('fn sanitize_subscription_metadata_nodes') &&
+    mainRs.includes('subscription_metadata_nodes_are_removed_before_runtime_and_speed') &&
+    mainRs.includes('is_subscription_metadata_node_name(name)') &&
+    mainRs.includes('is_fake_ip_address(server)'),
+  'Traffic/Expire plan rows must not become selectable or speed-tested nodes'
+);
+check(
   'long operations expose background job API',
   ['start_job', 'job_status', 'cancel_job'].every((name) => commandSection.includes(`fn ${name}`)) &&
     ['addProfileUrl', 'updateProfile', 'setActiveProfile', 'updateSetting', 'updateSettings', 'setMode', 'changeProxy', 'recoverNetwork', 'refreshOutboundIp', 'diagnostics', 'startCore', 'stopCore', 'restartCore'].every((name) => mainRs.includes(name)),

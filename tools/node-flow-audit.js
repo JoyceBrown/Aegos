@@ -44,8 +44,10 @@ check(
   'single-node diagnostics keep deep retry while batch stays fast',
   mainRs.includes('fn test_proxy_delay_fast') &&
     mainRs.includes('fn test_proxy_delay_with_retry') &&
-    mainRs.includes('let fast_delay = delay_probe_plan(protocol, DelayProbeDepth::Fast)') &&
+    mainRs.includes('fn test_proxy_delay_plan') &&
+    mainRs.includes('DelayProbeDepth::Fast') &&
     mainRs.includes('DelayProbeDepth::Full') &&
+    mainRs.includes('let fast_result = test_proxy_delay_plan') &&
     mainRs.includes('test_proxy_delay_with_retry('),
   'batch and single-node speed tests intentionally serve different user needs'
 );

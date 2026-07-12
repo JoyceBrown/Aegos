@@ -136,6 +136,27 @@ check(
 );
 
 check(
+  'speed-test targets exclude airport metadata and fake-ip nodes',
+  mainRs.includes('fn is_subscription_metadata_node_name') &&
+    mainRs.includes('fn sanitize_subscription_metadata_nodes') &&
+    mainRs.includes('is_subscription_metadata_node_name(name)') &&
+    mainRs.includes('fn is_fake_ip_address') &&
+    mainRs.includes('subscription_metadata_nodes_are_removed_before_runtime_and_speed'),
+  'Traffic/Expire rows and 198.18/198.19 fake-ip targets must never enter speed testing'
+);
+
+check(
+  'runtime DNS avoids FlClash local fake-ip resolver contamination',
+  mainRs.includes('fn harden_runtime_dns') &&
+    mainRs.includes('const AEGOS_DNS_LISTEN: &str = "127.0.0.1:1054"') &&
+    mainRs.includes('proxy-server-nameserver') &&
+    mainRs.includes('https://223.5.5.5/dns-query') &&
+    mainRs.includes('https://1.1.1.1/dns-query') &&
+    mainRs.includes('runtime_dns_is_isolated_from_local_fake_ip_resolvers'),
+  'proxy server domain lookup must use direct upstream resolvers, not 127.0.0.1:1053 or fake-ip DNS'
+);
+
+check(
   'advanced protocols have explicit adaptive scheduling',
   mainRs.includes('protocol_family("hysteria2")') &&
     mainRs.includes('protocol_concurrency("tuic")') &&
