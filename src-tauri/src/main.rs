@@ -4070,6 +4070,68 @@ rules:
     }
 
     #[test]
+    fn routing_diagnostics_report_escalates_rule_and_runtime_findings() {
+        let profile = Profile {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            profile_type: "file".to_string(),
+            path: "profiles/test.yaml".to_string(),
+            source_url: None,
+            node_count: 1,
+            proxy_group_count: 1,
+            updated_at: "now".to_string(),
+            digest: "profile-digest".to_string(),
+        };
+        let rule_validation = json!({
+            "ok": false,
+            "warningCount": 2,
+            "ruleCount": 4,
+            "missingRuleTargets": [{ "target": "Missing" }],
+            "ruleOrderIssues": [{ "kind": "unreachable" }],
+            "error": null
+        });
+        let reload_preflight = routing_reload_contract_from_parts(
+            &profile,
+            rule_validation.clone(),
+            Err("runtime preflight failed".to_string()),
+        );
+        let rollback_plan = routing_rollback_plan_from_parts(
+            &profile,
+            Some("profile-digest".to_string()),
+            Some("test".to_string()),
+            Some("runtime-config-digest".to_string()),
+            Some("runtime-file-digest".to_string()),
+            true,
+            true,
+            1,
+        );
+        let report = routing_diagnostics_report_from_parts(
+            &profile,
+            rule_validation,
+            reload_preflight,
+            rollback_plan,
+        );
+
+        assert_eq!(
+            report.get("severity").and_then(JsonValue::as_str),
+            Some("error")
+        );
+        assert_eq!(
+            report.get("readOnly").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            report.get("writesConfig").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        assert!(report
+            .get("sections")
+            .and_then(JsonValue::as_array)
+            .map(|sections| sections.len() >= 4)
+            .unwrap_or(false));
+    }
+
+    #[test]
     fn parses_base64_tuic_subscription() {
         let uri = "tuic://00000000-0000-4000-8000-000000000000:secret@example.com:443?sni=example.com&alpn=h3&congestion_control=bbr&udp_relay_mode=native&reduce_rtt=true#HK%20TUIC";
         let encoded = general_purpose::STANDARD.encode(uri);
@@ -9843,6 +9905,71 @@ fn routing_rollback_plan(state: State<AppState>, id: Option<String>) -> Result<J
 }
 
 #[tauri::command]
+fn routing_diagnostics_report(
+    state: State<AppState>,
+    id: Option<String>,
+) -> Result<JsonValue, String> {
+    let (
+        profile,
+        runtime_preflight,
+        profile_digest,
+        runtime_profile_id,
+        runtime_config_digest,
+        runtime_digest,
+        running,
+        traffic_takeover,
+        selected_proxy_map_size,
+    ) = {
+        let core = state.core.lock().unwrap();
+        let profile = if let Some(id) = id.as_deref() {
+            core.settings
+                .profiles
+                .iter()
+                .find(|profile| profile.id == id)
+                .cloned()
+        } else {
+            core.active_profile()
+        }
+        .ok_or_else(|| "Profile not found".to_string())?;
+        let runtime_preflight = core.preflight_profile_file(&profile);
+        let profile_path = PathBuf::from(&profile.path);
+        let profile_digest = profile_path.exists().then(|| sha256_file(&profile_path));
+        let runtime_path = core.runtime_profile_path();
+        let runtime_digest = runtime_path.exists().then(|| sha256_file(&runtime_path));
+        (
+            profile,
+            runtime_preflight,
+            profile_digest,
+            core.runtime_profile_id.clone(),
+            core.runtime_config_digest.clone(),
+            runtime_digest,
+            core.process.is_some(),
+            core.traffic_takeover,
+            core.settings.selected_proxy_map.len(),
+        )
+    };
+    let rule_validation = routing_rule_validation_summary_for_profile(&profile);
+    let reload_preflight =
+        routing_reload_contract_from_parts(&profile, rule_validation.clone(), runtime_preflight);
+    let rollback_plan = routing_rollback_plan_from_parts(
+        &profile,
+        profile_digest,
+        runtime_profile_id,
+        runtime_config_digest,
+        runtime_digest,
+        running,
+        traffic_takeover,
+        selected_proxy_map_size,
+    );
+    Ok(routing_diagnostics_report_from_parts(
+        &profile,
+        rule_validation,
+        reload_preflight,
+        rollback_plan,
+    ))
+}
+
+#[tauri::command]
 fn start_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
     let already_running = state.speed_test.lock().unwrap().running;
     let snapshot = mark_speed_test_preparing(&state.speed_test);
@@ -10498,6 +10625,92 @@ fn routing_rollback_plan_from_parts(
     })
 }
 
+fn json_array_len(value: &JsonValue, key: &str) -> u64 {
+    value
+        .get(key)
+        .and_then(JsonValue::as_array)
+        .map(|items| items.len() as u64)
+        .unwrap_or(0)
+}
+
+fn routing_diagnostics_report_from_parts(
+    profile: &Profile,
+    rule_validation: JsonValue,
+    reload_preflight: JsonValue,
+    rollback_plan: JsonValue,
+) -> JsonValue {
+    let warning_count = rule_validation
+        .get("warningCount")
+        .and_then(JsonValue::as_u64)
+        .unwrap_or(0);
+    let missing_target_count = json_array_len(&rule_validation, "missingRuleTargets");
+    let order_issue_count = json_array_len(&rule_validation, "ruleOrderIssues");
+    let runtime_ok = reload_preflight
+        .get("runtimePreflightOk")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false);
+    let rollback_ready = rollback_plan
+        .get("rollbackReady")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false);
+    let severity = if !runtime_ok
+        || rule_validation
+            .get("error")
+            .is_some_and(|value| !value.is_null())
+    {
+        "error"
+    } else if warning_count > 0 || !rollback_ready {
+        "warning"
+    } else {
+        "ok"
+    };
+    json!({
+        "profileId": profile.id,
+        "profileName": profile.name,
+        "readOnly": true,
+        "writesConfig": false,
+        "severity": severity,
+        "summary": {
+            "ruleWarnings": warning_count,
+            "missingRuleTargets": missing_target_count,
+            "ruleOrderIssues": order_issue_count,
+            "runtimePreflightOk": runtime_ok,
+            "rollbackReady": rollback_ready
+        },
+        "sections": [
+            {
+                "id": "rules",
+                "title": "Rule validation",
+                "severity": if warning_count > 0 { "warning" } else { "ok" },
+                "data": rule_validation
+            },
+            {
+                "id": "runtime-preflight",
+                "title": "Runtime preflight",
+                "severity": if runtime_ok { "ok" } else { "error" },
+                "data": reload_preflight
+            },
+            {
+                "id": "rollback",
+                "title": "Rollback plan",
+                "severity": if rollback_ready { "ok" } else { "warning" },
+                "data": rollback_plan
+            },
+            {
+                "id": "next-actions",
+                "title": "Suggested actions",
+                "severity": severity,
+                "data": [
+                    "fix missing rule targets before enabling edits",
+                    "resolve rule order warnings before hot reload",
+                    "require rollbackReady before any future config write",
+                    "keep routing diagnostics read-only until acceptance gate passes"
+                ]
+            }
+        ]
+    })
+}
+
 #[tauri::command]
 fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
     let (running, controller_port, secret, mode, groups, active_profile) = {
@@ -10786,6 +10999,7 @@ fn main() {
             profile_rule_validation,
             routing_reload_preflight,
             routing_rollback_plan,
+            routing_diagnostics_report,
             start_proxy_delay_test,
             test_single_proxy_delay,
             node_diagnostics,
