@@ -38,6 +38,9 @@ let profilePreviewSeq = 0;
 let profileMenuAnchor = null;
 let nodeTransitionTimer = null;
 let routingAssistantReady = false;
+let latestRoutingSnapshot = null;
+let routingAssistantDrafts = [];
+let routingAssistantView = 'simple';
 const speedTestButtons = new Set();
 let lastSpeedNodeRefreshAt = 0;
 let latestSpeedStatus = null;
@@ -56,6 +59,7 @@ let lastBackgroundJobError = '';
 let lastUserInputAt = 0;
 let lastUiHeartbeatAt = performance.now();
 let latestDiagnostics = null;
+let latestIpv6DnsSafety = null;
 let jobCenterSyncBusy = false;
 let jobCenterLastSyncAt = 0;
 let activeConnectionCount = 0;
@@ -1343,6 +1347,7 @@ function schedulePageLoad(page) {
         renderProfiles();
         markPageCache(page);
       }
+      if (page === 'settings') refreshIpv6DnsSafety();
     });
   }, pageNavSettleMs);
 }
@@ -1617,6 +1622,7 @@ function renderSettings(status) {
   $('#dnsToggle').checked = settings.dnsHijackEnabled !== false;
   $('#killToggle').checked = Boolean(settings.killSwitchEnabled);
   $('#ipv6Toggle').checked = Boolean(settings.ipv6Enabled);
+  $('#ipv6Toggle').disabled = true;
   $('#allowLanToggle').checked = Boolean(settings.allowLan);
   $('#mixedPortInput').value = mixedPort;
   $('#controllerPortInput').value = controllerPort;
@@ -1626,6 +1632,50 @@ function renderSettings(status) {
   $('#profileFailoverToggle').checked = reliability.profileFailover !== false;
   $('#reliabilityMaxDelayInput').value = reliability.maxDelayMs || 800;
   $('#reliabilityCandidateLimitInput').value = reliability.candidateLimit || 24;
+}
+
+function ensureIpv6DnsSafetyUi() {
+  if ($('#ipv6DnsSafetyCard')) return;
+  const securitySections = [...document.querySelectorAll('.settings-section')];
+  const target = securitySections.find((section) => section.textContent.includes('DNS') || section.textContent.includes('IPv6'));
+  if (!target) return;
+  const card = el('div', { id: 'ipv6DnsSafetyCard', className: 'ipv6-safety-card' }, [
+    el('article', {}, [el('span', { textContent: 'IPv6 模式' }), el('b', { id: 'ipv6AutoModeState', textContent: '自动检测' })]),
+    el('article', {}, [el('span', { textContent: 'IPv4 出口' }), el('b', { id: 'ipv4OutletState', textContent: '-' })]),
+    el('article', {}, [el('span', { textContent: 'IPv6 出口' }), el('b', { id: 'ipv6OutletState', textContent: '-' })]),
+    el('article', {}, [el('span', { textContent: '泄漏保护' }), el('b', { id: 'ipv6LeakState', textContent: '-' })]),
+    el('article', { className: 'wide' }, [el('span', { textContent: 'DNS 安全' }), el('b', { id: 'dnsLeakState', textContent: '-' })]),
+    el('small', { id: 'ipv6PlainPrompt', textContent: 'IPv6 和 DNS 状态会自动检测，不会改变当前连接。' })
+  ]);
+  target.appendChild(card);
+}
+
+function renderIpv6DnsSafety(data = latestIpv6DnsSafety) {
+  ensureIpv6DnsSafetyUi();
+  if (!data) return;
+  $('#ipv6AutoModeState').textContent = data.mode === 'auto' ? '自动' : '-';
+  $('#ipv4OutletState').textContent = data.currentNodeIpv4?.ok ? data.currentNodeIpv4.ip : '不可用';
+  $('#ipv6OutletState').textContent = data.currentNodeIpv6?.ok ? data.currentNodeIpv6.ip : (data.localIpv6?.available ? '节点不支持' : '本机无 IPv6');
+  const leak = data.ipv6Leak || {};
+  $('#ipv6LeakState').textContent = leak.level === 'risk' ? '有风险' : leak.level === 'blocked' ? '已阻断/回退' : '无风险';
+  $('#ipv6LeakState').classList.toggle('bad', leak.level === 'risk');
+  $('#ipv6LeakState').classList.toggle('ok', leak.level !== 'risk');
+  $('#dnsLeakState').textContent = data.dnsLeak?.ok ? '安全' : '需检查';
+  $('#dnsLeakState').classList.toggle('bad', !data.dnsLeak?.ok);
+  $('#dnsLeakState').classList.toggle('ok', Boolean(data.dnsLeak?.ok));
+  $('#ipv6PlainPrompt').textContent = data.plainPrompt || 'IPv6 和 DNS 状态会自动检测，不会改变当前连接。';
+}
+
+async function refreshIpv6DnsSafety() {
+  ensureIpv6DnsSafetyUi();
+  try {
+    const data = await invoke('ipv6_dns_safety_snapshot');
+    latestIpv6DnsSafety = data;
+    renderIpv6DnsSafety(data);
+  } catch (err) {
+    latestIpv6DnsSafety = null;
+    $('#ipv6PlainPrompt').textContent = `IPv6/DNS 检测暂不可用：${err.message || err}`;
+  }
 }
 
 function logCategoryLabel(category = '', level = '') {
@@ -2763,7 +2813,20 @@ function ensureRoutingAssistantUi() {
     el('option', { textContent: '\u76f4\u8fde', attrs: { value: 'direct' } }),
     el('option', { textContent: '\u62d2\u7edd', attrs: { value: 'reject' } })
   ];
+  const regionOptions = () => [
+    el('option', { textContent: '\u4e2d\u56fd\u5927\u9646\u76f4\u8fde', attrs: { value: 'cn-direct' } }),
+    el('option', { textContent: '\u56fd\u5916\u7f51\u7ad9\u8d70\u4ee3\u7406', attrs: { value: 'global-proxy' } }),
+    el('option', { textContent: 'Telegram \u8d70\u4ee3\u7406', attrs: { value: 'telegram-proxy' } }),
+    el('option', { textContent: 'Netflix \u8d70\u4ee3\u7406', attrs: { value: 'netflix-proxy' } })
+  ];
   const assistant = el('div', { className: 'routing-assistant', attrs: { 'aria-label': '\u5206\u6d41\u89c4\u5219\u8349\u7a3f\u9884\u89c8' } }, [
+    el('div', { className: 'routing-assistant-toolbar' }, [
+      el('div', { className: 'segmented mini' }, [
+        el('button', { id: 'routingSimpleViewBtn', className: 'active', textContent: '\u7b80\u5355' }),
+        el('button', { id: 'routingAdvancedViewBtn', textContent: '\u9ad8\u7ea7' })
+      ]),
+      el('button', { id: 'undoRoutingDraftBtn', className: 'ghost compact', textContent: '\u64a4\u9500\u4e0a\u4e00\u6761' })
+    ]),
     el('section', { className: 'routing-draft-card' }, [
       el('div', {}, [
         el('b', { textContent: '\u7f51\u7ad9\u5206\u6d41\uff08\u9884\u89c8\uff09' }),
@@ -2787,17 +2850,43 @@ function ensureRoutingAssistantUi() {
         el('button', { id: 'previewAppRuleBtn', className: 'primary compact', textContent: '\u9884\u89c8' })
       ]),
       el('p', { id: 'routingAppDraftPreview', className: 'routing-draft-preview', textContent: '\u7b49\u5f85\u8f93\u5165\u5e94\u7528\u3002' })
+    ]),
+    el('section', { className: 'routing-draft-card' }, [
+      el('div', {}, [
+        el('b', { textContent: '\u5730\u533a / \u7b56\u7565\u76ee\u6807\uff08\u9884\u89c8\uff09' }),
+        el('small', { textContent: '\u9009\u62e9\u5e38\u89c1\u573a\u666f\u548c\u76ee\u6807\u7b56\u7565\uff0c\u4e0d\u9700\u8981\u5199 YAML\u3002' })
+      ]),
+      el('div', { className: 'routing-draft-form' }, [
+        el('select', { id: 'routingRegionSelect' }, regionOptions()),
+        el('select', { id: 'routingTargetSelect' }, []),
+        el('button', { id: 'previewRegionRuleBtn', className: 'primary compact', textContent: '\u751f\u6210\u8349\u7a3f' })
+      ]),
+      el('p', { id: 'routingRegionDraftPreview', className: 'routing-draft-preview', textContent: '\u7b49\u5f85\u9009\u62e9\u573a\u666f\u3002' })
+    ]),
+    el('section', { id: 'routingDraftListCard', className: 'routing-draft-card routing-draft-list-card' }, [
+      el('div', {}, [
+        el('b', { textContent: '\u8349\u7a3f\u4e0e\u9a8c\u8bc1' }),
+        el('small', { id: 'routingDraftListHint', textContent: '\u8349\u7a3f\u4ec5\u4fdd\u5b58\u5728\u5f53\u524d\u9875\u9762\uff0c\u9a8c\u8bc1\u4e0d\u4f1a\u4fee\u6539\u8fde\u63a5\u3002' })
+      ]),
+      el('div', { id: 'routingDraftList', className: 'routing-draft-list' }, []),
+      el('p', { id: 'routingConflictSummary', className: 'routing-draft-preview', textContent: '\u6682\u65e0\u8349\u7a3f\u3002' })
     ])
   ]);
   summary.after(assistant);
   $('#previewWebsiteRuleBtn')?.addEventListener('click', previewWebsiteRoutingDraft);
   $('#previewAppRuleBtn')?.addEventListener('click', previewAppRoutingDraft);
+  $('#previewRegionRuleBtn')?.addEventListener('click', previewRegionRoutingDraft);
+  $('#undoRoutingDraftBtn')?.addEventListener('click', undoLastRoutingDraft);
+  $('#routingSimpleViewBtn')?.addEventListener('click', () => setRoutingAssistantView('simple'));
+  $('#routingAdvancedViewBtn')?.addEventListener('click', () => setRoutingAssistantView('advanced'));
   $('#routingWebsiteInput')?.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') previewWebsiteRoutingDraft();
   });
   $('#routingAppInput')?.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') previewAppRoutingDraft();
   });
+  refreshRoutingTargetOptions();
+  renderRoutingDraftList();
   routingAssistantReady = true;
 }
 
@@ -2808,6 +2897,133 @@ function routingDraftAction(action = 'proxy') {
     reject: { label: '\u62d2\u7edd', target: 'REJECT' }
   };
   return actionMap[action] || actionMap.proxy;
+}
+
+function routingRuleKey(draft = {}) {
+  return `${String(draft.kind || '').toUpperCase()}|${String(draft.condition || '').toLowerCase()}`;
+}
+
+function existingRoutingRules() {
+  return Array.isArray(latestRoutingSnapshot?.rules) ? latestRoutingSnapshot.rules : [];
+}
+
+function routingTargetOptions() {
+  const groups = Array.isArray(latestRoutingSnapshot?.groups) ? latestRoutingSnapshot.groups : [];
+  const options = [
+    { label: '\u4e3b\u8981\u4ee3\u7406\u7ec4', value: groups[0]?.name || 'Proxies' },
+    { label: '\u76f4\u8fde', value: 'DIRECT' },
+    { label: '\u62d2\u7edd', value: 'REJECT' }
+  ];
+  groups.slice(0, 12).forEach((group) => {
+    const name = String(group.name || '').trim();
+    if (name && !options.some((item) => item.value === name)) {
+      options.push({ label: name, value: name });
+    }
+  });
+  return options;
+}
+
+function refreshRoutingTargetOptions() {
+  const targetSelect = $('#routingTargetSelect');
+  if (!targetSelect) return;
+  const current = targetSelect.value;
+  const options = routingTargetOptions().map((item) => el('option', { textContent: item.label, attrs: { value: item.value } }));
+  replaceChildrenSafe(targetSelect, options);
+  if ([...targetSelect.options].some((option) => option.value === current)) targetSelect.value = current;
+}
+
+function classifyRoutingDraft(draft = {}) {
+  const key = routingRuleKey(draft);
+  const existing = existingRoutingRules().find((item) => routingRuleKey({ kind: item.kind, condition: item.condition }) === key);
+  const duplicateDraft = routingAssistantDrafts.find((item) => item.id !== draft.id && routingRuleKey(item) === key);
+  if (existing && String(existing.target || '') !== String(draft.target || '')) {
+    return { level: 'warn', text: `\u5df2\u6709\u89c4\u5219\u6307\u5411 ${routingTargetLabel(existing.target)}\uff0c\u65b0\u76ee\u6807\u662f ${routingTargetLabel(draft.target)}\u3002` };
+  }
+  if (existing) return { level: 'ok', text: '\u5df2\u6709\u76f8\u540c\u751f\u6548\u89c4\u5219\u3002' };
+  if (duplicateDraft) return { level: 'warn', text: '\u8349\u7a3f\u4e2d\u5df2\u6709\u76f8\u540c\u6761\u4ef6\uff0c\u5efa\u8bae\u5148\u64a4\u9500\u91cd\u590d\u9879\u3002' };
+  return { level: 'ok', text: '\u672a\u53d1\u73b0\u51b2\u7a81\uff0c\u4f46\u5f53\u524d\u4ecd\u53ea\u662f\u8349\u7a3f\u3002' };
+}
+
+function addRoutingDraft(draft) {
+  const item = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    createdAt: Date.now(),
+    verified: false,
+    ...draft
+  };
+  item.rule = `${item.kind},${item.condition},${item.target}${item.option ? `,${item.option}` : ''}`;
+  item.classification = classifyRoutingDraft(item);
+  routingAssistantDrafts = [item, ...routingAssistantDrafts].slice(0, 12);
+  renderRoutingDraftList();
+  return item;
+}
+
+function verifyRoutingDraft(id) {
+  routingAssistantDrafts = routingAssistantDrafts.map((item) => {
+    if (item.id !== id) return item;
+    const classification = classifyRoutingDraft(item);
+    return {
+      ...item,
+      verified: true,
+      classification,
+      verifiedAt: Date.now()
+    };
+  });
+  renderRoutingDraftList();
+}
+
+function removeRoutingDraft(id) {
+  routingAssistantDrafts = routingAssistantDrafts.filter((item) => item.id !== id);
+  renderRoutingDraftList();
+}
+
+function undoLastRoutingDraft() {
+  routingAssistantDrafts = routingAssistantDrafts.slice(1);
+  renderRoutingDraftList();
+}
+
+function setRoutingAssistantView(view) {
+  routingAssistantView = view === 'advanced' ? 'advanced' : 'simple';
+  const assistant = document.querySelector('.routing-assistant');
+  if (assistant) assistant.dataset.view = routingAssistantView;
+  $('#routingSimpleViewBtn')?.classList.toggle('active', routingAssistantView === 'simple');
+  $('#routingAdvancedViewBtn')?.classList.toggle('active', routingAssistantView === 'advanced');
+  renderRoutingDraftList();
+}
+
+function renderRoutingDraftList() {
+  const list = $('#routingDraftList');
+  const summary = $('#routingConflictSummary');
+  if (!list || !summary) return;
+  const rows = routingAssistantDrafts.map((item) => {
+    const classification = classifyRoutingDraft(item);
+    const advancedText = routingAssistantView === 'advanced' ? ` \u00b7 ${item.rule}` : '';
+    return el('div', { className: `routing-draft-row ${classification.level === 'warn' ? 'warn' : ''}` }, [
+      el('div', {}, [
+        el('b', { textContent: item.label || `${routingKindLabel(item.kind)} ${item.condition}` }),
+        el('small', { textContent: `${classification.text}${advancedText}` })
+      ]),
+      el('span', { className: item.verified ? 'ok' : 'muted', textContent: item.verified ? '\u5df2\u9a8c\u8bc1' : '\u8349\u7a3f' }),
+      el('button', { className: 'ghost compact', dataset: { verifyRoutingDraft: item.id }, textContent: '\u9a8c\u8bc1' }),
+      el('button', { className: 'ghost compact', dataset: { removeRoutingDraft: item.id }, textContent: '\u64a4\u9500' })
+    ]);
+  });
+  replaceChildrenSafe(list, rows.length ? rows : [emptyState('\u6682\u65e0\u8349\u7a3f\u3002')]);
+  const conflicts = routingAssistantDrafts.filter((item) => classifyRoutingDraft(item).level === 'warn').length;
+  summary.textContent = routingAssistantDrafts.length
+    ? `${routingAssistantDrafts.length} \u6761\u8349\u7a3f\uff0c${conflicts} \u6761\u9700\u8981\u6ce8\u610f\u3002`
+    : '\u6682\u65e0\u8349\u7a3f\u3002';
+  summary.className = `routing-draft-preview ${conflicts ? 'warn' : 'ok'}`;
+}
+
+function regionRoutingDraftPreset(value = '', target = 'Proxies') {
+  const presets = {
+    'cn-direct': { kind: 'GEOIP', condition: 'CN', target: 'DIRECT', option: 'no-resolve', label: '\u4e2d\u56fd\u5927\u9646 \u2192 \u76f4\u8fde' },
+    'global-proxy': { kind: 'GEOSITE', condition: 'geolocation-!cn', target, label: `\u56fd\u5916\u7f51\u7ad9 \u2192 ${routingTargetLabel(target)}` },
+    'telegram-proxy': { kind: 'GEOSITE', condition: 'telegram', target, label: `Telegram \u2192 ${routingTargetLabel(target)}` },
+    'netflix-proxy': { kind: 'GEOSITE', condition: 'netflix', target, label: `Netflix \u2192 ${routingTargetLabel(target)}` }
+  };
+  return presets[value] || presets['global-proxy'];
 }
 
 function normalizeWebsiteRuleInput(value = '') {
@@ -2831,8 +3047,15 @@ function previewWebsiteRoutingDraft() {
     return;
   }
   const next = routingDraftAction(action);
-  preview.textContent = `\u8349\u7a3f\uff1a${parsed.domain} \u2192 ${next.label}\u3002\u5f53\u524d\u53ea\u9884\u89c8\uff0c\u4e0d\u4f1a\u4fee\u6539\u914d\u7f6e\u3002`;
-  preview.dataset.rule = `DOMAIN-SUFFIX,${parsed.domain},${next.target}`;
+  const draft = addRoutingDraft({
+    kind: 'DOMAIN-SUFFIX',
+    condition: parsed.domain,
+    target: next.target,
+    label: `${parsed.domain} \u2192 ${next.label}`,
+    source: 'website'
+  });
+  preview.textContent = `\u8349\u7a3f\uff1a${draft.label}\u3002${draft.classification.text}`;
+  preview.dataset.rule = draft.rule;
   preview.className = 'routing-draft-preview ok';
 }
 
@@ -2864,9 +3087,31 @@ function previewAppRoutingDraft() {
     return;
   }
   const next = routingDraftAction(action);
-  preview.textContent = `\u8349\u7a3f\uff1a${parsed.value} \u2192 ${next.label}\u3002\u5f53\u524d\u53ea\u9884\u89c8\uff0c\u4e0d\u4f1a\u4fee\u6539\u914d\u7f6e\u3002`;
-  preview.dataset.rule = `${parsed.kind},${parsed.value},${next.target}`;
+  const draft = addRoutingDraft({
+    kind: parsed.kind,
+    condition: parsed.value,
+    target: next.target,
+    label: `${parsed.value} \u2192 ${next.label}`,
+    source: 'app'
+  });
+  preview.textContent = `\u8349\u7a3f\uff1a${draft.label}\u3002${draft.classification.text}`;
+  preview.dataset.rule = draft.rule;
   preview.className = 'routing-draft-preview ok';
+}
+
+function previewRegionRoutingDraft() {
+  const preview = $('#routingRegionDraftPreview');
+  if (!preview) return;
+  const value = $('#routingRegionSelect')?.value || 'global-proxy';
+  const target = $('#routingTargetSelect')?.value || routingTargetOptions()[0]?.value || 'Proxies';
+  const preset = regionRoutingDraftPreset(value, target);
+  const draft = addRoutingDraft({
+    ...preset,
+    source: 'region'
+  });
+  preview.textContent = `\u8349\u7a3f\uff1a${draft.label}\u3002${draft.classification.text}`;
+  preview.dataset.rule = draft.rule;
+  preview.className = draft.classification.level === 'warn' ? 'routing-draft-preview warn' : 'routing-draft-preview ok';
 }
 
 function normalizeConnectionRoutingTarget(value = '') {
@@ -2898,8 +3143,16 @@ function previewConnectionRoutingDraftFromButton(button) {
   const next = routingDraftAction('proxy');
   const websiteInput = $('#routingWebsiteInput');
   if (websiteInput && parsed.kind === 'DOMAIN-SUFFIX') websiteInput.value = parsed.value;
-  preview.textContent = `\u8349\u7a3f\uff1a${parsed.display} \u2192 ${next.label}\u3002\u6765\u81ea\u8fde\u63a5\u8bb0\u5f55\uff0c\u4e0d\u4f1a\u4fee\u6539\u914d\u7f6e\u3002`;
-  preview.dataset.rule = `${parsed.kind},${parsed.value},${next.target}${parsed.kind === 'IP-CIDR' ? ',no-resolve' : ''}`;
+  const draft = addRoutingDraft({
+    kind: parsed.kind,
+    condition: parsed.value,
+    target: next.target,
+    option: parsed.kind === 'IP-CIDR' ? 'no-resolve' : '',
+    label: `${parsed.display} \u2192 ${next.label}`,
+    source: 'connection'
+  });
+  preview.textContent = `\u8349\u7a3f\uff1a${draft.label}\u3002\u6765\u81ea\u8fde\u63a5\u8bb0\u5f55\uff0c${draft.classification.text}`;
+  preview.dataset.rule = draft.rule;
   preview.className = 'routing-draft-preview ok';
 }
 
@@ -2937,6 +3190,8 @@ function routingStatusLabel(item = {}) {
 
 function renderRoutingSnapshot(data = {}) {
   ensureRoutingAssistantUi();
+  latestRoutingSnapshot = data || {};
+  refreshRoutingTargetOptions();
   const groups = Array.isArray(data.groups) ? data.groups : [];
   const rawRules = Array.isArray(data.rules) ? data.rules : [];
   const systemRules = rawRules.filter(isAegosSystemRoutingRule);
@@ -2977,6 +3232,7 @@ function renderRoutingSnapshot(data = {}) {
     ]));
   }
   replaceChildrenSafe($('#routingRuleRows'), ruleRows.length ? ruleRows : [emptyState('\u6682\u65e0\u914d\u7f6e\u89c4\u5219\u3002')]);
+  renderRoutingDraftList();
 }
 async function refreshRoutingSnapshot(token = null) {
   if (pageCacheState.routing.loading) return;
@@ -3434,6 +3690,16 @@ document.body.addEventListener('click', async (event) => {
       ensureRoutingAssistantUi();
       previewConnectionRoutingDraftFromButton(routingDraftButton);
       setNotice('\u5df2\u4ece\u8fde\u63a5\u8bb0\u5f55\u751f\u6210\u5206\u6d41\u8349\u7a3f\uff0c\u672a\u4fee\u6539\u914d\u7f6e\u3002');
+      return;
+    }
+    const verifyRoutingDraftButton = event.target.closest('[data-verify-routing-draft]');
+    if (verifyRoutingDraftButton) {
+      verifyRoutingDraft(verifyRoutingDraftButton.dataset.verifyRoutingDraft);
+      return;
+    }
+    const removeRoutingDraftButton = event.target.closest('[data-remove-routing-draft]');
+    if (removeRoutingDraftButton) {
+      removeRoutingDraft(removeRoutingDraftButton.dataset.removeRoutingDraft);
       return;
     }
     const closeButton = event.target.closest('[data-close-connection]');

@@ -3769,6 +3769,159 @@ fn query_outbound_ip(mixed_port: u16) -> Result<String, String> {
     }
 }
 
+fn query_outbound_ip_family(mixed_port: u16, family: &str) -> Result<String, String> {
+    let proxy_url = format!("http://127.0.0.1:{mixed_port}");
+    let proxy = reqwest::Proxy::all(&proxy_url).map_err(|err| err.to_string())?;
+    let client = Client::builder()
+        .proxy(proxy)
+        .user_agent("Aegos/3 ipv6-dns-safety-check")
+        .timeout(Duration::from_millis(2600))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let services: &[&str] = match family {
+        "ipv6" => &["https://api6.ipify.org", "https://v6.ident.me", "https://icanhazip.com"],
+        _ => &["https://api.ipify.org", "https://api.ipify.org?format=text", "http://api.ipify.org"],
+    };
+    let mut last_error = String::new();
+    for url in services {
+        match client
+            .get(*url)
+            .send()
+            .and_then(|res| res.error_for_status())
+        {
+            Ok(res) => match res.text() {
+                Ok(text) => {
+                    if let Some(ip) = normalize_outbound_ip_response(&text) {
+                        let parsed = ip.parse::<IpAddr>().map_err(|err| err.to_string())?;
+                        if (family == "ipv6" && parsed.is_ipv6())
+                            || (family != "ipv6" && parsed.is_ipv4())
+                        {
+                            return Ok(ip);
+                        }
+                        last_error = format!("{url} returned {ip}, not {family}");
+                    } else {
+                        last_error = format!("{url} returned an invalid IP response");
+                    }
+                }
+                Err(err) => last_error = err.to_string(),
+            },
+            Err(err) => last_error = err.to_string(),
+        }
+    }
+    Err(if last_error.is_empty() {
+        format!("{family} outlet unavailable")
+    } else {
+        format!("{family} outlet unavailable: {last_error}")
+    })
+}
+
+fn local_ipv6_capability() -> JsonValue {
+    match UdpSocket::bind("[::]:0") {
+        Ok(socket) => {
+            let routed = socket.connect("[2606:4700:4700::1111]:53").is_ok();
+            let local = socket
+                .local_addr()
+                .ok()
+                .map(|addr| addr.ip().to_string())
+                .unwrap_or_else(|| "::".to_string());
+            let usable = routed
+                && local
+                    .parse::<IpAddr>()
+                    .map(|ip| ip.is_ipv6() && ip.to_string() != "::")
+                    .unwrap_or(false);
+            json!({
+                "available": usable,
+                "routed": routed,
+                "localAddress": if usable { local } else { "-".to_string() },
+                "method": "udp-route-probe",
+                "changesConnection": false
+            })
+        }
+        Err(err) => json!({
+            "available": false,
+            "routed": false,
+            "localAddress": "-",
+            "method": "udp-route-probe",
+            "error": err.to_string(),
+            "changesConnection": false
+        }),
+    }
+}
+
+fn ipv6_dns_safety_from_parts(
+    local: JsonValue,
+    ipv4_outlet: Result<String, String>,
+    ipv6_outlet: Result<String, String>,
+    dns_safety: Result<String, String>,
+    settings: &Settings,
+    running: bool,
+) -> JsonValue {
+    let local_available = local
+        .get("available")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false);
+    let ipv4_ok = ipv4_outlet.is_ok();
+    let ipv6_ok = ipv6_outlet.is_ok();
+    let node_ipv6_support = if !running {
+        "unknown"
+    } else if ipv6_ok {
+        "supported"
+    } else {
+        "unsupported"
+    };
+    let leak_level = if !local_available || ipv6_ok {
+        "none"
+    } else if settings.ipv6_enabled {
+        "risk"
+    } else {
+        "blocked"
+    };
+    let action = if !local_available {
+        "local-ipv6-unavailable"
+    } else if ipv6_ok {
+        "use-ipv6"
+    } else if settings.ipv6_enabled {
+        "block-ipv6-leak"
+    } else {
+        "fallback-ipv4"
+    };
+    let plain_prompt = match action {
+        "use-ipv6" => "Current node supports IPv6.",
+        "block-ipv6-leak" => "Current node does not support IPv6; IPv6 leak should be blocked.",
+        "fallback-ipv4" => "Current node does not support IPv6; Aegos is using IPv4.",
+        _ => "Local IPv6 is unavailable; Aegos is using IPv4.",
+    };
+    json!({
+        "mode": "auto",
+        "changesConnection": false,
+        "localIpv6": local,
+        "currentNodeIpv4": {
+            "ok": ipv4_ok,
+            "ip": ipv4_outlet.as_ref().ok(),
+            "error": ipv4_outlet.as_ref().err()
+        },
+        "currentNodeIpv6": {
+            "ok": ipv6_ok,
+            "ip": ipv6_outlet.as_ref().ok(),
+            "error": ipv6_outlet.as_ref().err()
+        },
+        "nodeIpv6Support": node_ipv6_support,
+        "ipv6Leak": {
+            "level": leak_level,
+            "blockedOrFallback": leak_level != "risk",
+            "action": action
+        },
+        "dnsLeak": {
+            "ok": dns_safety.is_ok(),
+            "detail": dns_safety.unwrap_or_else(|err| err),
+            "hijackEnabled": settings.dns_hijack_enabled,
+            "runtimeDnsListen": AEGOS_DNS_LISTEN
+        },
+        "plainPrompt": plain_prompt,
+        "checkedAt": now_secs()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3789,6 +3942,42 @@ mod tests {
         assert!(parse_usable_lan_ip("0.0.0.0").is_none());
         assert!(parse_usable_lan_ip("8.8.8.8").is_none());
         assert!(parse_usable_lan_ip("172.32.0.1").is_none());
+    }
+
+    #[test]
+    fn ipv6_dns_safety_auto_falls_back_without_connection_changes() {
+        let mut settings = default_settings();
+        settings.ipv6_enabled = false;
+        settings.dns_hijack_enabled = true;
+        let report = ipv6_dns_safety_from_parts(
+            json!({ "available": true, "routed": true, "localAddress": "2001:db8::10" }),
+            Ok("198.51.100.10".to_string()),
+            Err("ipv6 outlet unavailable".to_string()),
+            Ok("listen=127.0.0.1:1054".to_string()),
+            &settings,
+            true,
+        );
+        assert_eq!(report.get("mode").and_then(JsonValue::as_str), Some("auto"));
+        assert_eq!(
+            report.get("changesConnection").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            report.get("nodeIpv6Support").and_then(JsonValue::as_str),
+            Some("unsupported")
+        );
+        assert_eq!(
+            report
+                .get("ipv6Leak")
+                .and_then(|value| value.get("action"))
+                .and_then(JsonValue::as_str),
+            Some("fallback-ipv4")
+        );
+        assert!(report
+            .get("plainPrompt")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("")
+            .contains("IPv4"));
     }
 
     #[test]
@@ -10163,6 +10352,51 @@ fn refresh_outbound_ip(state: State<AppState>) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn ipv6_dns_safety_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
+    let (running, mixed_port, settings, active_profile) = {
+        let core = state.core.lock().unwrap();
+        (
+            core.process.is_some(),
+            core.settings.mixed_port,
+            core.settings.clone(),
+            core.active_profile(),
+        )
+    };
+    let local = local_ipv6_capability();
+    let ipv4_outlet = if running {
+        query_outbound_ip_family(mixed_port, "ipv4")
+    } else {
+        Err("core is not running".to_string())
+    };
+    let ipv6_outlet = if running {
+        query_outbound_ip_family(mixed_port, "ipv6")
+    } else {
+        Err("core is not running".to_string())
+    };
+    let dns_safety = active_profile
+        .as_ref()
+        .ok_or_else(|| "no active profile".to_string())
+        .and_then(|profile| {
+            let path = PathBuf::from(&profile.path);
+            let raw = fs::read_to_string(&path)
+                .map_err(|err| format!("DNS safety read failed {}: {err}", path.display()))?;
+            let source: YamlValue = serde_yaml::from_str(&raw).map_err(|err| {
+                format!("DNS safety YAML parse failed {}: {err}", path.display())
+            })?;
+            let patched = patch_config_with_settings(source, &settings, Some(&profile.id))?;
+            runtime_dns_safety_report(&patched)
+        });
+    Ok(ipv6_dns_safety_from_parts(
+        local,
+        ipv4_outlet,
+        ipv6_outlet,
+        dns_safety,
+        &settings,
+        running,
+    ))
+}
+
+#[tauri::command]
 fn select_best_proxy(state: State<AppState>) -> Result<JsonValue, String> {
     let _operation = lock_operation_queue(&state.operations, "select_best_proxy command")?;
     state.core.lock().unwrap().select_best_proxy()
@@ -11133,6 +11367,7 @@ fn main() {
             cancel_proxy_delay_test,
             recover_network,
             refresh_outbound_ip,
+            ipv6_dns_safety_snapshot,
             select_best_proxy,
             connections,
             routing_snapshot,

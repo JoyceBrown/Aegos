@@ -84,6 +84,8 @@ check('routing assistant gate audit script exists', exists('tools/routing-assist
 check('routing UX audit script exists', exists('tools/routing-ux-audit.js') && pkg.scripts?.['audit:routing-ux'] === 'node tools/routing-ux-audit.js', 'tools/routing-ux-audit.js');
 check('routing app UX audit script exists', exists('tools/routing-app-ux-audit.js') && pkg.scripts?.['audit:routing-app-ux'] === 'node tools/routing-app-ux-audit.js', 'tools/routing-app-ux-audit.js');
 check('routing connection draft audit script exists', exists('tools/routing-connection-draft-audit.js') && pkg.scripts?.['audit:routing-connection-draft'] === 'node tools/routing-connection-draft-audit.js', 'tools/routing-connection-draft-audit.js');
+check('routing assistant maturity audit script exists', exists('tools/routing-assistant-maturity-audit.js') && pkg.scripts?.['audit:routing-assistant-maturity'] === 'node tools/routing-assistant-maturity-audit.js', 'tools/routing-assistant-maturity-audit.js');
+check('IPv6/DNS safety audit script exists', exists('tools/ipv6-dns-safety-audit.js') && pkg.scripts?.['audit:ipv6-dns-safety'] === 'node tools/ipv6-dns-safety-audit.js', 'tools/ipv6-dns-safety-audit.js');
 
 const mainRs = readText('src-tauri/src/main.rs');
 const powershellCalls = (mainRs.match(/Command::new\("powershell\.exe"\)/g) || []).length;
