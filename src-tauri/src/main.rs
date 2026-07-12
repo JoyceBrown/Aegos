@@ -455,6 +455,51 @@ fn speed_test_snapshot_from_state(speed_test: &Arc<Mutex<SpeedTestState>>) -> Js
     })
 }
 
+fn mark_speed_test_preparing(speed_test: &Arc<Mutex<SpeedTestState>>) -> JsonValue {
+    {
+        let mut speed = speed_test.lock().unwrap();
+        if !speed.running {
+            let now = now_secs();
+            let previous_health = speed.health.clone();
+            let run_id = speed.run_id.saturating_add(1);
+            *speed = SpeedTestState {
+                run_id,
+                running: true,
+                started_at: now,
+                updated_at: now,
+                total: 0,
+                completed: 0,
+                ok: 0,
+                failed: 0,
+                delays: HashMap::new(),
+                health: previous_health,
+                low_latency: Vec::new(),
+                recommended: None,
+                error: None,
+            };
+        }
+    }
+    speed_test_snapshot_from_state(speed_test)
+}
+
+fn speed_test_run_is_current(speed_test: &Arc<Mutex<SpeedTestState>>, run_id: u64) -> bool {
+    let speed = speed_test.lock().unwrap();
+    speed.running && speed.run_id == run_id
+}
+
+fn fail_speed_test_if_current(
+    speed_test: &Arc<Mutex<SpeedTestState>>,
+    run_id: u64,
+    message: String,
+) {
+    let mut speed = speed_test.lock().unwrap();
+    if speed.run_id == run_id {
+        speed.running = false;
+        speed.error = Some(message);
+        speed.updated_at = now_secs();
+    }
+}
+
 fn export_logs_from_state(
     logs: &Arc<Mutex<Vec<LogEntry>>>,
     app_data: &Path,
@@ -7012,18 +7057,36 @@ impl CoreManager {
     }
 
     fn start_proxy_delay_test(&mut self) -> Result<JsonValue, String> {
+        self.start_proxy_delay_test_for_run(None)
+    }
+
+    fn start_proxy_delay_test_for_run(
+        &mut self,
+        expected_run_id: Option<u64>,
+    ) -> Result<JsonValue, String> {
         if let Err(err) = self.ensure_core_for_delay_test() {
             let message = format!("测速准备失败：{err}");
-            let mut speed = self.speed_test.lock().unwrap();
-            speed.running = false;
-            speed.error = Some(message.clone());
-            speed.updated_at = now_secs();
+            if let Some(run_id) = expected_run_id {
+                fail_speed_test_if_current(&self.speed_test, run_id, message.clone());
+            } else {
+                let mut speed = self.speed_test.lock().unwrap();
+                speed.running = false;
+                speed.error = Some(message.clone());
+                speed.updated_at = now_secs();
+            }
             return Err(message);
+        }
+        if let Some(run_id) = expected_run_id {
+            if !speed_test_run_is_current(&self.speed_test, run_id) {
+                return Ok(self.speed_test_snapshot());
+            }
         }
         let groups = self.proxy_groups();
         let targets = Self::collect_proxy_targets(&groups);
         if let Err(err) = speed_test_preflight(&targets) {
-            {
+            if let Some(run_id) = expected_run_id {
+                fail_speed_test_if_current(&self.speed_test, run_id, err.clone());
+            } else {
                 let mut speed = self.speed_test.lock().unwrap();
                 speed.running = false;
                 speed.error = Some(err.clone());
@@ -7045,12 +7108,19 @@ impl CoreManager {
         let run_id;
         {
             let mut speed = speed_test.lock().unwrap();
-            if speed.running {
+            if let Some(expected_run_id) = expected_run_id {
+                if speed.run_id != expected_run_id || !speed.running {
+                    drop(speed);
+                    return Ok(self.speed_test_snapshot());
+                }
+                run_id = expected_run_id;
+            } else if speed.running {
                 drop(speed);
                 return Ok(self.speed_test_snapshot());
+            } else {
+                run_id = speed.run_id.saturating_add(1);
             }
             let now = now_secs();
-            run_id = speed.run_id.saturating_add(1);
             *speed = SpeedTestState {
                 run_id,
                 running: true,
@@ -9282,7 +9352,27 @@ fn preview_profile_groups(state: State<AppState>, id: String) -> Result<JsonValu
 
 #[tauri::command]
 fn start_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
-    state.core.lock().unwrap().start_proxy_delay_test()
+    let already_running = state.speed_test.lock().unwrap().running;
+    let snapshot = mark_speed_test_preparing(&state.speed_test);
+    let run_id = snapshot
+        .get("runId")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    if already_running || run_id == 0 {
+        return Ok(snapshot);
+    }
+    let core = state.core.clone();
+    let speed_test = state.speed_test.clone();
+    thread::spawn(move || {
+        let result = core
+            .lock()
+            .unwrap()
+            .start_proxy_delay_test_for_run(Some(run_id));
+        if let Err(err) = result {
+            fail_speed_test_if_current(&speed_test, run_id, err);
+        }
+    });
+    Ok(snapshot)
 }
 
 #[tauri::command]

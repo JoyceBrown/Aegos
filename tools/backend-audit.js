@@ -17,6 +17,7 @@ const commandSection = mainRs.slice(mainRs.indexOf('#[tauri::command]'));
 const speedStart = mainRs.indexOf('fn start_proxy_delay_test');
 const speedEnd = mainRs.indexOf('fn test_single_proxy_delay', speedStart);
 const speedTestBody = speedStart >= 0 && speedEnd > speedStart ? mainRs.slice(speedStart, speedEnd) : '';
+const speedCommandBody = mainRs.match(/fn start_proxy_delay_test\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 
 check(
   'status snapshot avoids controller version probe',
@@ -32,6 +33,14 @@ check(
   'speed tests run in background thread',
   mainRs.includes('fn start_proxy_delay_test') && mainRs.includes('thread::spawn(move ||') && mainRs.includes('speed_test_snapshot'),
   'background delay test'
+);
+check(
+  'batch speed-test command returns before slow core preparation',
+  speedCommandBody.includes('mark_speed_test_preparing(&state.speed_test)') &&
+    speedCommandBody.includes('thread::spawn(move ||') &&
+    speedCommandBody.includes('start_proxy_delay_test_for_run(Some(run_id))') &&
+    !speedCommandBody.includes('state.core.lock().unwrap().start_proxy_delay_test()'),
+  'clicking speed test should not wait for standby core preparation or proxy-group assembly'
 );
 check(
   'speed tests use standby core without traffic takeover or proxy switching',
