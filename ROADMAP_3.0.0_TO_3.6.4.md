@@ -4,6 +4,19 @@ This roadmap is the execution contract for the 3.x foundation lane. It keeps the
 user's main requirement explicit: no skipped small versions, no vague "done"
 claims, and every checkpoint must have a deliverable, verification, and commit.
 
+## Canonical Planning Rule
+
+This file is the single source of truth for version execution.
+
+- Research documents under `research/` are absorption notes and reference
+  material. They must not define a conflicting version route.
+- If a research document discovers a useful capability, it must be merged into
+  this roadmap before implementation starts.
+- The 3.3.x lane is the routing-assistant lane because 3.3.0 opened that gate
+  and 3.3.1-3.3.3 have already shipped as source checkpoints.
+- Manual-node and protocol-field maturity from the open-source absorption plan
+  is preserved in 3.6.x and later migration lanes, not in 3.3.x.
+
 ## Non-Negotiable Rules
 
 - Speed tests never connect, switch nodes, switch mode, or take over traffic.
@@ -72,8 +85,21 @@ claims, and every checkpoint must have a deliverable, verification, and commit.
 | 3.5.9 | Smart recovery acceptance | Recovery is explainable, cancelable, non-invasive, and audited. |
 | 3.6.1 | Favorite node persistence | Favorite nodes survive restart/profile refresh safely. |
 | 3.6.2 | Frequent node statistics | Frequent nodes use real connection history, not fake metrics. |
-| 3.6.3 | Fixed node edit/delete/import | Manual fixed nodes support full CRUD/import with validation. |
-| 3.6.4 | Node rename | User node aliases are editable, persisted, and do not corrupt real proxy names. |
+| 3.6.3 | Fixed node protocol fields | Manual fixed nodes expose validated Reality, uTLS, SNI, ALPN, fingerprint, flow, obfs, ShadowTLS, Snell, HY2, and TUIC fields where supported. |
+| 3.6.4 | Fixed node CRUD/import/export acceptance | Manual fixed nodes support edit/delete/import/export, aliases, fixture coverage, clear unsupported-field prompts, and no corruption of real proxy names. |
+
+## Absorption Alignment
+
+The open-source absorption plan is merged into this route as follows:
+
+- MetaCubeXD and mihomo rule visibility map to 3.1.x and 3.2.x.
+- Hiddify-style ordinary-user routing expression maps to 3.3.x.
+- v2rayN and NekoBox/NekoRay protocol/manual-node lessons map to 3.6.x.
+- v2rayN migration research is deferred to the 4.x migration lane.
+- Snell/ShadowTLS server-side material stays reference-only until a later
+  template/documentation lane; Aegos must not execute server shell scripts.
+- sing-box/CoreAdapter work is deferred until after the current mihomo-based
+  Windows lane remains stable.
 
 ## Checkpoint Discipline
 
