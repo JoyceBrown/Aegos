@@ -70,6 +70,7 @@ check('routing mode audit script exists', exists('tools/routing-mode-audit.js') 
 check('routing groups audit script exists', exists('tools/routing-groups-audit.js') && pkg.scripts?.['audit:routing-groups'] === 'node tools/routing-groups-audit.js', 'tools/routing-groups-audit.js');
 check('routing types audit script exists', exists('tools/routing-types-audit.js') && pkg.scripts?.['audit:routing-types'] === 'node tools/routing-types-audit.js', 'tools/routing-types-audit.js');
 check('routing selection audit script exists', exists('tools/routing-selection-audit.js') && pkg.scripts?.['audit:routing-selection'] === 'node tools/routing-selection-audit.js', 'tools/routing-selection-audit.js');
+check('routing redaction audit script exists', exists('tools/routing-redaction-audit.js') && pkg.scripts?.['audit:routing-redaction'] === 'node tools/routing-redaction-audit.js', 'tools/routing-redaction-audit.js');
 
 const mainRs = readText('src-tauri/src/main.rs');
 const powershellCalls = (mainRs.match(/Command::new\("powershell\.exe"\)/g) || []).length;

@@ -9673,13 +9673,13 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
     };
     let mut rule_counts: HashMap<String, (usize, String)> = HashMap::new();
     for item in recent_connections {
-        let rule = item
+        let rule = sanitize_sensitive_text(item
             .get("rule")
             .and_then(|value| value.as_str())
             .filter(|value| !value.is_empty())
             .unwrap_or("MATCH")
-            .to_string();
-        let chains = item
+        );
+        let chains = sanitize_sensitive_text(&item
             .get("chains")
             .and_then(|value| value.as_array())
             .map(|values| {
@@ -9690,7 +9690,7 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
                     .join(" > ")
             })
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "-".to_string());
+            .unwrap_or_else(|| "-".to_string()));
         let entry = rule_counts.entry(rule).or_insert((0, chains));
         entry.0 += 1;
     }

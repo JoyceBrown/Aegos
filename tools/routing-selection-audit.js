@@ -29,7 +29,7 @@ const renderStart = appJs.indexOf('function renderRoutingSnapshot');
 const renderEnd = appJs.indexOf('async function refreshRoutingSnapshot', renderStart);
 const renderBody = renderStart >= 0 ? appJs.slice(renderStart, renderEnd > renderStart ? renderEnd : undefined) : '';
 
-check('package version is 3.1.5 for routing selection checkpoint', pkg.version === '3.1.5', pkg.version);
+check('package version remains within the 3.1 routing selection lane', /^3\.1\.\d+$/.test(pkg.version), pkg.version);
 check('routing table keeps current selection separate from speed results', indexHtml.includes('<span>当前选择</span>') && renderBody.includes('item.now ||'), 'current selection column');
 check('automatic strategy groups are explained without implying connection', renderBody.includes('自动策略，测速不切换') && renderBody.includes('手动/只读'), 'automatic/manual copy');
 check('routing snapshot exposes automatic behavior as metadata only', mainRs.includes('"automatic": matches!(group_type.as_str(), "url-test" | "fallback" | "load-balance")'), 'automatic metadata');
