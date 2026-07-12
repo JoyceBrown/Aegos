@@ -30,7 +30,7 @@ const setSystemProxyBody = sliceBetween(mainRs, 'fn set_system_proxy', 'fn set_k
 const settingsUpdateBody = sliceBetween(mainRs, 'fn update_settings', 'fn set_mode');
 const settingsRollbackBody = sliceBetween(mainRs, 'fn rollback_settings_after_failure', 'fn active_profile');
 const lifecycleBody = sliceBetween(mainRs, 'fn start_with_takeover', 'fn terminate_core_process');
-const diagnosticsBody = sliceBetween(mainRs, 'fn diagnostics(&mut self) -> JsonValue', 'fn add_profile_url_detached');
+const diagnosticsBody = sliceBetween(mainRs, 'fn diagnostics_from_snapshot', 'fn diagnostics_detached');
 
 check(
   'Windows proxy takeover snapshots and restores previous state',
@@ -93,7 +93,7 @@ check(
     mainRs.includes('settings.mixed_port == settings.controller_port') &&
     diagnosticsBody.includes('"Mixed port availability"') &&
     diagnosticsBody.includes('"Controller port availability"') &&
-    diagnosticsBody.includes('port_owner_detail(self.settings.mixed_port)') &&
+    diagnosticsBody.includes('port_owner_detail(snapshot.settings.mixed_port)') &&
     releaseAudit.includes('settings save rejects proxy port conflicts'),
   'avoid FlClash/Codex 7890 and explain occupied ports'
 );

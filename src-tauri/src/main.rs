@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Write},
     net::{IpAddr, TcpListener, UdpSocket},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -452,6 +452,66 @@ fn sha256_text(text: &str) -> String {
 
 fn ensure_dir(path: &Path) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|err| err.to_string())
+}
+
+fn ensure_path_within(path: &Path, root: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("path has no parent: {}", path.display()))?;
+    ensure_dir(root)?;
+    ensure_dir(parent)?;
+    let root_abs = root.canonicalize().map_err(|err| {
+        format!(
+            "path confinement root unavailable {}: {err}",
+            root.display()
+        )
+    })?;
+    let parent_abs = parent.canonicalize().map_err(|err| {
+        format!(
+            "path confinement parent unavailable {}: {err}",
+            parent.display()
+        )
+    })?;
+    if parent_abs.starts_with(&root_abs) {
+        Ok(())
+    } else {
+        Err(format!(
+            "refusing to write outside app data: {}",
+            path.display()
+        ))
+    }
+}
+
+fn atomic_write_text_confined(path: &Path, root: &Path, content: &str) -> Result<(), String> {
+    ensure_path_within(path, root)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("path has no parent: {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("aegos-file");
+    let temp_path = parent.join(format!(".{file_name}.{}.tmp", hex_random(4)));
+    {
+        let mut file = fs::File::create(&temp_path)
+            .map_err(|err| format!("atomic temp create failed {}: {err}", temp_path.display()))?;
+        file.write_all(content.as_bytes())
+            .map_err(|err| format!("atomic temp write failed {}: {err}", temp_path.display()))?;
+        let _ = file.sync_all();
+    }
+    fs::rename(&temp_path, path).map_err(|err| {
+        let _ = fs::remove_file(&temp_path);
+        format!("atomic replace failed {}: {err}", path.display())
+    })
+}
+
+fn remove_file_confined(path: &Path, root: &Path) -> Result<(), String> {
+    ensure_path_within(path, root)?;
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("remove file failed {}: {err}", path.display())),
+    }
 }
 
 fn yaml_key(name: &str) -> YamlValue {
@@ -1821,63 +1881,6 @@ fn parse_uri_subscription(text: &str) -> Option<YamlValue> {
     let mut root = Mapping::new();
     set_yaml(&mut root, "proxies", YamlValue::Sequence(proxies));
     Some(YamlValue::Mapping(root))
-}
-
-#[allow(dead_code)]
-fn parse_uri_subscription_source(text: &str) -> Result<ProfileSource, String> {
-    let config = parse_uri_subscription(text).ok_or_else(|| {
-        "订阅格式不支持：不是 Clash YAML，也不是可识别的 ss/vmess/vless/trojan/hysteria2/anytls/tuic URI 订阅".to_string()
-    })?;
-    let body = decoded_subscription_body(text);
-    let unsupported_lines = body
-        .lines()
-        .map(str::trim)
-        .filter(|line| !is_ignorable_subscription_line(line))
-        .filter(|line| {
-            !line.starts_with("ss://")
-                && !line.starts_with("trojan://")
-                && !line.starts_with("vmess://")
-                && !line.starts_with("vless://")
-                && !line.starts_with("hysteria2://")
-                && !line.starts_with("hy2://")
-                && !line.starts_with("anytls://")
-                && !line.starts_with("tuic://")
-        })
-        .count();
-    let summary = summarize_profile_source(&config, "uri", unsupported_lines)?;
-    Ok(ProfileSource { config, summary })
-}
-
-#[allow(dead_code)]
-fn download_profile_source_url(url: &str) -> Result<ProfileSource, String> {
-    let parsed = reqwest::Url::parse(url).map_err(|err| format!("订阅 URL 无效：{err}"))?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err("订阅 URL 仅支持 HTTP/HTTPS".to_string());
-    }
-    let text = Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|err| format!("download client init failed: {err}"))?
-        .get(url)
-        .header("User-Agent", format!("Aegos/{}", env!("CARGO_PKG_VERSION")))
-        .send()
-        .map_err(|err| format!("subscription download failed: {err}"))?
-        .error_for_status()
-        .map_err(|err| format!("subscription download failed: bad HTTP status: {err}"))?
-        .text()
-        .map_err(|err| format!("subscription read failed: {err}"))?;
-    if text.trim().is_empty() {
-        return Err("subscription download returned empty content".to_string());
-    }
-    let source = match serde_yaml::from_str::<YamlValue>(&text).ok() {
-        Some(YamlValue::Mapping(map)) => {
-            let config = YamlValue::Mapping(map);
-            let summary = summarize_profile_source(&config, "clash-yaml", 0)?;
-            ProfileSource { config, summary }
-        }
-        _ => parse_uri_subscription_source(&text)?,
-    };
-    Ok(source)
 }
 
 fn parse_uri_subscription_source_diagnostic(text: &str) -> Result<ProfileSource, String> {
@@ -3567,12 +3570,9 @@ fn load_settings(path: &Path) -> Settings {
         .unwrap_or_else(default_settings)
 }
 
-fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        ensure_dir(parent)?;
-    }
+fn save_json<T: Serialize>(path: &Path, root: &Path, value: &T) -> Result<(), String> {
     let raw = serde_json::to_string_pretty(value).map_err(|err| err.to_string())?;
-    fs::write(path, raw).map_err(|err| err.to_string())
+    atomic_write_text_confined(path, root, &raw)
 }
 
 fn is_port_free(port: u16) -> bool {
@@ -4273,11 +4273,11 @@ impl CoreManager {
     }
 
     fn save_settings(&self) -> Result<(), String> {
-        save_json(&self.settings_path, &self.settings)
+        save_json(&self.settings_path, &self.app_data, &self.settings)
     }
 
     fn save_system_proxy_snapshot(&self, snapshot: &SystemProxySnapshot) -> Result<(), String> {
-        save_json(&self.proxy_snapshot_path, snapshot)
+        save_json(&self.proxy_snapshot_path, &self.app_data, snapshot)
     }
 
     fn load_system_proxy_snapshot(&self) -> Option<SystemProxySnapshot> {
@@ -4287,7 +4287,7 @@ impl CoreManager {
     }
 
     fn clear_system_proxy_snapshot(&self) {
-        let _ = fs::remove_file(&self.proxy_snapshot_path);
+        let _ = remove_file_confined(&self.proxy_snapshot_path, &self.app_data);
     }
 
     fn capture_proxy_snapshot_before_takeover(&self) -> Result<(), String> {
@@ -4326,11 +4326,11 @@ impl CoreManager {
             &self.settings,
             Some("direct"),
         )?;
-        fs::write(
+        atomic_write_text_confined(
             &path,
-            serde_yaml::to_string(&config).map_err(|err| err.to_string())?,
-        )
-        .map_err(|err| err.to_string())?;
+            &self.profile_dir,
+            &serde_yaml::to_string(&config).map_err(|err| err.to_string())?,
+        )?;
         if !self.settings.profiles.iter().any(|p| p.id == "direct") {
             self.settings.profiles.insert(
                 0,
@@ -4503,10 +4503,6 @@ impl CoreManager {
             .or_else(|| self.settings.profiles.first().cloned())
     }
 
-    fn patched_config(&self, profile: &Profile, source: YamlValue) -> Result<YamlValue, String> {
-        patch_config_with_settings(source, &self.settings, Some(&profile.id))
-    }
-
     fn standby_settings(&self) -> Settings {
         let mut settings = self.settings.clone();
         settings.tun_enabled = false;
@@ -4548,16 +4544,11 @@ impl CoreManager {
         let rendered = self.render_runtime_profile(profile)?;
         let current_digest = sha256_file(&path);
         if current_digest != rendered.digest {
-            fs::write(&path, &rendered.yaml).map_err(|err| err.to_string())?;
+            atomic_write_text_confined(&path, &self.profile_dir, &rendered.yaml)?;
         }
         ensure_dir(&self.home_dir)?;
         let runtime_path = self.runtime_profile_path();
-        fs::write(&runtime_path, &rendered.yaml).map_err(|err| {
-            format!(
-                "runtime profile write failed {}: {err}",
-                runtime_path.display()
-            )
-        })?;
+        atomic_write_text_confined(&runtime_path, &self.home_dir, &rendered.yaml)?;
         self.add_log(
             format!(
                 "Config preflight passed: {} proxies, {} groups, digest {}{}",
@@ -4628,59 +4619,8 @@ impl CoreManager {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    fn patch_profile_file_legacy(&mut self, profile: &Profile) -> Result<(), String> {
-        let path = PathBuf::from(&profile.path);
-        let raw = fs::read_to_string(&path)
-            .map_err(|err| format!("配置读取失败 {}: {err}", path.display()))?;
-        let source: YamlValue = serde_yaml::from_str(&raw)
-            .map_err(|err| format!("YAML 解析失败 {}: {err}", path.display()))?;
-        let patched = self.patched_config(profile, source)?;
-        let report = preflight_runtime_config(&patched, profile, &self.settings)?;
-        fs::write(
-            &path,
-            serde_yaml::to_string(&patched).map_err(|err| err.to_string())?,
-        )
-        .map_err(|err| err.to_string())?;
-        self.add_log(
-            format!(
-                "Config preflight passed: {} proxies, {} groups",
-                report
-                    .get("proxies")
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or(0),
-                report
-                    .get("proxyGroups")
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or(0)
-            ),
-            "info",
-        );
-        Ok(())
-    }
-
     fn runtime_profile_path(&self) -> PathBuf {
         self.home_dir.join("aegos-runtime-profile.yaml")
-    }
-
-    #[allow(dead_code)]
-    fn write_runtime_profile_copy(&self, profile: &Profile) -> Result<PathBuf, String> {
-        ensure_dir(&self.home_dir)?;
-        let source_path = PathBuf::from(&profile.path);
-        let raw = fs::read_to_string(&source_path).map_err(|err| {
-            format!(
-                "runtime profile source read failed {}: {err}",
-                source_path.display()
-            )
-        })?;
-        let runtime_path = self.runtime_profile_path();
-        fs::write(&runtime_path, raw).map_err(|err| {
-            format!(
-                "runtime profile write failed {}: {err}",
-                runtime_path.display()
-            )
-        })?;
-        Ok(runtime_path)
     }
 
     fn hot_reload_profile(&mut self, profile: &Profile) -> Result<JsonValue, String> {
@@ -4808,7 +4748,7 @@ impl CoreManager {
                 .join("\n")
                 + "\n"
         };
-        fs::write(&path, content).map_err(|err| err.to_string())?;
+        atomic_write_text_confined(&path, &export_dir, &content)?;
         Ok(json!({
             "path": path.to_string_lossy(),
             "count": items.len()
@@ -4853,12 +4793,7 @@ impl CoreManager {
         let rendered = self.render_runtime_profile_with_settings(profile, &settings)?;
         ensure_dir(&self.home_dir)?;
         let runtime_path = self.runtime_profile_path();
-        fs::write(&runtime_path, &rendered.yaml).map_err(|err| {
-            format!(
-                "standby runtime profile write failed {}: {err}",
-                runtime_path.display()
-            )
-        })?;
+        atomic_write_text_confined(&runtime_path, &self.home_dir, &rendered.yaml)?;
         self.add_log(
             format!(
                 "Standby config preflight passed: {} proxies, {} groups, digest {}",
@@ -5259,57 +5194,6 @@ impl CoreManager {
         })
     }
 
-    #[allow(dead_code)]
-    fn refresh_outbound_ip(&mut self) -> Result<String, String> {
-        if self.process.is_none() {
-            self.outbound_ip_cache = "-".to_string();
-            self.outbound_ip_checked_at = now_secs();
-            return Err("请先连接核心后再刷新落地 IP".to_string());
-        }
-        let proxy_url = format!("http://127.0.0.1:{}", self.settings.mixed_port);
-        let proxy = reqwest::Proxy::all(&proxy_url).map_err(|err| err.to_string())?;
-        let client = Client::builder()
-            .proxy(proxy)
-            .timeout(Duration::from_secs(8))
-            .build()
-            .map_err(|err| err.to_string())?;
-        let services = [
-            "https://api.ipify.org",
-            "https://ifconfig.me/ip",
-            "https://icanhazip.com",
-        ];
-        let mut last_error = String::new();
-        for url in services {
-            match client
-                .get(url)
-                .send()
-                .and_then(|res| res.error_for_status())
-            {
-                Ok(res) => match res.text() {
-                    Ok(text) => {
-                        let ip = text.trim().trim_matches('"').to_string();
-                        if !ip.is_empty() && ip.len() <= 64 {
-                            self.outbound_ip_cache = ip.clone();
-                            self.outbound_ip_checked_at = now_secs();
-                            self.add_log(format!("Outbound IP refreshed: {ip}"), "info");
-                            return Ok(ip);
-                        }
-                    }
-                    Err(err) => last_error = err.to_string(),
-                },
-                Err(err) => last_error = err.to_string(),
-            }
-        }
-        self.outbound_ip_checked_at = now_secs();
-        let reason = if last_error.is_empty() {
-            "无法获取落地 IP".to_string()
-        } else {
-            format!("无法获取落地 IP: {last_error}")
-        };
-        self.add_log(&reason, "warn");
-        Err(reason)
-    }
-
     fn public_settings(&self) -> JsonValue {
         json!({
             "activeProfileId": self.settings.active_profile_id,
@@ -5432,26 +5316,6 @@ impl CoreManager {
         self.settings.kill_switch_enabled = enable;
         self.save_settings()?;
         Ok(enable)
-    }
-
-    #[allow(dead_code)]
-    fn refresh_kill_switch_rules_if_enabled(&mut self, reason: &str) -> Result<(), String> {
-        if !self.settings.kill_switch_enabled {
-            return Ok(());
-        }
-        if !is_process_elevated() {
-            return Err("断网保护已开启，测速需要管理员权限刷新防火墙放行规则。".to_string());
-        }
-        run_powershell(&build_kill_switch_script(
-            true,
-            &self.app_data,
-            &self.core_path,
-        ))?;
-        self.add_log(
-            format!("Disconnect protection allow rules refreshed for {reason}"),
-            "info",
-        );
-        Ok(())
     }
 
     fn repair_system_proxy_takeover(&mut self) -> Result<JsonValue, String> {
@@ -6928,95 +6792,6 @@ impl CoreManager {
         Ok(true)
     }
 
-    #[allow(dead_code)]
-    fn download_profile_source(&self, url: &str) -> Result<YamlValue, String> {
-        let parsed = reqwest::Url::parse(url).map_err(|err| err.to_string())?;
-        if !matches!(parsed.scheme(), "http" | "https") {
-            return Err("订阅 URL 仅支持 HTTP/HTTPS".to_string());
-        }
-        let text = Client::builder()
-            .timeout(Duration::from_secs(20))
-            .build()
-            .map_err(|err| err.to_string())?
-            .get(url)
-            .header("User-Agent", format!("Aegos/{}", env!("CARGO_PKG_VERSION")))
-            .send()
-            .map_err(|err| err.to_string())?
-            .text()
-            .map_err(|err| err.to_string())?;
-        let source = match serde_yaml::from_str::<YamlValue>(&text).ok() {
-            Some(YamlValue::Mapping(map)) => YamlValue::Mapping(map),
-            _ => parse_uri_subscription(&text).ok_or_else(|| {
-                "订阅格式不支持：请使用 Clash YAML 或 ss/vmess/trojan/tuic URI 订阅".to_string()
-            })?,
-        };
-        Ok(source)
-    }
-
-    #[allow(dead_code)]
-    fn add_profile_url(&mut self, url: &str) -> Result<Profile, String> {
-        let parsed = reqwest::Url::parse(url).map_err(|err| err.to_string())?;
-        let source = self.download_profile_source(url)?;
-        let id = format!("url-{}", now_iso());
-        let patched = patch_config_with_settings(source, &self.settings, Some(&id))?;
-        let path = self.profile_dir.join(format!("{id}.yaml"));
-        fs::write(
-            &path,
-            serde_yaml::to_string(&patched).map_err(|err| err.to_string())?,
-        )
-        .map_err(|err| err.to_string())?;
-        let profile = Profile {
-            id: id.clone(),
-            name: parsed.host_str().unwrap_or("remote").to_string(),
-            profile_type: "url".to_string(),
-            path: path.to_string_lossy().to_string(),
-            source_url: Some(url.to_string()),
-            node_count: yaml_sequence(&patched, "proxies")
-                .map(|items| items.len())
-                .unwrap_or(0),
-            proxy_group_count: yaml_sequence(&patched, "proxy-groups")
-                .map(|items| items.len())
-                .unwrap_or(0),
-            updated_at: now_iso(),
-            digest: sha256_file(&path),
-        };
-        self.settings.profiles.push(profile.clone());
-        self.settings.active_profile_id = id;
-        self.save_settings()?;
-        Ok(profile)
-    }
-
-    #[allow(dead_code)]
-    fn update_profile(&mut self, id: &str) -> Result<Profile, String> {
-        let mut profile = self
-            .settings
-            .profiles
-            .iter()
-            .find(|p| p.id == id)
-            .cloned()
-            .ok_or_else(|| "Profile not found".to_string())?;
-        let Some(url) = profile.source_url.clone() else {
-            return Ok(profile);
-        };
-        let source = self.download_profile_source(&url)?;
-        let patched = self.patched_config(&profile, source)?;
-        fs::write(
-            &profile.path,
-            serde_yaml::to_string(&patched).map_err(|err| err.to_string())?,
-        )
-        .map_err(|err| err.to_string())?;
-        profile.updated_at = now_iso();
-        profile.digest = sha256_file(Path::new(&profile.path));
-        if let Some(stored) = self.settings.profiles.iter_mut().find(|p| p.id == id) {
-            *stored = profile.clone();
-        }
-        self.save_settings()?;
-        if self.process.is_some() && self.settings.active_profile_id == id {
-            self.restart_core_preserving_proxy(250)?;
-        }
-        Ok(profile)
-    }
-
     fn set_active_profile(&mut self, id: &str) -> Result<Profile, String> {
         let was_running = self.process.is_some();
         let previous_profile_id = self.settings.active_profile_id.clone();
@@ -7138,7 +6913,7 @@ impl CoreManager {
             thread::sleep(Duration::from_millis(250));
         }
         if let Some(path) = remove_path {
-            let _ = fs::remove_file(path);
+            let _ = remove_file_confined(Path::new(&path), &self.profile_dir);
         }
         self.settings.profiles.retain(|p| p.id != id);
         if was_active {
@@ -7203,272 +6978,6 @@ impl CoreManager {
             "profileId": profile.id,
             "settings": self.public_settings()
         }))
-    }
-
-    #[allow(dead_code)]
-    fn diagnostics(&mut self) -> JsonValue {
-        let is_admin = is_process_elevated();
-        let admin_required = self.settings.tun_enabled || self.settings.kill_switch_enabled;
-        let admin_ok = is_admin || !admin_required;
-        let active_profile = self.active_profile();
-        let active_profile_path = active_profile
-            .as_ref()
-            .map(|profile| PathBuf::from(&profile.path));
-        let active_profile_exists = active_profile_path
-            .as_ref()
-            .map(|path| path.exists())
-            .unwrap_or(false);
-        let profile_preflight = active_profile
-            .as_ref()
-            .ok_or_else(|| "no active profile".to_string())
-            .and_then(|profile| {
-                let path = PathBuf::from(&profile.path);
-                let raw = fs::read_to_string(&path)
-                    .map_err(|err| format!("配置读取失败 {}: {err}", path.display()))?;
-                let source: YamlValue = serde_yaml::from_str(&raw)
-                    .map_err(|err| format!("YAML 解析失败 {}: {err}", path.display()))?;
-                let patched = self.patched_config(profile, source)?;
-                preflight_runtime_config(&patched, profile, &self.settings).map(|report| {
-                    format!(
-                        "{} proxies, {} groups, {} rules",
-                        report
-                            .get("proxies")
-                            .and_then(|value| value.as_u64())
-                            .unwrap_or(0),
-                        report
-                            .get("proxyGroups")
-                            .and_then(|value| value.as_u64())
-                            .unwrap_or(0),
-                        report
-                            .get("rules")
-                            .and_then(|value| value.as_u64())
-                            .unwrap_or(0)
-                    )
-                })
-            });
-        let profile_preflight_ok = profile_preflight.is_ok();
-        let profile_preflight_detail = profile_preflight.unwrap_or_else(|err| err);
-        let recent_logs = self.recent_logs(8);
-        let recent_error = recent_logs.iter().rev().find(|entry| {
-            matches!(entry.level.as_str(), "error" | "warn")
-                || entry.line.to_ascii_lowercase().contains("error")
-        });
-        let recent_log_detail = if recent_logs.is_empty() {
-            "no recent core logs".to_string()
-        } else {
-            recent_logs
-                .iter()
-                .map(|entry| format!("[{}] {}", entry.level, entry.line))
-                .collect::<Vec<_>>()
-                .join(" | ")
-        };
-        let recent_logs_ok = recent_error.is_none();
-        let running = self.process.is_some();
-        let current_proxy = read_windows_proxy_snapshot();
-        let expected_proxy_endpoint = format!("127.0.0.1:{}", self.settings.mixed_port);
-        let current_proxy_ok = current_proxy
-            .as_ref()
-            .map(|snapshot| {
-                !self.settings.system_proxy
-                    || proxy_points_to_aegos(snapshot, self.settings.mixed_port)
-            })
-            .unwrap_or(false);
-        let current_proxy_detail = current_proxy
-            .as_ref()
-            .map(|snapshot| {
-                format!(
-                    "enabled={}, server={}, expected={}",
-                    snapshot.proxy_enable, snapshot.proxy_server, expected_proxy_endpoint
-                )
-            })
-            .unwrap_or_else(|err| format!("read failed: {err}"));
-        let mixed_port_free = is_port_free(self.settings.mixed_port);
-        let controller_port_free = is_port_free(self.settings.controller_port);
-        let check =
-            |name: &str, ok: bool, detail: String, severity: &str, category: &str, hint: &str| {
-                json!({
-                    "name": name,
-                    "ok": ok,
-                    "detail": detail,
-                    "severity": if ok { "ok" } else { severity },
-                    "category": category,
-                    "hint": if ok { "" } else { hint },
-                    "actionable": !ok && !hint.is_empty()
-                })
-            };
-        let checks =
-            vec![
-            check(
-                "mihomo core",
-                self.core_path.exists(),
-                self.core_path.to_string_lossy().to_string(),
-                "error",
-                "runtime",
-                "核心文件缺失或路径不可用，请重新放置 resources/core/mihomo.exe 后再启动。",
-            ),
-            check(
-                "Active profile config",
-                active_profile_exists,
-                active_profile_path
-                    .clone()
-                    .map(|path| path.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "no active profile".to_string()),
-                "error",
-                "profile",
-                "当前订阅配置文件不存在，请切换到可用订阅或重新导入订阅。",
-            ),
-            check(
-                "Profile preflight",
-                profile_preflight_ok,
-                profile_preflight_detail,
-                "error",
-                "profile",
-                "订阅预检失败，请优先检查订阅内容、代理组引用和端口配置。",
-            ),
-            check(
-                "Tauri shell",
-                true,
-                "Aegos".to_string(),
-                "warning",
-                "app",
-                "",
-            ),
-            check(
-                "Administrator",
-                admin_ok,
-                if is_admin {
-                    "elevated".to_string()
-                } else if admin_required {
-                    "not elevated; TUN and 断网保护 require admin restart".to_string()
-                } else {
-                    "not elevated; only required when TUN or 断网保护 is enabled".to_string()
-                },
-                "warning",
-                "permission",
-                "TUN 或断网保护已启用时，需要在设置页以管理员身份重启 Aegos。",
-            ),
-            check(
-                "FlClash/Codex port isolation",
-                self.settings.mixed_port != 7890,
-                format!("Aegos mixed port: {}, reserved: 7890", self.settings.mixed_port),
-                "error",
-                "network",
-                "Aegos 不能占用 7890，建议保持 mixed port 为 7891，避免和 FlClash/Codex 代理冲突。",
-            ),
-            check(
-                "Controller port",
-                self.settings.controller_port != self.settings.mixed_port,
-                format!("127.0.0.1:{}", self.settings.controller_port),
-                "error",
-                "network",
-                "控制端口不能和代理端口相同，请在设置页改成 19091 或其他未占用端口。",
-            ),
-            check(
-                "System Proxy",
-                true,
-                if self.settings.system_proxy { "enabled" } else { "disabled" }.to_string(),
-                "warning",
-                "network",
-                "",
-            ),
-            check(
-                "Mixed port availability",
-                running || mixed_port_free,
-                port_owner_detail(self.settings.mixed_port),
-                "error",
-                "network",
-                "Aegos core is not running, but the mixed proxy port is already occupied. Change Aegos mixed port or close the conflicting proxy app.",
-            ),
-            check(
-                "Controller port availability",
-                running || controller_port_free,
-                port_owner_detail(self.settings.controller_port),
-                "error",
-                "network",
-                "Aegos core is not running, but the controller port is already occupied. Change Aegos controller port or close the conflicting app.",
-            ),
-            check(
-                "Windows System Proxy takeover",
-                current_proxy_ok,
-                current_proxy_detail,
-                "warning",
-                "network",
-                "Aegos system proxy is enabled in settings, but Windows is not pointing at the Aegos endpoint. Toggle system proxy off/on or use repair takeover.",
-            ),
-            check(
-                "TUN",
-                !self.settings.tun_enabled || is_admin,
-                if self.settings.tun_enabled { "enabled" } else { "disabled" }.to_string(),
-                "warning",
-                "permission",
-                "TUN 已启用但当前不是管理员权限，请在设置页以管理员身份重启。",
-            ),
-            check(
-                "断网保护",
-                !self.settings.kill_switch_enabled || is_admin,
-                if self.settings.kill_switch_enabled { "enabled" } else { "disabled" }.to_string(),
-                "warning",
-                "permission",
-                "断网保护已启用但当前不是管理员权限，请在设置页以管理员身份重启。",
-            ),
-            check(
-                "Recent core logs",
-                recent_logs_ok,
-                recent_log_detail,
-                "warning",
-                "logs",
-                "最近核心日志出现 warning/error，请打开日志页查看启动失败或代理连接失败的上下文。",
-            ),
-        ];
-        let failed_count = checks
-            .iter()
-            .filter(|item| {
-                !item
-                    .get("ok")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false)
-            })
-            .count();
-        let error_count = checks
-            .iter()
-            .filter(|item| item.get("severity").and_then(|value| value.as_str()) == Some("error"))
-            .count();
-        let warning_count = checks
-            .iter()
-            .filter(|item| item.get("severity").and_then(|value| value.as_str()) == Some("warning"))
-            .count();
-        let next_actions = checks
-            .iter()
-            .filter(|item| {
-                !item
-                    .get("ok")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false)
-                    && item
-                        .get("actionable")
-                        .and_then(|value| value.as_bool())
-                        .unwrap_or(false)
-            })
-            .filter_map(|item| {
-                item.get("hint")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string)
-            })
-            .take(3)
-            .collect::<Vec<_>>();
-        json!({
-            "generatedAt": now_iso(),
-            "appVersion": env!("CARGO_PKG_VERSION"),
-            "status": self.status(),
-            "summary": {
-                "total": checks.len(),
-                "failed": failed_count,
-                "errors": error_count,
-                "warnings": warning_count,
-                "nextActions": next_actions
-            },
-            "checks": checks
-        })
     }
 }
 
@@ -7935,11 +7444,11 @@ fn add_profile_url_detached(
             "the subscription was downloaded, but the generated Mihomo config is not runnable; check unsupported node fields or malformed proxy groups",
         )
     })?;
-    fs::write(
+    atomic_write_text_confined(
         &path,
-        serde_yaml::to_string(&patched).map_err(|err| err.to_string())?,
-    )
-    .map_err(|err| err.to_string())?;
+        &profile_dir,
+        &serde_yaml::to_string(&patched).map_err(|err| err.to_string())?,
+    )?;
     profile.digest = sha256_file(&path);
     {
         let _operation = lock_operation_queue(&operations, "addProfileUrl apply")?;
@@ -7952,7 +7461,7 @@ fn add_profile_url_detached(
         if let Err(err) = core.save_settings() {
             core.settings.profiles.retain(|item| item.id != profile.id);
             core.settings.active_profile_id = previous_profile_id;
-            let _ = fs::remove_file(&path);
+            let _ = remove_file_confined(&path, &profile_dir);
             return Err(err);
         }
         core.add_log(
@@ -7973,7 +7482,7 @@ fn add_profile_url_detached(
                 core.restore_system_proxy_preference(previous_system_proxy);
                 core.settings.profiles.retain(|item| item.id != profile.id);
                 core.settings.active_profile_id = previous_profile_id.clone();
-                let _ = fs::remove_file(&path);
+                let _ = remove_file_confined(&path, &profile_dir);
                 let save_result = core.save_settings();
                 let rollback_result = if save_result.is_ok() {
                     core.start().map(|_| ())
@@ -8028,24 +7537,15 @@ fn update_profile_detached(
     let previous_profile = profile.clone();
     let profile_path = PathBuf::from(&profile.path);
     let previous_raw = fs::read_to_string(&profile_path).ok();
-    let temp_path = profile_path.with_file_name(format!(
-        "{}.{}.tmp",
-        profile_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("profile"),
-        hex_random(4)
-    ));
-    fs::write(
-        &temp_path,
-        serde_yaml::to_string(&patched).map_err(|err| err.to_string())?,
-    )
-    .map_err(|err| err.to_string())?;
-    if let Err(err) = fs::copy(&temp_path, &profile_path) {
-        let _ = fs::remove_file(&temp_path);
-        return Err(err.to_string());
-    }
-    let _ = fs::remove_file(&temp_path);
+    let profile_root = profile_path
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| format!("Profile path has no parent: {}", profile_path.display()))?;
+    atomic_write_text_confined(
+        &profile_path,
+        &profile_root,
+        &serde_yaml::to_string(&patched).map_err(|err| err.to_string())?,
+    )?;
     profile.updated_at = now_iso();
     profile.digest = sha256_file(&profile_path);
     {
@@ -8056,14 +7556,14 @@ fn update_profile_detached(
         let previous_system_proxy = core.settings.system_proxy;
         let Some(stored) = core.settings.profiles.iter_mut().find(|p| p.id == id) else {
             if let Some(raw) = previous_raw.as_ref() {
-                let _ = fs::write(&profile_path, raw);
+                let _ = atomic_write_text_confined(&profile_path, &profile_root, raw);
             }
             return Err("Profile was removed before update completed".to_string());
         };
         *stored = profile.clone();
         if let Err(err) = core.save_settings() {
             if let Some(raw) = previous_raw.as_ref() {
-                let _ = fs::write(&profile_path, raw);
+                let _ = atomic_write_text_confined(&profile_path, &profile_root, raw);
             }
             if let Some(stored) = core.settings.profiles.iter_mut().find(|p| p.id == id) {
                 *stored = previous_profile.clone();
@@ -8089,7 +7589,7 @@ fn update_profile_detached(
                 let _ = core.stop();
                 core.restore_system_proxy_preference(previous_system_proxy);
                 if let Some(raw) = previous_raw.as_ref() {
-                    let _ = fs::write(&profile_path, raw);
+                    let _ = atomic_write_text_confined(&profile_path, &profile_root, raw);
                 }
                 if let Some(stored) = core.settings.profiles.iter_mut().find(|p| p.id == id) {
                     *stored = previous_profile.clone();
@@ -8613,41 +8113,6 @@ fn app_status(state: State<AppState>) -> Result<JsonValue, String> {
 }
 
 #[tauri::command]
-fn start_core(state: State<AppState>) -> Result<JsonValue, String> {
-    let _operation = lock_operation_queue(&state.operations, "start_core command")?;
-    state.core.lock().unwrap().start()
-}
-
-#[tauri::command]
-fn stop_core(state: State<AppState>) -> Result<JsonValue, String> {
-    let _operation = lock_operation_queue(&state.operations, "stop_core command")?;
-    state.core.lock().unwrap().stop()
-}
-
-#[tauri::command]
-fn restart_core(state: State<AppState>) -> Result<JsonValue, String> {
-    let _operation = lock_operation_queue(&state.operations, "restart_core command")?;
-    let mut core = state.core.lock().unwrap();
-    core.restart_core_preserving_proxy(350)
-}
-
-#[tauri::command]
-fn set_system_proxy(state: State<AppState>, enable: bool) -> Result<bool, String> {
-    let _operation = lock_operation_queue(&state.operations, "set_system_proxy command")?;
-    state.core.lock().unwrap().set_system_proxy(enable)
-}
-
-#[tauri::command]
-fn update_setting(
-    state: State<AppState>,
-    key: String,
-    value: JsonValue,
-) -> Result<JsonValue, String> {
-    let _operation = lock_operation_queue(&state.operations, "update_setting command")?;
-    state.core.lock().unwrap().update_setting(&key, value)
-}
-
-#[tauri::command]
 fn update_settings(state: State<AppState>, updates: JsonValue) -> Result<JsonValue, String> {
     let _operation = lock_operation_queue(&state.operations, "update_settings command")?;
     state.core.lock().unwrap().update_settings(updates)
@@ -8670,12 +8135,6 @@ fn relaunch_as_admin(app: AppHandle) -> Result<bool, String> {
         app.exit(0);
     });
     Ok(true)
-}
-
-#[tauri::command]
-fn set_mode(state: State<AppState>, mode: String) -> Result<String, String> {
-    let _operation = lock_operation_queue(&state.operations, "set_mode command")?;
-    state.core.lock().unwrap().set_mode(&mode)
 }
 
 #[tauri::command]
@@ -8726,12 +8185,6 @@ fn test_proxy_delays(state: State<AppState>) -> Result<JsonValue, String> {
 #[tauri::command]
 fn refresh_outbound_ip(state: State<AppState>) -> Result<String, String> {
     refresh_outbound_ip_detached(state.core.clone())
-}
-
-#[tauri::command]
-fn change_proxy(state: State<AppState>, group: String, proxy: String) -> Result<bool, String> {
-    let _operation = lock_operation_queue(&state.operations, "change_proxy command")?;
-    state.core.lock().unwrap().change_proxy(&group, &proxy)
 }
 
 #[tauri::command]
@@ -8841,14 +8294,8 @@ fn main() {
             job_status,
             cancel_job,
             app_status,
-            start_core,
-            stop_core,
-            restart_core,
-            set_system_proxy,
-            update_setting,
             update_settings,
             relaunch_as_admin,
-            set_mode,
             proxy_groups,
             start_proxy_delay_test,
             test_single_proxy_delay,
@@ -8858,7 +8305,6 @@ fn main() {
             recover_network,
             test_proxy_delays,
             refresh_outbound_ip,
-            change_proxy,
             select_best_proxy,
             connections,
             active_connection_count,

@@ -65,9 +65,10 @@ check('2.9.20-2.9.29 freeze document exists', exists(docPath), docPath);
 check('freeze document contains required sections', docSections.every((section) => freezeDoc.includes(section)), docSections.join(', '));
 check('freeze document covers every freeze-lane patch version', Array.from({ length: 10 }, (_, i) => `2.9.${20 + i}`).every((version) => freezeDoc.includes(version)), '2.9.20..2.9.29');
 
-check('release version is consolidated at 2.9.29', pkg.version === '2.9.29' && tauri.version === '2.9.29', `${pkg.version}/${tauri.version}`);
+check('release version has moved to post-freeze cleanup line', pkg.version === tauri.version && /^2\.9\.(?:29|3\d+)$/.test(pkg.version), `${pkg.version}/${tauri.version}`);
 check('release audit includes architecture gate', releaseAudit.includes('architecture freeze audit script exists') && releaseAudit.includes(docPath), 'tools/release-audit.js');
 check('package exposes audit:architecture', pkg.scripts?.['audit:architecture'] === 'node tools/architecture-freeze-audit.js', 'package.json scripts');
+check('debt-audit gate is wired for post-freeze cleanup', pkg.scripts?.['audit:debt'] === 'node tools/debt-audit.js' && releaseAudit.includes('debt audit script exists') && exists('tools/debt-audit.js'), 'debt-audit post-freeze gate');
 
 check('frontend does not call legacy synchronous core commands directly', directLegacyInvokes.every((name) => !appJs.includes(`invoke('${name}'`) && !appJs.includes(`invoke("${name}"`)), directLegacyInvokes.join(', '));
 check('backend exposes unified background job entrypoints', ['fn start_job', 'fn job_status', 'fn cancel_job', 'fn lock_operation_queue'].every((token) => mainRs.includes(token)), 'start_job/job_status/cancel_job/operation queue');
@@ -83,7 +84,7 @@ check('speed tests are measurement-only and use standby core path', ['fn start_s
 check('outbound IP lookup has current-node smart-mode routing', ['AEGOS_OUTBOUND_IP_GROUP', 'OUTBOUND_IP_RULE_DOMAINS', 'upsert_outbound_ip_group', 'sync_outbound_ip_group_selection'].every((token) => mainRs.includes(token)), 'outbound IP group');
 
 check('runtime config chain uses preflight, hot reload, digest, rollback', ['patch_config_with_settings', 'preflight_runtime_config', 'hot_reload_profile', 'runtime_config_digest', 'Profile hot reload failed; falling back to restart', 'Profile switch failed and rolled back'].every((token) => mainRs.includes(token)), 'profile config chain');
-check('legacy profile file patch path is fenced and unreachable', (mainRs.match(/patch_profile_file_legacy/g) || []).length === 1 && /#\[allow\(dead_code\)\]\s+fn patch_profile_file_legacy/.test(mainRs), 'legacy path remains dead_code only');
+check('legacy profile file patch path is removed after cleanup', !mainRs.includes('patch_profile_file_legacy') && !mainRs.includes('#[allow(dead_code)]'), 'legacy patch path deleted instead of fenced');
 check('critical defaults keep local controller private', mainRs.includes('AEGOS_DEFAULT_MIXED_PORT: u16 = 7891') && mainRs.includes('external-controller') && mainRs.includes('127.0.0.1') && mainRs.includes('allow-lan') && mainRs.includes('false'), 'ports/controller/allow-lan');
 
 check('logs and diagnostics are layered and exportable', ['DiagnosticsSnapshot', 'diagnostics_detached', 'diagnosticReportText', 'export_logs', 'logCategoryLabel'].every((token) => mainRs.includes(token) || appJs.includes(token)), 'diagnostics/logs');

@@ -47,14 +47,12 @@ check(
 );
 check(
   'disconnect protection allows speed tests without disabling protection',
-  mainRs.includes('fn refresh_kill_switch_rules_if_enabled') &&
-    mainRs.includes('fn build_speed_test_firewall_script') &&
+  mainRs.includes('fn build_speed_test_firewall_script') &&
     mainRs.includes('fn speed_test_firewall_ports') &&
     mainRs.includes('fn set_speed_test_firewall_rules') &&
-    mainRs.includes('Disconnect protection allow rules refreshed for {reason}') &&
     mainRs.includes('Speed test firewall window opened for ports') &&
-    mainRs.includes('service=Dnscache protocol=UDP remoteport=53') &&
-    mainRs.includes('service=Dnscache protocol=TCP remoteport=53') &&
+    mainRs.includes('"name=$rulePrefix DNS UDP"') &&
+    mainRs.includes('"name=$rulePrefix DNS TCP"') &&
     mainRs.includes('remoteport=$portList') &&
     mainRs.includes('cleanup_speed_firewall') &&
     /thread::spawn\(move \|\| \{[\s\S]*build_speed_test_firewall_script\(\s*true/.test(mainRs) &&
@@ -140,7 +138,7 @@ check(
     mainRs.includes('"actionable"') &&
     mainRs.includes('"summary"') &&
     mainRs.includes('"nextActions"') &&
-    mainRs.includes('let admin_required = self.settings.tun_enabled || self.settings.kill_switch_enabled') &&
+    mainRs.includes('let admin_required = snapshot.settings.tun_enabled || snapshot.settings.kill_switch_enabled') &&
     mainRs.includes('let admin_ok = is_admin || !admin_required'),
   'diagnostic metadata'
 );
@@ -249,7 +247,7 @@ check(
   mainRs.includes('Profile import applied but startup failed; rolled back') &&
     mainRs.includes('Profile update applied but startup failed; restored previous subscription') &&
     mainRs.includes('let previous_raw = fs::read_to_string(&profile_path).ok()') &&
-    mainRs.includes('let temp_path = profile_path.with_file_name') &&
+    mainRs.includes('atomic_write_text_confined(&profile_path, &profile_root, raw)') &&
     mainRs.includes('Profile was removed before update completed') &&
     mainRs.includes('core.restore_system_proxy_preference(previous_system_proxy)'),
   'subscription file/runtime transaction'
@@ -259,7 +257,8 @@ check(
   'profile switch validates, hot-reloads, and rolls back on failure',
   mainRs.includes('fn preflight_profile_file') &&
     mainRs.includes('fn hot_reload_profile') &&
-    mainRs.includes('fn write_runtime_profile_copy') &&
+    mainRs.includes('fn patch_profile_file') &&
+    mainRs.includes('atomic_write_text_confined(&runtime_path, &self.home_dir, &rendered.yaml)') &&
     mainRs.includes('proxy_group_name_set') &&
     mainRs.includes('/configs?force=true') &&
     mainRs.includes('Profile hot reload failed; falling back to restart') &&
@@ -302,7 +301,7 @@ check(
     ['startCore', 'stopCore', 'restartCore', 'setActiveProfile', 'updateSettings', 'updateSetting', 'setMode', 'changeProxy'].every((name) => mainRs.includes(`"${name}"`) && mainRs.includes(`"${name}"`)) &&
     mainRs.includes('operation_queue_is_exclusive') &&
     mainRs.includes('set_active_profile command') &&
-    mainRs.includes('change_proxy command'),
+    mainRs.includes('lock_operation_queue(&operations, "changeProxy")'),
   'operation queue for core/system mutations'
 );
 

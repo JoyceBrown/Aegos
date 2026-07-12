@@ -31,7 +31,7 @@ function sliceBetween(source, startNeedle, endNeedle) {
 const schedulePageLoadBody = bodyOf('schedulePageLoad');
 const runDiagnosticsBody = bodyOf('runDiagnostics');
 const exportLogsBody = bodyOf('exportLogs');
-const diagnosticsBackendBody = sliceBetween(mainRs, 'fn diagnostics(&mut self) -> JsonValue', 'fn add_profile_url_detached');
+const diagnosticsBackendBody = sliceBetween(mainRs, 'fn diagnostics_from_snapshot', 'fn diagnostics_detached');
 const exportLogsBackendBody = sliceBetween(mainRs, 'fn export_logs(&self) -> Result<JsonValue, String>', 'fn recent_log_summary');
 const diagnosticsJobBody = sliceBetween(mainRs, '"diagnostics" => {', '"recoverNetwork" => {');
 
@@ -94,11 +94,11 @@ check(
 
 check(
   'logs can be exported with a user-visible path',
-  exportLogsBody.includes("invoke('export_logs'") &&
+    exportLogsBody.includes("invoke('export_logs'") &&
     exportLogsBody.includes('result?.path') &&
     exportLogsBackendBody.includes('aegos-logs-') &&
     exportLogsBackendBody.includes('items.len()') &&
-    exportLogsBackendBody.includes('fs::write(&path, content)') &&
+    exportLogsBackendBody.includes('atomic_write_text_confined(&path, &export_dir, &content)') &&
     interactionSmoke.includes('log export button did not call export_logs'),
   'support export for user support and diagnostics'
 );

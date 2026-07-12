@@ -201,6 +201,51 @@ function escapeHtml(value = '') {
     .replaceAll("'", '&#39;');
 }
 
+function text(value = '') {
+  return document.createTextNode(String(value ?? ''));
+}
+
+function el(tag, options = {}, children = []) {
+  const node = document.createElement(tag);
+  if (options.className) node.className = options.className;
+  if (options.id) node.id = options.id;
+  if (options.textContent != null) node.textContent = String(options.textContent);
+  if (options.dataset) {
+    Object.entries(options.dataset).forEach(([key, value]) => {
+      if (value != null) node.dataset[key] = String(value);
+    });
+  }
+  if (options.attrs) {
+    Object.entries(options.attrs).forEach(([key, value]) => {
+      if (value === false || value == null) return;
+      node.setAttribute(key, value === true ? '' : String(value));
+    });
+  }
+  if (options.disabled) node.disabled = true;
+  if (options.ariaLabel) node.setAttribute('aria-label', String(options.ariaLabel));
+  children.flat().forEach((child) => {
+    if (child == null) return;
+    node.append(child instanceof Node ? child : text(child));
+  });
+  return node;
+}
+
+function icon(className) {
+  return el('span', {
+    className: `aegos-icon ${className}`,
+    attrs: { 'aria-hidden': 'true' }
+  });
+}
+
+function emptyState(message) {
+  return el('p', { className: 'empty', textContent: message });
+}
+
+function replaceChildrenSafe(target, children = []) {
+  if (!target) return;
+  target.replaceChildren(...children.filter(Boolean));
+}
+
 function formatClock() {
   const total = latestStatus?.trafficTakeover ? Math.floor((Date.now() - startedAt) / 1000) : 0;
   const h = String(Math.floor(total / 3600)).padStart(2, '0');
@@ -533,10 +578,32 @@ function currentNodeRow(rows = []) {
   return findRowByName(currentName, rows) || rows.find((row) => row?.[5]) || null;
 }
 
+function summaryRowsFromLatestGroup(limit = 600) {
+  const items = latestGroup?.items || [];
+  if (!items.length) return [];
+  const currentName = selectedNode || latestGroup?.now || '';
+  const rows = [];
+  let currentRow = null;
+  const sampleLimit = Math.min(items.length, limit);
+  for (let index = 0; index < sampleLimit; index += 1) {
+    const row = normalizeNodeItemCached(items[index], index);
+    if (row[1] === currentName || row[5]) currentRow = row;
+    rows.push(row);
+  }
+  if (currentName && !currentRow) {
+    const currentIndex = items.findIndex((item) => item.name === currentName || item.realProxyName === currentName);
+    if (currentIndex >= 0) {
+      currentRow = normalizeNodeItemCached(items[currentIndex], currentIndex);
+      rows.unshift(currentRow);
+    }
+  }
+  return rows;
+}
+
 function renderHomeNodeSummary(rows = []) {
   const sourceRows = rows.length
     ? rows
-    : (latestGroup?.items?.length ? normalizeRows(latestGroup.items) : []);
+    : summaryRowsFromLatestGroup();
   const currentRow = currentNodeRow(sourceRows);
   const currentDelay = delayText(currentRow?.[3]);
   const currentDelayClass = delayClass(currentRow?.[3]);
@@ -560,67 +627,35 @@ function renderHomeNodeSummary(rows = []) {
   if (notice) notice.classList.toggle('hidden', !autoGroup);
 }
 
-/*
-function renderNodeRow([region, name, host, delay, alive, active]) {
-  const statusText = Number(delay) >= 0 ? '可用' : (alive ? '待测速' : '不可用');
-  return `
-    <div class="row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="选择 ${escapeHtml(name)}">
-      <span class="radio"></span>
-      <span class="star">☆</span>
-      <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
-      <span>${escapeHtml(host)}</span>
-      <span>${Number(delay) >= 0 ? `${Math.round(delay)} ms` : '-'}</span>
-      <span>0.0%</span>
-      <span class="load"><span class="bar"></span>38%</span>
-      <span>-</span>
-      <span class="available">${alive ? '可用' : '不可用'}</span>
-      <span class="row-actions">
-        <button data-node="${escapeHtml(name)}" aria-label="连接">▷</button>
-        <button aria-label="编辑">✎</button>
-        <button aria-label="更多">⋯</button>
-      </span>
-    </div>
-  `;
-}
-
-function renderHomeNodeRow([region, name, host, delay, alive, active]) {
-  const statusText = Number(delay) >= 0 ? '可用' : (alive ? '待测速' : '不可用');
-  return `
-    <div class="row home-row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="选择 ${escapeHtml(name)}">
-      <span class="radio"></span>
-      <span class="star">☆</span>
-      <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
-      <span>${escapeHtml(host)}</span>
-      <span>${Number(delay) >= 0 ? `${Math.round(delay)} ms` : '-'}</span>
-      <span>0.0%</span>
-      <span class="available">${alive ? '可用' : '不可用'}</span>
-    </div>
-  `;
-}
-
-*/
-
 function renderNodeRow(row, stabilityRows = []) {
   const [region, name, host, delay, alive, active, protocol, healthStatus, medianDelay, jitter, score, recommended, failureStreak, favorite] = row;
   const delayValue = Number(delay);
   const delayText = delayValue > 0 ? `${Math.round(delayValue)} ms` : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : '-');
   const delayState = delayClass(delayValue);
   const stability = stabilityInfo(row, stabilityRows);
-  return `
-    <div class="row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="select ${escapeHtml(name)}">
-      <span class="radio"></span>
-      <span class="star aegos-icon ${favorite ? 'icon-star-filled' : 'icon-star'}" aria-hidden="true"></span>
-      <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
-      <span>${escapeHtml(protocolLabel(protocol))} / ${escapeHtml(host)}</span>
-      <span class="${delayState}">${delayText}</span>
-      <span class="confidence-pill ${stability.className}">${stability.label}</span>
-      <span class="row-actions">
-        <button data-node-action="test" data-node="${escapeHtml(name)}" aria-label="test delay"><span class="aegos-icon icon-speed" aria-hidden="true"></span></button>
-        <button data-node-action="edit" data-node="${escapeHtml(name)}" aria-label="edit node"><span class="aegos-icon icon-edit" aria-hidden="true"></span></button>
-        <button data-node-action="favorite" data-node="${escapeHtml(name)}" aria-label="favorite node"><span class="aegos-icon ${favorite ? 'icon-star-filled' : 'icon-star'}" aria-hidden="true"></span></button>
-      </span>
-    </div>
-  `;
+  const title = el('strong', {}, [
+    el('span', { className: 'node-badge', textContent: region }),
+    text(name)
+  ]);
+  const actions = el('span', { className: 'row-actions' }, [
+    el('button', { dataset: { nodeAction: 'test', node: name }, ariaLabel: 'test delay' }, [icon('icon-speed')]),
+    el('button', { dataset: { nodeAction: 'edit', node: name }, ariaLabel: 'edit node' }, [icon('icon-edit')]),
+    el('button', { dataset: { nodeAction: 'favorite', node: name }, ariaLabel: 'favorite node' }, [icon(favorite ? 'icon-star-filled' : 'icon-star')])
+  ]);
+  return el('div', {
+    className: `row ${active ? 'selected' : ''}`,
+    dataset: { node: name },
+    attrs: { tabindex: '0', role: 'button' },
+    ariaLabel: `select ${name}`
+  }, [
+    el('span', { className: 'radio' }),
+    icon(`star ${favorite ? 'icon-star-filled' : 'icon-star'}`),
+    title,
+    el('span', { textContent: `${protocolLabel(protocol)} / ${host || ''}` }),
+    el('span', { className: delayState, textContent: delayText }),
+    el('span', { className: `confidence-pill ${stability.className}`, textContent: stability.label }),
+    actions
+  ]);
 }
 
 function renderHomeNodeRow(row, stabilityRows = []) {
@@ -629,16 +664,23 @@ function renderHomeNodeRow(row, stabilityRows = []) {
   const delayText = delayValue > 0 ? `${Math.round(delayValue)} ms` : (delayValue === 0 ? '\u6d4b\u901f\u4e2d' : '-');
   const delayState = delayClass(delayValue);
   const stability = stabilityInfo(row, stabilityRows);
-  return `
-    <div class="row home-row ${active ? 'selected' : ''}" data-node="${escapeHtml(name)}" tabindex="0" role="button" aria-label="select ${escapeHtml(name)}">
-      <span class="radio"></span>
-      <span class="star">${favorite ? '&#9733;' : '&#9734;'}</span>
-      <strong><span class="node-badge">${escapeHtml(region)}</span>${escapeHtml(name)}</strong>
-      <span>${escapeHtml(protocolLabel(protocol))} / ${escapeHtml(host)}</span>
-      <span class="${delayState}">${delayText}</span>
-      <span class="confidence-pill ${stability.className}">${stability.label}</span>
-    </div>
-  `;
+  const title = el('strong', {}, [
+    el('span', { className: 'node-badge', textContent: region }),
+    text(name)
+  ]);
+  return el('div', {
+    className: `row home-row ${active ? 'selected' : ''}`,
+    dataset: { node: name },
+    attrs: { tabindex: '0', role: 'button' },
+    ariaLabel: `select ${name}`
+  }, [
+    el('span', { className: 'radio' }),
+    el('span', { className: 'star', textContent: favorite ? '\u2605' : '\u2606' }),
+    title,
+    el('span', { textContent: `${protocolLabel(protocol)} / ${host || ''}` }),
+    el('span', { className: delayState, textContent: delayText }),
+    el('span', { className: `confidence-pill ${stability.className}`, textContent: stability.label })
+  ]);
 }
 
 function noticeLevel(message = '') {
@@ -827,27 +869,25 @@ function renderJobCenter() {
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, 5);
   if (!jobs.length) {
-    box.innerHTML = '<p class="empty">&#26242;&#26080;&#21518;&#21488;&#20219;&#21153;</p>';
+    replaceChildrenSafe(box, [emptyState('\u6682\u65e0\u540e\u53f0\u4efb\u52a1')]);
     return;
   }
-  box.innerHTML = jobs.map((job) => {
+  replaceChildrenSafe(box, jobs.map((job) => {
     const state = terminalJobStates.has(job.state) ? job.state : 'running';
     const action = state === 'running'
-      ? `<button data-job-cancel="${escapeHtml(job.id)}">&#21462;&#28040;</button>`
+      ? el('button', { dataset: { jobCancel: job.id }, textContent: '\u53d6\u6d88' })
       : state !== 'succeeded'
-        ? `<button data-job-retry="${escapeHtml(job.id)}">&#37325;&#35797;</button>`
-        : '';
-    return `
-      <article class="job-row ${escapeHtml(state)}">
-        <div>
-          <b>${escapeHtml(job.label)}</b>
-          <small>${escapeHtml(job.message || job.kind || '-')}</small>
-        </div>
-        <span>${escapeHtml(jobProgressText(job))}</span>
-        ${action}
-      </article>
-    `;
-  }).join('');
+        ? el('button', { dataset: { jobRetry: job.id }, textContent: '\u91cd\u8bd5' })
+        : null;
+    return el('article', { className: `job-row ${state}` }, [
+      el('div', {}, [
+        el('b', { textContent: job.label }),
+        el('small', { textContent: job.message || job.kind || '-' })
+      ]),
+      el('span', { textContent: jobProgressText(job) }),
+      action
+    ]);
+  }));
 }
 
 async function syncJobCenter(force = false) {
@@ -1147,10 +1187,11 @@ function renderRows(items = [], options = {}) {
   if (activeRow?.[1]) $('#nodeName').textContent = activeRow[1];
 
   if (shouldRenderNodeRows) {
-    const overflowNotice = matchingNodeCount > nodeRows.length
-      ? `<p class="empty">\u5df2\u663e\u793a\u524d ${nodeRows.length} \u4e2a\u8282\u70b9\uff0c\u8bf7\u641c\u7d22\u6216\u7b5b\u9009\u7f29\u5c0f\u8303\u56f4\u3002</p>`
-      : '';
-    $('#nodeRows').innerHTML = nodeRows.map((row) => renderNodeRow(row, stabilityRows)).join('') + overflowNotice || '<p class="empty">\u6682\u65e0\u7b26\u5408\u6761\u4ef6\u7684\u8282\u70b9\u3002</p>';
+    const nodeChildren = nodeRows.map((row) => renderNodeRow(row, stabilityRows));
+    if (matchingNodeCount > nodeRows.length) {
+      nodeChildren.push(emptyState(`\u5df2\u663e\u793a\u524d ${nodeRows.length} \u4e2a\u8282\u70b9\uff0c\u8bf7\u641c\u7d22\u6216\u7b5b\u9009\u7f29\u5c0f\u8303\u56f4\u3002`));
+    }
+    replaceChildrenSafe($('#nodeRows'), nodeChildren.length ? nodeChildren : [emptyState('\u6682\u65e0\u7b26\u5408\u6761\u4ef6\u7684\u8282\u70b9\u3002')]);
   }
   const sortedHomeRows = homeRows;
   const homeFallbackRows = homeNodeMode === 'frequent' || homeNodeMode === 'region' ? fallbackBestRows : [];
@@ -1162,11 +1203,15 @@ function renderRows(items = [], options = {}) {
         ? '\u6682\u65e0\u7b26\u5408\u8be5\u5730\u533a\u7684\u8282\u70b9\u3002'
         : '\u6682\u65e0\u5e38\u7528\u8282\u70b9\u3002';
   if (shouldRenderHomeRows) {
-    $('#homeNodeRows').innerHTML = (sortedHomeRows.length ? sortedHomeRows : homeFallbackRows).slice(0, homeNodeRenderLimit)
-      .map((row) => renderHomeNodeRow(row, stabilityRows))
-      .join('') || `<p class="empty">${homeEmptyText}</p>`;
+    const homeChildren = (sortedHomeRows.length ? sortedHomeRows : homeFallbackRows)
+      .slice(0, homeNodeRenderLimit)
+      .map((row) => renderHomeNodeRow(row, stabilityRows));
+    replaceChildrenSafe($('#homeNodeRows'), homeChildren.length ? homeChildren : [emptyState(homeEmptyText)]);
   }
-  renderHomeNodeSummary();
+  const summaryRows = activeRow
+    ? [activeRow, ...stabilityRows.filter((row) => row !== activeRow)]
+    : stabilityRows;
+  renderHomeNodeSummary(summaryRows);
 }
 
 function updateSelectedNodeDom(name) {
@@ -1175,21 +1220,6 @@ function updateSelectedNodeDom(name) {
     row.classList.toggle('selected', row.dataset.node === selected);
   });
   if (selected) $('#nodeName').textContent = selected;
-}
-
-function renderProfiles() {
-  const profiles = latestStatus?.settings?.profiles || [];
-  $('#profileRows').innerHTML = profiles.map((profile) => `
-    <article class="list-card ${profile.id === latestStatus?.settings?.activeProfileId ? 'active' : ''}" data-profile-row="${escapeHtml(profile.id)}" tabindex="0" role="button">
-      <div><b>${escapeHtml(profile.name)}</b><small>${escapeHtml(profile.profile_type)} · ${escapeHtml(profile.updated_at || '-')}</small></div>
-      <small class="profile-source-summary">${Number(profile.node_count || profile.nodeCount || 0)} nodes</small>
-      <div class="card-actions">
-        <button data-profile-switch="${escapeHtml(profile.id)}">启用</button>
-        <button data-profile-update="${escapeHtml(profile.id)}">更新</button>
-        <button data-profile-remove="${escapeHtml(profile.id)}" ${profile.id === 'direct' ? 'disabled' : ''}>删除</button>
-      </div>
-    </article>
-  `).join('') || '<p class="empty">暂无订阅。</p>';
 }
 
 function profilePendingText(label = 'syncing') {
@@ -1216,38 +1246,49 @@ function ensureTakeoverControls() {
   const summaryGrid = document.querySelector('.settings-summary-grid');
   if (summaryGrid && !$('#settingsTakeoverSummary')) {
     const item = document.createElement('article');
-    item.innerHTML = '<span>恢复策略</span><b id="settingsTakeoverSummary">接管时记录</b>';
+    item.append(
+      el('span', { textContent: '\u6062\u590d\u7b56\u7565' }),
+      el('b', { id: 'settingsTakeoverSummary', textContent: '\u63a5\u7ba1\u65f6\u8bb0\u5f55' })
+    );
     summaryGrid.appendChild(item);
   }
   const proxySection = $('#systemProxyToggle')?.closest('.settings-section');
   if (proxySection && !$('#repairProxyBtn')) {
     const actions = document.createElement('div');
     actions.className = 'settings-actions';
-    actions.innerHTML = '<button id="repairProxyBtn" class="ghost">修复接管</button>';
+    actions.append(el('button', { id: 'repairProxyBtn', className: 'ghost', textContent: '\u4fee\u590d\u63a5\u7ba1' }));
     proxySection.appendChild(actions);
-    $('#repairProxyBtn').onclick = (event) => runButtonAction(event.currentTarget, '修复中...', repairSystemProxyJob);
+    $('#repairProxyBtn').onclick = (event) => runButtonAction(event.currentTarget, '\u4fee\u590d\u4e2d...', repairSystemProxyJob);
   }
 }
 
-renderProfiles = function renderProfiles() {
+function renderProfiles() {
   const profiles = latestStatus?.settings?.profiles || [];
-  $('#profileRows').innerHTML = profiles.map((profile) => {
+  const rows = profiles.map((profile) => {
     const pending = Boolean(profile.uiPending);
     const summary = pending ? profilePendingText(profile.uiPendingLabel) : profileSummaryText(profile);
-    return `
-    <article class="list-card ${profile.id === latestStatus?.settings?.activeProfileId ? 'active' : ''} ${pending ? 'is-pending' : ''}" data-profile-row="${escapeHtml(profile.id)}" tabindex="0" role="button" aria-busy="${pending ? 'true' : 'false'}">
-      <div><b>${escapeHtml(profile.name)}</b><small>${escapeHtml(profile.profile_type)} / ${escapeHtml(profile.updated_at || '-')}</small></div>
-      <small class="profile-source-summary">${escapeHtml(summary)}</small>
-      <div class="card-actions">
-        <button data-profile-switch="${escapeHtml(profile.id)}">\u542f\u7528</button>
-        <button data-profile-rename="${escapeHtml(profile.id)}" ${profile.id === 'direct' ? 'disabled' : ''}>\u91cd\u547d\u540d</button>
-        <button data-profile-update="${escapeHtml(profile.id)}">\u66f4\u65b0</button>
-        <button data-profile-remove="${escapeHtml(profile.id)}" ${profile.id === 'direct' ? 'disabled' : ''}>\u5220\u9664</button>
-      </div>
-    </article>
-  `;
-  }).join('') || '<p class="empty">\u6682\u65e0\u8ba2\u9605\u3002</p>';
-};
+    const id = profile.id || '';
+    const className = `list-card ${id === latestStatus?.settings?.activeProfileId ? 'active' : ''} ${pending ? 'is-pending' : ''}`;
+    return el('article', {
+      className,
+      dataset: { profileRow: id },
+      attrs: { tabindex: '0', role: 'button', 'aria-busy': pending ? 'true' : 'false' }
+    }, [
+      el('div', {}, [
+        el('b', { textContent: profile.name || id || '-' }),
+        el('small', { textContent: `${profile.profile_type || '-'} / ${profile.updated_at || '-'}` })
+      ]),
+      el('small', { className: 'profile-source-summary', textContent: summary }),
+      el('div', { className: 'card-actions' }, [
+        el('button', { dataset: { profileSwitch: id }, textContent: '\u542f\u7528' }),
+        el('button', { dataset: { profileRename: id }, textContent: '\u91cd\u547d\u540d', disabled: id === 'direct' }),
+        el('button', { dataset: { profileUpdate: id }, textContent: '\u66f4\u65b0' }),
+        el('button', { dataset: { profileRemove: id }, textContent: '\u5220\u9664', disabled: id === 'direct' })
+      ])
+    ]);
+  });
+  replaceChildrenSafe($('#profileRows'), rows.length ? rows : [emptyState('\u6682\u65e0\u8ba2\u9605\u3002')]);
+}
 
 function renderQuickProfileMenu(options = {}) {
   const menu = $('#profileMenu');
@@ -1255,15 +1296,17 @@ function renderQuickProfileMenu(options = {}) {
   if (!options.force && !menu.classList.contains('hidden')) return;
   const profiles = latestStatus?.settings?.profiles || [];
   const activeId = latestStatus?.settings?.activeProfileId || '';
-  menu.innerHTML = profiles.map((profile) => {
+  const rows = profiles.map((profile) => {
     const active = profile.id === activeId;
-    return `
-      <button class="${active ? 'active' : ''}" data-profile-switch="${escapeHtml(profile.id)}">
-        <b>${escapeHtml(profile.name || profile.id)}</b>
-        <small>${escapeHtml(profileSummaryText(profile))}</small>
-      </button>
-    `;
-  }).join('') || '<p class="empty">暂无订阅</p>';
+    return el('button', {
+      className: active ? 'active' : '',
+      dataset: { profileSwitch: profile.id }
+    }, [
+      el('b', { textContent: profile.name || profile.id }),
+      el('small', { textContent: profileSummaryText(profile) })
+    ]);
+  });
+  replaceChildrenSafe(menu, rows.length ? rows : [emptyState('\u6682\u65e0\u8ba2\u9605')]);
 }
 
 function positionQuickProfileMenu() {
@@ -1348,9 +1391,13 @@ function renderLogs() {
     ? allLogs
     : allLogs.filter((entry) => (entry.category || (entry.level === 'core' ? 'core' : 'runtime')) === logFilter);
   $all('[data-log-filter]').forEach((button) => button.classList.toggle('active', button.dataset.logFilter === logFilter));
-  $('#logRows').innerHTML = logs.slice(-logRenderLimit).reverse().map((entry) => `
-    <div class="log-row"><span>${escapeHtml(entry.at)}</span><b>${escapeHtml(entry.level)}</b><em>${escapeHtml(logCategoryLabel(entry.category, entry.level))}</em><code>${escapeHtml(entry.line)}</code></div>
-  `).join('') || '<p class="empty">\u6682\u65e0\u5339\u914d\u65e5\u5fd7\u3002</p>';
+  const rows = logs.slice(-logRenderLimit).reverse().map((entry) => el('div', { className: 'log-row' }, [
+    el('span', { textContent: entry.at }),
+    el('b', { textContent: entry.level }),
+    el('em', { textContent: logCategoryLabel(entry.category, entry.level) }),
+    el('code', { textContent: entry.line })
+  ]));
+  replaceChildrenSafe($('#logRows'), rows.length ? rows : [emptyState('\u6682\u65e0\u5339\u914d\u65e5\u5fd7\u3002')]);
 }
 
 function warmStaticPageCaches() {
@@ -1479,7 +1526,7 @@ function updateNodeDelayDom(name, delay) {
       if (value === 0) stabilityCell.textContent = '\u6d4b\u901f\u4e2d';
     }
   });
-  renderHomeNodeSummary(latestGroup?.items?.length ? normalizeRows(latestGroup.items) : []);
+  renderHomeNodeSummary(summaryRowsFromLatestGroup());
 }
 
 function applyOptimisticNodeDelay(name, delay) {
@@ -1565,7 +1612,7 @@ function removeConnectionElement(button) {
   const row = button?.closest('.simple-row');
   if (row) row.remove();
   if (!$('#connectionRows')?.querySelector('.simple-row')) {
-    $('#connectionRows').innerHTML = '<p class="empty">当前没有活动连接。</p>';
+    replaceChildrenSafe($('#connectionRows'), [emptyState('\u5f53\u524d\u6ca1\u6709\u6d3b\u52a8\u8fde\u63a5\u3002')]);
   }
 }
 
@@ -1805,43 +1852,6 @@ async function refreshOutboundIpAfterNodeChange(options = {}) {
 async function refreshOutboundIp() {
   return refreshOutboundIpAfterNodeChange({ manual: true });
 }
-async function recoverNetwork(showHealthyNotice = true, force = false) {
-  if (recoveryBusy) return null;
-  recoveryBusy = true;
-  lastRecoveryAt = Date.now();
-  try {
-    if (showHealthyNotice) setNotice('Aegos 2.0 自愈引擎正在检查出口...');
-    const result = await invoke('recover_network', { force });
-    await refreshStatus(true);
-    await refreshNodes(true);
-    if (result?.ok && result?.action === 'none') {
-      if (showHealthyNotice) setNotice('网络出口健康，无需切换。');
-      return result;
-    }
-    if (result?.action === 'observe') {
-      if (showHealthyNotice) setNotice(`自愈观察中：${result.failures || 0}/${result.threshold || 0}`);
-      return result;
-    }
-    const recovery = result?.result || {};
-    if (result?.ok && result?.profileChanged) {
-      setNotice(`已切换订阅并恢复：${result.profile?.name || '-'} / ${recovery.proxy || '-'}`);
-      return result;
-    }
-    if (result?.ok) {
-      setNotice(`已自动切换到可用节点：${recovery.proxy || '-'} (${recovery.delay || '-'} ms)`);
-      return result;
-    }
-    setNotice(`自愈失败：${result?.probe?.reason || '没有找到可用节点'}`);
-    return result;
-  } catch (err) {
-    await refreshStatus(true);
-    setNotice(`自愈失败：${err.message || err}`);
-    return null;
-  } finally {
-    recoveryBusy = false;
-  }
-}
-
 async function recoverNetworkJob(showHealthyNotice = true, force = false) {
   if (recoveryBusy) return null;
   recoveryBusy = true;
@@ -2020,9 +2030,7 @@ async function updateActiveProfile() {
 async function toggleCore() {
   const button = $('#connectBtn');
   if (button?.dataset.busy === 'true') return;
-  button.dataset.busy = 'true';
-  button.classList.add('is-pending');
-  button.setAttribute('aria-busy', 'true');
+  setButtonBusy(button, true, '', { preserveContent: true });
   try {
     const stopping = Boolean(latestStatus?.trafficTakeover);
     setNotice(stopping ? '正在断开连接...' : '正在启动连接...');
@@ -2035,9 +2043,7 @@ async function toggleCore() {
   } catch (err) {
     setNotice(`操作失败：${err.message || err}`);
   } finally {
-    button.dataset.busy = '';
-    button.classList.remove('is-pending');
-    button.setAttribute('aria-busy', 'false');
+    setButtonBusy(button, false, '', { preserveContent: true });
     if (latestStatus) renderStatus(latestStatus);
   }
 }
@@ -2306,16 +2312,23 @@ async function refreshConnections(token = null) {
   try {
     const items = await invoke('connections');
     if (!isCurrentPageTask(token, 'connections')) return;
-    $('#connectionRows').innerHTML = (Array.isArray(items) ? items : []).map((item) => {
-      const chains = Array.isArray(item.chains) ? item.chains.join(' › ') : '-';
+    const rows = (Array.isArray(items) ? items : []).map((item) => {
+      const chains = Array.isArray(item.chains) ? item.chains.join(' ? ') : '-';
       const traffic = `${formatRate(item.upload)} / ${formatRate(item.download)}`;
       const target = item.metadata?.host || item.metadata?.destinationIP || item.id || '-';
-      return `<div class="simple-row"><span>${escapeHtml(target)}</span><span>${escapeHtml(item.rule || '-')}</span><span>${escapeHtml(chains)}</span><span>${traffic}</span><button data-close-connection="${escapeHtml(item.id)}">关闭</button></div>`;
-    }).join('') || '<p class="empty">当前没有活动连接。</p>';
+      return el('div', { className: 'simple-row' }, [
+        el('span', { textContent: target }),
+        el('span', { textContent: item.rule || '-' }),
+        el('span', { textContent: chains }),
+        el('span', { textContent: traffic }),
+        el('button', { dataset: { closeConnection: item.id }, textContent: '\u5173\u95ed' })
+      ]);
+    });
+    replaceChildrenSafe($('#connectionRows'), rows.length ? rows : [emptyState('\u5f53\u524d\u6ca1\u6709\u6d3b\u52a8\u8fde\u63a5\u3002')]);
     markPageCache('connections');
   } catch (err) {
     if (!isCurrentPageTask(token, 'connections')) return;
-    $('#connectionRows').innerHTML = `<p class="empty">连接管理不可用：${escapeHtml(err.message || err)}</p>`;
+    replaceChildrenSafe($('#connectionRows'), [emptyState(`\u8fde\u63a5\u7ba1\u7406\u4e0d\u53ef\u7528\uff1a${err.message || err}`)]);
     markPageCache('connections');
   } finally {
     pageCacheState.connections.loading = false;
@@ -2379,38 +2392,37 @@ function renderDiagnosticSummary(data, checks) {
   const warnings = Number(summary.warnings || checks.filter((item) => item.severity === 'warning').length);
   const failed = Number(summary.failed || checks.filter((item) => !item.ok).length);
   const statusClass = errors > 0 ? 'is-bad' : warnings > 0 ? 'is-warn' : 'is-ok';
-  const statusText = errors > 0 ? '需要处理' : warnings > 0 ? '需要关注' : '状态正常';
+  const statusText = errors > 0 ? '\u9700\u8981\u5904\u7406' : warnings > 0 ? '\u9700\u8981\u5173\u6ce8' : '\u72b6\u6001\u6b63\u5e38';
   const nextActions = Array.isArray(summary.nextActions) && summary.nextActions.length
     ? summary.nextActions
     : checks.filter((item) => item.actionable).map((item) => item.hint).filter(Boolean).slice(0, 3);
-  $('#diagSummary').innerHTML = `
-    <div class="diagnostic-status ${statusClass}">
-      <b>${escapeHtml(statusText)}</b>
-      <span>${checks.length} 项检查 / ${failed} 项异常</span>
-    </div>
-    <div class="diagnostic-metrics">
-      <span><b>${errors}</b>错误</span>
-      <span><b>${warnings}</b>警告</span>
-      <span><b>${checks.length - failed}</b>通过</span>
-    </div>
-    <div class="diagnostic-actions">
-      ${nextActions.length ? nextActions.map((action) => `<small>${escapeHtml(action)}</small>`).join('') : '<small>未发现需要立即处理的问题。</small>'}
-    </div>
-  `;
+  replaceChildrenSafe($('#diagSummary'), [
+    el('div', { className: `diagnostic-status ${statusClass}` }, [
+      el('b', { textContent: statusText }),
+      el('span', { textContent: `${checks.length} \u9879\u68c0\u67e5 / ${failed} \u9879\u5f02\u5e38` })
+    ]),
+    el('div', { className: 'diagnostic-metrics' }, [
+      el('span', {}, [el('b', { textContent: errors }), text('\u9519\u8bef')]),
+      el('span', {}, [el('b', { textContent: warnings }), text('\u8b66\u544a')]),
+      el('span', {}, [el('b', { textContent: checks.length - failed }), text('\u901a\u8fc7')])
+    ]),
+    el('div', { className: 'diagnostic-actions' }, nextActions.length
+      ? nextActions.map((action) => el('small', { textContent: action }))
+      : [el('small', { textContent: '\u672a\u53d1\u73b0\u9700\u8981\u7acb\u5373\u5904\u7406\u7684\u95ee\u9898\u3002' })])
+  ]);
 }
 
 function renderDiagnosticRows(checks) {
   const sorted = [...checks].sort((a, b) => diagnosticSeverityRank(a) - diagnosticSeverityRank(b));
-  $('#diagRows').innerHTML = sorted.map((item) => `
-    <article class="list-card diagnostic-row severity-${escapeHtml(item.severity)}">
-      <div>
-        <b>${escapeHtml(item.name)}</b>
-        <small>${escapeHtml(item.detail)}</small>
-        ${item.hint ? `<small class="diagnostic-hint">${escapeHtml(item.hint)}</small>` : ''}
-      </div>
-      <span class="${item.ok ? 'ok' : item.severity === 'error' ? 'bad' : 'warn'}">${diagnosticSeverityLabel(item)}</span>
-    </article>
-  `).join('') || '<p class="empty">暂无诊断结果。</p>';
+  const rows = sorted.map((item) => el('article', { className: `list-card diagnostic-row severity-${item.severity}` }, [
+    el('div', {}, [
+      el('b', { textContent: item.name }),
+      el('small', { textContent: item.detail }),
+      item.hint ? el('small', { className: 'diagnostic-hint', textContent: item.hint }) : null
+    ]),
+    el('span', { className: item.ok ? 'ok' : item.severity === 'error' ? 'bad' : 'warn', textContent: diagnosticSeverityLabel(item) })
+  ]));
+  replaceChildrenSafe($('#diagRows'), rows.length ? rows : [emptyState('\u6682\u65e0\u8bca\u65ad\u7ed3\u679c\u3002')]);
 }
 
 function renderCachedDiagnostics() {
@@ -2420,13 +2432,13 @@ function renderCachedDiagnostics() {
     renderDiagnosticRows(checks);
     return;
   }
-  $('#diagSummary').innerHTML = `
-    <div class="diagnostic-status">
-      <b>\u7b49\u5f85\u8bca\u65ad</b>
-      <span>\u70b9\u51fb\u8fd0\u884c\u8bca\u65ad\u540e\u67e5\u770b\u5f53\u524d\u7ed3\u679c\u3002</span>
-    </div>
-  `;
-  $('#diagRows').innerHTML = '<p class="empty">\u5c1a\u672a\u8fd0\u884c\u8bca\u65ad\u3002</p>';
+  replaceChildrenSafe($('#diagSummary'), [
+    el('div', { className: 'diagnostic-status' }, [
+      el('b', { textContent: '\u7b49\u5f85\u8bca\u65ad' }),
+      el('span', { textContent: '\u70b9\u51fb\u8fd0\u884c\u8bca\u65ad\u540e\u67e5\u770b\u5f53\u524d\u7ed3\u679c\u3002' })
+    ])
+  ]);
+  replaceChildrenSafe($('#diagRows'), [emptyState('\u5c1a\u672a\u8fd0\u884c\u8bca\u65ad\u3002')]);
 }
 
 async function runDiagnostics(showNotice = true, token = null) {
@@ -2454,13 +2466,13 @@ async function runDiagnostics(showNotice = true, token = null) {
   } catch (err) {
     if (!isCurrentPageTask(token, 'diagnostics')) return;
     latestDiagnostics = null;
-    $('#diagSummary').innerHTML = `
-      <div class="diagnostic-status is-bad">
-        <b>诊断不可用</b>
-        <span>无法读取诊断结果</span>
-      </div>
-    `;
-    $('#diagRows').innerHTML = `<p class="empty">诊断失败：${escapeHtml(err.message || err)}</p>`;
+    replaceChildrenSafe($('#diagSummary'), [
+      el('div', { className: 'diagnostic-status is-bad' }, [
+        el('b', { textContent: '\u8bca\u65ad\u4e0d\u53ef\u7528' }),
+        el('span', { textContent: '\u65e0\u6cd5\u8bfb\u53d6\u8bca\u65ad\u7ed3\u679c' })
+      ])
+    ]);
+    replaceChildrenSafe($('#diagRows'), [emptyState(`\u8bca\u65ad\u5931\u8d25\uff1a${err.message || err}`)]);
     if (showNotice) setNotice(`诊断失败：${err.message || err}`);
     markPageCache('diagnostics');
   } finally {
@@ -2519,7 +2531,7 @@ $('#quickRestartBtn').onclick = (event) => runButtonAction(event.currentTarget, 
 $('#lockAutoGroupBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '锁定中...', lockAutoGroupJob));
 $('#refreshConnectionsBtn').onclick = refreshConnections;
 $('#closeAllConnectionsBtn').onclick = (event) => runButtonAction(event.currentTarget, '关闭中...', () => runOptimisticAction({
-  apply: () => { $('#connectionRows').innerHTML = '<p class="empty">当前没有活动连接。</p>'; },
+  apply: () => { replaceChildrenSafe($('#connectionRows'), [emptyState('\u5f53\u524d\u6ca1\u6709\u6d3b\u52a8\u8fde\u63a5\u3002')]); },
   commit: () => invoke('close_connections'),
   refresh: () => refreshConnections(),
   rollback: () => refreshConnections(),

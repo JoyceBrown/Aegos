@@ -39,6 +39,7 @@ const exportLogsBody = sliceBetween(mainRs, 'fn export_logs(&self)', 'fn recent_
 const startBody = sliceBetween(mainRs, 'fn start_with_takeover', 'fn terminate_core_process');
 const renderNodeBody = sliceBetween(appJs, 'function renderNodeRow', 'function renderHomeNodeRow');
 const renderLogsBody = sliceBetween(appJs, 'function renderLogs', 'function setOutboundIpText');
+const dangerousRenderApis = /\b(innerHTML\s*=|outerHTML\s*=|insertAdjacentHTML\s*\(|document\.write\s*\(|eval\s*\(|new Function\s*\()/m;
 
 check(
   'security audit script is exposed in package scripts',
@@ -130,16 +131,17 @@ check(
 );
 
 check(
-  'UI innerHTML render paths escape dynamic user/core text',
-  appJs.includes('function escapeHtml') &&
-    renderNodeBody.includes('escapeHtml(name)') &&
-    renderNodeBody.includes('escapeHtml(host)') &&
-    renderLogsBody.includes('escapeHtml(entry.line)') &&
-    appJs.includes('诊断失败：${escapeHtml(err.message || err)}') &&
-    !appJs.includes('innerHTML = err') &&
-    !appJs.includes('innerHTML = item.detail') &&
-    !appJs.includes('innerHTML = entry.line'),
-  'dynamic node/log/diagnostic text must be escaped before template insertion'
+  'UI renders dynamic user/core text through safe DOM APIs',
+  appJs.includes('function text(value') &&
+    appJs.includes('function el(tag') &&
+    appJs.includes('function replaceChildrenSafe') &&
+    renderNodeBody.includes('text(name)') &&
+    renderNodeBody.includes('textContent: `${protocolLabel(protocol)} / ${host || \'\'}') &&
+    renderLogsBody.includes('textContent: entry.line') &&
+    appJs.includes('textContent: item.detail') &&
+    appJs.includes('emptyState(`\\u8bca\\u65ad\\u5931\\u8d25') &&
+    !dangerousRenderApis.test(appJs),
+  'dynamic node/log/diagnostic text must go through textContent/text nodes, with dangerous DOM APIs banned'
 );
 
 check(
