@@ -112,6 +112,17 @@ check(
 );
 
 check(
+  'speed probes align with FlClash delay-test defaults',
+  mainRs.includes('fn delay_probe_plan') &&
+    mainRs.includes('"https://www.gstatic.com/generate_204"') &&
+    mainRs.includes('assert!(tuic_probes.iter().all(|probe| probe.timeout_ms == 5000))') &&
+    mainRs.includes('"https://cp.cloudflare.com/generate_204"') &&
+    mainRs.includes('set_yaml(&mut config, "unified-delay", YamlValue::Bool(true))') &&
+    mainRs.includes('set_yaml(&mut config, "tcp-concurrent", YamlValue::Bool(true))'),
+  'primary URL/timeout and mihomo delay flags match the FlClash measurement baseline'
+);
+
+check(
   'interaction smoke covers no-switch and navigation responsiveness',
   interactionSmoke.includes('speed test triggered a proxy switch') &&
     interactionSmoke.includes('batch speed test triggered a proxy switch') &&

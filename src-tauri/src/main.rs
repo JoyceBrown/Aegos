@@ -363,6 +363,12 @@ struct SpeedTestTarget {
     protocol: String,
 }
 
+#[derive(Clone, Copy)]
+struct DelayProbe {
+    url: &'static str,
+    timeout_ms: u64,
+}
+
 struct CoreManager {
     app_data: PathBuf,
     home_dir: PathBuf,
@@ -795,10 +801,6 @@ fn test_proxy_delay_request(
         .unwrap_or(-1)
 }
 
-fn is_tuic_protocol(protocol: &str) -> bool {
-    protocol.trim().eq_ignore_ascii_case("tuic")
-}
-
 fn protocol_family(protocol: &str) -> &'static str {
     let text = protocol.trim().to_ascii_lowercase();
     if text.contains("tuic") {
@@ -834,12 +836,38 @@ fn protocol_concurrency(protocol: &str) -> usize {
 
 fn protocol_primary_timeout_ms(protocol: &str) -> u64 {
     match protocol_family(protocol) {
-        "tuic" => 2600,
-        "hysteria" | "wireguard" => 3200,
-        "anytls" => 3400,
-        "reality" | "vmess" | "trojan" | "ss" => 3600,
-        _ => 4000,
+        "tuic" | "hysteria" | "wireguard" | "anytls" => 5000,
+        "reality" | "vmess" | "trojan" | "ss" => 5000,
+        _ => 5000,
     }
+}
+
+fn delay_probe_plan(protocol: &str) -> Vec<DelayProbe> {
+    let timeout_ms = protocol_primary_timeout_ms(protocol);
+    let mut probes = vec![
+        DelayProbe {
+            url: "https://www.gstatic.com/generate_204",
+            timeout_ms,
+        },
+        DelayProbe {
+            url: "http://www.gstatic.com/generate_204",
+            timeout_ms,
+        },
+        DelayProbe {
+            url: "http://cp.cloudflare.com/generate_204",
+            timeout_ms,
+        },
+    ];
+    if matches!(
+        protocol_family(protocol),
+        "tuic" | "hysteria" | "wireguard" | "anytls"
+    ) {
+        probes.push(DelayProbe {
+            url: "https://cp.cloudflare.com/generate_204",
+            timeout_ms,
+        });
+    }
+    probes
 }
 
 fn log_category(level: &str, line: &str) -> &'static str {
@@ -1343,33 +1371,20 @@ fn test_proxy_delay_with_retry(
     name: &str,
     protocol: &str,
 ) -> i64 {
-    if is_tuic_protocol(protocol) {
-        return test_proxy_delay_request(
-            client,
-            controller_port,
-            secret,
-            name,
-            "https://www.gstatic.com/generate_204",
-            protocol_primary_timeout_ms(protocol),
-        );
-    }
-    [
-        (
-            "http://www.gstatic.com/generate_204",
-            protocol_primary_timeout_ms(protocol),
-        ),
-        (
-            "https://www.gstatic.com/generate_204",
-            protocol_primary_timeout_ms(protocol),
-        ),
-        ("http://cp.cloudflare.com/generate_204", 4200),
-    ]
-    .iter()
-    .map(|(url, timeout_ms)| {
-        test_proxy_delay_request(client, controller_port, secret, name, url, *timeout_ms)
-    })
-    .find(|delay| *delay >= 0)
-    .unwrap_or(-1)
+    delay_probe_plan(protocol)
+        .iter()
+        .map(|probe| {
+            test_proxy_delay_request(
+                client,
+                controller_port,
+                secret,
+                name,
+                probe.url,
+                probe.timeout_ms,
+            )
+        })
+        .find(|delay| *delay >= 0)
+        .unwrap_or(-1)
 }
 
 fn b64_decode_text(input: &str) -> Option<String> {
@@ -2074,6 +2089,8 @@ fn patch_config_with_settings(
         "find-process-mode",
         YamlValue::String("strict".to_string()),
     );
+    set_yaml(&mut config, "unified-delay", YamlValue::Bool(true));
+    set_yaml(&mut config, "tcp-concurrent", YamlValue::Bool(true));
 
     if settings.tun_enabled {
         let tun = config
@@ -3190,6 +3207,18 @@ rules:
         let first =
             patch_config_with_settings(source.clone(), &settings, None).expect("first patch");
         let second = patch_config_with_settings(source, &settings, None).expect("second patch");
+        assert_eq!(
+            first
+                .get(yaml_key("unified-delay"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            first
+                .get(yaml_key("tcp-concurrent"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
         let first_yaml = serde_yaml::to_string(&first).expect("first yaml");
         let second_yaml = serde_yaml::to_string(&second).expect("second yaml");
         assert_eq!(sha256_text(&first_yaml), sha256_text(&second_yaml));
@@ -3460,10 +3489,16 @@ rules:
         assert_eq!(protocol_concurrency("hysteria2"), 10);
         assert_eq!(protocol_concurrency("anytls"), 16);
         assert_eq!(protocol_concurrency("tuic"), 8);
-        assert_eq!(protocol_primary_timeout_ms("vless-reality"), 3600);
-        assert_eq!(protocol_primary_timeout_ms("hysteria2"), 3200);
-        assert_eq!(protocol_primary_timeout_ms("anytls"), 3400);
-        assert_eq!(protocol_primary_timeout_ms("tuic"), 2600);
+        assert_eq!(protocol_primary_timeout_ms("vless-reality"), 5000);
+        assert_eq!(protocol_primary_timeout_ms("hysteria2"), 5000);
+        assert_eq!(protocol_primary_timeout_ms("anytls"), 5000);
+        assert_eq!(protocol_primary_timeout_ms("tuic"), 5000);
+        let tuic_probes = delay_probe_plan("tuic");
+        assert_eq!(tuic_probes[0].url, "https://www.gstatic.com/generate_204");
+        assert!(tuic_probes
+            .iter()
+            .any(|probe| probe.url == "https://cp.cloudflare.com/generate_204"));
+        assert!(tuic_probes.iter().all(|probe| probe.timeout_ms == 5000));
 
         let targets = vec![
             SpeedTestTarget {
@@ -6483,20 +6518,12 @@ impl CoreManager {
                     continue;
                 }
                 tested += 1;
-                let delay = test_proxy_delay_request(
+                let delay = test_proxy_delay_with_retry(
                     &client,
                     self.settings.controller_port,
                     &self.settings.secret,
                     name,
-                    "https://www.gstatic.com/generate_204",
-                    if is_tuic_protocol(protocol) {
-                        2800
-                    } else {
-                        self.settings
-                            .reliability_max_delay_ms
-                            .saturating_add(1600)
-                            .clamp(1800, 5000)
-                    },
+                    protocol,
                 );
                 if delay > 0 && delay <= max_delay {
                     results.push((group_name.clone(), name.to_string(), delay));
