@@ -482,6 +482,36 @@ fn mark_speed_test_preparing(speed_test: &Arc<Mutex<SpeedTestState>>) -> JsonVal
     speed_test_snapshot_from_state(speed_test)
 }
 
+fn mark_single_speed_test_preparing(
+    speed_test: &Arc<Mutex<SpeedTestState>>,
+    name: &str,
+) -> JsonValue {
+    {
+        let mut speed = speed_test.lock().unwrap();
+        let now = now_secs();
+        let previous_health = speed.health.clone();
+        let run_id = speed.run_id.saturating_add(1);
+        let mut delays = HashMap::new();
+        delays.insert(name.to_string(), 0);
+        *speed = SpeedTestState {
+            run_id,
+            running: true,
+            started_at: now,
+            updated_at: now,
+            total: 1,
+            completed: 0,
+            ok: 0,
+            failed: 0,
+            delays,
+            health: previous_health,
+            low_latency: Vec::new(),
+            recommended: None,
+            error: None,
+        };
+    }
+    speed_test_snapshot_from_state(speed_test)
+}
+
 fn speed_test_run_is_current(speed_test: &Arc<Mutex<SpeedTestState>>, run_id: u64) -> bool {
     let speed = speed_test.lock().unwrap();
     speed.running && speed.run_id == run_id
@@ -7262,16 +7292,44 @@ impl CoreManager {
         Ok(self.speed_test_snapshot())
     }
 
-    fn test_single_proxy_delay(&mut self, name: String) -> Result<JsonValue, String> {
-        self.ensure_core_for_delay_test()?;
+    fn test_single_proxy_delay_for_run(
+        &mut self,
+        name: String,
+        expected_run_id: Option<u64>,
+    ) -> Result<JsonValue, String> {
+        if let Err(err) = self.ensure_core_for_delay_test() {
+            if let Some(run_id) = expected_run_id {
+                fail_speed_test_if_current(&self.speed_test, run_id, err.clone());
+            }
+            return Err(err);
+        }
+        if let Some(run_id) = expected_run_id {
+            if !speed_test_run_is_current(&self.speed_test, run_id) {
+                return Ok(self.speed_test_snapshot());
+            }
+        }
         let groups = self.proxy_groups();
         let targets = Self::collect_proxy_targets(&groups);
-        speed_test_preflight(&targets)?;
-        let target = targets
+        if let Err(err) = speed_test_preflight(&targets) {
+            if let Some(run_id) = expected_run_id {
+                fail_speed_test_if_current(&self.speed_test, run_id, err.clone());
+            }
+            return Err(err);
+        }
+        let target = match targets
             .iter()
             .find(|target| target.name == name || target.select_name == name)
             .cloned()
-            .ok_or_else(|| format!("Node not found: {name}"))?;
+        {
+            Some(target) => target,
+            None => {
+                let message = format!("Node not found: {name}");
+                if let Some(run_id) = expected_run_id {
+                    fail_speed_test_if_current(&self.speed_test, run_id, message.clone());
+                }
+                return Err(message);
+            }
+        };
         let controller_port = self.settings.controller_port;
         let secret = self.settings.secret.clone();
         let speed_test = self.speed_test.clone();
@@ -7287,7 +7345,15 @@ impl CoreManager {
         let run_id;
         {
             let mut speed = speed_test.lock().unwrap();
-            run_id = speed.run_id.saturating_add(1);
+            if let Some(expected_run_id) = expected_run_id {
+                if speed.run_id != expected_run_id || !speed.running {
+                    drop(speed);
+                    return Ok(self.speed_test_snapshot());
+                }
+                run_id = expected_run_id;
+            } else {
+                run_id = speed.run_id.saturating_add(1);
+            }
             speed.run_id = run_id;
             speed.running = true;
             speed.started_at = now_secs();
@@ -9377,7 +9443,36 @@ fn start_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
 
 #[tauri::command]
 fn test_single_proxy_delay(state: State<AppState>, name: String) -> Result<JsonValue, String> {
-    state.core.lock().unwrap().test_single_proxy_delay(name)
+    let snapshot = mark_single_speed_test_preparing(&state.speed_test, &name);
+    let run_id = snapshot
+        .get("runId")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    if run_id == 0 {
+        return Ok(snapshot);
+    }
+    let core = state.core.clone();
+    let speed_test = state.speed_test.clone();
+    let queued_name = name.clone();
+    thread::spawn(move || {
+        let result = core
+            .lock()
+            .unwrap()
+            .test_single_proxy_delay_for_run(name, Some(run_id));
+        if let Err(err) = result {
+            fail_speed_test_if_current(&speed_test, run_id, err);
+        }
+    });
+    Ok(json!({
+        "ok": true,
+        "queued": true,
+        "runId": run_id,
+        "proxy": queued_name.clone(),
+        "realProxyName": queued_name,
+        "delay": 0,
+        "healthStatus": "testing",
+        "healthConfidence": "testing"
+    }))
 }
 
 #[tauri::command]

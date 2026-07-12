@@ -24,8 +24,9 @@ function bodyBetween(source, startNeedle, endNeedle) {
 }
 
 const testNodesBody = appJs.match(/async function testNodes\([^)]*\) \{([\s\S]*?)\n\}/)?.[1] || '';
-const speedBody = bodyBetween(mainRs, 'fn start_proxy_delay_test', 'fn test_single_proxy_delay');
-const singleBody = bodyBetween(mainRs, 'fn test_single_proxy_delay', 'fn test_proxy_delays');
+const speedBody = bodyBetween(mainRs, 'fn start_proxy_delay_test_for_run', 'fn test_single_proxy_delay_for_run');
+const singleBody = bodyBetween(mainRs, 'fn test_single_proxy_delay_for_run', 'fn test_proxy_delays');
+const singleCommandBody = mainRs.match(/fn test_single_proxy_delay\(state: State<AppState>, name: String\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 const ensureBody = bodyBetween(mainRs, 'fn ensure_core_for_delay_test', 'fn start_proxy_delay_test');
 const profileSwitchBody = bodyBetween(mainRs, 'fn set_active_profile', 'fn rename_profile');
 
@@ -52,7 +53,7 @@ check(
   'single-node speed test does not switch proxies',
   singleBody.includes('test_proxy_delay_with_retry') &&
     singleBody.includes('thread::spawn(move ||') &&
-    singleBody.includes('"queued": true') &&
+    singleCommandBody.includes('"queued": true') &&
     singleBody.includes('speed.delays.insert') &&
     singleBody.includes('speed_recommendation(&targets_for_recommendation') &&
     !singleBody.includes('change_proxy') &&
@@ -150,7 +151,7 @@ check(
   'speed preflight fails fast on unsafe targets',
   mainRs.includes('fn speed_test_preflight') &&
     mainRs.includes('dns-fake-ip') &&
-    mainRs.includes('speed_test_preflight(&targets)?') &&
+    mainRs.includes('if let Err(err) = speed_test_preflight(&targets)') &&
     mainRs.includes('speed_test_preflight_blocks_fake_ip_targets'),
   'fake-ip and metadata targets should fail before slow batch probing'
 );

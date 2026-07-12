@@ -18,6 +18,7 @@ const speedStart = mainRs.indexOf('fn start_proxy_delay_test');
 const speedEnd = mainRs.indexOf('fn test_single_proxy_delay', speedStart);
 const speedTestBody = speedStart >= 0 && speedEnd > speedStart ? mainRs.slice(speedStart, speedEnd) : '';
 const speedCommandBody = mainRs.match(/fn start_proxy_delay_test\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
+const singleSpeedCommandBody = mainRs.match(/fn test_single_proxy_delay\(state: State<AppState>, name: String\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 
 check(
   'status snapshot avoids controller version probe',
@@ -41,6 +42,14 @@ check(
     speedCommandBody.includes('start_proxy_delay_test_for_run(Some(run_id))') &&
     !speedCommandBody.includes('state.core.lock().unwrap().start_proxy_delay_test()'),
   'clicking speed test should not wait for standby core preparation or proxy-group assembly'
+);
+check(
+  'single-node speed-test command returns before slow core preparation',
+  singleSpeedCommandBody.includes('mark_single_speed_test_preparing(&state.speed_test, &name)') &&
+    singleSpeedCommandBody.includes('thread::spawn(move ||') &&
+    singleSpeedCommandBody.includes('test_single_proxy_delay_for_run(name, Some(run_id))') &&
+    !singleSpeedCommandBody.includes('state.core.lock().unwrap().test_single_proxy_delay(name)'),
+  'single-node speed buttons should not wait for standby core preparation or proxy-group assembly'
 );
 check(
   'speed tests use standby core without traffic takeover or proxy switching',
