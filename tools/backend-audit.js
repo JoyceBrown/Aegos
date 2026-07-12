@@ -232,6 +232,22 @@ check(
 );
 
 check(
+  'proxy group refresh and preview avoid holding the CoreManager mutex during controller/YAML work',
+  mainRs.includes('fn assemble_proxy_groups_snapshot') &&
+    mainRs.includes('fn controller_proxy_groups_snapshot') &&
+    mainRs.includes('fn profile_proxy_groups_for_profile_snapshot') &&
+    mainRs.includes('fn apply_group_resolution_with_selected_map') &&
+    mainRs.includes('fn apply_speed_test_delays_from_state') &&
+    mainRs.includes('fn proxy_groups(state: State<AppState>)') &&
+    mainRs.includes('assemble_proxy_groups_snapshot(') &&
+    mainRs.includes('fn preview_profile_groups(state: State<AppState>, id: String)') &&
+    mainRs.includes('profile_proxy_groups_for_profile_snapshot(') &&
+    !mainRs.includes('state.core.lock().unwrap().proxy_groups()') &&
+    !mainRs.includes('state.core.lock().unwrap().preview_profile_groups(&id)'),
+  'node list refresh and subscription preview should snapshot core state, then do controller/file parsing outside the core lock'
+);
+
+check(
   'port conflict diagnostics include owner lookup',
   mainRs.includes('fn port_owner_detail') &&
     mainRs.includes('Get-NetTCPConnection') &&
@@ -324,10 +340,10 @@ check(
   'proxy state model keeps selected map and resolves group references',
   mainRs.includes('selected_proxy_map') &&
     mainRs.includes('fn resolve_group_leaf') &&
-    mainRs.includes('fn apply_group_resolution') &&
+    mainRs.includes('fn apply_group_resolution_with_selected_map') &&
     mainRs.includes('realProxyName') &&
     mainRs.includes('proxy_items') &&
-    mainRs.includes('profile_proxy_groups') &&
+    mainRs.includes('profile_proxy_groups_for_profile_snapshot') &&
     mainRs.includes('.selected_proxy_map') &&
     mainRs.includes('insert(group.to_string(), proxy.to_string())'),
   'FlClash-style selected map and group resolution'

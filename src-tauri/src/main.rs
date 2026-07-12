@@ -522,6 +522,382 @@ fn controller_request(
     })
 }
 
+fn controller_proxy_groups_snapshot(
+    running: bool,
+    controller_port: u16,
+    secret: &str,
+) -> Option<JsonValue> {
+    if !running {
+        return None;
+    }
+    let data = controller_request(controller_port, secret, "GET", "/proxies", None, 1200).ok()?;
+    let proxies = data.get("proxies").and_then(|value| value.as_object())?;
+    let groups: Vec<JsonValue> = proxies
+        .values()
+        .filter(|item| {
+            matches!(
+                item.get("type").and_then(|value| value.as_str()),
+                Some("Selector" | "URLTest" | "Fallback" | "LoadBalance" | "Relay")
+            )
+        })
+        .filter(|item| {
+            item.get("name").and_then(|value| value.as_str()) != Some(AEGOS_OUTBOUND_IP_GROUP)
+        })
+        .filter(|item| {
+            item.get("all")
+                .and_then(|value| value.as_array())
+                .map(|items| !items.is_empty())
+                .unwrap_or(false)
+        })
+        .map(|group| {
+            let items = group
+                .get("all")
+                .and_then(|value| value.as_array())
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|name| {
+                    name.as_str().map(|name| {
+                        normalize_proxy_item(proxies.get(name).cloned().unwrap_or_else(|| {
+                            json!({ "name": name, "type": "Unknown", "alive": true, "delay": -1 })
+                        }))
+                    })
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "name": group.get("name").cloned().unwrap_or(json!("")),
+                "type": group.get("type").cloned().unwrap_or(json!("Selector")),
+                "now": group.get("now").cloned().unwrap_or(json!("")),
+                "items": items
+            })
+        })
+        .collect();
+    Some(json!(groups))
+}
+
+fn profile_proxy_groups_for_profile_snapshot(
+    profile: &Profile,
+    selected_map: &HashMap<String, String>,
+    use_selected_map: bool,
+) -> JsonValue {
+    let raw = fs::read_to_string(&profile.path).unwrap_or_default();
+    let config: YamlValue =
+        serde_yaml::from_str(&raw).unwrap_or_else(|_| YamlValue::Mapping(Mapping::new()));
+    let proxies = config
+        .get(yaml_key("proxies"))
+        .and_then(|value| value.as_sequence())
+        .cloned()
+        .unwrap_or_default();
+    let proxy_items = proxies
+        .iter()
+        .filter_map(yaml_proxy_to_json)
+        .map(|item| {
+            let name = item
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string();
+            (name, item)
+        })
+        .collect::<HashMap<_, _>>();
+    if proxy_items.is_empty() {
+        return json!([]);
+    }
+    let proxy_groups = config
+        .get(yaml_key("proxy-groups"))
+        .and_then(|value| value.as_sequence())
+        .cloned()
+        .unwrap_or_default();
+    let group_names = proxy_groups
+        .iter()
+        .filter_map(yaml_mapping_name)
+        .map(|name| name.to_string())
+        .collect::<HashSet<_>>();
+    let groups = proxy_groups
+        .iter()
+        .filter(|group| yaml_mapping_name(group) != Some(AEGOS_OUTBOUND_IP_GROUP))
+        .filter_map(|group| {
+            let map = group.as_mapping()?;
+            let name = map
+                .get(yaml_key("name"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("GLOBAL");
+            let group_type = map
+                .get(yaml_key("type"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("Selector");
+            let all = map
+                .get(yaml_key("proxies"))
+                .and_then(|value| value.as_sequence())
+                .cloned()
+                .unwrap_or_default();
+            let items = all
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(|item_name| {
+                    proxy_items.get(item_name).cloned().unwrap_or_else(|| {
+                        if group_names.contains(item_name) {
+                            json!({
+                                "name": item_name,
+                                "server": item_name,
+                                "type": "Group",
+                                "alive": true,
+                                "delay": -1,
+                                "group": true
+                            })
+                        } else {
+                            builtin_proxy_item(item_name)
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            if items.is_empty() {
+                return None;
+            }
+            let now = (if use_selected_map {
+                selected_map.get(name).cloned()
+            } else {
+                None
+            })
+            .or_else(|| {
+                map.get(yaml_key("now"))
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string())
+            })
+            .or_else(|| {
+                items
+                    .first()
+                    .and_then(|item| item.get("name"))
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string())
+            })
+            .unwrap_or_default();
+            Some(json!({
+                "name": name,
+                "type": group_type,
+                "now": now,
+                "testUrl": map.get(yaml_key("url")).and_then(|value| value.as_str()).unwrap_or(""),
+                "items": items
+            }))
+        })
+        .collect::<Vec<_>>();
+    if !groups.is_empty() {
+        return json!(groups);
+    }
+    let items: Vec<JsonValue> = proxy_items.into_values().collect();
+    if items.is_empty() {
+        return json!([]);
+    }
+    let now = items
+        .first()
+        .and_then(|item| item.get("name"))
+        .cloned()
+        .unwrap_or(json!(""));
+    json!([{ "name": "GLOBAL", "type": "Selector", "now": now, "items": items }])
+}
+
+fn annotate_manual_groups_with_names(groups: &mut JsonValue, names: &HashSet<String>) {
+    if names.is_empty() {
+        return;
+    }
+    let Some(groups) = groups.as_array_mut() else {
+        return;
+    };
+    for group in groups {
+        let Some(items) = group
+            .get_mut("items")
+            .and_then(|items| items.as_array_mut())
+        else {
+            continue;
+        };
+        for item in items {
+            let Some(name) = item.get("name").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            if names.contains(name) {
+                if let Some(map) = item.as_object_mut() {
+                    map.insert("manual".to_string(), json!(true));
+                    map.insert("fixed".to_string(), json!(true));
+                    map.insert("static".to_string(), json!(true));
+                    map.insert("source".to_string(), json!("manual"));
+                }
+            }
+        }
+    }
+}
+
+fn apply_group_resolution_with_selected_map(
+    groups: &mut JsonValue,
+    selected_map: &HashMap<String, String>,
+) {
+    let Some(snapshot) = groups.as_array().cloned() else {
+        return;
+    };
+    let group_names = snapshot
+        .iter()
+        .filter_map(|group| group.get("name").and_then(|value| value.as_str()))
+        .map(|name| name.to_string())
+        .collect::<HashSet<_>>();
+    let Some(group_items) = groups.as_array_mut() else {
+        return;
+    };
+    for group in group_items {
+        let group_name = group
+            .get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_string();
+        let selected = selected_map
+            .get(&group_name)
+            .cloned()
+            .unwrap_or_else(|| group_selected_name(group, selected_map));
+        if !selected.is_empty() {
+            if let Some(map) = group.as_object_mut() {
+                map.insert("now".to_string(), json!(selected));
+            }
+        }
+        if let Some(items) = group
+            .get_mut("items")
+            .and_then(|items| items.as_array_mut())
+        {
+            for item in items {
+                let Some(name) = item
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string())
+                else {
+                    continue;
+                };
+                if !group_names.contains(&name) {
+                    continue;
+                }
+                let leaf = resolve_group_leaf(&snapshot, selected_map, &name, 0);
+                if let Some(map) = item.as_object_mut() {
+                    map.insert("group".to_string(), json!(true));
+                    map.insert("type".to_string(), json!("Group"));
+                    map.insert("realProxyName".to_string(), json!(leaf));
+                }
+            }
+        }
+    }
+}
+
+fn apply_speed_test_delays_from_state(groups: &mut JsonValue, speed: &SpeedTestState) {
+    if speed.delays.is_empty() && speed.health.is_empty() {
+        return;
+    }
+    let now = now_secs();
+    let recommended_name = speed
+        .recommended
+        .as_ref()
+        .and_then(|value| value.get("realProxyName"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+    if let Some(group_items) = groups.as_array_mut() {
+        for group in group_items {
+            if let Some(items) = group
+                .get_mut("items")
+                .and_then(|items| items.as_array_mut())
+            {
+                for item in items {
+                    if let Some(name) = item
+                        .get("realProxyName")
+                        .or_else(|| item.get("name"))
+                        .and_then(|value| value.as_str())
+                        .map(|value| value.to_string())
+                    {
+                        if let Some(delay) = speed.delays.get(&name).copied() {
+                            if let Some(map) = item.as_object_mut() {
+                                map.insert("delay".to_string(), json!(delay));
+                                map.insert("alive".to_string(), json!(delay >= 0));
+                            }
+                        }
+                        if let Some(health) = speed.health.get(&name) {
+                            if let Some(map) = item.as_object_mut() {
+                                let confidence = speed_result_confidence(
+                                    health.last_delay,
+                                    health.failure_streak,
+                                    health.last_success_at,
+                                    health.last_tested_at,
+                                    health.cooldown_until,
+                                    now,
+                                );
+                                map.insert("healthStatus".to_string(), json!(health.status));
+                                map.insert("healthConfidence".to_string(), json!(confidence));
+                                map.insert(
+                                    "lastTestedAt".to_string(),
+                                    json!(health.last_tested_at),
+                                );
+                                map.insert(
+                                    "lastSuccessAt".to_string(),
+                                    json!(health.last_success_at),
+                                );
+                                map.insert(
+                                    "resultAgeSecs".to_string(),
+                                    json!(if health.last_success_at > 0 {
+                                        now.saturating_sub(health.last_success_at)
+                                    } else if health.last_tested_at > 0 {
+                                        now.saturating_sub(health.last_tested_at)
+                                    } else {
+                                        0
+                                    }),
+                                );
+                                map.insert("medianDelay".to_string(), json!(health.median_delay));
+                                map.insert("jitter".to_string(), json!(health.jitter));
+                                map.insert(
+                                    "failureStreak".to_string(),
+                                    json!(health.failure_streak),
+                                );
+                                map.insert(
+                                    "lastFailureReason".to_string(),
+                                    json!(health.last_failure_reason),
+                                );
+                                map.insert("healthScore".to_string(), json!(health.score));
+                                map.insert(
+                                    "cooldownUntil".to_string(),
+                                    json!(health.cooldown_until),
+                                );
+                                map.insert(
+                                    "recommended".to_string(),
+                                    json!(
+                                        recommended_name.as_deref() == Some(name.as_str())
+                                            && health.last_delay > 0
+                                            && health.last_delay < 100
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn assemble_proxy_groups_snapshot(
+    running: bool,
+    controller_port: u16,
+    secret: &str,
+    active_profile: Option<Profile>,
+    selected_map: HashMap<String, String>,
+    manual_names: HashSet<String>,
+    speed: SpeedTestState,
+) -> JsonValue {
+    let mut groups = controller_proxy_groups_snapshot(running, controller_port, secret)
+        .unwrap_or_else(|| {
+            active_profile
+                .as_ref()
+                .map(|profile| {
+                    profile_proxy_groups_for_profile_snapshot(profile, &selected_map, true)
+                })
+                .unwrap_or_else(|| json!([]))
+        });
+    apply_group_resolution_with_selected_map(&mut groups, &selected_map);
+    apply_speed_test_delays_from_state(&mut groups, &speed);
+    annotate_manual_groups_with_names(&mut groups, &manual_names);
+    groups
+}
+
 #[derive(Clone, Copy)]
 struct DelayProbe {
     url: &'static str,
@@ -6425,39 +6801,17 @@ impl CoreManager {
     }
 
     fn proxy_groups(&self) -> JsonValue {
-        let mut result = None;
-        if self.process.is_some() {
-            if let Ok(data) = self.controller("GET", "/proxies", None, 1200) {
-                if let Some(proxies) = data.get("proxies").and_then(|v| v.as_object()) {
-                    let groups: Vec<JsonValue> = proxies
-                        .values()
-                        .filter(|item| matches!(item.get("type").and_then(|v| v.as_str()), Some("Selector" | "URLTest" | "Fallback" | "LoadBalance" | "Relay")))
-                        .filter(|item| item.get("name").and_then(|v| v.as_str()) != Some(AEGOS_OUTBOUND_IP_GROUP))
-                        .filter(|item| item.get("all").and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false))
-                        .map(|group| {
-                            let items = group.get("all").and_then(|v| v.as_array()).cloned().unwrap_or_default()
-                                .into_iter()
-                                .filter_map(|name| name.as_str().map(|name| {
-                                    normalize_proxy_item(proxies.get(name).cloned().unwrap_or_else(|| json!({ "name": name, "type": "Unknown", "alive": true, "delay": -1 })))
-                                }))
-                                .collect::<Vec<_>>();
-                            json!({
-                                "name": group.get("name").cloned().unwrap_or(json!("")),
-                                "type": group.get("type").cloned().unwrap_or(json!("Selector")),
-                                "now": group.get("now").cloned().unwrap_or(json!("")),
-                                "items": items
-                            })
-                        })
-                        .collect();
-                    result = Some(json!(groups));
-                }
-            }
-        }
-        let mut groups = result.unwrap_or_else(|| self.profile_proxy_groups());
-        self.apply_group_resolution(&mut groups);
-        self.apply_speed_test_delays(&mut groups);
-        self.annotate_manual_groups(&mut groups);
-        groups
+        let manual_names = self.active_manual_node_names();
+        let speed = self.speed_test.lock().unwrap().clone();
+        assemble_proxy_groups_snapshot(
+            self.process.is_some(),
+            self.settings.controller_port,
+            &self.settings.secret,
+            self.active_profile(),
+            self.settings.selected_proxy_map.clone(),
+            manual_names,
+            speed,
+        )
     }
 
     fn active_manual_node_names(&self) -> HashSet<String> {
@@ -6465,179 +6819,6 @@ impl CoreManager {
             .and_then(|profile| self.settings.manual_nodes.get(&profile.id).cloned())
             .map(|nodes| nodes.keys().cloned().collect::<HashSet<_>>())
             .unwrap_or_default()
-    }
-
-    fn annotate_manual_groups(&self, groups: &mut JsonValue) {
-        let names = self.active_manual_node_names();
-        if names.is_empty() {
-            return;
-        }
-        let Some(groups) = groups.as_array_mut() else {
-            return;
-        };
-        for group in groups {
-            let Some(items) = group
-                .get_mut("items")
-                .and_then(|items| items.as_array_mut())
-            else {
-                continue;
-            };
-            for item in items {
-                let Some(name) = item.get("name").and_then(|value| value.as_str()) else {
-                    continue;
-                };
-                if names.contains(name) {
-                    if let Some(map) = item.as_object_mut() {
-                        map.insert("manual".to_string(), json!(true));
-                        map.insert("fixed".to_string(), json!(true));
-                        map.insert("static".to_string(), json!(true));
-                        map.insert("source".to_string(), json!("manual"));
-                    }
-                }
-            }
-        }
-    }
-
-    fn profile_proxy_groups_for_profile(
-        &self,
-        profile: &Profile,
-        use_selected_map: bool,
-    ) -> JsonValue {
-        let raw = fs::read_to_string(&profile.path).unwrap_or_default();
-        let config: YamlValue =
-            serde_yaml::from_str(&raw).unwrap_or_else(|_| YamlValue::Mapping(Mapping::new()));
-        let proxies = config
-            .get(yaml_key("proxies"))
-            .and_then(|v| v.as_sequence())
-            .cloned()
-            .unwrap_or_default();
-        let proxy_items = proxies
-            .iter()
-            .filter_map(yaml_proxy_to_json)
-            .map(|item| {
-                let name = item
-                    .get("name")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                (name, item)
-            })
-            .collect::<HashMap<_, _>>();
-        if proxy_items.is_empty() {
-            return json!([]);
-        }
-        let proxy_groups = config
-            .get(yaml_key("proxy-groups"))
-            .and_then(|value| value.as_sequence())
-            .cloned()
-            .unwrap_or_default();
-        let group_names = proxy_groups
-            .iter()
-            .filter_map(yaml_mapping_name)
-            .map(|name| name.to_string())
-            .collect::<HashSet<_>>();
-        let groups = proxy_groups
-            .iter()
-            .filter(|group| yaml_mapping_name(group) != Some(AEGOS_OUTBOUND_IP_GROUP))
-            .filter_map(|group| {
-                let map = group.as_mapping()?;
-                let name = map
-                    .get(yaml_key("name"))
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("GLOBAL");
-                let group_type = map
-                    .get(yaml_key("type"))
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("Selector");
-                let all = map
-                    .get(yaml_key("proxies"))
-                    .and_then(|value| value.as_sequence())
-                    .cloned()
-                    .unwrap_or_default();
-                let items = all
-                    .iter()
-                    .filter_map(|item| item.as_str())
-                    .map(|item_name| {
-                        proxy_items
-                            .get(item_name)
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                if group_names.contains(item_name) {
-                                    json!({
-                                        "name": item_name,
-                                        "server": item_name,
-                                        "type": "Group",
-                                        "alive": true,
-                                        "delay": -1,
-                                        "group": true
-                                    })
-                                } else {
-                                    builtin_proxy_item(item_name)
-                                }
-                            })
-                    })
-                    .collect::<Vec<_>>();
-                if items.is_empty() {
-                    return None;
-                }
-                let now = (if use_selected_map {
-                    self.settings.selected_proxy_map.get(name).cloned()
-                } else {
-                    None
-                })
-                .or_else(|| {
-                        map.get(yaml_key("now"))
-                            .and_then(|value| value.as_str())
-                            .map(|value| value.to_string())
-                    })
-                    .or_else(|| {
-                        items
-                            .first()
-                            .and_then(|item| item.get("name"))
-                            .and_then(|value| value.as_str())
-                            .map(|value| value.to_string())
-                    })
-                    .unwrap_or_default();
-                Some(json!({
-                    "name": name,
-                    "type": group_type,
-                    "now": now,
-                    "testUrl": map.get(yaml_key("url")).and_then(|value| value.as_str()).unwrap_or(""),
-                    "items": items
-                }))
-            })
-            .collect::<Vec<_>>();
-        if !groups.is_empty() {
-            return json!(groups);
-        }
-        let items: Vec<JsonValue> = proxy_items.into_values().collect();
-        if items.is_empty() {
-            return json!([]);
-        }
-        let now = items
-            .first()
-            .and_then(|item| item.get("name"))
-            .cloned()
-            .unwrap_or(json!(""));
-        json!([{ "name": "GLOBAL", "type": "Selector", "now": now, "items": items }])
-    }
-
-    fn profile_proxy_groups(&self) -> JsonValue {
-        let Some(profile) = self.active_profile() else {
-            return json!([]);
-        };
-        self.profile_proxy_groups_for_profile(&profile, true)
-    }
-
-    fn preview_profile_groups(&self, id: &str) -> Result<JsonValue, String> {
-        let profile = self
-            .settings
-            .profiles
-            .iter()
-            .find(|profile| profile.id == id)
-            .cloned()
-            .ok_or_else(|| "Profile not found".to_string())?;
-        Ok(self.profile_proxy_groups_for_profile(&profile, false))
     }
 
     fn collect_proxy_targets(groups: &JsonValue) -> Vec<SpeedTestTarget> {
@@ -6699,156 +6880,9 @@ impl CoreManager {
             .unwrap_or_default()
     }
 
-    fn apply_group_resolution(&self, groups: &mut JsonValue) {
-        let Some(snapshot) = groups.as_array().cloned() else {
-            return;
-        };
-        let group_names = snapshot
-            .iter()
-            .filter_map(|group| group.get("name").and_then(|value| value.as_str()))
-            .map(|name| name.to_string())
-            .collect::<HashSet<_>>();
-        let Some(group_items) = groups.as_array_mut() else {
-            return;
-        };
-        for group in group_items {
-            let group_name = group
-                .get("name")
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-                .to_string();
-            let selected = self
-                .settings
-                .selected_proxy_map
-                .get(&group_name)
-                .cloned()
-                .unwrap_or_else(|| group_selected_name(group, &self.settings.selected_proxy_map));
-            if !selected.is_empty() {
-                if let Some(map) = group.as_object_mut() {
-                    map.insert("now".to_string(), json!(selected));
-                }
-            }
-            if let Some(items) = group
-                .get_mut("items")
-                .and_then(|items| items.as_array_mut())
-            {
-                for item in items {
-                    let Some(name) = item
-                        .get("name")
-                        .and_then(|value| value.as_str())
-                        .map(|value| value.to_string())
-                    else {
-                        continue;
-                    };
-                    if !group_names.contains(&name) {
-                        continue;
-                    }
-                    let leaf =
-                        resolve_group_leaf(&snapshot, &self.settings.selected_proxy_map, &name, 0);
-                    if let Some(map) = item.as_object_mut() {
-                        map.insert("group".to_string(), json!(true));
-                        map.insert("type".to_string(), json!("Group"));
-                        map.insert("realProxyName".to_string(), json!(leaf));
-                    }
-                }
-            }
-        }
-    }
-
     fn apply_speed_test_delays(&self, groups: &mut JsonValue) {
         let speed = self.speed_test.lock().unwrap().clone();
-        if speed.delays.is_empty() && speed.health.is_empty() {
-            return;
-        }
-        let now = now_secs();
-        let recommended_name = speed
-            .recommended
-            .as_ref()
-            .and_then(|value| value.get("realProxyName"))
-            .and_then(|value| value.as_str())
-            .map(|value| value.to_string());
-        if let Some(group_items) = groups.as_array_mut() {
-            for group in group_items {
-                if let Some(items) = group
-                    .get_mut("items")
-                    .and_then(|items| items.as_array_mut())
-                {
-                    for item in items {
-                        if let Some(name) = item
-                            .get("realProxyName")
-                            .or_else(|| item.get("name"))
-                            .and_then(|value| value.as_str())
-                            .map(|value| value.to_string())
-                        {
-                            if let Some(delay) = speed.delays.get(&name).copied() {
-                                if let Some(map) = item.as_object_mut() {
-                                    map.insert("delay".to_string(), json!(delay));
-                                    map.insert("alive".to_string(), json!(delay >= 0));
-                                }
-                            }
-                            if let Some(health) = speed.health.get(&name) {
-                                if let Some(map) = item.as_object_mut() {
-                                    let confidence = speed_result_confidence(
-                                        health.last_delay,
-                                        health.failure_streak,
-                                        health.last_success_at,
-                                        health.last_tested_at,
-                                        health.cooldown_until,
-                                        now,
-                                    );
-                                    map.insert("healthStatus".to_string(), json!(health.status));
-                                    map.insert("healthConfidence".to_string(), json!(confidence));
-                                    map.insert(
-                                        "lastTestedAt".to_string(),
-                                        json!(health.last_tested_at),
-                                    );
-                                    map.insert(
-                                        "lastSuccessAt".to_string(),
-                                        json!(health.last_success_at),
-                                    );
-                                    map.insert(
-                                        "resultAgeSecs".to_string(),
-                                        json!(if health.last_success_at > 0 {
-                                            now.saturating_sub(health.last_success_at)
-                                        } else if health.last_tested_at > 0 {
-                                            now.saturating_sub(health.last_tested_at)
-                                        } else {
-                                            0
-                                        }),
-                                    );
-                                    map.insert(
-                                        "medianDelay".to_string(),
-                                        json!(health.median_delay),
-                                    );
-                                    map.insert("jitter".to_string(), json!(health.jitter));
-                                    map.insert(
-                                        "failureStreak".to_string(),
-                                        json!(health.failure_streak),
-                                    );
-                                    map.insert(
-                                        "lastFailureReason".to_string(),
-                                        json!(health.last_failure_reason),
-                                    );
-                                    map.insert("healthScore".to_string(), json!(health.score));
-                                    map.insert(
-                                        "cooldownUntil".to_string(),
-                                        json!(health.cooldown_until),
-                                    );
-                                    map.insert(
-                                        "recommended".to_string(),
-                                        json!(
-                                            recommended_name.as_deref() == Some(name.as_str())
-                                                && health.last_delay > 0
-                                                && health.last_delay < 100
-                                        ),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        apply_speed_test_delays_from_state(groups, &speed);
     }
 
     fn current_outbound_ip_proxy_name(&self, groups: &JsonValue) -> Option<String> {
@@ -9175,12 +9209,54 @@ fn relaunch_as_admin(app: AppHandle) -> Result<bool, String> {
 
 #[tauri::command]
 fn proxy_groups(state: State<AppState>) -> Result<JsonValue, String> {
-    Ok(state.core.lock().unwrap().proxy_groups())
+    let (running, controller_port, secret, active_profile, selected_map, manual_names, speed) = {
+        let core = state.core.lock().unwrap();
+        let active_profile = core.active_profile();
+        let manual_names = active_profile
+            .as_ref()
+            .and_then(|profile| core.settings.manual_nodes.get(&profile.id).cloned())
+            .map(|nodes| nodes.keys().cloned().collect::<HashSet<_>>())
+            .unwrap_or_default();
+        let speed = core.speed_test.lock().unwrap().clone();
+        (
+            core.process.is_some(),
+            core.settings.controller_port,
+            core.settings.secret.clone(),
+            active_profile,
+            core.settings.selected_proxy_map.clone(),
+            manual_names,
+            speed,
+        )
+    };
+    Ok(assemble_proxy_groups_snapshot(
+        running,
+        controller_port,
+        &secret,
+        active_profile,
+        selected_map,
+        manual_names,
+        speed,
+    ))
 }
 
 #[tauri::command]
 fn preview_profile_groups(state: State<AppState>, id: String) -> Result<JsonValue, String> {
-    state.core.lock().unwrap().preview_profile_groups(&id)
+    let (profile, selected_map) = {
+        let core = state.core.lock().unwrap();
+        let profile = core
+            .settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == id)
+            .cloned()
+            .ok_or_else(|| "Profile not found".to_string())?;
+        (profile, core.settings.selected_proxy_map.clone())
+    };
+    Ok(profile_proxy_groups_for_profile_snapshot(
+        &profile,
+        &selected_map,
+        false,
+    ))
 }
 
 #[tauri::command]
