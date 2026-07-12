@@ -25,11 +25,13 @@ function check(name, ok, detail = '') {
 const standardPath = 'research/opensource-absorption-standard.md';
 const referencePath = 'research/opensource-reference.md';
 const roadmapPath = 'research/opensource-absorption-roadmap.md';
+const coreApiContractPath = 'core-api-contract.md';
 const pkg = readJson('package.json');
 const releaseAudit = read('tools/release-audit.js');
 const standard = exists(standardPath) ? read(standardPath) : '';
 const reference = exists(referencePath) ? read(referencePath) : '';
 const roadmap = exists(roadmapPath) ? read(roadmapPath) : '';
+const coreApiContract = exists(coreApiContractPath) ? read(coreApiContractPath) : '';
 
 const requiredStandardSections = [
   '## 1. 总原则',
@@ -81,6 +83,7 @@ const requiredSourceUrls = [
 check('opensource absorption standard exists', exists(standardPath), standardPath);
 check('opensource reference exists', exists(referencePath), referencePath);
 check('opensource absorption roadmap exists', exists(roadmapPath), roadmapPath);
+check('mihomo core API contract exists', exists(coreApiContractPath), coreApiContractPath);
 check('package exposes audit:opensource', pkg.scripts?.['audit:opensource'] === 'node tools/opensource-absorption-audit.js', 'package.json');
 check('release audit knows opensource absorption gate', releaseAudit.includes('opensource absorption audit script exists'), 'tools/release-audit.js');
 check('standard contains required sections', requiredStandardSections.every((section) => standard.includes(section)), requiredStandardSections.join(', '));
@@ -98,6 +101,10 @@ check('roadmap applies scoring standard to projects', requiredProjects.every((pr
 check('roadmap maps absorption into versions', ['2.9.53', '2.9.54', '2.9.55', '2.9.56', '3.1.0', '3.2.0', '3.3.0', '3.4.0', '3.5.0', '4.0.0'].every((version) => roadmap.includes(version)), 'version route');
 check('roadmap preserves no-copy and validation gates', ['不复制', '融合方式', '验收', '停止条件', '测速仍会自动切节点'].every((text) => roadmap.includes(text)), 'fusion and stop gates');
 check('roadmap keeps sing-box and snell out of the immediate mainline', roadmap.includes('不进 3.0 主线') && roadmap.includes('不执行服务端 shell'), 'deferred high-risk projects');
+check('core API contract records current mihomo controller envelope', ['controller_request', 'CoreManager::controller', '127.0.0.1', 'bearer auth', 'no_proxy'].every((text) => coreApiContract.includes(text)), 'controller envelope');
+check('core API contract classifies read, measurement, and mutating APIs', ['GET /proxies', 'GET /proxies/{name}/delay', 'PUT /proxies/{group}', 'PATCH /configs', 'GET /traffic', 'GET /connections', 'DELETE /connections'].every((text) => coreApiContract.includes(text)), 'API matrix');
+check('core API contract forbids speed-test proxy switching', ['Delay tests are measurement-only', 'Forbidden in this path', 'PUT /proxies/{group}', 'selected proxy map mutation'].every((text) => coreApiContract.includes(text)), 'measurement-only contract');
+check('core API contract gates dangerous group delay semantics', coreApiContract.includes('GET /group/{name}/delay') && coreApiContract.includes('clear fixed selection') && coreApiContract.includes('Prefer `/proxies/{name}/delay`'), 'group delay gate');
 
 const result = {
   ok: fail.length === 0,

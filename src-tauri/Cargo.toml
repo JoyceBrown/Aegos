@@ -1,6 +1,6 @@
 [package]
 name = "aegos"
-version = "2.9.52"
+version = "2.9.53"
 description = "Aegos lightweight desktop shell"
 authors = ["Codex"]
 edition = "2021"
