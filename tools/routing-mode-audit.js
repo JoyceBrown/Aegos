@@ -31,7 +31,7 @@ const routingBody = routingStart >= 0
   ? mainRs.slice(routingStart, routingEnd > routingStart ? routingEnd : undefined)
   : '';
 
-check('package version remains within the 3.1 routing mode lane', /^3\.1\.\d+$/.test(pkg.version), pkg.version);
+check('package version keeps 3.x routing mode gate active', /^3\.\d+\.\d+$/.test(pkg.version), pkg.version);
 check('routing page exposes a current mode summary field', indexHtml.includes('<span>当前模式</span><b id="routingModeState">-</b>'), 'routingModeState');
 check('backend routing snapshot reads mode from core settings', routingBody.includes('core.settings.mode.clone()') && routingBody.includes('"mode": mode'), 'routing_snapshot mode');
 check('frontend renders routing mode through shared modeLabel', appJs.includes("$('#routingModeState').textContent = modeLabel(data.mode || latestStatus?.mode || 'rule')"), 'modeLabel render');

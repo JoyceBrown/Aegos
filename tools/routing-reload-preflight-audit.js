@@ -26,8 +26,8 @@ const pkg = readJson('package.json');
 const mainRs = read('src-tauri/src/main.rs');
 const releaseAudit = read('tools/release-audit.js');
 
-const commandStart = mainRs.indexOf('#[tauri::command]\nfn routing_reload_preflight');
-const commandEnd = mainRs.indexOf('fn start_proxy_delay_test', commandStart + 1);
+const commandStart = mainRs.indexOf('fn routing_reload_preflight(');
+const commandEnd = mainRs.indexOf('#[tauri::command]', commandStart + 1);
 const commandBody = commandStart >= 0 ? mainRs.slice(commandStart, commandEnd > commandStart ? commandEnd : undefined) : '';
 
 check('package version keeps 3.x routing foundation active', /^3\.\d+\.\d+$/.test(pkg.version), pkg.version);

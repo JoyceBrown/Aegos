@@ -31,10 +31,17 @@ const renderStart = appJs.indexOf('function renderRoutingSnapshot');
 const renderEnd = appJs.indexOf('async function refreshRoutingSnapshot', renderStart);
 const renderBody = renderStart >= 0 ? appJs.slice(renderStart, renderEnd > renderStart ? renderEnd : undefined) : '';
 
-check('package version remains within the 3.1 routing redaction lane', /^3\.1\.\d+$/.test(pkg.version), pkg.version);
+check('package version keeps 3.x routing redaction gate active', /^3\.\d+\.\d+$/.test(pkg.version), pkg.version);
 check('routing snapshot sanitizes recent rule names', routingBody.includes('let rule = sanitize_sensitive_text') && routingBody.includes('.get("rule")'), 'rule redaction');
 check('routing snapshot sanitizes recent chain names', routingBody.includes('let chains = sanitize_sensitive_text') && routingBody.includes('.get("chains")'), 'chain redaction');
-check('routing frontend renders recent rules through text nodes', renderBody.includes('textContent: item.rule') && renderBody.includes('textContent: item.chains') && !renderBody.includes('innerHTML'), 'safe rule rendering');
+check(
+  'routing frontend renders recent rules through text nodes',
+  renderBody.includes('textContent: item.condition') &&
+    renderBody.includes('routingTargetLabel(item.target)') &&
+    renderBody.includes('routingStatusLabel(item)') &&
+    !renderBody.includes('innerHTML'),
+  'safe rule rendering'
+);
 check('routing redaction shares the global sensitive data sanitizer', mainRs.includes('fn sanitize_sensitive_text') && securityAudit.includes('logs and public subscription metadata are sanitized'), 'shared sanitizer');
 check('routing redaction audit is wired into release gate', releaseAudit.includes('routing redaction audit script exists'), 'release-audit');
 

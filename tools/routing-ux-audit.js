@@ -31,7 +31,7 @@ const previewStart = appJs.indexOf('function previewWebsiteRoutingDraft');
 const previewEnd = appJs.indexOf('function isAegosSystemRoutingRule', previewStart + 1);
 const previewBody = previewStart >= 0 ? appJs.slice(previewStart, previewEnd > previewStart ? previewEnd : undefined) : '';
 
-check('package version stays in 3.3 routing UX lane', /^3\.3\.\d+$/.test(pkg.version), pkg.version);
+check('package version keeps 3.x routing UX gate active', /^3\.\d+\.\d+$/.test(pkg.version), pkg.version);
 check('routing UX audit is exposed as package script', pkg.scripts?.['audit:routing-ux'] === 'node tools/routing-ux-audit.js', 'npm run audit:routing-ux');
 check('routing static text is normalized at runtime for readable Chinese', appJs.includes('function normalizeRoutingStaticText') && appJs.includes('\\u5b89\\u5168\\u9884\\u89c8') && appJs.includes('routingSystemRuleCount'), 'runtime text normalization');
 check('website routing preview exists and is draft-only', appJs.includes('function ensureRoutingAssistantUi') && appJs.includes('routingWebsiteInput') && appJs.includes('routingDraftPreview') && previewBody.includes('DOMAIN-SUFFIX') && !previewBody.includes('invoke('), 'draft-only website wizard');

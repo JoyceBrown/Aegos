@@ -37,8 +37,8 @@ const requiredScripts = [
   'audit:routing-foundation',
 ];
 
-const commandStart = mainRs.indexOf('#[tauri::command]\nfn routing_foundation_acceptance');
-const commandEnd = mainRs.indexOf('#[tauri::command]\nfn start_proxy_delay_test', commandStart + 1);
+const commandStart = mainRs.indexOf('fn routing_foundation_acceptance(');
+const commandEnd = mainRs.indexOf('#[tauri::command]', commandStart + 1);
 const commandBody = commandStart >= 0 ? mainRs.slice(commandStart, commandEnd > commandStart ? commandEnd : undefined) : '';
 
 check('package version keeps 3.x routing foundation active', /^3\.\d+\.\d+$/.test(pkg.version), pkg.version);

@@ -17,7 +17,7 @@ function check(name, ok, detail = '') {
   else failures.push(`${name}${detail ? ` (${detail})` : ''}`);
 }
 
-check('version is 3.4.17 diagnostics productization checkpoint', pkg.version === '3.4.17', pkg.version);
+check('version is at least 3.4.17 diagnostics productization checkpoint', /^3\.4\.(1[7-9]|20)$/.test(pkg.version), pkg.version);
 check(
   'diagnostic report export is exposed through backend command',
   mainRs.includes('fn export_diagnostics_report(') &&

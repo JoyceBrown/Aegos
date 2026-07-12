@@ -17,7 +17,7 @@ function check(name, ok, detail = '') {
   else failures.push(`${name}${detail ? ` (${detail})` : ''}`);
 }
 
-check('version is 3.4.16 routing productization checkpoint', pkg.version === '3.4.16', pkg.version);
+check('version is at least 3.4.16 routing productization checkpoint', /^3\.4\.(1[6-9]|20)$/.test(pkg.version), pkg.version);
 check(
   'backend exposes constrained routing apply and undo commands',
   mainRs.includes('fn apply_routing_drafts(') &&

@@ -32,7 +32,7 @@ const appPreviewStart = appJs.indexOf('function previewAppRoutingDraft');
 const appPreviewEnd = appJs.indexOf('function isAegosSystemRoutingRule', appPreviewStart + 1);
 const appPreviewBody = appPreviewStart >= 0 ? appJs.slice(appPreviewStart, appPreviewEnd > appPreviewStart ? appPreviewEnd : undefined) : '';
 
-check('package version stays in 3.3 app routing UX lane', /^3\.3\.\d+$/.test(pkg.version), pkg.version);
+check('package version keeps 3.x app routing UX gate active', /^3\.\d+\.\d+$/.test(pkg.version), pkg.version);
 check('routing app UX audit is exposed as package script', pkg.scripts?.['audit:routing-app-ux'] === 'node tools/routing-app-ux-audit.js', 'npm run audit:routing-app-ux');
 check('app routing draft UI exists beside website draft UI', appJs.includes('routingAppInput') && appJs.includes('routingAppAction') && appJs.includes('routingAppDraftPreview') && stylesCss.includes('.routing-draft-card'), 'app draft card');
 check('app routing preview supports process name and path drafts', appJs.includes('function normalizeAppRuleInput') && appJs.includes('PROCESS-NAME') && appJs.includes('PROCESS-PATH') && appPreviewBody.includes('parsed.kind'), 'process draft kinds');

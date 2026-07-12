@@ -29,9 +29,15 @@ const renderStart = appJs.indexOf('function renderRoutingSnapshot');
 const renderEnd = appJs.indexOf('async function refreshRoutingSnapshot', renderStart);
 const renderBody = renderStart >= 0 ? appJs.slice(renderStart, renderEnd > renderStart ? renderEnd : undefined) : '';
 
-check('package version remains within the 3.1 routing selection lane', /^3\.1\.\d+$/.test(pkg.version), pkg.version);
+check('package version keeps 3.x routing selection gate active', /^3\.\d+\.\d+$/.test(pkg.version), pkg.version);
 check('routing table keeps current selection separate from speed results', indexHtml.includes('<span>当前选择</span>') && renderBody.includes('item.now ||'), 'current selection column');
-check('automatic strategy groups are explained without implying connection', renderBody.includes('自动策略，测速不切换') && renderBody.includes('手动/只读'), 'automatic/manual copy');
+check(
+  'automatic strategy groups are explained without implying connection',
+  (renderBody.includes('自动选择，测速不会手动切换') ||
+    renderBody.includes('\\u81ea\\u52a8\\u9009\\u62e9\\uff0c\\u6d4b\\u901f\\u4e0d\\u4f1a\\u624b\\u52a8\\u5207\\u6362')) &&
+    (renderBody.includes('手动选择') || renderBody.includes('\\u624b\\u52a8\\u9009\\u62e9')),
+  'automatic/manual copy'
+);
 check('routing snapshot exposes automatic behavior as metadata only', mainRs.includes('"automatic": matches!(group_type.as_str(), "url-test" | "fallback" | "load-balance")'), 'automatic metadata');
 check('speed tests remain guarded as measurement-only', speedAudit.includes('speed tests remain measurement-only') || speedAudit.includes('batch speed-test backend does not switch proxies'), 'speed measurement-only');
 check('routing selection audit is wired into release gate', releaseAudit.includes('routing selection audit script exists'), 'release-audit');

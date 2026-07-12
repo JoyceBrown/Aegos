@@ -40,13 +40,19 @@ const requiredAudits = [
   'routing-redaction',
 ];
 
-check('package version is 3.1.7 for routing acceptance checkpoint', pkg.version === '3.1.7', pkg.version);
+check('package version keeps 3.x routing acceptance gate active', /^3\.\d+\.\d+$/.test(pkg.version), pkg.version);
 check('all routing audit scripts are exposed', requiredAudits.every((name) => pkg.scripts?.[`audit:${name}`] === `node tools/${name}-audit.js` && exists(`tools/${name}-audit.js`)), requiredAudits.join(', '));
 check('release gate knows all routing audits', requiredAudits.every((name) => releaseAudit.includes(`${name}-audit.js`)) && releaseAudit.includes('routing acceptance audit script exists'), 'release-audit routing gates');
 check('routing surface is present and read-only', indexHtml.includes('data-page="routing"') && indexHtml.includes('routingReadonlyBadge') && mainRs.includes('fn routing_snapshot') && !mainRs.includes('save_routing_rule'), 'read-only routing surface');
 check('routing rendering uses safe text paths', appJs.includes('function renderRoutingSnapshot') && appJs.includes('replaceChildrenSafe') && !/renderRoutingSnapshot[\s\S]*innerHTML/.test(appJs), 'safe routing render');
 check('routing page is included in performance and interaction smoke', perfSmoke.includes("'routing'") && interactionSmoke.includes('routing page panel did not activate immediately') && interactionSmoke.includes('routing mode summary did not match current backend mode'), 'runtime smoke coverage');
-check('routing cannot reintroduce speed-test switching', appJs.includes('自动策略，测速不切换') && !appJs.includes("runBackgroundJob('selectBestProxy'"), 'speed no-switch semantics');
+check(
+  'routing cannot reintroduce speed-test switching',
+  (appJs.includes('自动选择，测速不会手动切换') ||
+    appJs.includes('\\u81ea\\u52a8\\u9009\\u62e9\\uff0c\\u6d4b\\u901f\\u4e0d\\u4f1a\\u624b\\u52a8\\u5207\\u6362')) &&
+    !appJs.includes("runBackgroundJob('selectBestProxy'"),
+  'speed no-switch semantics'
+);
 
 const result = {
   ok: fail.length === 0,

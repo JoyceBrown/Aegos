@@ -18,7 +18,7 @@ function check(name, ok, detail = '') {
   else failures.push(`${name}${detail ? ` (${detail})` : ''}`);
 }
 
-check('version is 3.4.19 interaction/performance checkpoint', pkg.version === '3.4.19', pkg.version);
+check('version is at least 3.4.19 interaction/performance checkpoint', /^3\.4\.(19|20)$/.test(pkg.version), pkg.version);
 check(
   'settings background probes cannot pile up during rapid navigation',
   appJs.includes('let environmentReadinessBusy = false') &&

@@ -30,7 +30,7 @@ const singleFrontend = bodyBetween(appJs, 'async function waitForSingleNodeDelay
 const applySpeed = bodyBetween(appJs, 'function applySpeedStatusToNodes', 'function normalizeNodeItem');
 const profileSwitch = bodyBetween(appJs, 'function resetSpeedUiForProfileSwitch', 'async function pollSpeedTest');
 
-check('version is 3.4.13', pkg.version === '3.4.13', pkg.version);
+check('version is at least 3.4.13 speed product checkpoint', /^3\.4\.(1[3-9]|20)$/.test(pkg.version), pkg.version);
 
 check(
   'speed-test snapshot has a result signature',

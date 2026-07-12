@@ -4304,8 +4304,9 @@ rules:
         let dir = std::env::temp_dir().join(format!("aegos-profile-validation-{}", hex_random(6)));
         fs::create_dir_all(&dir).expect("temp dir");
         let path = dir.join("profile.yaml");
-        fs::write(
+        atomic_write_text_confined(
             &path,
+            &dir,
             r#"
 proxies:
   - name: Node A
@@ -4344,7 +4345,7 @@ rules:
             Some(2)
         );
         assert_eq!(summary.get("ok").and_then(JsonValue::as_bool), Some(false));
-        let _ = fs::remove_file(path);
+        let _ = remove_file_confined(&path, &dir);
         let _ = fs::remove_dir(dir);
     }
 

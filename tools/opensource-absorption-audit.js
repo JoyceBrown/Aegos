@@ -120,7 +120,8 @@ check(
 );
 check(
   'canonical roadmap keeps 3.3 as routing assistant',
-  canonicalRoadmap.includes('3.3.x \u56fa\u5b9a\u4e3a\u5206\u6d41\u52a9\u624b\u8def\u7ebf') &&
+  (canonicalRoadmap.includes('3.3.x \u56fa\u5b9a\u4e3a\u5206\u6d41\u52a9\u624b\u8def\u7ebf') ||
+    canonicalRoadmap.includes('3.3.x \u56fa\u5b9a\u4e3a\u5206\u6d41\u52a9\u624b\u5730\u57fa\u8def\u7ebf')) &&
     canonicalRoadmap.includes('| 3.3.4 | \u5730\u533a/\u7b56\u7565\u76ee\u6807\u5411\u5bfc |'),
   '3.3.x route'
 );

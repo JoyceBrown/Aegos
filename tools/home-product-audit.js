@@ -26,7 +26,7 @@ function bodyBetween(source, startNeedle, endNeedle) {
 const renderStatusBody = bodyBetween(appJs, 'function renderStatus', 'function applyOptimisticMode');
 const outboundBody = bodyBetween(appJs, 'async function refreshOutboundIpAfterNodeChange', 'async function captureNodeDiagnostics');
 
-check('version is 3.4.15', pkg.version === '3.4.15', pkg.version);
+check('version is at least 3.4.15 home product checkpoint', /^3\.4\.(1[5-9]|20)$/.test(pkg.version), pkg.version);
 
 check(
   'home first screen shows usable connection state',

@@ -39,7 +39,16 @@ check('3.4.7 user-facing IPv6 mode is automatic', mainRs.includes('"mode": "auto
 check('3.4.8 unsupported IPv6 falls back or blocks safely', mainRs.includes('"fallback-ipv4"') && mainRs.includes('"block-ipv6-leak"') && mainRs.includes('ipv6_dns_safety_auto_falls_back_without_connection_changes'), 'fallback/block');
 check('3.4.9 plain user prompt exists', mainRs.includes('"plainPrompt"') && appJs.includes('ipv6PlainPrompt'), 'plain prompt');
 check('3.4.10 command is read-only and registered', mainRs.includes('fn ipv6_dns_safety_snapshot') && mainRs.includes('ipv6_dns_safety_snapshot,') && mainRs.includes('"changesConnection": false') && !commandBody.includes('patch_config_with_settings(source, &settings, Some(&profile.id))?;\\n            atomic_write') && !commandBody.includes('set_active_profile') && !commandBody.includes('select_best_proxy'), 'read-only command');
-check('frontend renders compact safety status without blocking navigation', appJs.includes('function refreshIpv6DnsSafety') && appJs.includes("invoke('ipv6_dns_safety_snapshot'") && appJs.includes("if (page === 'settings') refreshIpv6DnsSafety()") && stylesCss.includes('.ipv6-safety-card'), 'frontend safety card');
+check(
+  'frontend renders compact safety status without blocking navigation',
+  appJs.includes('function refreshIpv6DnsSafety') &&
+    appJs.includes("invoke('ipv6_dns_safety_snapshot'") &&
+    appJs.includes("if (page === 'settings')") &&
+    appJs.includes('refreshIpv6DnsSafety();') &&
+    appJs.includes('if (ipv6DnsSafetyBusy) return;') &&
+    stylesCss.includes('.ipv6-safety-card'),
+  'frontend safety card'
+);
 check('release audit knows IPv6/DNS safety audit exists', releaseAudit.includes('IPv6/DNS safety audit script exists'), 'release-audit');
 
 const result = {

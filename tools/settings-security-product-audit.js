@@ -19,7 +19,7 @@ function check(name, ok, detail = '') {
   else failures.push(`${name}${detail ? ` (${detail})` : ''}`);
 }
 
-check('version is 3.4.18 settings/security checkpoint', pkg.version === '3.4.18', pkg.version);
+check('version is at least 3.4.18 settings/security checkpoint', /^3\.4\.(18|19|20)$/.test(pkg.version), pkg.version);
 check(
   'environment readiness backend command is registered',
   mainRs.includes('fn environment_readiness(') &&

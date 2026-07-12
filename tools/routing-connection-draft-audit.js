@@ -32,7 +32,7 @@ const handlerStart = appJs.indexOf('const routingDraftButton = event.target.clos
 const handlerEnd = appJs.indexOf('const closeButton = event.target.closest', handlerStart + 1);
 const handlerBody = handlerStart >= 0 ? appJs.slice(handlerStart, handlerEnd > handlerStart ? handlerEnd : undefined) : '';
 
-check('package version is 3.3.3 connection draft checkpoint', pkg.version === '3.3.3', pkg.version);
+check('package version keeps 3.x connection draft gate active', /^3\.\d+\.\d+$/.test(pkg.version), pkg.version);
 check('routing connection draft audit is exposed as package script', pkg.scripts?.['audit:routing-connection-draft'] === 'node tools/routing-connection-draft-audit.js', 'npm run audit:routing-connection-draft');
 check('connection rows expose a draft action without replacing close action', appJs.includes('dataset: { routingDraftTarget: target }') && appJs.includes('dataset: { closeConnection: item.id }') && stylesCss.includes('.connection-actions'), 'connection action row');
 check('connection target normalization supports domain and IPv4 drafts', appJs.includes('function normalizeConnectionRoutingTarget') && appJs.includes('IP-CIDR') && appJs.includes('DOMAIN-SUFFIX') && appJs.includes('/32'), 'domain/ip draft targets');

@@ -23,6 +23,7 @@ function lineOf(text, index) {
 function locations(text, pattern, rel) {
   return matches(text, pattern).map((match) => ({
     file: rel,
+    index: match.index ?? 0,
     line: lineOf(text, match.index ?? 0),
     match: match[0],
   }));
@@ -66,10 +67,7 @@ for (const name of ['atomic_write_text_confined', 'remove_file_confined']) {
   const end = start >= 0 ? mainRs.indexOf('\nfn ', start + 1) : -1;
   if (start >= 0) {
     rawDeletes
-      .filter((item) => {
-        const index = mainRs.split(/\r?\n/).slice(0, item.line - 1).join('\n').length;
-        return end < 0 ? index >= start : index >= start && index < end;
-      })
+      .filter((item) => (end < 0 ? item.index >= start : item.index >= start && item.index < end))
       .forEach((item) => allowedDeleteLines.add(item.line));
   }
 }

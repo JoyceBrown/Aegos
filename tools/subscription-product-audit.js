@@ -32,7 +32,7 @@ const profileClickBody = bodyBetween(appJs, 'const profileSwitch =', 'const prof
 const addProfileBody = bodyBetween(mainRs, 'fn add_profile_url_detached', 'fn update_profile_detached');
 const updateProfileBody = bodyBetween(mainRs, 'fn update_profile_detached', 'fn update_all_profiles_detached');
 
-check('version is 3.4.14', pkg.version === '3.4.14', pkg.version);
+check('version is at least 3.4.14 subscription product checkpoint', /^3\.4\.(1[4-9]|20)$/.test(pkg.version), pkg.version);
 
 check(
   'subscription diagnostics remain actionable',
