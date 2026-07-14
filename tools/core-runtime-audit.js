@@ -115,10 +115,13 @@ check(
     coreRuntimeRs.includes('fn normalize_proxy_item') &&
     coreRuntimeRs.includes('pub fn select_proxy(&self, group: &str, proxy: &str, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn proxy_delay_with_client(') &&
+    coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
+    coreRuntimeRs.includes('pub fn classify_delay_http_failure(') &&
     mainRs.includes('.proxy_groups_snapshot(1200, &[AEGOS_OUTBOUND_IP_GROUP])') &&
     !mainRs.includes('.proxies_snapshot(1200)') &&
     !mainRs.includes('fn normalize_proxy_item') &&
-    mainRs.includes('.proxy_delay_with_client(client, name, test_url, timeout_ms)') &&
+    mainRs.includes('.proxy_delay_result_with_client(client, name, test_url, timeout_ms)') &&
+    !mainRs.includes('fn classify_delay_http_failure') &&
     mainRs.includes('.select_proxy(AEGOS_OUTBOUND_IP_GROUP, &proxy, 1500)') &&
     mainRs.includes('.select_proxy(group, proxy, 5000)') &&
     !mainRs.includes('controller_request(controller_port, secret, "GET", "/proxies"') &&

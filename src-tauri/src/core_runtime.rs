@@ -88,6 +88,28 @@ pub struct CoreControllerHttpFailure {
     pub message: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CoreDelayProbeResult {
+    pub delay: i64,
+    pub failure_reason: String,
+}
+
+impl CoreDelayProbeResult {
+    fn ok(delay: i64) -> Self {
+        Self {
+            delay,
+            failure_reason: String::new(),
+        }
+    }
+
+    fn failed(reason: &str) -> Self {
+        Self {
+            delay: -1,
+            failure_reason: reason.to_string(),
+        }
+    }
+}
+
 impl CoreController {
     pub fn new(controller_port: u16, secret: impl Into<String>) -> Self {
         Self {
@@ -263,6 +285,27 @@ impl CoreController {
             })
     }
 
+    pub fn proxy_delay_result_with_client(
+        &self,
+        client: &Client,
+        name: &str,
+        test_url: &str,
+        timeout_ms: u64,
+    ) -> CoreDelayProbeResult {
+        let data = match self.proxy_delay_with_client(client, name, test_url, timeout_ms) {
+            Ok(data) => data,
+            Err(err) => {
+                let reason = if let Some(status) = err.status {
+                    classify_delay_http_failure(status, &err.body)
+                } else {
+                    classify_delay_failure_message(&err.message)
+                };
+                return CoreDelayProbeResult::failed(reason);
+            }
+        };
+        normalize_delay_probe_response(&data)
+    }
+
     pub fn connections_snapshot(&self, timeout_ms: u64) -> Result<JsonValue, String> {
         self.request("GET", "/connections", None, timeout_ms)
             .map(|data| {
@@ -314,6 +357,99 @@ impl CoreController {
         self.request("DELETE", "/connections", None, timeout_ms)?;
         Ok(())
     }
+}
+
+pub fn classify_delay_http_failure(status: u16, body: &str) -> &'static str {
+    let body_class = classify_delay_failure_message(body);
+    if body_class != "unknown" && body_class != "network" {
+        return body_class;
+    }
+    match status {
+        401 | 403 => "auth",
+        404 => "node-not-found",
+        408 | 504 => "timeout",
+        500 | 502 | 503 => "controller-delay-error",
+        _ => "network",
+    }
+}
+
+fn classify_delay_failure_message(reason: &str) -> &'static str {
+    let text = reason.trim().to_ascii_lowercase();
+    if text.is_empty() {
+        "unknown"
+    } else if text.contains("timeout")
+        || text.contains("timed out")
+        || text.contains("deadline")
+        || text.contains("i/o timeout")
+    {
+        "timeout"
+    } else if text.contains("fake-ip")
+        || text.contains("198.18.")
+        || text.contains("198.19.")
+        || text.contains("metadata")
+    {
+        "dns-fake-ip"
+    } else if text.contains("dns")
+        || text.contains("lookup")
+        || text.contains("no such host")
+        || text.contains("resolve")
+    {
+        "dns"
+    } else if text.contains("tls") || text.contains("certificate") || text.contains("x509") {
+        "tls"
+    } else if text.contains("unauthorized")
+        || text.contains("forbidden")
+        || text.contains("authentication")
+        || text.contains("permission denied")
+        || text.contains("401")
+        || text.contains("403")
+    {
+        "auth"
+    } else if text.contains("unsupported proxy type")
+        || text.contains("unsupported protocol")
+        || text.contains("not supported")
+    {
+        "unsupported-protocol"
+    } else if text.contains("node not found") || text.contains("not found") || text.contains("404")
+    {
+        "node-not-found"
+    } else if text.contains("503") || text.contains("504") {
+        "controller-delay-error"
+    } else if text.contains("controller")
+        || text.contains("/proxies")
+        || text.contains("/configs")
+        || text.contains("127.0.0.1")
+        || text.contains("connection refused")
+    {
+        "controller-unavailable"
+    } else if text.contains("delay test")
+        || text.contains("test url")
+        || text.contains("generate delay")
+        || text.contains("an error occurred")
+    {
+        "probe-failed"
+    } else if text.contains("network") || text.contains("connect") || text.contains("proxy") {
+        "network"
+    } else {
+        "unknown"
+    }
+}
+
+fn normalize_delay_probe_response(data: &JsonValue) -> CoreDelayProbeResult {
+    let delay = data
+        .get("delay")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(-1);
+    if delay >= 0 {
+        return CoreDelayProbeResult::ok(delay);
+    }
+    let reason = data
+        .get("message")
+        .or_else(|| data.get("error"))
+        .and_then(|value| value.as_str())
+        .map(classify_delay_failure_message)
+        .unwrap_or("timeout");
+    CoreDelayProbeResult::failed(reason)
 }
 
 fn is_controller_proxy_group(item: &JsonValue) -> bool {
@@ -676,6 +812,24 @@ mod tests {
         assert!(is_controller_proxy_group(&json!({ "type": "Selector" })));
         assert!(is_controller_proxy_group(&json!({ "type": "URLTest" })));
         assert!(!is_controller_proxy_group(&json!({ "type": "ss" })));
+    }
+
+    #[test]
+    fn controller_delay_failures_are_classified_inside_runtime_boundary() {
+        assert_eq!(
+            classify_delay_http_failure(503, ""),
+            "controller-delay-error"
+        );
+        assert_eq!(classify_delay_http_failure(404, ""), "node-not-found");
+        assert_eq!(classify_delay_http_failure(503, "lookup failed"), "dns");
+        assert_eq!(
+            normalize_delay_probe_response(&json!({ "delay": 78 })),
+            CoreDelayProbeResult::ok(78)
+        );
+        assert_eq!(
+            normalize_delay_probe_response(&json!({ "message": "tls handshake failed" })),
+            CoreDelayProbeResult::failed("tls")
+        );
     }
 
     #[test]

@@ -249,20 +249,6 @@ fn classify_failure_reason(reason: &str) -> &'static str {
     }
 }
 
-fn classify_delay_http_failure(status: u16, body: &str) -> &'static str {
-    let body_class = classify_failure_reason(body);
-    if body_class != "unknown" && body_class != "network" {
-        return body_class;
-    }
-    match status {
-        401 | 403 => "auth",
-        404 => "node-not-found",
-        408 | 504 => "timeout",
-        500 | 502 | 503 => "controller-delay-error",
-        _ => "network",
-    }
-}
-
 fn classified_error(context: &str, reason: impl AsRef<str>) -> String {
     let reason = reason.as_ref();
     format!(
@@ -1885,31 +1871,11 @@ fn test_proxy_delay_request(
     timeout_ms: u64,
 ) -> DelayTestResult {
     let controller = core_runtime::CoreController::new(controller_port, secret);
-    let data = match controller.proxy_delay_with_client(client, name, test_url, timeout_ms) {
-        Ok(data) => data,
-        Err(err) => {
-            let reason = if let Some(status) = err.status {
-                classify_delay_http_failure(status, &err.body)
-            } else {
-                classify_failure_reason(&err.message)
-            };
-            return DelayTestResult::failed(reason);
-        }
-    };
-    let delay = data
-        .get("delay")
-        .and_then(|value| value.as_i64())
-        .unwrap_or(-1);
-    if delay >= 0 {
-        DelayTestResult::ok(delay)
+    let result = controller.proxy_delay_result_with_client(client, name, test_url, timeout_ms);
+    if result.delay >= 0 {
+        DelayTestResult::ok(result.delay)
     } else {
-        let reason = data
-            .get("message")
-            .or_else(|| data.get("error"))
-            .and_then(|value| value.as_str())
-            .map(classify_failure_reason)
-            .unwrap_or("timeout");
-        DelayTestResult::failed(reason)
+        DelayTestResult::failed(&result.failure_reason)
     }
 }
 
@@ -5411,12 +5377,6 @@ rules:
         );
         assert!(classified_error("Node switch", "connection refused")
             .contains("Node switch failed [controller-unavailable]"));
-        assert_eq!(
-            classify_delay_http_failure(503, ""),
-            "controller-delay-error"
-        );
-        assert_eq!(classify_delay_http_failure(404, ""), "node-not-found");
-        assert_eq!(classify_delay_http_failure(503, "lookup failed"), "dns");
     }
 
     #[test]

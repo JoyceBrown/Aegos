@@ -209,10 +209,13 @@ check(
     coreRuntimeRs.includes('fn normalize_proxy_item') &&
     coreRuntimeRs.includes('pub fn select_proxy(&self, group: &str, proxy: &str, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn proxy_delay_with_client(') &&
+    coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
+    coreRuntimeRs.includes('pub fn classify_delay_http_failure(') &&
     mainRs.includes('.proxy_groups_snapshot(1200, &[AEGOS_OUTBOUND_IP_GROUP])') &&
     !mainRs.includes('.proxies_snapshot(1200)') &&
     !mainRs.includes('fn normalize_proxy_item') &&
-    mainRs.includes('.proxy_delay_with_client(client, name, test_url, timeout_ms)') &&
+    mainRs.includes('.proxy_delay_result_with_client(client, name, test_url, timeout_ms)') &&
+    !mainRs.includes('fn classify_delay_http_failure') &&
     mainRs.includes('.select_proxy(AEGOS_OUTBOUND_IP_GROUP, &proxy, 1500)') &&
     mainRs.includes('.select_proxy(group, proxy, 5000)') &&
     !mainRs.includes('controller_request(controller_port, secret, "GET", "/proxies"') &&
@@ -241,7 +244,7 @@ check('node-level diagnostics are linked from failed node tests', mainRs.include
 check('soak smoke covers failed node diagnostics', soakSmoke.includes("command === 'node_diagnostics'") && soakSmoke.includes('failed single node test did not capture node diagnostics') && soakSmoke.includes("command === 'test_single_proxy_delay'"), 'soak node diagnostics coverage');
 const speedPollMs = Number(appJs.match(/const speedTestPollMs = (\d+);/)?.[1] || 0);
 check('speed tests stream completed nodes quickly', mainRs.includes('mpsc::channel') && mainRs.includes('speed_test_phases') && mainRs.includes('Arc::new(client)') && mainRs.includes('speed.recommended = speed_recommendation') && speedPollMs > 0 && speedPollMs <= 300, `incremental speed test results; poll=${speedPollMs}ms`);
-check('failed speed tests show structured reasons', mainRs.includes('last_failure_reason') && mainRs.includes('lastFailureReason') && mainRs.includes('DelayTestResult') && mainRs.includes('fn classify_delay_http_failure') && mainRs.includes('controller-delay-error') && appJs.includes('function speedFailureReasonLabel') && appJs.includes('function nodeSpeedNoteInfo') && appJs.includes('className: \'node-note note-bad\'') && indexHtml.includes('<span>状态</span>') && speedAudit.includes('failed speed tests keep a visible structured reason'), 'timeout/DNS/TLS/auth labels');
+check('failed speed tests show structured reasons', mainRs.includes('last_failure_reason') && mainRs.includes('lastFailureReason') && mainRs.includes('DelayTestResult') && coreRuntimeRs.includes('pub fn classify_delay_http_failure') && coreRuntimeRs.includes('controller-delay-error') && appJs.includes('function speedFailureReasonLabel') && appJs.includes('function nodeSpeedNoteInfo') && appJs.includes('className: \'node-note note-bad\'') && indexHtml.includes('<span>状态</span>') && speedAudit.includes('failed speed tests keep a visible structured reason'), 'timeout/DNS/TLS/auth labels');
 check('speed test preflight blocks unsafe targets before batch probing', mainRs.includes('fn speed_test_preflight') && mainRs.includes('speed_test_preflight(&targets)') && mainRs.includes('speed_test_preflight_blocks_fake_ip_targets') && speedAudit.includes('speed preflight fails fast on unsafe targets'), 'fake-ip/metadata speed preflight');
 check('speed runtime binds outbound to physical adapter when virtual TUN exists', mainRs.includes('fn detect_windows_primary_interface_name') && coreRuntimeRs.includes('fn apply_interface_binding') && coreRuntimeRs.includes('"interface-name"') && mainRs.includes('core_runtime::render_runtime_profile_yaml') && mainRs.includes('flclash|clash|mihomo|aegos|tun|tap|wintun') && coreRuntimeRs.includes('runtime_interface_binding_sets_mihomo_interface_name') && !mainRs.includes('fn apply_runtime_interface_binding_name') && backendAudit.includes('runtime outbound interface avoids nested virtual adapter routing') && speedAudit.includes('runtime outbound avoids FlClash virtual adapter route nesting'), 'avoid nested FlClash/Wintun/TUN routing');
 check('speed test polling streams shared results to home and nodes', appJs.includes('async function refreshVisibleNodesForSpeed') && appJs.includes('function applySpeedStatusToNodes') && appJs.includes("target: 'all'") && appJs.includes('applySpeedStatusToNodes(status)') && appJs.includes('await refreshVisibleNodesForSpeed(true)') && interactionSmoke.includes('node page did not receive quick home speed results') && interactionSmoke.includes('home page did not receive node batch speed results'), 'shared home/nodes speed refresh');

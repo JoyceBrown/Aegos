@@ -138,10 +138,11 @@ check(
   mainRs.includes('last_failure_reason') &&
     mainRs.includes('lastFailureReason') &&
     mainRs.includes('DelayTestResult') &&
-    mainRs.includes('classify_failure_reason(&err.message)') &&
-    mainRs.includes('.map(classify_failure_reason)') &&
-    mainRs.includes('fn classify_delay_http_failure') &&
-    mainRs.includes('controller-delay-error') &&
+    coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
+    coreRuntimeRs.includes('pub fn classify_delay_http_failure') &&
+    coreRuntimeRs.includes('controller-delay-error') &&
+    mainRs.includes('.proxy_delay_result_with_client(client, name, test_url, timeout_ms)') &&
+    !mainRs.includes('fn classify_delay_http_failure') &&
     appJs.includes('function speedFailureReasonLabel') &&
     appJs.includes('function nodeSpeedNoteInfo') &&
     appJs.includes('speedFailureReasonLabel(failureReason)') &&
