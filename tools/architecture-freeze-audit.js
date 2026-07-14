@@ -26,6 +26,7 @@ const pkg = readJson('package.json');
 const tauri = readJson('src-tauri/tauri.conf.json');
 const capabilities = read('src-tauri/capabilities/default.json');
 const mainRs = read('src-tauri/src/main.rs');
+const coreRuntimeRs = read('src-tauri/src/core_runtime.rs');
 const appJs = read('src/app.js');
 const indexHtml = read('src/index.html');
 const stylesCss = read('src/styles.css');
@@ -80,7 +81,7 @@ check('sidebar navigation stays deferred and token guarded', ['pointerdown', 'sc
 check('connection state closure is the shared truth surface', ['fn connection_closure', '"coreRunning"', '"trafficTakeover"', '"systemProxyApplied"', '"currentNode"', '"outboundIpKnown"'].every((token) => mainRs.includes(token)), 'connection_closure');
 check('system proxy takeover is verified and recoverable', ['verify_system_proxy_points_to_aegos', 'capture_proxy_snapshot_before_takeover', 'write_windows_proxy_snapshot', 'repairSystemProxy'].every((token) => mainRs.includes(token) || appJs.includes(token)), 'system proxy transaction');
 check('disconnect protection firewall is wrapped and verifiable', ['build_speed_test_firewall_script', 'Invoke-AegosNetsh', 'Disconnect protection enable failed', 'cleanup_speed_firewall'].every((token) => mainRs.includes(token)), 'firewall wrapper');
-check('speed tests are measurement-only and use standby core path', ['fn start_standby', 'fn ensure_core_for_delay_test', 'Speed test starting mihomo in standby without traffic takeover'].every((token) => mainRs.includes(token)) && testNodesBody.includes("invoke('start_proxy_delay_test'") && !testNodesBody.includes("runBackgroundJob('changeProxy'") && !speedTestBody.includes('change_proxy') && interactionSmoke.includes('speed test triggered a proxy switch') && interactionSmoke.includes('batch speed test triggered a proxy switch'), 'standby speed test');
+check('speed tests are measurement-only and use standby core path', ['fn start_standby', 'fn ensure_core_for_delay_test', 'core_runtime::STANDBY_SPEED_START_MESSAGE'].every((token) => mainRs.includes(token)) && coreRuntimeRs.includes('pub const STANDBY_SPEED_START_MESSAGE') && testNodesBody.includes("invoke('start_proxy_delay_test'") && !testNodesBody.includes("runBackgroundJob('changeProxy'") && !speedTestBody.includes('change_proxy') && interactionSmoke.includes('speed test triggered a proxy switch') && interactionSmoke.includes('batch speed test triggered a proxy switch'), 'standby speed test');
 check('outbound IP lookup has current-node smart-mode routing', ['AEGOS_OUTBOUND_IP_GROUP', 'OUTBOUND_IP_RULE_DOMAINS', 'upsert_outbound_ip_group', 'sync_outbound_ip_group_selection'].every((token) => mainRs.includes(token)), 'outbound IP group');
 
 check('runtime config chain uses preflight, hot reload, digest, rollback', ['patch_config_with_settings', 'preflight_runtime_config', 'hot_reload_profile', 'runtime_config_digest', 'Profile hot reload failed; falling back to restart', 'Profile switch failed and rolled back'].every((token) => mainRs.includes(token)), 'profile config chain');

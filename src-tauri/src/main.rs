@@ -7430,16 +7430,13 @@ impl CoreManager {
             }
         }
         self.add_log(
-            format!(
-                "Profile hot reloaded via mihomo controller: {} digest {}{}",
-                profile.name,
-                core_runtime::digest_prefix(&result.digest),
+            core_runtime::hot_reload_success_message(
+                &profile.name,
+                &result.digest,
                 result
                     .version_probe
                     .get("version")
-                    .and_then(JsonValue::as_str)
-                    .map(|version| format!(", controller version {version}"))
-                    .unwrap_or_default()
+                    .and_then(JsonValue::as_str),
             ),
             "info",
         );
@@ -7470,7 +7467,7 @@ impl CoreManager {
                 self.runtime_profile_id = None;
                 self.runtime_config_digest = None;
                 self.traffic_takeover = false;
-                Some(format!("mihomo exited before ready: {status}"))
+                Some(core_runtime::exited_before_ready_message(&status))
             }
             Ok(None) => None,
             Err(err) => {
@@ -7478,7 +7475,7 @@ impl CoreManager {
                 self.runtime_profile_id = None;
                 self.runtime_config_digest = None;
                 self.traffic_takeover = false;
-                Some(format!("mihomo status check failed: {err}"))
+                Some(core_runtime::status_check_failed_message(&err))
             }
         }
     }
@@ -7589,10 +7586,7 @@ impl CoreManager {
 
     fn start_with_takeover(&mut self, enable_takeover: bool) -> Result<JsonValue, String> {
         if !self.core_path.exists() {
-            return Err(format!(
-                "mihomo core not found: {}",
-                self.core_path.display()
-            ));
+            return Err(core_runtime::core_missing_message(&self.core_path));
         }
         self.ensure_runtime_ports().map_err(|err| {
             self.start_failure_message(None, &format!("Port preparation failed: {err}"))
@@ -7623,10 +7617,7 @@ impl CoreManager {
             }
             let restore_system_proxy = self.settings.system_proxy;
             let restore_takeover = self.traffic_takeover && enable_takeover;
-            self.add_log(
-                "Runtime profile or controller drift detected; restarting mihomo",
-                "warn",
-            );
+            self.add_log(core_runtime::RUNTIME_DRIFT_RESTART_MESSAGE, "warn");
             self.stop()?;
             if restore_takeover {
                 self.restore_system_proxy_preference(restore_system_proxy);
@@ -7688,7 +7679,7 @@ impl CoreManager {
         self.process = Some(child);
         if let Err(err) = self.wait_for_controller() {
             let message = self.start_failure_message(Some(&profile), &err);
-            self.terminate_core_process("Stopping failed mihomo startup");
+            self.terminate_core_process(core_runtime::TERMINATE_FAILED_STARTUP_MESSAGE);
             return Err(message);
         }
         self.runtime_profile_id = Some(profile.id.clone());
@@ -7742,7 +7733,7 @@ impl CoreManager {
 
     fn stop(&mut self) -> Result<JsonValue, String> {
         let restore_result = self.set_system_proxy(false);
-        self.terminate_core_process("Stopping mihomo");
+        self.terminate_core_process(core_runtime::TERMINATE_STOP_MESSAGE);
         if let Err(err) = restore_result {
             return Err(format!(
                 "Core stopped, but Windows system proxy restore failed: {err}"
@@ -7760,7 +7751,7 @@ impl CoreManager {
                 );
             }
         }
-        self.terminate_core_process("Stopping mihomo for app exit");
+        self.terminate_core_process(core_runtime::TERMINATE_EXIT_MESSAGE);
     }
 
     fn wait_for_controller(&mut self) -> Result<(), String> {
@@ -7774,10 +7765,7 @@ impl CoreManager {
             }
             thread::sleep(Duration::from_millis(250));
         }
-        Err(
-            "mihomo controller did not become ready within 6 seconds; check core logs for details."
-                .to_string(),
-        )
+        Err(core_runtime::CONTROLLER_READY_TIMEOUT_MESSAGE.to_string())
     }
 
     fn traffic_snapshot(&self, timeout_ms: u64) -> Result<JsonValue, String> {
@@ -8430,10 +8418,7 @@ impl CoreManager {
             );
             self.start()?;
         } else {
-            self.add_log(
-                "Speed test starting mihomo in standby without traffic takeover",
-                "info",
-            );
+            self.add_log(core_runtime::STANDBY_SPEED_START_MESSAGE, "info");
             self.start_standby()?;
         }
         Ok(())

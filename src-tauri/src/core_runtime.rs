@@ -26,6 +26,15 @@ pub const RESOURCE_SUBDIR: &str = "core";
 pub const BINARY_NAME: &str = "mihomo.exe";
 pub const MISSING_RESOURCE_HINT: &str =
     "Core file is missing or unavailable. Restore resources/core/mihomo.exe and restart Aegos.";
+pub const TERMINATE_FAILED_STARTUP_MESSAGE: &str = "Stopping failed mihomo startup";
+pub const TERMINATE_STOP_MESSAGE: &str = "Stopping mihomo";
+pub const TERMINATE_EXIT_MESSAGE: &str = "Stopping mihomo for app exit";
+pub const CONTROLLER_READY_TIMEOUT_MESSAGE: &str =
+    "mihomo controller did not become ready within 6 seconds; check core logs for details.";
+pub const STANDBY_SPEED_START_MESSAGE: &str =
+    "Speed test starting mihomo in standby without traffic takeover";
+pub const RUNTIME_DRIFT_RESTART_MESSAGE: &str =
+    "Runtime profile or controller drift detected; restarting mihomo";
 pub const SUPPORTED_PROXY_TYPES: &[&str] = &[
     "direct",
     "reject",
@@ -169,6 +178,33 @@ pub fn resolve_core_path(resource_dir: &Path, current_dir: &Path) -> PathBuf {
     } else {
         development_core_path(current_dir)
     }
+}
+
+pub fn core_missing_message(core_path: &Path) -> String {
+    format!("mihomo core not found: {}", core_path.display())
+}
+
+pub fn exited_before_ready_message(status: &std::process::ExitStatus) -> String {
+    format!("mihomo exited before ready: {status}")
+}
+
+pub fn status_check_failed_message(err: &impl std::fmt::Display) -> String {
+    format!("mihomo status check failed: {err}")
+}
+
+pub fn hot_reload_success_message(
+    profile_name: &str,
+    digest: &str,
+    controller_version: Option<&str>,
+) -> String {
+    format!(
+        "Profile hot reloaded via mihomo controller: {} digest {}{}",
+        profile_name,
+        digest_prefix(digest),
+        controller_version
+            .map(|version| format!(", controller version {version}"))
+            .unwrap_or_default()
+    )
 }
 
 pub struct RuntimeConfigPreflightInput<'a> {
@@ -1159,6 +1195,33 @@ mod tests {
                 .join(BINARY_NAME)
         );
         assert!(MISSING_RESOURCE_HINT.contains("resources/core/mihomo.exe"));
+    }
+
+    #[test]
+    fn runtime_lifecycle_messages_are_owned_by_runtime_boundary() {
+        let core_path = PathBuf::from(r"C:\Program Files\Aegos\core\mihomo.exe");
+        assert_eq!(
+            core_missing_message(&core_path),
+            format!("mihomo core not found: {}", core_path.display())
+        );
+        assert_eq!(
+            status_check_failed_message(&"probe failed"),
+            "mihomo status check failed: probe failed"
+        );
+        assert_eq!(
+            hot_reload_success_message("Profile A", "abcdef1234567890", Some("v1")),
+            "Profile hot reloaded via mihomo controller: Profile A digest abcdef123456, controller version v1"
+        );
+        assert_eq!(
+            hot_reload_success_message("Profile A", "abcdef1234567890", None),
+            "Profile hot reloaded via mihomo controller: Profile A digest abcdef123456"
+        );
+        assert!(TERMINATE_FAILED_STARTUP_MESSAGE.contains("failed mihomo startup"));
+        assert!(TERMINATE_STOP_MESSAGE.contains("Stopping mihomo"));
+        assert!(TERMINATE_EXIT_MESSAGE.contains("app exit"));
+        assert!(CONTROLLER_READY_TIMEOUT_MESSAGE.contains("did not become ready"));
+        assert!(STANDBY_SPEED_START_MESSAGE.contains("standby without traffic takeover"));
+        assert!(RUNTIME_DRIFT_RESTART_MESSAGE.contains("drift detected"));
     }
 
     fn test_preflight_input<'a>() -> RuntimeConfigPreflightInput<'a> {

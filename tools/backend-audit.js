@@ -72,7 +72,9 @@ check(
   mainRs.includes('fn start_standby') &&
     mainRs.includes('fn ensure_core_for_delay_test') &&
     speedTestBody.includes('ensure_core_for_delay_test') &&
-    mainRs.includes('Speed test starting mihomo in standby without traffic takeover') &&
+    mainRs.includes('core_runtime::STANDBY_SPEED_START_MESSAGE') &&
+    coreRuntimeRs.includes('pub const STANDBY_SPEED_START_MESSAGE') &&
+    coreRuntimeRs.includes('Speed test starting mihomo in standby without traffic takeover') &&
     mainRs.includes('settings.tun_enabled = false') &&
     mainRs.includes('"trafficTakeover"') &&
     !speedTestBody.includes('change_proxy') &&
@@ -186,8 +188,11 @@ check(
     mainRs.includes('Core startup failed: {reason}') &&
     mainRs.includes('Config generation failed: {err}') &&
     mainRs.includes('Core process spawn failed: {err}') &&
-    mainRs.includes('mihomo controller did not become ready within 6 seconds') &&
-    mainRs.includes('Stopping failed mihomo startup'),
+    mainRs.includes('core_runtime::CONTROLLER_READY_TIMEOUT_MESSAGE') &&
+    mainRs.includes('core_runtime::TERMINATE_FAILED_STARTUP_MESSAGE') &&
+    coreRuntimeRs.includes('pub const CONTROLLER_READY_TIMEOUT_MESSAGE') &&
+    coreRuntimeRs.includes('pub const TERMINATE_FAILED_STARTUP_MESSAGE') &&
+    coreRuntimeRs.includes('runtime_lifecycle_messages_are_owned_by_runtime_boundary'),
   'startup failure context'
 );
 
@@ -372,7 +377,14 @@ check(
 check(
   'core lifecycle cleans failed starts and preserves proxy intent on restarts',
   mainRs.includes('fn terminate_core_process') &&
-    mainRs.includes('Stopping failed mihomo startup') &&
+    mainRs.includes('core_runtime::TERMINATE_FAILED_STARTUP_MESSAGE') &&
+    mainRs.includes('core_runtime::TERMINATE_STOP_MESSAGE') &&
+    mainRs.includes('core_runtime::TERMINATE_EXIT_MESSAGE') &&
+    mainRs.includes('core_runtime::RUNTIME_DRIFT_RESTART_MESSAGE') &&
+    coreRuntimeRs.includes('pub const TERMINATE_FAILED_STARTUP_MESSAGE') &&
+    coreRuntimeRs.includes('pub const TERMINATE_STOP_MESSAGE') &&
+    coreRuntimeRs.includes('pub const TERMINATE_EXIT_MESSAGE') &&
+    coreRuntimeRs.includes('pub const RUNTIME_DRIFT_RESTART_MESSAGE') &&
     mainRs.includes('fn restart_core_preserving_proxy') &&
     mainRs.includes('fn restore_system_proxy_preference') &&
     mainRs.includes('self.restart_core_preserving_proxy(350)?') &&

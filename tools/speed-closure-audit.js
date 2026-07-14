@@ -87,7 +87,9 @@ check(
 check(
   'standby core preparation does not enable traffic takeover when disconnected',
   ensureBody.includes('start_standby()?') &&
-    ensureBody.includes('Speed test starting mihomo in standby without traffic takeover') &&
+    ensureBody.includes('core_runtime::STANDBY_SPEED_START_MESSAGE') &&
+    coreRuntimeRs.includes('pub const STANDBY_SPEED_START_MESSAGE') &&
+    coreRuntimeRs.includes('Speed test starting mihomo in standby without traffic takeover') &&
     mainRs.includes('settings.tun_enabled = false') &&
     mainRs.includes('apply_takeover_after_core_ready(enable_takeover)') &&
     mainRs.includes('trafficTakeover'),
