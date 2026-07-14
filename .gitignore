@@ -7,3 +7,4 @@ ui-smoke/
 *.tmp
 *.bak
 npm-debug.log*
+resources/core/archive/*.exe

@@ -728,8 +728,11 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 20));
     if (!document.querySelector('[data-profile-row="direct"]')?.classList.contains('active')) throw new Error('profile row did not become active optimistically');
     await new Promise((resolve) => setTimeout(resolve, 420));
-    window.prompt = () => 'Renamed Smoke Sub';
     await click('[data-profile-rename="url-test"]');
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    if (document.querySelector('#appDialogOverlay')?.classList.contains('hidden')) throw new Error('profile rename did not open app dialog');
+    document.querySelector('#appDialogInput').value = 'Renamed Smoke Sub';
+    document.querySelector('#appDialogForm').dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
     await new Promise((resolve) => setTimeout(resolve, 420));
     if (!document.querySelector('[data-profile-row="url-test"]')?.textContent.includes('Renamed Smoke Sub')) throw new Error('profile rename did not update row');
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'renameProfile')) throw new Error('profile rename did not use background job');

@@ -48,6 +48,11 @@ const duplicateRendererPatches = [
   ...locations(appJs, /\/\*\s*function renderNodeRow[\s\S]*?\*\//g, 'src/app.js'),
 ];
 const directBusyWrites = locations(appJs, /button\.dataset\.busy\s*=\s*['"`]true['"`]/g, 'src/app.js');
+const nativeBrowserDialogs = [
+  ...locations(appJs, /\b(?:window\.)?prompt\s*\(/g, 'src/app.js'),
+  ...locations(appJs, /\b(?:window\.)?confirm\s*\(/g, 'src/app.js'),
+  ...locations(appJs, /\b(?:window\.)?alert\s*\(/g, 'src/app.js'),
+];
 const forbiddenFrontendInvokes = locations(
   appJs,
   /invoke\(['"`](start_core|stop_core|restart_core|set_system_proxy|update_setting|set_mode|change_proxy|recover_network)['"`]/g,
@@ -102,6 +107,12 @@ const checks = [
     ok: directBusyWrites.length === 0,
     count: directBusyWrites.length,
     items: directBusyWrites,
+  },
+  {
+    name: 'native browser dialogs are replaced by app dialogs',
+    ok: nativeBrowserDialogs.length === 0,
+    count: nativeBrowserDialogs.length,
+    items: nativeBrowserDialogs,
   },
   {
     name: 'frontend does not call legacy core mutation commands directly',

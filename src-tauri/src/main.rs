@@ -1,5 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod core_runtime;
+mod config_pipeline;
+mod profile_compiler;
+
 use base64::{engine::general_purpose, Engine as _};
 use rand::random;
 use reqwest::blocking::Client;
@@ -13,7 +17,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::{IpAddr, TcpListener, UdpSocket},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command},
     sync::{mpsc, Arc, Mutex, OnceLock},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -24,7 +28,6 @@ use tauri::{AppHandle, Manager, State, Window, WindowEvent};
 use std::os::windows::process::CommandExt;
 
 const APP_NAME: &str = "Aegos";
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 const AEGOS_DEFAULT_MIXED_PORT: u16 = 7891;
 const AEGOS_DEFAULT_CONTROLLER_PORT: u16 = 19091;
 const RESERVED_MIXED_PORTS: &[u16] = &[7890];
@@ -169,8 +172,15 @@ fn classify_failure_reason(reason: &str) -> &'static str {
         || text.contains("kill switch")
     {
         "protection-blocked"
-    } else if text.contains("blocked") || text.contains("reject") || text.contains("denied by rule") {
+    } else if text.contains("blocked") || text.contains("reject") || text.contains("denied by rule")
+    {
         "blocked"
+    } else if (text.contains("connect") || text.contains("dial"))
+        && (text.contains("no route to host")
+            || text.contains("network unreachable")
+            || text.contains("host unreachable"))
+    {
+        "node-connect"
     } else if text.contains("no route to host")
         || text.contains("network unreachable")
         || text.contains("host unreachable")
@@ -205,7 +215,7 @@ fn classify_failure_reason(reason: &str) -> &'static str {
     {
         "unsupported-protocol"
     } else if text.contains("port")
-        && (text.contains("in use") || text.contains("conflict") || text.contains("占用"))
+        && (text.contains("in use") || text.contains("conflict") || text.contains("鍗犵敤"))
     {
         "port-conflict"
     } else if text.contains("node not found") || text.contains("not found") || text.contains("404")
@@ -223,7 +233,7 @@ fn classify_failure_reason(reason: &str) -> &'static str {
     } else if text.contains("yaml")
         || text.contains("config")
         || text.contains("preflight")
-        || text.contains("配置")
+        || text.contains("閰嶇疆")
     {
         "config"
     } else if text.contains("delay test")
@@ -312,12 +322,6 @@ fn looks_like_clash_yaml(text: &str) -> bool {
             || line.starts_with("port:")
             || line.starts_with("socks-port:")
     })
-}
-
-struct RenderedProfile {
-    yaml: String,
-    digest: String,
-    report: JsonValue,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -587,15 +591,15 @@ fn export_logs_from_state(
     } else {
         header
             + &items
-            .iter()
-            .map(|entry| {
-                let line = sanitize_sensitive_text(&entry.line)
-                    .replace('\r', " ")
-                    .replace('\n', " ");
-                format!("{} [{}:{}] {}", entry.at, entry.level, entry.category, line)
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+                .iter()
+                .map(|entry| {
+                    let line = sanitize_sensitive_text(&entry.line)
+                        .replace('\r', " ")
+                        .replace('\n', " ");
+                    format!("{} [{}:{}] {}", entry.at, entry.level, entry.category, line)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
             + "\n"
     };
     atomic_write_text_confined(&path, &export_dir, &content)?;
@@ -684,13 +688,19 @@ fn diagnostics_report_text(report: &JsonValue) -> String {
     lines.push(String::new());
     lines.push("Checks:".to_string());
     for item in checks {
-        let name = item.get("name").and_then(JsonValue::as_str).unwrap_or("Check");
+        let name = item
+            .get("name")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("Check");
         let severity = item
             .get("severity")
             .and_then(JsonValue::as_str)
             .unwrap_or("info");
         let ok = item.get("ok").and_then(JsonValue::as_bool).unwrap_or(false);
-        let detail = item.get("detail").and_then(JsonValue::as_str).unwrap_or("-");
+        let detail = item
+            .get("detail")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("-");
         let hint = item.get("hint").and_then(JsonValue::as_str).unwrap_or("");
         lines.push(format!(
             "[{}] {}: {}",
@@ -728,45 +738,6 @@ fn export_diagnostics_report_from_state(
     }))
 }
 
-fn controller_request(
-    controller_port: u16,
-    secret: &str,
-    method: &str,
-    endpoint: &str,
-    body: Option<JsonValue>,
-    timeout_ms: u64,
-) -> Result<JsonValue, String> {
-    let client = Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_millis(timeout_ms))
-        .build()
-        .map_err(|err| err.to_string())?;
-    let url = format!("http://127.0.0.1:{controller_port}{endpoint}");
-    let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|err| err.to_string())?;
-    let mut req = client.request(method, url).bearer_auth(secret);
-    if let Some(body) = body {
-        req = req.json(&body);
-    }
-    let res = req.send().map_err(|err| err.to_string())?;
-    let status = res.status();
-    let text = res.text().map_err(|err| err.to_string())?;
-    if !status.is_success() {
-        return Err(if text.trim().is_empty() {
-            format!("Controller HTTP {status}")
-        } else {
-            format!("Controller HTTP {status}: {}", text.trim())
-        });
-    }
-    if text.trim().is_empty() {
-        return Ok(json!({}));
-    }
-    serde_json::from_str(&text).or_else(|_| {
-        text.lines()
-            .find_map(|line| serde_json::from_str::<JsonValue>(line).ok())
-            .ok_or_else(|| "Controller response is not JSON".to_string())
-    })
-}
-
 fn controller_proxy_groups_snapshot(
     running: bool,
     controller_port: u16,
@@ -775,7 +746,12 @@ fn controller_proxy_groups_snapshot(
     if !running {
         return None;
     }
-    let data = controller_request(controller_port, secret, "GET", "/proxies", None, 1200).ok()?;
+    let data = core_runtime::CoreController {
+        controller_port,
+        secret: secret.to_string(),
+    }
+    .proxies_snapshot(1200)
+    .ok()?;
     let proxies = data.get("proxies").and_then(|value| value.as_object())?;
     let groups: Vec<JsonValue> = proxies
         .values()
@@ -826,8 +802,13 @@ fn profile_proxy_groups_for_profile_snapshot(
     use_selected_map: bool,
 ) -> JsonValue {
     let raw = fs::read_to_string(&profile.path).unwrap_or_default();
-    let config: YamlValue =
+    let config_value: YamlValue =
         serde_yaml::from_str(&raw).unwrap_or_else(|_| YamlValue::Mapping(Mapping::new()));
+    let mut config = match config_value {
+        YamlValue::Mapping(map) => map,
+        _ => Mapping::new(),
+    };
+    normalize_profile_groups_for_display(&mut config);
     let proxies = config
         .get(yaml_key("proxies"))
         .and_then(|value| value.as_sequence())
@@ -939,6 +920,175 @@ fn profile_proxy_groups_for_profile_snapshot(
         .cloned()
         .unwrap_or(json!(""));
     json!([{ "name": "GLOBAL", "type": "Selector", "now": now, "items": items }])
+}
+
+fn snapshot_proxy_item_name(item: &JsonValue) -> Option<&str> {
+    item.get("realProxyName")
+        .or_else(|| item.get("name"))
+        .and_then(JsonValue::as_str)
+        .filter(|name| !name.trim().is_empty())
+}
+
+fn snapshot_group_names(groups: &[JsonValue]) -> HashSet<String> {
+    groups
+        .iter()
+        .filter_map(|group| group.get("name").and_then(JsonValue::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
+fn is_builtin_snapshot_proxy_item(item: &JsonValue) -> bool {
+    let name = item
+        .get("name")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    let item_type = item
+        .get("type")
+        .or_else(|| item.get("protocol"))
+        .and_then(JsonValue::as_str)
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    item.get("builtin")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false)
+        || matches!(
+            name.as_str(),
+            "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS" | "COMPATIBLE"
+        )
+        || matches!(
+            item_type.as_str(),
+            "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS" | "COMPATIBLE"
+        )
+}
+
+fn collect_real_snapshot_items(
+    groups: &[JsonValue],
+    group: &JsonValue,
+    group_names: &HashSet<String>,
+    seen_groups: &mut HashSet<String>,
+    seen_nodes: &mut HashSet<String>,
+    out: &mut Vec<JsonValue>,
+) {
+    let group_name = group
+        .get("name")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("")
+        .to_string();
+    if !group_name.is_empty() && !seen_groups.insert(group_name) {
+        return;
+    }
+    let Some(items) = group.get("items").and_then(JsonValue::as_array) else {
+        return;
+    };
+    for item in items {
+        let name = snapshot_proxy_item_name(item).unwrap_or("");
+        if group_names.contains(name) {
+            if let Some(next_group) = groups
+                .iter()
+                .find(|group| group.get("name").and_then(JsonValue::as_str) == Some(name))
+            {
+                collect_real_snapshot_items(
+                    groups,
+                    next_group,
+                    group_names,
+                    seen_groups,
+                    seen_nodes,
+                    out,
+                );
+            }
+            continue;
+        }
+        if name.is_empty() || is_builtin_snapshot_proxy_item(item) {
+            continue;
+        }
+        if seen_nodes.insert(name.to_string()) {
+            out.push(item.clone());
+        }
+    }
+}
+
+fn all_real_snapshot_items(groups: &[JsonValue]) -> Vec<JsonValue> {
+    let group_names = snapshot_group_names(groups);
+    let mut seen_groups = HashSet::new();
+    let mut seen_nodes = HashSet::new();
+    let mut out = Vec::new();
+    for group in groups {
+        collect_real_snapshot_items(
+            groups,
+            group,
+            &group_names,
+            &mut seen_groups,
+            &mut seen_nodes,
+            &mut out,
+        );
+    }
+    out
+}
+
+fn normalize_proxy_groups_snapshot_defaults(groups: &mut JsonValue) {
+    let Some(group_items) = groups.as_array_mut() else {
+        return;
+    };
+    if group_items.is_empty() {
+        return;
+    }
+    let all_items = all_real_snapshot_items(group_items);
+    if all_items.is_empty() {
+        return;
+    }
+    let first_name = all_items
+        .first()
+        .and_then(snapshot_proxy_item_name)
+        .unwrap_or("")
+        .to_string();
+    let has_proxies = group_items.iter().any(|group| {
+        group
+            .get("name")
+            .and_then(JsonValue::as_str)
+            .map(is_proxies_group_name)
+            .unwrap_or(false)
+    });
+    if !has_proxies {
+        group_items.insert(
+            0,
+            json!({
+                "name": "Proxies",
+                "type": "Selector",
+                "now": first_name,
+                "items": all_items.clone()
+            }),
+        );
+    }
+    let has_auto = group_items.iter().any(|group| {
+        group
+            .get("name")
+            .and_then(JsonValue::as_str)
+            .map(is_aegos_auto_select_group_name)
+            .unwrap_or(false)
+    });
+    if !has_auto && all_items.len() >= 2 {
+        let insert_index = group_items
+            .iter()
+            .position(|group| {
+                group
+                    .get("name")
+                    .and_then(JsonValue::as_str)
+                    .map(is_proxies_group_name)
+                    .unwrap_or(false)
+            })
+            .map(|index| index.saturating_add(1))
+            .unwrap_or(0);
+        group_items.insert(
+            insert_index,
+            json!({
+                "name": "鑷姩閫夋嫨",
+                "type": "URLTest",
+                "now": first_name,
+                "items": all_items
+            }),
+        );
+    }
 }
 
 fn annotate_manual_groups_with_names(groups: &mut JsonValue, names: &HashSet<String>) {
@@ -1137,6 +1287,7 @@ fn assemble_proxy_groups_snapshot(
                 })
                 .unwrap_or_else(|| json!([]))
         });
+    normalize_proxy_groups_snapshot_defaults(&mut groups);
     apply_group_resolution_with_selected_map(&mut groups, &selected_map);
     apply_speed_test_delays_from_state(&mut groups, &speed);
     annotate_manual_groups_with_names(&mut groups, &manual_names);
@@ -1160,6 +1311,7 @@ struct CoreManager {
     home_dir: PathBuf,
     profile_dir: PathBuf,
     core_path: PathBuf,
+    core_sha256: String,
     settings_path: PathBuf,
     proxy_snapshot_path: PathBuf,
     settings: Settings,
@@ -1227,6 +1379,26 @@ struct RoutingDraftInput {
     option: Option<String>,
     label: Option<String>,
     source: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct RoutingGroupEditInput {
+    action: String,
+    name: Option<String>,
+    new_name: Option<String>,
+    group_type: Option<String>,
+    items: Option<Vec<String>>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct RoutingRuleEditInput {
+    action: String,
+    raw: Option<String>,
+    kind: Option<String>,
+    condition: Option<String>,
+    target: Option<String>,
+    option: Option<String>,
+    label: Option<String>,
 }
 
 fn now_iso() -> String {
@@ -1331,13 +1503,185 @@ fn yaml_str(value: impl Into<String>) -> YamlValue {
     YamlValue::String(value.into())
 }
 
-fn yaml_string_sequence(values: &[&str]) -> YamlValue {
-    YamlValue::Sequence(
-        values
+fn yaml_string_values(values: &[String]) -> YamlValue {
+    YamlValue::Sequence(values.iter().map(|value| yaml_str(value)).collect())
+}
+
+fn select_proxy_group(name: &str, values: &[String]) -> YamlValue {
+    let mut group = Mapping::new();
+    set_yaml(&mut group, "name", yaml_str(name));
+    set_yaml(&mut group, "type", yaml_str("select"));
+    set_yaml(&mut group, "proxies", yaml_string_values(values));
+    YamlValue::Mapping(group)
+}
+
+fn url_test_proxy_group(name: &str, values: &[String]) -> YamlValue {
+    let mut group = Mapping::new();
+    set_yaml(&mut group, "name", yaml_str(name));
+    set_yaml(&mut group, "type", yaml_str("url-test"));
+    set_yaml(
+        &mut group,
+        "url",
+        yaml_str("https://www.gstatic.com/generate_204"),
+    );
+    set_yaml(&mut group, "interval", yaml_num(300));
+    set_yaml(&mut group, "proxies", yaml_string_values(values));
+    YamlValue::Mapping(group)
+}
+
+fn is_internal_proxy_group_name(name: &str) -> bool {
+    name == AEGOS_OUTBOUND_IP_GROUP || name.eq_ignore_ascii_case("GLOBAL")
+}
+
+fn is_proxies_group_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("Proxies") || name.eq_ignore_ascii_case("Proxy")
+}
+
+fn is_aegos_auto_select_group_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("Aegos Auto Select")
+        || name.eq_ignore_ascii_case("Auto Select")
+        || name == "鑷姩閫夋嫨"
+}
+
+fn synthesize_default_proxy_groups_if_needed(config: &mut Mapping, proxy_names: &[String]) {
+    if proxy_names.is_empty() {
+        return;
+    }
+    let existing_groups = config
+        .get(yaml_key("proxy-groups"))
+        .and_then(|value| value.as_sequence())
+        .cloned()
+        .unwrap_or_default();
+    let visible_count = existing_groups
+        .iter()
+        .filter(|group| {
+            yaml_mapping_name(group)
+                .map(|name| !is_internal_proxy_group_name(name))
+                .unwrap_or(false)
+        })
+        .count();
+    if visible_count > 1 {
+        return;
+    }
+    let mut all_with_direct = proxy_names.to_vec();
+    all_with_direct.push("DIRECT".to_string());
+    set_yaml(
+        config,
+        "proxy-groups",
+        YamlValue::Sequence(vec![
+            select_proxy_group("GLOBAL", &all_with_direct),
+            select_proxy_group("Proxies", &all_with_direct),
+        ]),
+    );
+}
+
+fn ensure_proxies_group_contains_all_nodes(config: &mut Mapping, proxy_names: &[String]) {
+    if proxy_names.is_empty() {
+        return;
+    }
+    let mut all_with_direct = proxy_names.to_vec();
+    all_with_direct.push("DIRECT".to_string());
+    let groups = config
+        .entry(yaml_key("proxy-groups"))
+        .or_insert_with(|| YamlValue::Sequence(Vec::new()));
+    if !matches!(groups, YamlValue::Sequence(_)) {
+        *groups = YamlValue::Sequence(Vec::new());
+    }
+    let Some(groups) = groups.as_sequence_mut() else {
+        return;
+    };
+    let Some(index) = groups.iter().position(|group| {
+        yaml_mapping_name(group)
+            .map(is_proxies_group_name)
+            .unwrap_or(false)
+    }) else {
+        let insert_index = groups
             .iter()
-            .map(|value| YamlValue::String((*value).to_string()))
-            .collect(),
-    )
+            .position(|group| {
+                yaml_mapping_name(group)
+                    .map(is_internal_proxy_group_name)
+                    .unwrap_or(false)
+            })
+            .map(|index| index.saturating_add(1))
+            .unwrap_or(0);
+        groups.insert(
+            insert_index,
+            select_proxy_group("Proxies", &all_with_direct),
+        );
+        return;
+    };
+    let Some(map) = groups[index].as_mapping_mut() else {
+        groups[index] = select_proxy_group("Proxies", &all_with_direct);
+        return;
+    };
+    set_yaml(map, "type", yaml_str("select"));
+    let list = map
+        .entry(yaml_key("proxies"))
+        .or_insert_with(|| YamlValue::Sequence(Vec::new()));
+    if !matches!(list, YamlValue::Sequence(_)) {
+        *list = YamlValue::Sequence(Vec::new());
+    }
+    let Some(items) = list.as_sequence_mut() else {
+        return;
+    };
+    let mut seen = items
+        .iter()
+        .filter_map(YamlValue::as_str)
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    for name in all_with_direct {
+        if seen.insert(name.clone()) {
+            items.push(yaml_str(name));
+        }
+    }
+}
+
+fn ensure_auto_select_group_contains_all_nodes(config: &mut Mapping, proxy_names: &[String]) {
+    if proxy_names.len() < 2 {
+        return;
+    }
+    let groups = config
+        .entry(yaml_key("proxy-groups"))
+        .or_insert_with(|| YamlValue::Sequence(Vec::new()));
+    if !matches!(groups, YamlValue::Sequence(_)) {
+        *groups = YamlValue::Sequence(Vec::new());
+    }
+    let Some(groups) = groups.as_sequence_mut() else {
+        return;
+    };
+    let Some(index) = groups.iter().position(|group| {
+        yaml_mapping_name(group)
+            .map(is_aegos_auto_select_group_name)
+            .unwrap_or(false)
+    }) else {
+        let insert_index = groups
+            .iter()
+            .position(|group| {
+                yaml_mapping_name(group)
+                    .map(is_proxies_group_name)
+                    .unwrap_or(false)
+            })
+            .map(|index| index.saturating_add(1))
+            .unwrap_or(0);
+        groups.insert(insert_index, url_test_proxy_group("鑷姩閫夋嫨", proxy_names));
+        return;
+    };
+    let Some(map) = groups[index].as_mapping_mut() else {
+        groups[index] = url_test_proxy_group("鑷姩閫夋嫨", proxy_names);
+        return;
+    };
+    set_yaml(map, "type", yaml_str("url-test"));
+    set_yaml(map, "url", yaml_str("https://www.gstatic.com/generate_204"));
+    set_yaml(map, "interval", yaml_num(300));
+    set_yaml(map, "proxies", yaml_string_values(proxy_names));
+}
+
+fn normalize_profile_groups_for_display(config: &mut Mapping) {
+    sanitize_subscription_metadata_nodes(config);
+    let proxy_names = proxy_node_names(config);
+    synthesize_default_proxy_groups_if_needed(config, &proxy_names);
+    ensure_proxies_group_contains_all_nodes(config, &proxy_names);
+    ensure_auto_select_group_contains_all_nodes(config, &proxy_names);
 }
 
 fn yaml_num(value: u64) -> YamlValue {
@@ -1535,7 +1879,7 @@ fn port_from_value(value: &JsonValue, fallback: u16, label: &str) -> Result<u16,
 fn mixed_port_from_value(value: &JsonValue, fallback: u16) -> Result<u16, String> {
     let port = port_from_value(value, fallback, "Mixed proxy port")?;
     if RESERVED_MIXED_PORTS.contains(&port) {
-        return Err("7890 已由 FlClash/Codex 使用，Aegos 请使用 7891 或其他端口。".to_string());
+        return Err("Port 7890 is reserved for FlClash/Codex traffic; use 7891 or another port for Aegos.".to_string());
     }
     Ok(port)
 }
@@ -1571,18 +1915,6 @@ fn percent_decode(input: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
-fn url_path_encode(input: &str) -> String {
-    input
-        .bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
-}
-
 fn test_proxy_delay_request(
     client: &Client,
     controller_port: u16,
@@ -1591,30 +1923,19 @@ fn test_proxy_delay_request(
     test_url: &str,
     timeout_ms: u64,
 ) -> DelayTestResult {
-    let url = format!(
-        "http://127.0.0.1:{}/proxies/{}/delay?timeout={}&url={}",
+    let controller = core_runtime::CoreController {
         controller_port,
-        url_path_encode(name),
-        timeout_ms,
-        url_path_encode(test_url)
-    );
-    let response = match client.get(url).bearer_auth(secret).send() {
-        Ok(response) => response,
-        Err(err) => {
-            return DelayTestResult::failed(classify_failure_reason(&err.to_string()));
-        }
+        secret: secret.to_string(),
     };
-    let status = response.status();
-    if !status.is_success() {
-        let status_code = status.as_u16();
-        let body = response.text().unwrap_or_default();
-        let reason = classify_delay_http_failure(status_code, &body);
-        return DelayTestResult::failed(reason);
-    }
-    let data = match response.json::<JsonValue>() {
+    let data = match controller.proxy_delay_with_client(client, name, test_url, timeout_ms) {
         Ok(data) => data,
         Err(err) => {
-            return DelayTestResult::failed(classify_failure_reason(&err.to_string()));
+            let reason = if let Some(status) = err.status {
+                classify_delay_http_failure(status, &err.body)
+            } else {
+                classify_failure_reason(&err.message)
+            };
+            return DelayTestResult::failed(reason);
         }
     };
     let delay = data
@@ -2825,7 +3146,7 @@ fn summarize_profile_source(
         .map(|items| items.len())
         .unwrap_or(0);
     if proxies == 0 {
-        return Err("订阅解析成功，但没有可用 proxies 节点".to_string());
+        return Err("璁㈤槄瑙ｆ瀽鎴愬姛锛屼絾娌℃湁鍙敤 proxies 鑺傜偣".to_string());
     }
     Ok(ProfileSourceSummary {
         format: format.to_string(),
@@ -3077,80 +3398,9 @@ fn download_profile_source_url_diagnostic(url: &str) -> Result<ProfileSource, St
     parse_profile_source_text_diagnostic(&text)
 }
 
-const AEGOS_DNS_LISTEN: &str = "127.0.0.1:1054";
-const AEGOS_DIRECT_NAMESERVERS: [&str; 3] = [
-    "https://223.5.5.5/dns-query",
-    "https://1.1.1.1/dns-query",
-    "tls://8.8.8.8:853",
-];
-
-fn yaml_value_strings(value: Option<&YamlValue>) -> Vec<String> {
-    match value {
-        Some(YamlValue::Sequence(items)) => items
-            .iter()
-            .filter_map(|item| item.as_str().map(str::to_string))
-            .collect(),
-        Some(YamlValue::String(item)) => vec![item.to_string()],
-        _ => Vec::new(),
-    }
-}
-
 fn is_fake_ip_address(value: &str) -> bool {
     let text = value.trim();
     text.starts_with("198.18.") || text.starts_with("198.19.")
-}
-
-fn is_local_or_fake_nameserver(value: &str) -> bool {
-    let text = value.trim().to_ascii_lowercase();
-    text.is_empty()
-        || text.contains("127.0.0.1")
-        || text.contains("localhost")
-        || text.contains("198.18.")
-        || text.contains("198.19.")
-}
-
-fn runtime_dns_safety_report(config: &YamlValue) -> Result<String, String> {
-    let dns = config
-        .get(yaml_key("dns"))
-        .and_then(YamlValue::as_mapping)
-        .ok_or_else(|| "runtime DNS block missing".to_string())?;
-    let listen = dns
-        .get(yaml_key("listen"))
-        .and_then(YamlValue::as_str)
-        .unwrap_or("");
-    if listen != AEGOS_DNS_LISTEN {
-        return Err(format!(
-            "runtime DNS listen should be {AEGOS_DNS_LISTEN}, got {listen}"
-        ));
-    }
-    let proxy_nameservers = yaml_value_strings(dns.get(yaml_key("proxy-server-nameserver")));
-    if proxy_nameservers.is_empty() {
-        return Err("proxy-server-nameserver is empty".to_string());
-    }
-    if proxy_nameservers
-        .iter()
-        .any(|value| is_local_or_fake_nameserver(value))
-    {
-        return Err(format!(
-            "proxy-server-nameserver contains unsafe local/fake-ip resolver: {}",
-            proxy_nameservers.join(", ")
-        ));
-    }
-    let nameservers = yaml_value_strings(dns.get(yaml_key("nameserver")));
-    let has_direct_upstream = AEGOS_DIRECT_NAMESERVERS
-        .iter()
-        .all(|expected| nameservers.iter().any(|value| value == expected));
-    if !has_direct_upstream {
-        return Err(format!(
-            "direct upstream DNS set is incomplete: {}",
-            nameservers.join(", ")
-        ));
-    }
-    Ok(format!(
-        "listen={}, proxy-server-nameserver={}",
-        listen,
-        proxy_nameservers.join(", ")
-    ))
 }
 
 fn is_subscription_metadata_node_name(name: &str) -> bool {
@@ -3166,33 +3416,11 @@ fn is_subscription_metadata_node_name(name: &str) -> bool {
         || lower.contains(" gb |")
         || lower.contains("traffic:")
         || lower.contains("expire:")
-        || text.contains("流量")
-        || text.contains("剩余")
-        || text.contains("到期")
-        || text.contains("过期")
-        || text.contains("套餐")
-}
-
-fn harden_runtime_dns(config: &mut Mapping) {
-    let nameservers = AEGOS_DIRECT_NAMESERVERS
-        .iter()
-        .copied()
-        .filter(|value| !is_local_or_fake_nameserver(value))
-        .collect::<Vec<_>>();
-    let dns = config
-        .entry(yaml_key("dns"))
-        .or_insert_with(|| YamlValue::Mapping(Mapping::new()));
-    let dns_map = get_mapping_mut(dns);
-    set_yaml(dns_map, "enable", YamlValue::Bool(true));
-    set_yaml(dns_map, "ipv6", YamlValue::Bool(false));
-    set_yaml(dns_map, "listen", yaml_str(AEGOS_DNS_LISTEN));
-    set_yaml(dns_map, "enhanced-mode", yaml_str("fake-ip"));
-    set_yaml(dns_map, "nameserver", yaml_string_sequence(&nameservers));
-    set_yaml(
-        dns_map,
-        "proxy-server-nameserver",
-        yaml_string_sequence(&nameservers),
-    );
+        || text.contains("娴侀噺")
+        || text.contains("鍓╀綑")
+        || text.contains("鍒版湡")
+        || text.contains("杩囨湡")
+        || text.contains("濂楅")
 }
 
 fn sanitize_subscription_metadata_nodes(config: &mut Mapping) -> usize {
@@ -3298,7 +3526,7 @@ fn patch_config_with_settings(
     );
     set_yaml(&mut config, "unified-delay", YamlValue::Bool(true));
     set_yaml(&mut config, "tcp-concurrent", YamlValue::Bool(true));
-    harden_runtime_dns(&mut config);
+    config_pipeline::harden_runtime_dns(&mut config);
     sanitize_subscription_metadata_nodes(&mut config);
 
     if settings.tun_enabled {
@@ -3331,17 +3559,11 @@ fn patch_config_with_settings(
         apply_manual_nodes(&mut config, settings, profile_id)?;
     }
 
-    let proxy_names: Vec<YamlValue> = config
-        .get(yaml_key("proxies"))
-        .and_then(|v| v.as_sequence())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.get(yaml_key("name")).and_then(|v| v.as_str()))
-                .map(|name| YamlValue::String(name.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let proxy_name_strings = proxy_node_names(&config);
+    let proxy_names: Vec<YamlValue> = proxy_name_strings
+        .iter()
+        .map(|name| yaml_str(name))
+        .collect();
     let has_proxy_group = matches!(config.get(yaml_key("proxy-groups")), Some(YamlValue::Sequence(items)) if !items.is_empty());
     if !proxy_names.is_empty() && !has_proxy_group {
         let mut group = Mapping::new();
@@ -3358,6 +3580,9 @@ fn patch_config_with_settings(
             YamlValue::Sequence(vec![YamlValue::Mapping(group)]),
         );
     }
+    synthesize_default_proxy_groups_if_needed(&mut config, &proxy_name_strings);
+    ensure_proxies_group_contains_all_nodes(&mut config, &proxy_name_strings);
+    ensure_auto_select_group_contains_all_nodes(&mut config, &proxy_name_strings);
 
     if !matches!(config.get(yaml_key("rules")), Some(YamlValue::Sequence(items)) if !items.is_empty())
     {
@@ -3378,7 +3603,7 @@ fn patch_config_with_settings(
 
 fn normalize_manual_node(input: &JsonValue) -> Result<JsonValue, String> {
     let Some(map) = input.as_object() else {
-        return Err("手动节点必须是对象".to_string());
+        return Err("Manual node must be an object.".to_string());
     };
     let name = map
         .get("name")
@@ -3405,16 +3630,16 @@ fn normalize_manual_node(input: &JsonValue) -> Result<JsonValue, String> {
                 .and_then(|value| value.trim().parse::<u64>().ok())
         });
     let Some(port) = port else {
-        return Err("请输入固定节点端口".to_string());
+        return Err("Manual node port is required.".to_string());
     };
     if name.is_empty() {
-        return Err("请输入固定节点名称".to_string());
+        return Err("Manual node name is required.".to_string());
     }
     if server.is_empty() {
-        return Err("请输入固定节点地址".to_string());
+        return Err("璇疯緭鍏ュ浐瀹氳妭鐐瑰湴鍧€".to_string());
     }
     if port == 0 || port > 65535 {
-        return Err("固定节点端口必须在 1-65535 之间".to_string());
+        return Err("鍥哄畾鑺傜偣绔彛蹇呴』鍦?1-65535 涔嬮棿".to_string());
     }
     if !mihomo_supports_proxy_type(&node_type) {
         return Err(format!(
@@ -3441,7 +3666,7 @@ fn normalize_manual_node(input: &JsonValue) -> Result<JsonValue, String> {
             | "direct"
             | "reject"
     ) {
-        return Err(format!("暂不支持的固定节点协议：{node_type}"));
+        return Err(format!("鏆備笉鏀寔鐨勫浐瀹氳妭鐐瑰崗璁細{node_type}"));
     }
 
     let mut node = serde_json::Map::new();
@@ -3495,7 +3720,7 @@ fn normalize_manual_node(input: &JsonValue) -> Result<JsonValue, String> {
 fn manual_node_yaml(node: &JsonValue) -> Result<YamlValue, String> {
     let mut clean = serde_json::Map::new();
     let Some(map) = node.as_object() else {
-        return Err("手动节点数据无效".to_string());
+        return Err("鎵嬪姩鑺傜偣鏁版嵁鏃犳晥".to_string());
     };
     for (key, value) in map {
         if matches!(
@@ -3540,7 +3765,7 @@ fn insert_manual_node_into_config(
     let name = node
         .get("name")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| "手动节点缺少名称".to_string())?;
+        .ok_or_else(|| "鎵嬪姩鑺傜偣缂哄皯鍚嶇О".to_string())?;
     let original = original_name.unwrap_or(name);
     let proxy = manual_node_yaml(node)?;
     {
@@ -3553,7 +3778,7 @@ fn insert_manual_node_into_config(
             .enumerate()
             .any(|(index, item)| proxy_name(item) == Some(name) && Some(index) != existing_index)
         {
-            return Err(format!("固定节点名称已存在：{name}"));
+            return Err(format!("鍥哄畾鑺傜偣鍚嶇О宸插瓨鍦細{name}"));
         }
         if let Some(index) = existing_index {
             proxies[index] = proxy;
@@ -3662,31 +3887,6 @@ fn yaml_mapping_name(item: &YamlValue) -> Option<&str> {
         .and_then(|value| value.as_str())
 }
 
-fn proxy_ports_from_config(config: &YamlValue) -> Vec<u16> {
-    let mut ports = HashSet::new();
-    for proxy in yaml_sequence(config, "proxies")
-        .into_iter()
-        .flat_map(|items| items.iter())
-    {
-        let Some(map) = proxy.as_mapping() else {
-            continue;
-        };
-        let Some(port) = map
-            .get(yaml_key("port"))
-            .and_then(|value| value.as_u64())
-            .and_then(|value| u16::try_from(value).ok())
-        else {
-            continue;
-        };
-        if port > 0 {
-            ports.insert(port);
-        }
-    }
-    let mut ports = ports.into_iter().collect::<Vec<_>>();
-    ports.sort_unstable();
-    ports
-}
-
 fn preflight_runtime_config(
     config: &YamlValue,
     profile: &Profile,
@@ -3694,7 +3894,7 @@ fn preflight_runtime_config(
 ) -> Result<JsonValue, String> {
     let root = config
         .as_mapping()
-        .ok_or_else(|| "配置预检失败：根节点必须是 YAML 对象".to_string())?;
+        .ok_or_else(|| "Config preflight failed: root YAML value must be an object".to_string())?;
     let proxies = yaml_sequence(config, "proxies")
         .cloned()
         .unwrap_or_default();
@@ -3710,7 +3910,7 @@ fn preflight_runtime_config(
 
     for (index, proxy) in proxies.iter().enumerate() {
         let Some(map) = proxy.as_mapping() else {
-            missing_fields.push(format!("proxies[{}] 不是对象", index));
+            missing_fields.push(format!("proxies[{index}] is not an object"));
             continue;
         };
         let name = map
@@ -3719,7 +3919,7 @@ fn preflight_runtime_config(
             .unwrap_or("")
             .trim();
         if name.is_empty() {
-            missing_fields.push(format!("proxies[{}] 缺少 name", index));
+            missing_fields.push(format!("proxies[{index}] missing name"));
         } else if !names.insert(name.to_string()) {
             duplicate_names.push(name.to_string());
         }
@@ -3731,7 +3931,7 @@ fn preflight_runtime_config(
             .is_empty()
         {
             missing_fields.push(format!(
-                "{} 缺少 type",
+                "{} missing type",
                 if name.is_empty() { "proxy" } else { name }
             ));
         }
@@ -3750,18 +3950,18 @@ fn preflight_runtime_config(
     }
 
     if !builtin_direct && proxies.is_empty() {
-        return Err("配置预检失败：订阅没有可用 proxies 节点".to_string());
+        return Err("Config preflight failed: subscription has no usable proxies".to_string());
     }
     if !duplicate_names.is_empty() {
         duplicate_names.sort();
         duplicate_names.dedup();
         return Err(format!(
-            "配置预检失败：存在重复节点名 {}",
+            "Config preflight failed: duplicate proxy name(s): {}",
             duplicate_names.join(", ")
         ));
     }
     if !missing_fields.is_empty() {
-        return Err(format!("配置预检失败：{}", missing_fields.join("；")));
+        return Err(format!("Config preflight failed: {}", missing_fields.join(", ")));
     }
     if !unsupported_proxy_types.is_empty() {
         unsupported_proxy_types.sort();
@@ -3773,10 +3973,10 @@ fn preflight_runtime_config(
         ));
     }
     if !proxies.is_empty() && proxy_groups.is_empty() {
-        return Err("配置预检失败：存在节点但没有 proxy-groups".to_string());
+        return Err("Config preflight failed: proxy-groups is required when proxies exist".to_string());
     }
     if rules.is_empty() {
-        return Err("配置预检失败：rules 为空".to_string());
+        return Err("Config preflight failed: rules is empty".to_string());
     }
 
     let proxy_name_set = proxies
@@ -3823,7 +4023,7 @@ fn preflight_runtime_config(
         bad_refs.sort();
         bad_refs.dedup();
         return Err(format!(
-            "配置预检失败：代理组引用了不存在的节点 {}",
+            "Config preflight failed: proxy group references missing target(s): {}",
             bad_refs.join(", ")
         ));
     }
@@ -3834,7 +4034,7 @@ fn preflight_runtime_config(
         .unwrap_or(0);
     if mixed_port != u64::from(settings.mixed_port) {
         return Err(format!(
-            "配置预检失败：mixed-port 应为 {}，实际为 {}",
+            "Config preflight failed: mixed-port should be {}, got {}",
             settings.mixed_port, mixed_port
         ));
     }
@@ -3844,7 +4044,7 @@ fn preflight_runtime_config(
         .unwrap_or("");
     if !controller.ends_with(&format!(":{}", settings.controller_port)) {
         return Err(format!(
-            "配置预检失败：external-controller 应使用端口 {}",
+            "Config preflight failed: external-controller should end with :{}",
             settings.controller_port
         ));
     }
@@ -3864,7 +4064,6 @@ fn preflight_runtime_config(
         }
     }))
 }
-
 fn normalize_outbound_ip_response(text: &str) -> Option<String> {
     let candidate = text
         .trim()
@@ -3921,9 +4120,9 @@ fn query_outbound_ip(mixed_port: u16) -> Result<String, String> {
         }
     }
     if last_error.is_empty() {
-        Err("无法获取落地 IP".to_string())
+        Err("鏃犳硶鑾峰彇钀藉湴 IP".to_string())
     } else {
-        Err(format!("无法获取落地 IP: {last_error}"))
+        Err(format!("鏃犳硶鑾峰彇钀藉湴 IP: {last_error}"))
     }
 }
 
@@ -3968,8 +4167,16 @@ fn query_outbound_ip_family(mixed_port: u16, family: &str) -> Result<String, Str
         .build()
         .map_err(|err| err.to_string())?;
     let services: &[&str] = match family {
-        "ipv6" => &["https://api6.ipify.org", "https://v6.ident.me", "https://icanhazip.com"],
-        _ => &["https://api.ipify.org", "https://api.ipify.org?format=text", "http://api.ipify.org"],
+        "ipv6" => &[
+            "https://api6.ipify.org",
+            "https://v6.ident.me",
+            "https://icanhazip.com",
+        ],
+        _ => &[
+            "https://api.ipify.org",
+            "https://api.ipify.org?format=text",
+            "http://api.ipify.org",
+        ],
     };
     let mut last_error = String::new();
     for url in services {
@@ -4104,7 +4311,7 @@ fn ipv6_dns_safety_from_parts(
             "ok": dns_safety.is_ok(),
             "detail": dns_safety.unwrap_or_else(|err| err),
             "hijackEnabled": settings.dns_hijack_enabled,
-            "runtimeDnsListen": AEGOS_DNS_LISTEN
+            "runtimeDnsListen": config_pipeline::AEGOS_DNS_LISTEN
         },
         "plainPrompt": plain_prompt,
         "checkedAt": now_secs()
@@ -4961,7 +5168,7 @@ rules:
             .expect("dns");
         assert_eq!(
             dns.get(yaml_key("listen")).and_then(YamlValue::as_str),
-            Some(AEGOS_DNS_LISTEN)
+            Some(config_pipeline::AEGOS_DNS_LISTEN)
         );
         let proxy_nameservers = dns
             .get(yaml_key("proxy-server-nameserver"))
@@ -4969,7 +5176,7 @@ rules:
             .expect("proxy nameserver");
         assert!(proxy_nameservers.iter().all(|item| item
             .as_str()
-            .map(|value| !is_local_or_fake_nameserver(value))
+            .map(|value| !config_pipeline::is_local_or_fake_nameserver(value))
             .unwrap_or(false)));
     }
 
@@ -5026,7 +5233,7 @@ rules:
             .iter()
             .filter_map(YamlValue::as_str)
             .collect::<Vec<_>>();
-        assert_eq!(group_names, vec!["Real HK"]);
+        assert_eq!(group_names, vec!["Real HK", "DIRECT"]);
     }
 
     #[test]
@@ -5051,6 +5258,99 @@ rules:
 
         assert_eq!(resolve_group_leaf(&groups, &selected, "Final", 0), "Node A");
         assert_eq!(resolve_group_leaf(&groups, &selected, "Auto", 0), "Node A");
+    }
+
+    #[test]
+    fn patch_config_adds_main_and_auto_groups_when_subscription_has_only_custom_groups() {
+        let source: YamlValue = serde_yaml::from_str(
+            r#"
+proxies:
+  - name: HK 01
+    type: ss
+    server: hk.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+  - name: SG 01
+    type: ss
+    server: sg.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: Spotify
+    type: select
+    proxies:
+      - HK 01
+  - name: SG
+    type: select
+    proxies:
+      - SG 01
+rules:
+  - MATCH,Spotify
+"#,
+        )
+        .expect("source");
+        let patched =
+            patch_config_with_settings(source, &default_settings(), Some("test")).expect("patch");
+        let group_names = yaml_sequence(&patched, "proxy-groups")
+            .expect("groups")
+            .iter()
+            .filter_map(yaml_mapping_name)
+            .collect::<Vec<_>>();
+        assert!(group_names.iter().any(|name| *name == "Proxies"));
+        assert!(group_names.iter().any(|name| *name == "鑷姩閫夋嫨"));
+        let proxies_group = yaml_sequence(&patched, "proxy-groups")
+            .expect("groups")
+            .iter()
+            .find(|group| yaml_mapping_name(group) == Some("Proxies"))
+            .cloned()
+            .expect("Proxies group");
+        let proxies = proxies_group
+            .get(yaml_key("proxies"))
+            .and_then(YamlValue::as_sequence)
+            .expect("Proxies items")
+            .iter()
+            .filter_map(YamlValue::as_str)
+            .collect::<Vec<_>>();
+        assert!(proxies.contains(&"HK 01"));
+        assert!(proxies.contains(&"SG 01"));
+    }
+
+    #[test]
+    fn runtime_snapshot_adds_main_and_auto_groups_for_custom_only_groups() {
+        let mut groups = json!([
+            {
+                "name": "Spotify",
+                "type": "Selector",
+                "now": "HK 01",
+                "items": [{ "name": "HK 01", "type": "ss", "server": "hk.example.com" }]
+            },
+            {
+                "name": "SG",
+                "type": "Selector",
+                "now": "SG 01",
+                "items": [{ "name": "SG 01", "type": "ss", "server": "sg.example.com" }]
+            }
+        ]);
+        normalize_proxy_groups_snapshot_defaults(&mut groups);
+        let names = groups
+            .as_array()
+            .expect("groups")
+            .iter()
+            .filter_map(|group| group.get("name").and_then(JsonValue::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(names[0], "Proxies");
+        assert_eq!(names[1], "鑷姩閫夋嫨");
+        let proxies_len = groups
+            .as_array()
+            .expect("groups")
+            .first()
+            .and_then(|group| group.get("items"))
+            .and_then(JsonValue::as_array)
+            .map(Vec::len)
+            .unwrap_or_default();
+        assert_eq!(proxies_len, 2);
     }
 
     #[test]
@@ -5186,7 +5486,7 @@ dns:
 "#,
         )
         .unwrap();
-        let err = runtime_dns_safety_report(&config).expect_err("local resolver should fail");
+        let err = config_pipeline::runtime_dns_safety_report(&config).expect_err("local resolver should fail");
         assert!(err.contains("unsafe"));
     }
 
@@ -5774,7 +6074,7 @@ fn find_free_port(current: u16, fallback: u16, reserved: &[u16]) -> Result<u16, 
             return Ok(port);
         }
     }
-    Err(format!("未找到可用端口: {fallback}-{}", fallback + 79))
+    Err(format!("鏈壘鍒板彲鐢ㄧ鍙? {fallback}-{}", fallback + 79))
 }
 
 fn proxy_delay(proxy: &JsonValue) -> i64 {
@@ -5995,7 +6295,7 @@ fn is_recovery_candidate_name(name: &str) -> bool {
     }
     let lower = text.to_ascii_lowercase();
     ![
-        "traffic", "expire", "剩余", "到期", "套餐", "官网", "流量", "过期",
+        "traffic", "expire", "鍓╀綑", "鍒版湡", "濂楅", "瀹樼綉", "娴侀噺", "杩囨湡",
     ]
     .iter()
     .any(|needle| lower.contains(&needle.to_ascii_lowercase()))
@@ -6049,7 +6349,7 @@ fn run_powershell(script: &str) -> Result<String, String> {
         &wrapped_script,
     ]);
     #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
+    command.creation_flags(core_runtime::CREATE_NO_WINDOW);
     let output = command.output().map_err(|err| err.to_string())?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -6114,18 +6414,6 @@ foreach ($route in $routes) {
 #[cfg(not(windows))]
 fn detect_windows_primary_interface_name() -> Option<String> {
     None
-}
-
-fn apply_runtime_interface_binding_name(config: &mut YamlValue, interface_name: &str) -> bool {
-    let name = interface_name.trim();
-    if name.is_empty() {
-        return false;
-    }
-    if let Some(map) = config.as_mapping_mut() {
-        set_yaml(map, "interface-name", yaml_str(name));
-        return true;
-    }
-    false
 }
 
 fn is_private_lan_ip(ip: IpAddr) -> bool {
@@ -6350,6 +6638,7 @@ try {{
         format!(
             r#"
 $ErrorActionPreference = 'Stop'
+trap {{ throw "Disconnect protection disable failed: $($_.Exception.Message)" }}
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{ throw 'Disabling disconnect protection requires administrator permission' }}
 $snapshotPath = '{}'
@@ -6490,6 +6779,7 @@ impl CoreManager {
             home_dir,
             profile_dir,
             core_path,
+            core_sha256: String::new(),
             settings_path,
             proxy_snapshot_path,
             settings,
@@ -6505,6 +6795,11 @@ impl CoreManager {
             outbound_ip_cache: "-".to_string(),
             outbound_ip_checked_at: 0,
             reliability_failures: 0,
+        };
+        manager.core_sha256 = if manager.core_path.exists() {
+            sha256_file(&manager.core_path)
+        } else {
+            String::new()
         };
         manager.ensure_direct_profile()?;
         manager.repair_profile_metadata();
@@ -6544,6 +6839,26 @@ impl CoreManager {
             .and_then(|raw| serde_json::from_str(&raw).ok())
     }
 
+    fn core_runtime_info(&self) -> JsonValue {
+        core_runtime::CoreRuntimeContract::default()
+            .identity_json(&self.core_runtime_paths(), &self.core_sha256)
+    }
+
+    fn core_runtime_paths(&self) -> core_runtime::CoreRuntimePaths {
+        core_runtime::CoreRuntimePaths {
+            core_path: self.core_path.clone(),
+            home_dir: self.home_dir.clone(),
+            runtime_profile_path: self.runtime_profile_path(),
+        }
+    }
+
+    fn core_controller(&self) -> core_runtime::CoreController {
+        core_runtime::CoreController {
+            controller_port: self.settings.controller_port,
+            secret: self.settings.secret.clone(),
+        }
+    }
+
     fn clear_system_proxy_snapshot(&self) {
         let _ = remove_file_confined(&self.proxy_snapshot_path, &self.app_data);
     }
@@ -6579,11 +6894,7 @@ impl CoreManager {
 
     fn ensure_direct_profile(&mut self) -> Result<(), String> {
         let path = self.profile_dir.join("direct.yaml");
-        let config = patch_config_with_settings(
-            YamlValue::Mapping(Mapping::new()),
-            &self.settings,
-            Some("direct"),
-        )?;
+        let config = config_pipeline::patch_direct_profile(&self.settings)?;
         atomic_write_text_confined(
             &path,
             &self.profile_dir,
@@ -6594,7 +6905,7 @@ impl CoreManager {
                 0,
                 Profile {
                     id: "direct".to_string(),
-                    name: "直连诊断配置".to_string(),
+                    name: "鐩磋繛璇婃柇閰嶇疆".to_string(),
                     profile_type: "builtin".to_string(),
                     path: path.to_string_lossy().to_string(),
                     source_url: None,
@@ -6768,24 +7079,34 @@ impl CoreManager {
         )
     }
 
-    fn apply_routing_drafts(&mut self, drafts: Vec<RoutingDraftInput>) -> Result<JsonValue, String> {
+    fn routing_apply_metadata(&self) -> Option<JsonValue> {
+        let (_, backup_meta_path) = self.routing_apply_backup_paths();
+        fs::read_to_string(&backup_meta_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+    }
+
+    fn apply_routing_drafts(
+        &mut self,
+        drafts: Vec<RoutingDraftInput>,
+    ) -> Result<JsonValue, String> {
         if drafts.is_empty() {
-            return Err("没有可应用的分流草稿。".to_string());
+            return Err("No routing drafts to apply.".to_string());
         }
         if drafts.len() > 24 {
-            return Err("一次最多应用 24 条分流草稿，请分批处理。".to_string());
+            return Err("Apply at most 24 routing drafts at once.".to_string());
         }
         let profile = self
             .active_profile()
-            .ok_or_else(|| "没有活动订阅，无法应用分流规则。".to_string())?;
+            .ok_or_else(|| "No active profile; routing rules cannot be applied.".to_string())?;
         if profile.profile_type == "builtin" {
-            return Err("内置直连配置不能写入分流规则，请先导入订阅。".to_string());
+            return Err("The built-in direct profile cannot be edited; import a subscription first.".to_string());
         }
         let profile_path = PathBuf::from(&profile.path);
         let previous_raw = fs::read_to_string(&profile_path)
-            .map_err(|err| format!("分流规则应用失败：读取当前配置失败：{err}"))?;
+            .map_err(|err| format!("鍒嗘祦瑙勫垯搴旂敤澶辫触锛氳鍙栧綋鍓嶉厤缃け璐ワ細{err}"))?;
         let mut source: YamlValue = serde_yaml::from_str(&previous_raw)
-            .map_err(|err| format!("分流规则应用失败：当前配置 YAML 无法解析：{err}"))?;
+            .map_err(|err| format!("Routing apply failed: active profile YAML parse failed: {err}"))?;
         let targets = routing_rule_target_catalog(&source);
         let mut applied_rules = Vec::new();
         let mut applied_details = Vec::new();
@@ -6795,7 +7116,7 @@ impl CoreManager {
             applied_details.push(detail);
         }
         let Some(config) = source.as_mapping_mut() else {
-            return Err("分流规则应用失败：配置根节点不是 YAML 对象。".to_string());
+            return Err("Routing apply failed: config root is not a YAML object.".to_string());
         };
         let rules = ensure_yaml_sequence(config, "rules");
         for rule in &applied_rules {
@@ -6804,7 +7125,7 @@ impl CoreManager {
                 .filter_map(YamlValue::as_str)
                 .any(|existing| existing.trim() == rule);
             if duplicate {
-                return Err(format!("分流规则已存在，未重复写入：{rule}"));
+                return Err(format!("鍒嗘祦瑙勫垯宸插瓨鍦紝鏈噸澶嶅啓鍏ワ細{rule}"));
             }
         }
         let insert_at = rules
@@ -6820,12 +7141,11 @@ impl CoreManager {
             rules.insert(insert_at + offset, yaml_str(rule));
         }
         let settings = self.settings.clone();
-        let patched = patch_config_with_settings(source.clone(), &settings, Some(&profile.id))
-            .map_err(|err| format!("分流规则预检失败：{err}"))?;
-        let runtime_preflight = preflight_runtime_config(&patched, &profile, &settings)
-            .map_err(|err| format!("分流规则预检失败：{err}"))?;
-        let next_raw = serde_yaml::to_string(&source)
-            .map_err(|err| format!("分流规则序列化失败：{err}"))?;
+        let runtime = config_pipeline::preflight_profile_source(source.clone(), &profile, &settings)
+            .map_err(|err| format!("Routing preflight failed: {err}"))?;
+        let runtime_preflight = runtime.report;
+        let next_raw =
+            serde_yaml::to_string(&source).map_err(|err| format!("鍒嗘祦瑙勫垯搴忓垪鍖栧け璐ワ細{err}"))?;
         let (backup_path, backup_meta_path) = self.routing_apply_backup_paths();
         atomic_write_text_confined(&backup_path, &self.app_data, &previous_raw)?;
         let previous_digest = sha256_text(&previous_raw);
@@ -6852,17 +7172,18 @@ impl CoreManager {
             Ok(json!({ "ok": true, "skipped": true, "reason": "core is not running" }))
         };
         if let Err(err) = reload_result {
-            let restore_file = atomic_write_text_confined(&profile_path, &self.profile_dir, &previous_raw);
+            let restore_file =
+                atomic_write_text_confined(&profile_path, &self.profile_dir, &previous_raw);
             let restore_runtime = if was_running && restore_file.is_ok() {
                 self.hot_reload_profile(&profile).map(|_| ())
             } else {
                 restore_file.map(|_| ())
             };
             return Err(match restore_runtime {
-                Ok(_) => format!("分流规则热重载失败，已回滚当前配置：{err}"),
-                Err(rollback_err) => format!(
-                    "分流规则热重载失败：{err}；回滚也失败：{rollback_err}"
-                ),
+                Ok(_) => format!("Routing hot reload failed and config was rolled back: {err}"),
+                Err(rollback_err) => {
+                    format!("Routing hot reload failed: {err}; rollback also failed: {rollback_err}")
+                }
             });
         }
         self.add_log(
@@ -6874,6 +7195,7 @@ impl CoreManager {
             ),
             "info",
         );
+        add_routing_user_rules(&self.app_data, &profile.id, &applied_rules)?;
         Ok(json!({
             "ok": true,
             "profileId": profile.id,
@@ -6882,14 +7204,14 @@ impl CoreManager {
             "rules": applied_details,
             "runtimePreflight": runtime_preflight,
             "rollbackAvailable": true,
-            "nextStep": "已应用，可在分流页撤销最近一次应用。"
+            "nextStep": "Applied. You can undo the latest routing apply from the routing page."
         }))
     }
 
     fn undo_last_routing_apply(&mut self) -> Result<JsonValue, String> {
         let (backup_path, backup_meta_path) = self.routing_apply_backup_paths();
         let backup_raw = fs::read_to_string(&backup_path)
-            .map_err(|_| "没有可撤销的分流应用记录。".to_string())?;
+            .map_err(|_| "No routing apply record is available to undo.".to_string())?;
         let metadata: JsonValue = fs::read_to_string(&backup_meta_path)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
@@ -6897,9 +7219,9 @@ impl CoreManager {
         let profile_id = metadata
             .get("profileId")
             .and_then(JsonValue::as_str)
-            .ok_or_else(|| "分流撤销记录不完整，缺少订阅 ID。".to_string())?;
+            .ok_or_else(|| "Routing undo record is incomplete: missing profile id.".to_string())?;
         if self.settings.active_profile_id != profile_id {
-            return Err("请先切回创建分流规则时的订阅，再撤销最近应用。".to_string());
+            return Err("Switch back to the profile used for the routing apply before undoing it.".to_string());
         }
         let profile = self
             .settings
@@ -6907,19 +7229,18 @@ impl CoreManager {
             .iter()
             .find(|profile| profile.id == profile_id)
             .cloned()
-            .ok_or_else(|| "分流撤销失败：原订阅不存在。".to_string())?;
+            .ok_or_else(|| "Routing undo failed: original profile no longer exists.".to_string())?;
         let restored_config: YamlValue = serde_yaml::from_str(&backup_raw)
-            .map_err(|err| format!("分流撤销失败：备份 YAML 无法解析：{err}"))?;
+            .map_err(|err| format!("Routing undo failed: backup YAML parse failed: {err}"))?;
         let settings = self.settings.clone();
-        let patched = patch_config_with_settings(restored_config, &settings, Some(&profile.id))
-            .map_err(|err| format!("分流撤销预检失败：{err}"))?;
-        let runtime_preflight = preflight_runtime_config(&patched, &profile, &settings)
-            .map_err(|err| format!("分流撤销预检失败：{err}"))?;
+        let runtime = config_pipeline::preflight_profile_source(restored_config, &profile, &settings)
+            .map_err(|err| format!("Routing undo preflight failed: {err}"))?;
+        let runtime_preflight = runtime.report;
         let profile_path = PathBuf::from(&profile.path);
         atomic_write_text_confined(&profile_path, &self.profile_dir, &backup_raw)?;
         if self.process.is_some() {
             self.hot_reload_profile(&profile)
-                .map_err(|err| format!("分流撤销已恢复文件，但热重载失败：{err}"))?;
+                .map_err(|err| format!("Routing undo restored the file, but hot reload failed: {err}"))?;
         }
         let _ = remove_file_confined(&backup_path, &self.app_data);
         let _ = remove_file_confined(&backup_meta_path, &self.app_data);
@@ -6937,8 +7258,349 @@ impl CoreManager {
             "profileName": profile.name,
             "runtimePreflight": runtime_preflight,
             "rollbackAvailable": false,
-            "nextStep": "已撤销最近一次分流应用。"
+            "nextStep": "Latest routing apply has been undone."
         }))
+    }
+
+    fn commit_profile_routing_config(
+        &mut self,
+        profile: &Profile,
+        source: &YamlValue,
+        previous_raw: &str,
+        label: &str,
+    ) -> Result<JsonValue, String> {
+        let settings = self.settings.clone();
+        let runtime = config_pipeline::preflight_profile_source(source.clone(), profile, &settings)
+            .map_err(|err| format!("{label} preflight failed: {err}"))?;
+        let runtime_preflight = runtime.report;
+        let next_raw = serde_yaml::to_string(source)
+            .map_err(|err| format!("{label} YAML serialization failed: {err}"))?;
+        let profile_path = PathBuf::from(&profile.path);
+        atomic_write_text_confined(&profile_path, &self.profile_dir, &next_raw)?;
+        let was_running = self.process.is_some();
+        if was_running {
+            if let Err(err) = self.hot_reload_profile(profile) {
+                let restore_file =
+                    atomic_write_text_confined(&profile_path, &self.profile_dir, previous_raw);
+                let restore_runtime = if restore_file.is_ok() {
+                    self.hot_reload_profile(profile).map(|_| ())
+                } else {
+                    restore_file.map(|_| ())
+                };
+                return Err(match restore_runtime {
+                    Ok(_) => format!("{label} hot reload failed and config was rolled back: {err}"),
+                    Err(rollback_err) => {
+                        format!("{label} hot reload failed: {err}; rollback also failed: {rollback_err}")
+                    }
+                });
+            }
+        }
+        Ok(json!({
+            "ok": true,
+            "profileId": profile.id,
+            "profileName": profile.name,
+            "runtimePreflight": runtime_preflight,
+            "digest": sha256_text(&next_raw)
+        }))
+    }
+
+    fn active_editable_profile_and_config(
+        &self,
+        label: &str,
+    ) -> Result<(Profile, String, YamlValue), String> {
+        let profile = self
+            .active_profile()
+            .ok_or_else(|| format!("{label} failed: no active profile"))?;
+        if profile.profile_type == "builtin" {
+            return Err(format!(
+                "{label} failed: builtin direct profile cannot be edited"
+            ));
+        }
+        let raw = fs::read_to_string(&profile.path)
+            .map_err(|err| format!("{label} failed: read profile config failed: {err}"))?;
+        let source: YamlValue = serde_yaml::from_str(&raw)
+            .map_err(|err| format!("{label} failed: profile YAML parse failed: {err}"))?;
+        Ok((profile, raw, source))
+    }
+
+    fn apply_routing_group_edit(
+        &mut self,
+        edit: RoutingGroupEditInput,
+    ) -> Result<JsonValue, String> {
+        let (profile, previous_raw, mut source) =
+            self.active_editable_profile_and_config("Routing group edit")?;
+        let action = edit.action.trim().to_ascii_lowercase();
+        {
+            let Some(config) = source.as_mapping_mut() else {
+                return Err(
+                    "Routing group edit failed: profile root is not a YAML object".to_string(),
+                );
+            };
+            normalize_profile_groups_for_display(config);
+        }
+        let targets_before = routing_rule_target_catalog(&source);
+        let name = edit.name.unwrap_or_default();
+        let new_name = edit.new_name.unwrap_or_else(|| name.clone());
+        let validated_name = if action == "add" {
+            validate_routing_rule_part("strategy group name", &new_name, 80)?
+        } else {
+            validate_routing_rule_part("strategy group name", &name, 80)?
+        };
+        let validated_new_name = validate_routing_rule_part("strategy group name", &new_name, 80)?;
+        if is_internal_proxy_group_name(&validated_name)
+            || is_internal_proxy_group_name(&validated_new_name)
+        {
+            return Err("Routing group edit failed: internal groups cannot be edited".to_string());
+        }
+        if action == "delete" && validated_name.eq_ignore_ascii_case("Proxies") {
+            return Err(
+                "Routing group edit failed: Proxies is the main group and cannot be deleted"
+                    .to_string(),
+            );
+        }
+        if action == "delete" {
+            let blocking_rules = yaml_sequence(&source, "rules")
+                .into_iter()
+                .flat_map(|items| items.iter())
+                .filter_map(YamlValue::as_str)
+                .filter(|rule| {
+                    routing_rule_target(rule).as_deref() == Some(validated_name.as_str())
+                })
+                .take(3)
+                .count();
+            if blocking_rules > 0 && !targets_before.contains("Proxies") {
+                return Err(format!(
+                    "Routing group edit failed: {validated_name} is still used by {blocking_rules} rule(s), and Proxies is not available as fallback"
+                ));
+            }
+        }
+        let Some(config) = source.as_mapping_mut() else {
+            return Err("Routing group edit failed: profile root is not a YAML object".to_string());
+        };
+        let mut renamed = false;
+        {
+            let groups = ensure_yaml_sequence(config, "proxy-groups");
+            let group_index = groups
+                .iter()
+                .position(|group| yaml_mapping_name(group) == Some(validated_name.as_str()));
+            match action.as_str() {
+                "add" => {
+                    if groups
+                        .iter()
+                        .any(|group| yaml_mapping_name(group) == Some(validated_new_name.as_str()))
+                    {
+                        return Err(format!(
+                            "Routing group edit failed: group already exists: {validated_new_name}"
+                        ));
+                    }
+                    let members = validate_routing_group_members(
+                        &edit.items.unwrap_or_default(),
+                        &targets_before,
+                    )?;
+                    let group_type = validate_routing_group_type(
+                        edit.group_type.as_deref().unwrap_or("select"),
+                    )?;
+                    let mut group = Mapping::new();
+                    set_yaml(&mut group, "name", yaml_str(validated_new_name.clone()));
+                    set_yaml(&mut group, "type", yaml_str(group_type));
+                    set_yaml(&mut group, "proxies", yaml_string_values(&members));
+                    groups.push(YamlValue::Mapping(group));
+                }
+                "edit" => {
+                    let Some(index) = group_index else {
+                        return Err(format!(
+                            "Routing group edit failed: group not found: {validated_name}"
+                        ));
+                    };
+                    if validated_name != validated_new_name
+                        && groups.iter().any(|group| {
+                            yaml_mapping_name(group) == Some(validated_new_name.as_str())
+                        })
+                    {
+                        return Err(format!(
+                            "Routing group edit failed: group already exists: {validated_new_name}"
+                        ));
+                    }
+                    let members = validate_routing_group_members(
+                        &edit.items.unwrap_or_default(),
+                        &targets_before,
+                    )?;
+                    let group_type = validate_routing_group_type(
+                        edit.group_type.as_deref().unwrap_or("select"),
+                    )?;
+                    let Some(map) = groups[index].as_mapping_mut() else {
+                        return Err(
+                            "Routing group edit failed: group is not editable YAML".to_string()
+                        );
+                    };
+                    set_yaml(map, "name", yaml_str(validated_new_name.clone()));
+                    set_yaml(map, "type", yaml_str(group_type));
+                    set_yaml(map, "proxies", yaml_string_values(&members));
+                    renamed = validated_name != validated_new_name;
+                }
+                "delete" => {
+                    let Some(index) = group_index else {
+                        return Err(format!(
+                            "Routing group edit failed: group not found: {validated_name}"
+                        ));
+                    };
+                    groups.remove(index);
+                }
+                _ => return Err("Routing group edit failed: unsupported action".to_string()),
+            }
+        }
+        if renamed {
+            if let Some(rules) = config
+                .get_mut(yaml_key("rules"))
+                .and_then(YamlValue::as_sequence_mut)
+            {
+                for rule in rules {
+                    if let Some(raw) = rule.as_str() {
+                        if let Some(next) =
+                            routing_rule_replace_target(raw, &validated_name, &validated_new_name)
+                        {
+                            *rule = yaml_str(next);
+                        }
+                    }
+                }
+            }
+            if let Some(value) = self.settings.selected_proxy_map.remove(&validated_name) {
+                self.settings
+                    .selected_proxy_map
+                    .insert(validated_new_name.clone(), value);
+                let _ = self.save_settings();
+            }
+        }
+        if action == "delete" {
+            if let Some(rules) = config
+                .get_mut(yaml_key("rules"))
+                .and_then(YamlValue::as_sequence_mut)
+            {
+                for rule in rules {
+                    if let Some(raw) = rule.as_str() {
+                        if let Some(next) =
+                            routing_rule_replace_target(raw, &validated_name, "Proxies")
+                        {
+                            *rule = yaml_str(next);
+                        }
+                    }
+                }
+            }
+            self.settings.selected_proxy_map.remove(&validated_name);
+            let _ = self.save_settings();
+        }
+        let mut result = self.commit_profile_routing_config(
+            &profile,
+            &source,
+            &previous_raw,
+            "Routing group edit",
+        )?;
+        if let Some(map) = result.as_object_mut() {
+            map.insert("action".to_string(), json!(action));
+            map.insert("group".to_string(), json!(validated_new_name));
+        }
+        Ok(result)
+    }
+
+    fn apply_routing_rule_edit(&mut self, edit: RoutingRuleEditInput) -> Result<JsonValue, String> {
+        let (profile, previous_raw, mut source) =
+            self.active_editable_profile_and_config("Routing rule edit")?;
+        let action = edit.action.trim().to_ascii_lowercase();
+        let raw = edit.raw.unwrap_or_default();
+        let user_rules = routing_user_rule_set(&self.app_data, &profile.id);
+        if matches!(action.as_str(), "edit" | "delete") && !user_rules.contains(raw.trim()) {
+            return Err(
+                "Routing rule edit failed: only Aegos user rules can be edited or deleted"
+                    .to_string(),
+            );
+        }
+        let targets = routing_rule_target_catalog(&source);
+        let Some(config) = source.as_mapping_mut() else {
+            return Err("Routing rule edit failed: profile root is not a YAML object".to_string());
+        };
+        let rules = ensure_yaml_sequence(config, "rules");
+        let index = if action == "add" {
+            None
+        } else {
+            rules
+                .iter()
+                .position(|rule| rule.as_str().map(str::trim) == Some(raw.trim()))
+        };
+        let mut next_user_rule = None;
+        match action.as_str() {
+            "add" | "edit" => {
+                let draft = RoutingDraftInput {
+                    kind: edit.kind.unwrap_or_default(),
+                    condition: edit.condition.unwrap_or_default(),
+                    target: edit.target.unwrap_or_default(),
+                    option: edit.option,
+                    label: edit.label,
+                    source: Some("user".to_string()),
+                };
+                let (next_rule, _) = normalize_routing_draft_rule(&draft, &targets)?;
+                if rules
+                    .iter()
+                    .any(|rule| rule.as_str().map(str::trim) == Some(next_rule.as_str()))
+                    && raw.trim() != next_rule
+                {
+                    return Err(format!(
+                        "Routing rule edit failed: rule already exists: {next_rule}"
+                    ));
+                }
+                if action == "add" {
+                    let insert_at = rules
+                        .iter()
+                        .position(|value| {
+                            value
+                                .as_str()
+                                .map(|rule| {
+                                    rule.trim_start().to_ascii_uppercase().starts_with("MATCH,")
+                                })
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(rules.len());
+                    rules.insert(insert_at, yaml_str(next_rule.clone()));
+                } else {
+                    let Some(index) = index else {
+                        return Err("Routing rule edit failed: rule not found".to_string());
+                    };
+                    rules[index] = yaml_str(next_rule.clone());
+                }
+                next_user_rule = Some(next_rule);
+            }
+            "delete" => {
+                let Some(index) = index else {
+                    return Err("Routing rule edit failed: rule not found".to_string());
+                };
+                rules.remove(index);
+            }
+            _ => return Err("Routing rule edit failed: unsupported action".to_string()),
+        }
+        let result = self.commit_profile_routing_config(
+            &profile,
+            &source,
+            &previous_raw,
+            "Routing rule edit",
+        )?;
+        match action.as_str() {
+            "add" => replace_routing_user_rule(
+                &self.app_data,
+                &profile.id,
+                None,
+                next_user_rule.as_deref(),
+            )?,
+            "edit" => replace_routing_user_rule(
+                &self.app_data,
+                &profile.id,
+                Some(raw.trim()),
+                next_user_rule.as_deref(),
+            )?,
+            "delete" => {
+                replace_routing_user_rule(&self.app_data, &profile.id, Some(raw.trim()), None)?
+            }
+            _ => {}
+        }
+        Ok(result)
     }
 
     fn standby_settings(&self) -> Settings {
@@ -6952,7 +7614,10 @@ impl CoreManager {
             .map(|rendered| rendered.report)
     }
 
-    fn render_runtime_profile(&self, profile: &Profile) -> Result<RenderedProfile, String> {
+    fn render_runtime_profile(
+        &self,
+        profile: &Profile,
+    ) -> Result<profile_compiler::RenderedProfile, String> {
         self.render_runtime_profile_with_settings(profile, &self.settings)
     }
 
@@ -6960,51 +7625,33 @@ impl CoreManager {
         &self,
         profile: &Profile,
         settings: &Settings,
-    ) -> Result<RenderedProfile, String> {
-        let path = PathBuf::from(&profile.path);
-        let raw = fs::read_to_string(&path)
-            .map_err(|err| format!("profile config read failed {}: {err}", path.display()))?;
-        let source: YamlValue = serde_yaml::from_str(&raw)
-            .map_err(|err| format!("profile YAML parse failed {}: {err}", path.display()))?;
-        let patched = patch_config_with_settings(source, settings, Some(&profile.id))?;
-        let report = preflight_runtime_config(&patched, profile, settings)?;
-        let yaml = serde_yaml::to_string(&patched).map_err(|err| err.to_string())?;
-        let digest = sha256_text(&yaml);
-        Ok(RenderedProfile {
-            yaml,
-            digest,
-            report,
-        })
+    ) -> Result<profile_compiler::RenderedProfile, String> {
+        profile_compiler::compile_profile_file(profile, settings)
     }
 
     fn launch_runtime_yaml(
         &self,
-        rendered: &RenderedProfile,
-    ) -> Result<(String, String, Option<String>), String> {
-        let mut config: YamlValue = serde_yaml::from_str(&rendered.yaml)
-            .map_err(|err| format!("runtime YAML reparse failed: {err}"))?;
-        let outbound_interface = detect_windows_primary_interface_name()
-            .filter(|name| apply_runtime_interface_binding_name(&mut config, name));
-        let yaml = serde_yaml::to_string(&config).map_err(|err| err.to_string())?;
-        let digest = sha256_text(&yaml);
-        Ok((yaml, digest, outbound_interface))
+        rendered: &profile_compiler::RenderedProfile,
+    ) -> Result<core_runtime::CoreRuntimeProfile, String> {
+        core_runtime::render_runtime_profile_yaml(
+            &rendered.yaml,
+            detect_windows_primary_interface_name(),
+        )
     }
 
     fn patch_profile_file(&mut self, profile: &Profile) -> Result<String, String> {
         let path = PathBuf::from(&profile.path);
         let rendered = self.render_runtime_profile(profile)?;
-        let (runtime_yaml, runtime_digest, outbound_interface) =
-            self.launch_runtime_yaml(&rendered)?;
+        let runtime_profile = self.launch_runtime_yaml(&rendered)?;
         let current_digest = sha256_file(&path);
         if current_digest != rendered.digest {
             atomic_write_text_confined(&path, &self.profile_dir, &rendered.yaml)?;
         }
-        ensure_dir(&self.home_dir)?;
-        let runtime_path = self.runtime_profile_path();
-        atomic_write_text_confined(&runtime_path, &self.home_dir, &runtime_yaml)?;
+        let runtime_write =
+            core_runtime::write_runtime_profile(&self.core_runtime_paths(), &runtime_profile)?;
         self.add_log(
             format!(
-                "Config preflight passed: {} proxies, {} groups, digest {}{}{}",
+                "Config preflight passed: {} proxies, {} groups, digest {}{}{}, runtime {}",
                 rendered
                     .report
                     .get("proxies")
@@ -7015,20 +7662,22 @@ impl CoreManager {
                     .get("proxyGroups")
                     .and_then(|value| value.as_u64())
                     .unwrap_or(0),
-                &runtime_digest[..12.min(runtime_digest.len())],
+                core_runtime::digest_prefix(&runtime_write.digest),
                 if current_digest == rendered.digest {
                     " (unchanged)"
                 } else {
                     ""
                 },
-                outbound_interface
+                runtime_write
+                    .outbound_interface
                     .as_ref()
                     .map(|name| format!(", outbound interface {name}"))
-                    .unwrap_or_else(|| ", outbound interface auto".to_string())
+                    .unwrap_or_else(|| ", outbound interface auto".to_string()),
+                runtime_write.path.display()
             ),
             "info",
         );
-        Ok(runtime_digest)
+        Ok(runtime_write.digest)
     }
 
     fn speed_test_firewall_ports(&self) -> Vec<u16> {
@@ -7037,12 +7686,12 @@ impl CoreManager {
             let path = PathBuf::from(&profile.path);
             if let Ok(raw) = fs::read_to_string(&path) {
                 if let Ok(source) = serde_yaml::from_str::<YamlValue>(&raw) {
-                    if let Ok(patched) = patch_config_with_settings(
+                    if let Ok(profile_ports) = config_pipeline::speed_test_firewall_ports_from_source(
                         source,
+                        &profile,
                         &self.standby_settings(),
-                        Some(&profile.id),
                     ) {
-                        ports.extend(proxy_ports_from_config(&patched));
+                        ports.extend(profile_ports);
                     }
                 }
             }
@@ -7060,11 +7709,11 @@ impl CoreManager {
         let config_digest = self.patch_profile_file(profile)?;
         let same_runtime = self.runtime_profile_id.as_deref() == Some(profile.id.as_str())
             && self.runtime_config_digest.as_deref() == Some(config_digest.as_str());
-        if same_runtime && self.controller("GET", "/version", None, 900).is_ok() {
+        if same_runtime && self.core_controller().version_probe(900).is_ok() {
             self.add_log(
                 format!(
                     "Profile apply skipped; unchanged runtime config digest: {}",
-                    &config_digest[..12.min(config_digest.len())]
+                    core_runtime::digest_prefix(&config_digest)
                 ),
                 "info",
             );
@@ -7075,16 +7724,16 @@ impl CoreManager {
                 "digest": config_digest
             }));
         }
-        let runtime_path = self.runtime_profile_path();
-        let result = self.controller(
-            "PUT",
-            "/configs?force=true",
-            Some(json!({ "path": runtime_path.to_string_lossy().to_string() })),
-            8000,
-        )?;
+        let apply_transaction = core_runtime::CoreRuntimeApplyTransaction::new(
+            self.runtime_profile_path(),
+            profile.name.clone(),
+            config_digest.clone(),
+        );
+        self.add_log(apply_transaction.display_label(), "info");
+        let result = apply_transaction.apply(&self.core_controller())?;
         self.wait_for_controller()?;
         self.runtime_profile_id = Some(profile.id.clone());
-        self.runtime_config_digest = Some(config_digest.clone());
+        self.runtime_config_digest = Some(result.digest.clone());
         if self.traffic_takeover
             && (self.settings.start_with_system_proxy || self.settings.system_proxy)
         {
@@ -7097,13 +7746,19 @@ impl CoreManager {
         }
         self.add_log(
             format!(
-                "Profile hot reloaded via mihomo controller: {} digest {}",
+                "Profile hot reloaded via mihomo controller: {} digest {}{}",
                 profile.name,
-                &config_digest[..12.min(config_digest.len())]
+                core_runtime::digest_prefix(&result.digest),
+                result
+                    .version_probe
+                    .get("version")
+                    .and_then(JsonValue::as_str)
+                    .map(|version| format!(", controller version {version}"))
+                    .unwrap_or_default()
             ),
             "info",
         );
-        Ok(result)
+        Ok(result.controller_response)
     }
 
     fn ensure_runtime_ports(&mut self) -> Result<(), String> {
@@ -7153,7 +7808,7 @@ impl CoreManager {
     fn recent_log_summary(&self, limit: usize) -> String {
         let items = self.recent_logs(limit);
         if items.is_empty() {
-            return "无最近日志".to_string();
+            return "No recent logs.".to_string();
         }
         items
             .into_iter()
@@ -7165,10 +7820,10 @@ impl CoreManager {
     fn start_failure_message(&self, profile: Option<&Profile>, reason: &str) -> String {
         let profile_name = profile
             .map(|item| item.name.as_str())
-            .unwrap_or("未选择订阅");
+            .unwrap_or("鏈€夋嫨璁㈤槄");
         let profile_path = profile.map(|item| item.path.as_str()).unwrap_or("-");
         format!(
-            "核心启动失败：{reason}；订阅：{profile_name}；配置：{profile_path}；核心：{}；端口：mixed {} / controller {}；最近日志：{}",
+            "Core startup failed: {reason}; profile: {profile_name}; config: {profile_path}; core: {}; ports: mixed {} / controller {}; recent logs: {}",
             self.core_path.display(),
             self.settings.mixed_port,
             self.settings.controller_port,
@@ -7186,14 +7841,12 @@ impl CoreManager {
         }
         let settings = self.standby_settings();
         let rendered = self.render_runtime_profile_with_settings(profile, &settings)?;
-        let (runtime_yaml, runtime_digest, outbound_interface) =
-            self.launch_runtime_yaml(&rendered)?;
-        ensure_dir(&self.home_dir)?;
-        let runtime_path = self.runtime_profile_path();
-        atomic_write_text_confined(&runtime_path, &self.home_dir, &runtime_yaml)?;
+        let runtime_profile = self.launch_runtime_yaml(&rendered)?;
+        let runtime_write =
+            core_runtime::write_runtime_profile(&self.core_runtime_paths(), &runtime_profile)?;
         self.add_log(
             format!(
-                "Standby config preflight passed: {} proxies, {} groups, digest {}{}",
+                "Standby config preflight passed: {} proxies, {} groups, digest {}{}, runtime {}",
                 rendered
                     .report
                     .get("proxies")
@@ -7204,15 +7857,17 @@ impl CoreManager {
                     .get("proxyGroups")
                     .and_then(|value| value.as_u64())
                     .unwrap_or(0),
-                &runtime_digest[..12.min(runtime_digest.len())],
-                outbound_interface
+                core_runtime::digest_prefix(&runtime_write.digest),
+                runtime_write
+                    .outbound_interface
                     .as_ref()
                     .map(|name| format!(", outbound interface {name}"))
-                    .unwrap_or_else(|| ", outbound interface auto".to_string())
+                    .unwrap_or_else(|| ", outbound interface auto".to_string()),
+                runtime_write.path.display()
             ),
             "info",
         );
-        Ok(runtime_digest)
+        Ok(runtime_write.digest)
     }
 
     fn apply_takeover_after_core_ready(&mut self, enable_takeover: bool) {
@@ -7255,19 +7910,19 @@ impl CoreManager {
             ));
         }
         self.ensure_runtime_ports()
-            .map_err(|err| self.start_failure_message(None, &format!("端口准备失败：{err}")))?;
+            .map_err(|err| self.start_failure_message(None, &format!("Port preparation failed: {err}")))?;
         let profile = self
             .active_profile()
-            .ok_or_else(|| "没有活动配置".to_string())?;
+            .ok_or_else(|| "娌℃湁娲诲姩閰嶇疆".to_string())?;
         let config_digest = self
             .prepare_runtime_profile(&profile, enable_takeover)
             .map_err(|err| {
-                self.start_failure_message(Some(&profile), &format!("配置生成失败：{err}"))
+                self.start_failure_message(Some(&profile), &format!("Config generation failed: {err}"))
             })?;
         if self.process.is_some() {
             let same_profile = self.runtime_profile_id.as_deref() == Some(profile.id.as_str());
             let same_config = self.runtime_config_digest.as_deref() == Some(config_digest.as_str());
-            if same_profile && same_config && self.controller("GET", "/version", None, 900).is_ok()
+            if same_profile && same_config && self.core_controller().version_probe(900).is_ok()
             {
                 self.apply_takeover_after_core_ready(enable_takeover);
                 return Ok(json!({
@@ -7291,33 +7946,17 @@ impl CoreManager {
             thread::sleep(Duration::from_millis(250));
         }
         ensure_dir(&self.home_dir).map_err(|err| {
-            self.start_failure_message(Some(&profile), &format!("运行目录准备失败：{err}"))
+            self.start_failure_message(Some(&profile), &format!("Runtime directory preparation failed: {err}"))
         })?;
-        let runtime_profile_path = self.runtime_profile_path();
-        let runtime_profile_arg = runtime_profile_path.to_string_lossy().to_string();
-        self.add_log(
-            format!(
-                "Starting mihomo{}: {}",
-                if enable_takeover { "" } else { " in standby" },
-                profile.name
-            ),
-            "info",
+        let launch_plan = core_runtime::CoreLaunchPlan::new(
+            self.core_runtime_paths(),
+            profile.name.clone(),
+            !enable_takeover,
         );
-        let mut command = Command::new(&self.core_path);
-        command
-            .args([
-                "-d",
-                &self.home_dir.to_string_lossy(),
-                "-f",
-                &runtime_profile_arg,
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(windows)]
-        command.creation_flags(CREATE_NO_WINDOW);
+        self.add_log(launch_plan.display_label(), "info");
+        let mut command = launch_plan.command();
         let mut child = command.spawn().map_err(|err| {
-            self.start_failure_message(Some(&profile), &format!("核心进程启动失败：{err}"))
+            self.start_failure_message(Some(&profile), &format!("Core process spawn failed: {err}"))
         })?;
         if let Some(stdout) = child.stdout.take() {
             let logs = self.logs.clone();
@@ -7439,50 +8078,16 @@ impl CoreManager {
                 self.add_log(&reason, "error");
                 return Err(reason);
             }
-            if self.controller("GET", "/version", None, 300).is_ok() {
+            if self.core_controller().version_probe(300).is_ok() {
                 return Ok(());
             }
             thread::sleep(Duration::from_millis(250));
         }
-        Err("mihomo 控制接口未在 6 秒内就绪，请查看日志中的核心错误。".to_string())
-    }
-
-    fn controller(
-        &self,
-        method: &str,
-        endpoint: &str,
-        body: Option<JsonValue>,
-        timeout_ms: u64,
-    ) -> Result<JsonValue, String> {
-        controller_request(
-            self.settings.controller_port,
-            &self.settings.secret,
-            method,
-            endpoint,
-            body,
-            timeout_ms,
-        )
+        Err("mihomo controller did not become ready within 6 seconds; check core logs for details.".to_string())
     }
 
     fn traffic_snapshot(&self, timeout_ms: u64) -> Result<JsonValue, String> {
-        let client = Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_millis(timeout_ms))
-            .build()
-            .map_err(|err| err.to_string())?;
-        let url = format!("http://127.0.0.1:{}/traffic", self.settings.controller_port);
-        let res = client
-            .get(url)
-            .bearer_auth(&self.settings.secret)
-            .send()
-            .map_err(|err| err.to_string())?;
-        if !res.status().is_success() {
-            return Err(format!("Controller HTTP {}", res.status()));
-        }
-        let mut reader = BufReader::new(res);
-        let mut line = String::new();
-        reader.read_line(&mut line).map_err(|err| err.to_string())?;
-        serde_json::from_str(line.trim()).map_err(|err| err.to_string())
+        self.core_controller().traffic_snapshot(timeout_ms)
     }
 
     fn status(&mut self) -> JsonValue {
@@ -7502,6 +8107,7 @@ impl CoreManager {
             "product": "Aegos",
             "appVersion": env!("CARGO_PKG_VERSION"),
             "runtime": "mihomo",
+            "runtimeInfo": self.core_runtime_info(),
             "shell": "tauri",
             "running": running,
             "coreReady": running,
@@ -7520,7 +8126,7 @@ impl CoreManager {
             },
             "permissions": {
                 "isAdmin": is_process_elevated(),
-                "requiresAdminFor": ["TUN", "断网保护"]
+                "requiresAdminFor": ["TUN", "鏂綉淇濇姢"]
             },
             "speedTest": self.speed_test_snapshot(),
             "settings": self.public_settings(),
@@ -7678,13 +8284,13 @@ impl CoreManager {
             "partial"
         };
         let label = match level {
-            "strict" => "强保护",
-            "guarded" => "防断连保护",
-            "tunnel" => "全局接管",
-            "proxy" => "系统代理",
-            "standby" => "核心待命",
-            "partial" => "仅内核运行",
-            _ => "未接管",
+            "strict" => "Protected",
+            "guarded" => "Disconnect protected",
+            "tunnel" => "鍏ㄥ眬鎺ョ",
+            "proxy" => "绯荤粺浠ｇ悊",
+            "standby" => "鏍稿績寰呭懡",
+            "partial" => "Core only",
+            _ => "Not taken over",
         };
         json!({ "level": level, "label": label })
     }
@@ -7728,7 +8334,7 @@ impl CoreManager {
 
     fn set_kill_switch(&mut self, enable: bool) -> Result<bool, String> {
         if enable && !is_process_elevated() {
-            return Err("断网保护需要管理员权限，请在设置中以管理员身份重启 Aegos。".to_string());
+            return Err("Disconnect protection requires administrator permission; restart Aegos as administrator in settings.".to_string());
         }
         run_powershell(&build_kill_switch_script(
             enable,
@@ -7769,7 +8375,7 @@ impl CoreManager {
                 let enable = value.as_bool().unwrap_or(false);
                 if enable && !is_process_elevated() {
                     return Err(
-                        "TUN 模式需要管理员权限，请在设置中以管理员身份重启 Aegos。".to_string()
+                        "TUN mode requires administrator permission; restart Aegos as administrator in settings.".to_string()
                     );
                 }
                 self.settings.tun_enabled = enable;
@@ -7923,7 +8529,7 @@ impl CoreManager {
         self.settings.mode = mode.to_string();
         self.save_settings()?;
         if self.process.is_some() {
-            let _ = self.controller("PATCH", "/configs", Some(json!({ "mode": mode })), 3000);
+            let _ = self.core_controller().set_mode(mode, 3000);
         }
         Ok(mode.to_string())
     }
@@ -8049,12 +8655,10 @@ impl CoreManager {
         }
         let groups = self.proxy_groups();
         let proxy = self.current_outbound_ip_proxy_name(&groups)?;
-        if let Err(err) = self.controller(
-            "PUT",
-            &format!("/proxies/{}", url_path_encode(AEGOS_OUTBOUND_IP_GROUP)),
-            Some(json!({ "name": proxy })),
-            1500,
-        ) {
+        if let Err(err) =
+            self.core_controller()
+                .select_proxy(AEGOS_OUTBOUND_IP_GROUP, &proxy, 1500)
+        {
             self.add_log(
                 format!("Outbound IP lookup group sync failed: {err}"),
                 "warn",
@@ -8117,7 +8721,7 @@ impl CoreManager {
     }
 
     fn ensure_core_for_delay_test(&mut self) -> Result<(), String> {
-        if self.process.is_some() && self.controller("GET", "/version", None, 900).is_ok() {
+        if self.process.is_some() && self.core_controller().version_probe(900).is_ok() {
             return Ok(());
         }
         if self.traffic_takeover {
@@ -8141,7 +8745,7 @@ impl CoreManager {
         expected_run_id: Option<u64>,
     ) -> Result<JsonValue, String> {
         if let Err(err) = self.ensure_core_for_delay_test() {
-            let message = format!("测速准备失败：{err}");
+            let message = format!("娴嬮€熷噯澶囧け璐ワ細{err}");
             if let Some(run_id) = expected_run_id {
                 fail_speed_test_if_current(&self.speed_test, run_id, message.clone());
             } else {
@@ -8231,7 +8835,7 @@ impl CoreManager {
                     &speed_firewall_core_path,
                     &speed_firewall_ports,
                 )) {
-                    let message = format!("断网保护测速放行失败：{err}");
+                    let message = format!("鏂綉淇濇姢娴嬮€熸斁琛屽け璐ワ細{err}");
                     let mut speed = speed_test.lock().unwrap();
                     if speed.run_id == run_id {
                         speed.running = false;
@@ -8856,12 +9460,7 @@ impl CoreManager {
             .insert(group.to_string(), proxy.to_string());
         self.save_settings()?;
         if self.process.is_some() {
-            if let Err(err) = self.controller(
-                "PUT",
-                &format!("/proxies/{}", url_path_encode(group)),
-                Some(json!({ "name": proxy })),
-                5000,
-            ) {
+            if let Err(err) = self.core_controller().select_proxy(group, proxy, 5000) {
                 match previous {
                     Some(value) => {
                         self.settings
@@ -8876,7 +9475,7 @@ impl CoreManager {
                 return Err(classified_error("Node switch", err));
             }
             let _ = self.sync_outbound_ip_group_selection();
-            let _ = self.controller("DELETE", "/connections", None, 1500);
+            let _ = self.core_controller().close_connections(1500);
         }
         Ok(true)
     }
@@ -8981,10 +9580,10 @@ impl CoreManager {
     fn rename_profile(&mut self, id: &str, name: &str) -> Result<Profile, String> {
         let next_name = name.trim();
         if next_name.is_empty() {
-            return Err("订阅名称不能为空".to_string());
+            return Err("璁㈤槄鍚嶇О涓嶈兘涓虹┖".to_string());
         }
         if next_name.chars().count() > 80 {
-            return Err("订阅名称不能超过 80 个字符".to_string());
+            return Err("Profile name must be 80 characters or fewer.".to_string());
         }
         let profile = self
             .settings
@@ -9004,7 +9603,7 @@ impl CoreManager {
 
     fn remove_profile(&mut self, id: &str) -> Result<bool, String> {
         if id == "direct" {
-            return Err("内置直连配置不能删除".to_string());
+            return Err("鍐呯疆鐩磋繛閰嶇疆涓嶈兘鍒犻櫎".to_string());
         }
         let was_running = self.process.is_some();
         let was_active = self.settings.active_profile_id == id;
@@ -9044,12 +9643,12 @@ impl CoreManager {
     fn save_manual_node(&mut self, input: JsonValue) -> Result<JsonValue, String> {
         let profile = self
             .active_profile()
-            .ok_or_else(|| "请先导入或启用一个订阅，再添加固定节点".to_string())?;
+            .ok_or_else(|| "Import or enable a profile before adding a fixed node.".to_string())?;
         let node = normalize_manual_node(&input)?;
         let name = node
             .get("name")
             .and_then(|value| value.as_str())
-            .ok_or_else(|| "固定节点缺少名称".to_string())?
+            .ok_or_else(|| "鍥哄畾鑺傜偣缂哄皯鍚嶇О".to_string())?
             .to_string();
         let original_name = input
             .get("originalName")
@@ -9069,13 +9668,13 @@ impl CoreManager {
         profile_nodes.insert(name.clone(), node.clone());
         if let Err(err) = self.save_settings() {
             self.settings = previous_settings;
-            return Err(format!("固定节点保存失败：{err}"));
+            return Err(format!("Fixed node save failed: {err}"));
         }
         if self.process.is_some() && self.settings.active_profile_id == profile.id {
             if let Err(err) = self.hot_reload_profile(&profile) {
                 self.settings = previous_settings;
                 let _ = self.save_settings();
-                let message = format!("固定节点保存后热重载失败，已回滚：{err}");
+                let message = format!("Fixed node hot reload failed after save; rolled back: {err}");
                 self.add_log(&message, "error");
                 return Err(message);
             }
@@ -9293,13 +9892,13 @@ fn diagnostics_protection_status(snapshot: &DiagnosticsSnapshot) -> JsonValue {
         "partial"
     };
     let label = match level {
-        "strict" => "强保护",
-        "guarded" => "断网保护",
-        "tunnel" => "全局接管",
-        "proxy" => "系统代理",
-        "standby" => "核心待命",
-        "partial" => "仅内核运行",
-        _ => "未接管",
+        "strict" => "Protected",
+        "guarded" => "鏂綉淇濇姢",
+        "tunnel" => "鍏ㄥ眬鎺ョ",
+        "proxy" => "绯荤粺浠ｇ悊",
+        "standby" => "鏍稿績寰呭懡",
+        "partial" => "Core only",
+        _ => "Not taken over",
     };
     json!({ "level": level, "label": label })
 }
@@ -9377,7 +9976,7 @@ fn diagnostics_status_from_snapshot(snapshot: &DiagnosticsSnapshot, is_admin: bo
         },
         "permissions": {
             "isAdmin": is_admin,
-            "requiresAdminFor": ["TUN", "断网保护"]
+            "requiresAdminFor": ["TUN", "鏂綉淇濇姢"]
         },
         "speedTest": diagnostics_speed_snapshot(&snapshot.speed_test),
         "settings": diagnostics_public_settings(snapshot),
@@ -9405,28 +10004,29 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
         .and_then(|profile| {
             let path = PathBuf::from(&profile.path);
             let raw = fs::read_to_string(&path)
-                .map_err(|err| format!("配置读取失败 {}: {err}", path.display()))?;
+                .map_err(|err| format!("閰嶇疆璇诲彇澶辫触 {}: {err}", path.display()))?;
             let source: YamlValue = serde_yaml::from_str(&raw)
-                .map_err(|err| format!("YAML 解析失败 {}: {err}", path.display()))?;
-            let patched =
-                patch_config_with_settings(source, &snapshot.settings, Some(&profile.id))?;
-            preflight_runtime_config(&patched, profile, &snapshot.settings).map(|report| {
-                format!(
-                    "{} proxies, {} groups, {} rules",
-                    report
-                        .get("proxies")
-                        .and_then(|value| value.as_u64())
-                        .unwrap_or(0),
-                    report
-                        .get("proxyGroups")
-                        .and_then(|value| value.as_u64())
-                        .unwrap_or(0),
-                    report
-                        .get("rules")
-                        .and_then(|value| value.as_u64())
-                        .unwrap_or(0)
-                )
-            })
+                .map_err(|err| format!("YAML 瑙ｆ瀽澶辫触 {}: {err}", path.display()))?;
+            let runtime =
+                config_pipeline::preflight_profile_source(source, profile, &snapshot.settings)?;
+            Ok(format!(
+                "{} proxies, {} groups, {} rules",
+                runtime
+                    .report
+                    .get("proxies")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0),
+                runtime
+                    .report
+                    .get("proxyGroups")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0),
+                runtime
+                    .report
+                    .get("rules")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0)
+            ))
         });
     let profile_preflight_ok = profile_preflight.is_ok();
     let profile_preflight_detail = profile_preflight.unwrap_or_else(|err| err);
@@ -9441,9 +10041,12 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             let source: YamlValue = serde_yaml::from_str(&raw).map_err(|err| {
                 format!("DNS preflight YAML parse failed {}: {err}", path.display())
             })?;
-            let patched =
-                patch_config_with_settings(source, &snapshot.settings, Some(&profile.id))?;
-            runtime_dns_safety_report(&patched)
+            let patched = config_pipeline::patch_profile_source(
+                source,
+                profile,
+                &snapshot.settings,
+            )?;
+            config_pipeline::runtime_dns_safety_report(&patched)
         });
     let runtime_dns_safety_ok = runtime_dns_safety.is_ok();
     let runtime_dns_safety_detail = runtime_dns_safety.unwrap_or_else(|err| err);
@@ -9501,7 +10104,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             snapshot.core_path.to_string_lossy().to_string(),
             "error",
             "runtime",
-            "核心文件缺失或路径不可用，请重新放置 resources/core/mihomo.exe 后再启动。",
+            "Core file is missing or unavailable. Restore resources/core/mihomo.exe and restart Aegos.",
         ),
         check(
             "Active profile config",
@@ -9512,7 +10115,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
                 .unwrap_or_else(|| "no active profile".to_string()),
             "error",
             "profile",
-            "当前订阅配置文件不存在，请切换到可用订阅或重新导入订阅。",
+            "The active profile config file does not exist. Switch to another profile or import the subscription again.",
         ),
         check(
             "Profile preflight",
@@ -9520,7 +10123,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             profile_preflight_detail,
             "error",
             "profile",
-            "订阅预检失败，请优先检查订阅内容、代理组引用和端口配置。",
+            "Profile preflight failed. Check subscription content, proxy-group references, and port settings first.",
         ),
         check(
             "Speed test DNS isolation",
@@ -9528,7 +10131,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             runtime_dns_safety_detail,
             "error",
             "speed",
-            "测速 DNS 隔离异常。请重启 Aegos 让运行配置重新生成；如果仍失败，检查是否有其他代理占用 DNS 1053/1054。",
+            "Speed-test DNS isolation is abnormal. Restart Aegos to regenerate runtime config; if it repeats, check DNS port conflicts.",
         ),
         check("Tauri shell", true, "Aegos".to_string(), "warning", "app", ""),
         check(
@@ -9537,13 +10140,13 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             if is_admin {
                 "elevated".to_string()
             } else if admin_required {
-                "not elevated; TUN and 断网保护 require admin restart".to_string()
+                "not elevated; TUN and 鏂綉淇濇姢 require admin restart".to_string()
             } else {
-                "not elevated; only required when TUN or 断网保护 is enabled".to_string()
+                "not elevated; only required when TUN or 鏂綉淇濇姢 is enabled".to_string()
             },
             "warning",
             "permission",
-            "TUN 或断网保护已启用时，需要在设置页以管理员身份重启 Aegos。",
+            "TUN or disconnect protection requires restarting Aegos as administrator from settings.",
         ),
         check(
             "FlClash/Codex port isolation",
@@ -9554,7 +10157,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             ),
             "error",
             "network",
-            "Aegos 不能占用 7890，建议保持 mixed port 为 7891，避免和 FlClash/Codex 代理冲突。",
+            "Aegos must not use port 7890. Keep mixed port at 7891 or another free port to avoid FlClash/Codex conflicts.",
         ),
         check(
             "Controller port",
@@ -9562,7 +10165,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             format!("127.0.0.1:{}", snapshot.settings.controller_port),
             "error",
             "network",
-            "控制端口不能和代理端口相同，请在设置页改成 19091 或其他未占用端口。",
+            "Controller port cannot equal the proxy port. Use 19091 or another free port in settings.",
         ),
         check(
             "System Proxy",
@@ -9612,10 +10215,10 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             .to_string(),
             "warning",
             "permission",
-            "TUN 已启用但当前不是管理员权限，请在设置页以管理员身份重启。",
+            "TUN is enabled but Aegos is not elevated. Restart as administrator from settings.",
         ),
         check(
-            "断网保护",
+            "鏂綉淇濇姢",
             !snapshot.settings.kill_switch_enabled || is_admin,
             if snapshot.settings.kill_switch_enabled {
                 "enabled"
@@ -9625,7 +10228,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             .to_string(),
             "warning",
             "permission",
-            "断网保护已启用但当前不是管理员权限，请在设置页以管理员身份重启。",
+            "Disconnect protection is enabled but Aegos is not elevated. Restart as administrator from settings.",
         ),
         check(
             "Recent core logs",
@@ -9633,7 +10236,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             recent_log_detail,
             "warning",
             "logs",
-            "最近核心日志出现 warning/error，请打开日志页查看启动失败或代理连接失败的上下文。",
+            "Recent core logs contain warning/error entries. Open Logs for startup or proxy failure context.",
         ),
     ];
     let failed_count = checks
@@ -9704,7 +10307,6 @@ fn add_profile_url_detached(
     let source = download_profile_source_url_diagnostic(url)?;
     let summary = source.summary.clone();
     let id = format!("url-{}", now_iso());
-    let patched = patch_config_with_settings(source.config, &settings, Some(&id))?;
     let path = profile_dir.join(format!("{id}.yaml"));
     let mut profile = Profile {
         id: id.clone(),
@@ -9717,13 +10319,15 @@ fn add_profile_url_detached(
         updated_at: now_iso(),
         digest: String::new(),
     };
-    preflight_runtime_config(&patched, &profile, &settings).map_err(|err| {
-        subscription_diagnostic(
-            "runtime-preflight",
-            format!("runtime config preflight failed: {err}"),
-            "the subscription was downloaded, but the generated Mihomo config is not runnable; check unsupported node fields or malformed proxy groups",
-        )
-    })?;
+    let runtime = config_pipeline::preflight_profile_source(source.config, &profile, &settings)
+        .map_err(|err| {
+            subscription_diagnostic(
+                "runtime-preflight",
+                format!("runtime config preflight failed: {err}"),
+                "the subscription was downloaded, but the generated Mihomo config is not runnable; check unsupported node fields or malformed proxy groups",
+            )
+        })?;
+    let patched = runtime.config;
     atomic_write_text_confined(
         &path,
         &profile_dir,
@@ -9804,16 +10408,17 @@ fn update_profile_detached(
     };
     let source = download_profile_source_url_diagnostic(&url)?;
     let summary = source.summary.clone();
-    let patched = patch_config_with_settings(source.config, &settings, Some(&profile.id))?;
     profile.node_count = summary.proxies;
     profile.proxy_group_count = summary.proxy_groups;
-    preflight_runtime_config(&patched, &profile, &settings).map_err(|err| {
-        subscription_diagnostic(
-            "runtime-preflight",
-            format!("runtime config preflight failed: {err}"),
-            "the subscription was downloaded, but the generated Mihomo config is not runnable; the previous subscription is kept",
-        )
-    })?;
+    let runtime = config_pipeline::preflight_profile_source(source.config, &profile, &settings)
+        .map_err(|err| {
+            subscription_diagnostic(
+                "runtime-preflight",
+                format!("runtime config preflight failed: {err}"),
+                "the subscription was downloaded, but the generated Mihomo config is not runnable; the previous subscription is kept",
+            )
+        })?;
+    let patched = runtime.config;
     let previous_profile = profile.clone();
     let profile_path = PathBuf::from(&profile.path);
     let previous_raw = fs::read_to_string(&profile_path).ok();
@@ -9900,7 +10505,7 @@ fn refresh_outbound_ip_detached(core: Arc<Mutex<CoreManager>>) -> Result<String,
         if core.process.is_none() {
             core.outbound_ip_cache = "-".to_string();
             core.outbound_ip_checked_at = now_secs();
-            return Err("请先连接核心后再刷新落地 IP".to_string());
+            return Err("璇峰厛杩炴帴鏍稿績鍚庡啀鍒锋柊钀藉湴 IP".to_string());
         }
         let _ = core.sync_outbound_ip_group_selection();
         core.settings.mixed_port
@@ -9999,24 +10604,26 @@ fn lock_operation_queue<'a>(
 
 fn job_label(kind: &str) -> String {
     match kind {
-        "addProfileUrl" => "导入订阅",
-        "renameProfile" => "重命名订阅",
-        "updateProfile" => "更新订阅",
-        "recoverNetwork" => "网络自愈",
-        "refreshOutboundIp" => "刷新落地 IP",
-        "startCore" => "连接核心",
-        "stopCore" => "断开核心",
-        "restartCore" => "重启核心",
-        "setActiveProfile" => "切换订阅",
-        "updateSettings" => "保存设置",
-        "updateSetting" => "保存设置",
-        "setMode" => "切换模式",
-        "changeProxy" => "切换节点",
-        "selectBestProxy" => "切换到推荐",
-        "applyRoutingDrafts" => "应用分流草稿",
-        "undoRoutingApply" => "撤销分流应用",
-        "exportDiagnostics" => "导出诊断报告",
-        _ => "后台任务",
+        "addProfileUrl" => "瀵煎叆璁㈤槄",
+        "renameProfile" => "Rename profile",
+        "updateProfile" => "鏇存柊璁㈤槄",
+        "recoverNetwork" => "缃戠粶鑷剤",
+        "refreshOutboundIp" => "鍒锋柊钀藉湴 IP",
+        "startCore" => "杩炴帴鏍稿績",
+        "stopCore" => "鏂紑鏍稿績",
+        "restartCore" => "閲嶅惎鏍稿績",
+        "setActiveProfile" => "鍒囨崲璁㈤槄",
+        "updateSettings" => "淇濆瓨璁剧疆",
+        "updateSetting" => "淇濆瓨璁剧疆",
+        "setMode" => "鍒囨崲妯″紡",
+        "changeProxy" => "鍒囨崲鑺傜偣",
+        "selectBestProxy" => "Switch to recommended",
+        "applyRoutingDrafts" => "搴旂敤鍒嗘祦鑽夌",
+        "undoRoutingApply" => "鎾ら攢鍒嗘祦搴旂敤",
+        "applyRoutingGroupEdit" => "Edit strategy group",
+        "applyRoutingRuleEdit" => "缂栬緫鐢ㄦ埛瑙勫垯",
+        "exportDiagnostics" => "瀵煎嚭璇婃柇鎶ュ憡",
+        _ => "鍚庡彴浠诲姟",
     }
     .to_string()
 }
@@ -10070,7 +10677,7 @@ fn finish_job(
                 job.state = "succeeded".to_string();
                 job.progress = job.total.max(1);
                 job.total = job.progress;
-                job.message = "完成".to_string();
+                job.message = "瀹屾垚".to_string();
                 job.result = Some(value);
                 job.error = None;
             }
@@ -10111,6 +10718,8 @@ fn start_job(
             | "repairSystemProxy"
             | "applyRoutingDrafts"
             | "undoRoutingApply"
+            | "applyRoutingGroupEdit"
+            | "applyRoutingRuleEdit"
             | "exportDiagnostics"
     ) {
         return Err(format!("Unsupported job kind: {kind}"));
@@ -10126,7 +10735,7 @@ fn start_job(
         updated_at: now,
         progress: 0,
         total: 1,
-        message: "等待执行".to_string(),
+        message: "绛夊緟鎵ц".to_string(),
         result: None,
         error: None,
         cancel_requested: false,
@@ -10142,7 +10751,7 @@ fn start_job(
     let operations = state.operations.clone();
     let app_data = state.app_data.clone();
     thread::spawn(move || {
-        set_job_state(&jobs, &id, "running", 0, 3, "正在准备");
+        set_job_state(&jobs, &id, "running", 0, 3, "姝ｅ湪鍑嗗");
         if job_cancel_requested(&jobs, &id) {
             finish_cancelled(&jobs, &id, "cancelled before start");
             return;
@@ -10154,7 +10763,7 @@ fn start_job(
                     .and_then(|value| value.as_str())
                     .ok_or_else(|| "Missing url".to_string())
                     .and_then(|url| {
-                        set_job_state(&jobs, &id, "running", 1, 3, "正在下载订阅");
+                        set_job_state(&jobs, &id, "running", 1, 3, "姝ｅ湪涓嬭浇璁㈤槄");
                         add_profile_url_detached(core.clone(), operations.clone(), url)
                             .map(|profile| json!({ "profile": profile }))
                     });
@@ -10166,7 +10775,7 @@ fn start_job(
                     .and_then(|value| value.as_str())
                     .ok_or_else(|| "Missing profile id".to_string())
                     .and_then(|profile_id| {
-                        set_job_state(&jobs, &id, "running", 1, 3, "正在更新订阅");
+                        set_job_state(&jobs, &id, "running", 1, 3, "姝ｅ湪鏇存柊璁㈤槄");
                         update_profile_detached(core.clone(), operations.clone(), profile_id)
                             .map(|profile| json!({ "profile": profile }))
                     });
@@ -10182,7 +10791,7 @@ fn start_job(
                             .get("name")
                             .and_then(|value| value.as_str())
                             .ok_or_else(|| "Missing profile name".to_string())?;
-                        set_job_state(&jobs, &id, "running", 1, 2, "正在重命名订阅");
+                        set_job_state(&jobs, &id, "running", 1, 2, "Renaming profile");
                         let _operation = lock_operation_queue(&operations, "renameProfile")?;
                         core.lock()
                             .unwrap()
@@ -10195,7 +10804,7 @@ fn start_job(
                 update_all_profiles_detached(core.clone(), operations.clone(), jobs.clone(), &id)
             }
             "refreshOutboundIp" => {
-                set_job_state(&jobs, &id, "running", 1, 2, "正在查询落地 IP");
+                set_job_state(&jobs, &id, "running", 1, 2, "姝ｅ湪鏌ヨ钀藉湴 IP");
                 refresh_outbound_ip_detached(core.clone()).map(|ip| json!({ "ip": ip }))
             }
             "diagnostics" => {
@@ -10203,7 +10812,7 @@ fn start_job(
                 Ok(diagnostics_detached(core.clone()))
             }
             "exportDiagnostics" => {
-                set_job_state(&jobs, &id, "running", 1, 2, "正在导出诊断报告");
+                set_job_state(&jobs, &id, "running", 1, 2, "姝ｅ湪瀵煎嚭璇婃柇鎶ュ憡");
                 export_diagnostics_report_from_state(core.clone(), &app_data)
             }
             "recoverNetwork" => {
@@ -10211,28 +10820,28 @@ fn start_job(
                     .get("force")
                     .and_then(|value| value.as_bool())
                     .unwrap_or(false);
-                set_job_state(&jobs, &id, "running", 1, 4, "正在执行网络自愈");
+                set_job_state(&jobs, &id, "running", 1, 4, "姝ｅ湪鎵ц缃戠粶鑷剤");
                 (|| -> Result<JsonValue, String> {
                     let _operation = lock_operation_queue(&operations, "recoverNetwork")?;
                     core.lock().unwrap().recover_network(force)
                 })()
             }
             "startCore" => {
-                set_job_state(&jobs, &id, "running", 1, 4, "正在启动核心");
+                set_job_state(&jobs, &id, "running", 1, 4, "姝ｅ湪鍚姩鏍稿績");
                 (|| -> Result<JsonValue, String> {
                     let _operation = lock_operation_queue(&operations, "startCore")?;
                     core.lock().unwrap().start()
                 })()
             }
             "stopCore" => {
-                set_job_state(&jobs, &id, "running", 1, 2, "正在断开核心");
+                set_job_state(&jobs, &id, "running", 1, 2, "姝ｅ湪鏂紑鏍稿績");
                 (|| -> Result<JsonValue, String> {
                     let _operation = lock_operation_queue(&operations, "stopCore")?;
                     core.lock().unwrap().stop()
                 })()
             }
             "restartCore" => {
-                set_job_state(&jobs, &id, "running", 1, 5, "正在重启核心");
+                set_job_state(&jobs, &id, "running", 1, 5, "姝ｅ湪閲嶅惎鏍稿績");
                 (|| -> Result<JsonValue, String> {
                     let _operation = lock_operation_queue(&operations, "restartCore")?;
                     let mut core = core.lock().unwrap();
@@ -10245,7 +10854,7 @@ fn start_job(
                     .and_then(|value| value.as_str())
                     .ok_or_else(|| "Missing profile id".to_string())
                     .and_then(|profile_id| {
-                        set_job_state(&jobs, &id, "running", 1, 4, "正在应用订阅");
+                        set_job_state(&jobs, &id, "running", 1, 4, "姝ｅ湪搴旂敤璁㈤槄");
                         let _operation = lock_operation_queue(&operations, "setActiveProfile")?;
                         core.lock()
                             .unwrap()
@@ -10274,7 +10883,7 @@ fn start_job(
                     .get("updates")
                     .cloned()
                     .unwrap_or_else(|| payload.clone());
-                set_job_state(&jobs, &id, "running", 1, 4, "正在保存设置");
+                set_job_state(&jobs, &id, "running", 1, 4, "姝ｅ湪淇濆瓨璁剧疆");
                 (|| -> Result<JsonValue, String> {
                     let _operation = lock_operation_queue(&operations, "updateSettings")?;
                     core.lock()
@@ -10292,7 +10901,7 @@ fn start_job(
                     .get("value")
                     .cloned()
                     .ok_or_else(|| "Missing setting value".to_string())?;
-                set_job_state(&jobs, &id, "running", 1, 3, "正在保存设置");
+                set_job_state(&jobs, &id, "running", 1, 3, "姝ｅ湪淇濆瓨璁剧疆");
                 let _operation = lock_operation_queue(&operations, "updateSetting")?;
                 let mut core = core.lock().unwrap();
                 if key == "systemProxy" {
@@ -10309,7 +10918,7 @@ fn start_job(
                     .and_then(|value| value.as_str())
                     .ok_or_else(|| "Missing mode".to_string())
                     .and_then(|mode| {
-                        set_job_state(&jobs, &id, "running", 1, 2, "正在切换模式");
+                        set_job_state(&jobs, &id, "running", 1, 2, "姝ｅ湪鍒囨崲妯″紡");
                         let _operation = lock_operation_queue(&operations, "setMode")?;
                         core.lock()
                             .unwrap()
@@ -10327,7 +10936,7 @@ fn start_job(
                     .get("proxy")
                     .and_then(|value| value.as_str())
                     .ok_or_else(|| "Missing proxy name".to_string())?;
-                set_job_state(&jobs, &id, "running", 1, 2, "正在切换节点");
+                set_job_state(&jobs, &id, "running", 1, 2, "姝ｅ湪鍒囨崲鑺傜偣");
                 let _operation = lock_operation_queue(&operations, "changeProxy")?;
                 let mut core = core.lock().unwrap();
                 core.change_proxy(group, proxy)?;
@@ -10358,14 +10967,28 @@ fn start_job(
                     .ok_or_else(|| "Missing routing drafts".to_string())?;
                 let drafts = serde_json::from_value::<Vec<RoutingDraftInput>>(drafts_value)
                     .map_err(|err| format!("Invalid routing drafts: {err}"))?;
-                set_job_state(&jobs, &id, "running", 1, 4, "正在预检分流草稿");
+                set_job_state(&jobs, &id, "running", 1, 4, "姝ｅ湪棰勬鍒嗘祦鑽夌");
                 let _operation = lock_operation_queue(&operations, "applyRoutingDrafts")?;
                 core.lock().unwrap().apply_routing_drafts(drafts)
             })(),
             "undoRoutingApply" => (|| -> Result<JsonValue, String> {
-                set_job_state(&jobs, &id, "running", 1, 3, "正在撤销分流应用");
+                set_job_state(&jobs, &id, "running", 1, 3, "姝ｅ湪鎾ら攢鍒嗘祦搴旂敤");
                 let _operation = lock_operation_queue(&operations, "undoRoutingApply")?;
                 core.lock().unwrap().undo_last_routing_apply()
+            })(),
+            "applyRoutingGroupEdit" => (|| -> Result<JsonValue, String> {
+                let edit = serde_json::from_value::<RoutingGroupEditInput>(payload.clone())
+                    .map_err(|err| format!("Invalid routing group edit: {err}"))?;
+                set_job_state(&jobs, &id, "running", 1, 4, "Saving strategy group");
+                let _operation = lock_operation_queue(&operations, "applyRoutingGroupEdit")?;
+                core.lock().unwrap().apply_routing_group_edit(edit)
+            })(),
+            "applyRoutingRuleEdit" => (|| -> Result<JsonValue, String> {
+                let edit = serde_json::from_value::<RoutingRuleEditInput>(payload.clone())
+                    .map_err(|err| format!("Invalid routing rule edit: {err}"))?;
+                set_job_state(&jobs, &id, "running", 1, 4, "姝ｅ湪淇濆瓨鐢ㄦ埛瑙勫垯");
+                let _operation = lock_operation_queue(&operations, "applyRoutingRuleEdit")?;
+                core.lock().unwrap().apply_routing_rule_edit(edit)
             })(),
             _ => Err("Unsupported job kind".to_string()),
         };
@@ -10404,7 +11027,7 @@ fn cancel_job(state: State<AppState>, id: String) -> Result<JsonValue, String> {
     job.cancel_requested = true;
     if job.state == "queued" {
         job.state = "cancelled".to_string();
-        job.message = "已取消".to_string();
+        job.message = "Cancelled".to_string();
         job.updated_at = now_secs();
     }
     if job.state == "running" {
@@ -10417,6 +11040,11 @@ fn cancel_job(state: State<AppState>, id: String) -> Result<JsonValue, String> {
 #[tauri::command]
 fn app_status(state: State<AppState>) -> Result<JsonValue, String> {
     Ok(state.core.lock().unwrap().status())
+}
+
+#[tauri::command]
+fn core_runtime_info(state: State<AppState>) -> Result<JsonValue, String> {
+    Ok(state.core.lock().unwrap().core_runtime_info())
 }
 
 #[tauri::command]
@@ -10840,11 +11468,10 @@ fn ipv6_dns_safety_snapshot(state: State<AppState>) -> Result<JsonValue, String>
             let path = PathBuf::from(&profile.path);
             let raw = fs::read_to_string(&path)
                 .map_err(|err| format!("DNS safety read failed {}: {err}", path.display()))?;
-            let source: YamlValue = serde_yaml::from_str(&raw).map_err(|err| {
-                format!("DNS safety YAML parse failed {}: {err}", path.display())
-            })?;
-            let patched = patch_config_with_settings(source, &settings, Some(&profile.id))?;
-            runtime_dns_safety_report(&patched)
+            let source: YamlValue = serde_yaml::from_str(&raw)
+                .map_err(|err| format!("DNS safety YAML parse failed {}: {err}", path.display()))?;
+            let patched = config_pipeline::patch_profile_source(source, profile, &settings)?;
+            config_pipeline::runtime_dns_safety_report(&patched)
         });
     Ok(ipv6_dns_safety_from_parts(
         local,
@@ -10877,71 +11504,77 @@ fn environment_readiness(state: State<AppState>) -> Result<JsonValue, String> {
             "label": "WebView2",
             "ok": true,
             "level": "ok",
-            "detail": "当前界面已运行；安装包会在缺失时显示 WebView2 bootstrapper。",
-            "action": "其他 Windows 设备可直接运行安装包，缺 WebView2 时按安装器提示处理。"
+            "detail": "Current WebView is running; the installer will show the WebView2 bootstrapper if needed.",
+            "action": "Other Windows devices can run the installer directly and follow the WebView2 prompt if it appears."
         }),
         json!({
             "id": "admin",
-            "label": "管理员权限",
+            "label": "Administrator",
             "ok": is_admin || (!settings.tun_enabled && !settings.kill_switch_enabled),
             "level": if is_admin { "ok" } else if settings.tun_enabled || settings.kill_switch_enabled { "warn" } else { "info" },
-            "detail": if is_admin { "管理员运行中" } else { "普通权限运行中" },
-            "action": if is_admin { "无需处理。" } else { "只有 TUN 或断网保护需要管理员权限；普通系统代理可继续使用。" }
+            "detail": if is_admin { "Running as administrator" } else { "Running with normal permissions" },
+            "action": if is_admin { "No action needed." } else { "Only TUN and disconnect protection require administrator permission; normal system proxy can continue." }
         }),
         json!({
             "id": "mixed-port",
-            "label": "代理端口",
+            "label": "Proxy port",
             "ok": mixed_port_ok,
             "level": if mixed_port_ok { "ok" } else { "error" },
             "detail": port_owner_detail(settings.mixed_port),
-            "action": if mixed_port_ok { "端口可用。" } else { "修改代理端口或关闭占用程序。" }
+            "action": if mixed_port_ok { "Port is available." } else { "Change the proxy port or close the conflicting app." }
         }),
         json!({
             "id": "controller-port",
-            "label": "控制端口",
+            "label": "Controller port",
             "ok": controller_port_ok,
             "level": if controller_port_ok { "ok" } else { "error" },
             "detail": port_owner_detail(settings.controller_port),
-            "action": if controller_port_ok { "端口可用。" } else { "修改控制端口或关闭占用程序。" }
+            "action": if controller_port_ok { "Port is available." } else { "Change the controller port or close the conflicting app." }
         }),
         json!({
             "id": "controller-bind",
-            "label": "控制接口",
+            "label": "Controller bind",
             "ok": !settings.allow_lan,
             "level": if settings.allow_lan { "warn" } else { "ok" },
-            "detail": if settings.allow_lan { "allow-lan 开启时会扩大监听面。" } else { "默认仅 127.0.0.1 本机访问。" },
-            "action": if settings.allow_lan { "不需要局域网访问时请关闭允许局域网。" } else { "保持默认更安全。" }
+            "detail": if settings.allow_lan { "allow-lan expands the listening surface." } else { "Controller is bound to 127.0.0.1 by default." },
+            "action": if settings.allow_lan { "Turn off LAN access unless another device must connect." } else { "Keep the safer default." }
         }),
         json!({
             "id": "allow-lan",
-            "label": "局域网访问",
+            "label": "LAN access",
             "ok": !settings.allow_lan,
             "level": if settings.allow_lan { "warn" } else { "ok" },
-            "detail": if settings.allow_lan { "已允许局域网设备访问代理。" } else { "已关闭局域网访问。" },
-            "action": if settings.allow_lan { "只在明确需要其他设备连接时开启。" } else { "无需处理。" }
+            "detail": if settings.allow_lan { "LAN devices may access the proxy." } else { "LAN access is disabled." },
+            "action": if settings.allow_lan { "Enable only when another device must connect." } else { "No action needed." }
         }),
         json!({
             "id": "core-resource",
-            "label": "内核文件",
+            "label": "Core file",
             "ok": core_path.exists(),
             "level": if core_path.exists() { "ok" } else { "error" },
             "detail": core_path.to_string_lossy(),
-            "action": if core_path.exists() { "内核资源存在。" } else { "重新安装或检查 resources/core/mihomo.exe。" }
+            "action": if core_path.exists() { "Core resource exists." } else { "Reinstall or check resources/core/mihomo.exe." }
         }),
         json!({
             "id": "proxy-restore",
-            "label": "系统代理恢复",
+            "label": "System proxy restore",
             "ok": proxy_snapshot_exists || !traffic_takeover,
             "level": if proxy_snapshot_exists || !traffic_takeover { "ok" } else { "warn" },
-            "detail": if proxy_snapshot_exists { "已保存接管前快照。" } else if traffic_takeover { "接管中但暂无快照。" } else { "当前未接管系统代理。" },
-            "action": if proxy_snapshot_exists || !traffic_takeover { "无需处理。" } else { "如系统代理异常，请使用修复接管或断开连接。" }
+            "detail": if proxy_snapshot_exists { "Proxy snapshot exists." } else if traffic_takeover { "Traffic takeover is active, but no snapshot exists." } else { "System proxy is not currently taken over." },
+            "action": if proxy_snapshot_exists || !traffic_takeover { "No action needed." } else { "If system proxy is abnormal, use repair takeover or disconnect." }
         }),
     ];
-    checks.sort_by_key(|item| match item.get("level").and_then(JsonValue::as_str).unwrap_or("info") {
-        "error" => 0,
-        "warn" => 1,
-        "ok" => 2,
-        _ => 3,
+    checks.sort_by_key(|item| {
+        match item
+            .get("level")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("info")
+        {
+            "error" => 0,
+            "warn" => 1,
+            "ok" => 2,
+            _ => 3,
+        }
     });
     let errors = checks
         .iter()
@@ -10958,7 +11591,7 @@ fn environment_readiness(state: State<AppState>) -> Result<JsonValue, String> {
             "errors": errors,
             "warnings": warnings,
             "total": checks.len(),
-            "label": if errors > 0 { "需要处理" } else if warnings > 0 { "可优化" } else { "环境正常" }
+            "label": if errors > 0 { "Needs attention" } else if warnings > 0 { "Can improve" } else { "Environment OK" }
         },
         "checks": checks
     }))
@@ -10972,23 +11605,19 @@ fn select_best_proxy(state: State<AppState>) -> Result<JsonValue, String> {
 
 #[tauri::command]
 fn connections(state: State<AppState>) -> Result<JsonValue, String> {
-    let (running, controller_port, secret) = {
+    let (running, controller) = {
         let core = state.core.lock().unwrap();
         (
             core.process.is_some(),
-            core.settings.controller_port,
-            core.settings.secret.clone(),
+            core.core_controller(),
         )
     };
     if !running {
         return Ok(json!([]));
     }
-    Ok(
-        controller_request(controller_port, &secret, "GET", "/connections", None, 900)
-            .ok()
-            .and_then(|data| data.get("connections").cloned())
-            .unwrap_or_else(|| json!([])),
-    )
+    Ok(controller
+        .connections_snapshot(900)
+        .unwrap_or_else(|_| json!([])))
 }
 
 fn canonical_strategy_type(value: &str) -> String {
@@ -11204,6 +11833,233 @@ fn routing_rule_target_catalog(config: &YamlValue) -> HashSet<String> {
     targets
 }
 
+fn routing_user_rules_path(app_data: &Path) -> PathBuf {
+    app_data.join("routing-user-rules.json")
+}
+
+fn read_routing_user_rules(app_data: &Path) -> JsonValue {
+    fs::read_to_string(routing_user_rules_path(app_data))
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_else(|| json!({}))
+}
+
+fn write_routing_user_rules(app_data: &Path, value: &JsonValue) -> Result<(), String> {
+    let path = routing_user_rules_path(app_data);
+    let raw = serde_json::to_string_pretty(value).map_err(|err| err.to_string())?;
+    atomic_write_text_confined(&path, app_data, &raw)
+}
+
+fn routing_user_rule_set(app_data: &Path, profile_id: &str) -> HashSet<String> {
+    read_routing_user_rules(app_data)
+        .get(profile_id)
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| value.as_str().map(|text| text.trim().to_string()))
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn add_routing_user_rules(
+    app_data: &Path,
+    profile_id: &str,
+    rules: &[String],
+) -> Result<(), String> {
+    if rules.is_empty() {
+        return Ok(());
+    }
+    let mut registry = read_routing_user_rules(app_data);
+    if !registry.is_object() {
+        registry = json!({});
+    }
+    let Some(map) = registry.as_object_mut() else {
+        return Ok(());
+    };
+    let entry = map
+        .entry(profile_id.to_string())
+        .or_insert_with(|| json!([]));
+    if !entry.is_array() {
+        *entry = json!([]);
+    }
+    let Some(items) = entry.as_array_mut() else {
+        return Ok(());
+    };
+    let mut seen = items
+        .iter()
+        .filter_map(|value| value.as_str())
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    for rule in rules {
+        let trimmed = rule.trim();
+        if !trimmed.is_empty() && seen.insert(trimmed.to_string()) {
+            items.push(json!(trimmed));
+        }
+    }
+    write_routing_user_rules(app_data, &registry)
+}
+
+fn replace_routing_user_rule(
+    app_data: &Path,
+    profile_id: &str,
+    old_rule: Option<&str>,
+    new_rule: Option<&str>,
+) -> Result<(), String> {
+    let mut registry = read_routing_user_rules(app_data);
+    if !registry.is_object() {
+        registry = json!({});
+    }
+    let Some(map) = registry.as_object_mut() else {
+        return Ok(());
+    };
+    let entry = map
+        .entry(profile_id.to_string())
+        .or_insert_with(|| json!([]));
+    if !entry.is_array() {
+        *entry = json!([]);
+    }
+    let Some(items) = entry.as_array_mut() else {
+        return Ok(());
+    };
+    if let Some(old_rule) = old_rule {
+        items.retain(|value| value.as_str().map(str::trim) != Some(old_rule.trim()));
+    }
+    if let Some(new_rule) = new_rule.map(str::trim).filter(|value| !value.is_empty()) {
+        let exists = items
+            .iter()
+            .any(|value| value.as_str().map(str::trim) == Some(new_rule));
+        if !exists {
+            items.push(json!(new_rule));
+        }
+    }
+    write_routing_user_rules(app_data, &registry)
+}
+
+fn routing_rule_target(rule: &str) -> Option<String> {
+    let mut parts = rule.split(',').map(str::trim);
+    let kind = parts.next()?.to_ascii_uppercase();
+    if matches!(kind.as_str(), "MATCH" | "FINAL") {
+        return parts.next().map(str::to_string);
+    }
+    parts.next()?;
+    parts.next().map(str::to_string)
+}
+
+fn routing_rule_replace_target(rule: &str, old_target: &str, new_target: &str) -> Option<String> {
+    let mut parts = rule
+        .split(',')
+        .map(|part| part.trim().to_string())
+        .collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return None;
+    }
+    let target_index = if matches!(parts[0].to_ascii_uppercase().as_str(), "MATCH" | "FINAL") {
+        1
+    } else {
+        2
+    };
+    if parts.get(target_index).map(String::as_str) != Some(old_target) {
+        return None;
+    }
+    parts[target_index] = new_target.to_string();
+    Some(parts.join(","))
+}
+
+fn validate_routing_group_type(value: &str) -> Result<&'static str, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "select" | "selector" => Ok("select"),
+        "url-test" | "urltest" => Ok("url-test"),
+        "fallback" => Ok("fallback"),
+        "load-balance" | "loadbalance" => Ok("load-balance"),
+        other => Err(format!("Unsupported strategy group type: {other}")),
+    }
+}
+
+fn validate_routing_group_members(
+    values: &[String],
+    targets: &HashSet<String>,
+) -> Result<Vec<String>, String> {
+    let mut members = Vec::new();
+    let mut seen = HashSet::new();
+    for value in values {
+        let member = validate_routing_rule_part("strategy group member", value, 180)?;
+        if !routing_rule_target_exists(targets, &member) {
+            return Err(format!("Strategy group member does not exist: {member}"));
+        }
+        if seen.insert(member.clone()) {
+            members.push(member);
+        }
+    }
+    if members.is_empty() {
+        return Err("Strategy group needs at least one node or group".to_string());
+    }
+    Ok(members)
+}
+
+fn mark_registered_user_routing_rules(rules: &mut [JsonValue], registry: &HashSet<String>) {
+    for item in rules {
+        let raw = item
+            .get("raw")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim();
+        if raw.is_empty() || !registry.contains(raw) {
+            continue;
+        }
+        if let Some(map) = item.as_object_mut() {
+            map.insert("source".to_string(), json!("user"));
+            map.insert("editable".to_string(), json!(true));
+        }
+    }
+}
+
+fn mark_last_applied_routing_rules(rules: &mut [JsonValue], metadata: Option<&JsonValue>) {
+    let applied = metadata
+        .and_then(|value| value.get("appliedRules"))
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| value.as_str().map(|text| text.trim().to_string()))
+        .collect::<HashSet<_>>();
+    if applied.is_empty() {
+        return;
+    }
+    mark_registered_user_routing_rules(rules, &applied);
+}
+
+fn mark_system_routing_rules(rules: &mut [JsonValue]) {
+    for item in rules {
+        let target = item
+            .get("target")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let condition = item
+            .get("condition")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let system_rule = target == AEGOS_OUTBOUND_IP_GROUP
+            || condition.contains("api.ipify.org")
+            || condition.contains("api6.ipify.org")
+            || condition.contains("checkip.amazonaws.com")
+            || condition.contains("ifconfig.me")
+            || condition.contains("icanhazip.com")
+            || condition.contains("ident.me");
+        if !system_rule {
+            continue;
+        }
+        if let Some(map) = item.as_object_mut() {
+            map.insert("source".to_string(), json!("system"));
+            map.insert("editable".to_string(), json!(false));
+            map.insert(
+                "explanation".to_string(),
+                json!("Aegos internal rule used to query the current node outbound IP; it is hidden from normal routing decisions and cannot be edited."),
+            );
+        }
+    }
+}
+
 fn routing_rule_target_exists(targets: &HashSet<String>, target: &str) -> bool {
     targets.contains(target) || targets.contains(&target.to_ascii_uppercase())
 }
@@ -11211,17 +12067,17 @@ fn routing_rule_target_exists(targets: &HashSet<String>, target: &str) -> bool {
 fn validate_routing_rule_part(label: &str, value: &str, max_len: usize) -> Result<String, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Err(format!("{label}不能为空。"));
+        return Err(format!("{label} cannot be empty."));
     }
     if trimmed.len() > max_len {
-        return Err(format!("{label}太长，请缩短后再应用。"));
+        return Err(format!("{label} is too long. Shorten it and apply again."));
     }
     if trimmed.contains('\r')
         || trimmed.contains('\n')
         || trimmed.contains('\0')
         || trimmed.contains(',')
     {
-        return Err(format!("{label}包含不支持的字符。"));
+        return Err(format!("{label} contains unsupported characters."));
     }
     Ok(trimmed.to_string())
 }
@@ -11242,12 +12098,12 @@ fn normalize_routing_draft_rule(
         "IP-CIDR",
     ];
     if !allowed.contains(&kind.as_str()) {
-        return Err(format!("暂不支持这种分流规则类型：{kind}"));
+        return Err(format!("Unsupported routing rule type: {kind}"));
     }
-    let condition = validate_routing_rule_part("分流条件", &draft.condition, 220)?;
-    let target = validate_routing_rule_part("分流目标", &draft.target, 140)?;
+    let condition = validate_routing_rule_part("鍒嗘祦鏉′欢", &draft.condition, 220)?;
+    let target = validate_routing_rule_part("鍒嗘祦鐩爣", &draft.target, 140)?;
     if !routing_rule_target_exists(targets, &target) {
-        return Err(format!("分流目标不存在：{target}"));
+        return Err(format!("鍒嗘祦鐩爣涓嶅瓨鍦細{target}"));
     }
     let option = draft
         .option
@@ -11256,10 +12112,10 @@ fn normalize_routing_draft_rule(
         .filter(|value| !value.is_empty());
     if let Some(option) = option {
         if option != "no-resolve" {
-            return Err(format!("暂不支持这个规则选项：{option}"));
+            return Err(format!("Unsupported routing rule option: {option}"));
         }
         if !matches!(kind.as_str(), "GEOIP" | "IP-CIDR") {
-            return Err("no-resolve 只适用于 GEOIP 或 IP-CIDR 规则。".to_string());
+            return Err("no-resolve only applies to GEOIP or IP-CIDR rules.".to_string());
         }
     }
     let rule = if let Some(option) = option {
@@ -11713,7 +12569,7 @@ fn routing_assistant_gate_contract() -> JsonValue {
 
 #[tauri::command]
 fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
-    let (running, controller_port, secret, mode, groups, active_profile) = {
+    let (running, controller_port, secret, mode, groups, active_profile, last_apply) = {
         let core = state.core.lock().unwrap();
         (
             core.process.is_some(),
@@ -11722,6 +12578,7 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
             core.settings.mode.clone(),
             core.proxy_groups(),
             core.active_profile(),
+            core.routing_apply_metadata(),
         )
     };
     let group_rows = groups
@@ -11729,6 +12586,13 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
         .cloned()
         .unwrap_or_default()
         .into_iter()
+        .filter(|group| {
+            group
+                .get("name")
+                .and_then(|value| value.as_str())
+                .map(|name| !is_internal_proxy_group_name(name))
+                .unwrap_or(true)
+        })
         .map(|group| {
             let group_type_raw = group
                 .get("type")
@@ -11744,15 +12608,20 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
                 "name": group.get("name").and_then(|value| value.as_str()).unwrap_or("-"),
                 "type": group_type,
                 "now": group.get("now").and_then(|value| value.as_str()).unwrap_or("-"),
+                "items": group.get("items").cloned().unwrap_or_else(|| json!([])),
                 "itemCount": item_count,
-                "automatic": matches!(group_type.as_str(), "url-test" | "fallback" | "load-balance")
+                "automatic": matches!(group_type.as_str(), "url-test" | "fallback" | "load-balance"),
+                "editable": !is_internal_proxy_group_name(group.get("name").and_then(|value| value.as_str()).unwrap_or(""))
             })
         })
         .collect::<Vec<_>>();
     let recent_connections = if running {
-        controller_request(controller_port, &secret, "GET", "/connections", None, 550)
+        core_runtime::CoreController {
+            controller_port,
+            secret: secret.clone(),
+        }
+        .connections_snapshot(550)
             .ok()
-            .and_then(|data| data.get("connections").cloned())
             .and_then(|value| value.as_array().cloned())
             .unwrap_or_default()
     } else {
@@ -11795,8 +12664,32 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
             })
         })
         .collect::<Vec<_>>();
-    let (static_rules, missing_rule_targets, rule_order_issues, rule_error) =
+    let (mut static_rules, missing_rule_targets, rule_order_issues, rule_error) =
         routing_rules_for_profile(active_profile.as_ref());
+    if let Some(profile) = active_profile.as_ref() {
+        let registry = routing_user_rule_set(&state.app_data, &profile.id);
+        mark_registered_user_routing_rules(&mut static_rules, &registry);
+    }
+    mark_last_applied_routing_rules(&mut static_rules, last_apply.as_ref());
+    mark_system_routing_rules(&mut static_rules);
+    if !static_rules.iter().any(|item| {
+        item.get("source").and_then(JsonValue::as_str) == Some("system")
+            && item.get("target").and_then(JsonValue::as_str) == Some(AEGOS_OUTBOUND_IP_GROUP)
+    }) {
+        static_rules.push(json!({
+            "index": 0,
+            "raw": "Aegos internal outbound IP rules",
+            "kind": "SYSTEM",
+            "category": "system",
+            "condition": "Outbound IP query domains",
+            "target": AEGOS_OUTBOUND_IP_GROUP,
+            "options": [],
+            "status": "readonly",
+            "source": "system",
+            "editable": false,
+            "explanation": "Aegos internal rule used to query the current node outbound IP; it is generated at runtime and cannot be edited."
+        }));
+    }
     let group_count = group_rows.len();
     let auto_group_count = group_rows
         .iter()
@@ -11808,6 +12701,15 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
         .count();
     let recent_rule_hits = recent_rules.len();
     let rule_count = static_rules.len();
+    let user_rule_count = static_rules
+        .iter()
+        .filter(|item| item.get("source").and_then(JsonValue::as_str) == Some("user"))
+        .count();
+    let system_rule_count = static_rules
+        .iter()
+        .filter(|item| item.get("source").and_then(JsonValue::as_str) == Some("system"))
+        .count();
+    let config_rule_count = rule_count.saturating_sub(user_rule_count + system_rule_count);
     let missing_rule_target_count = missing_rule_targets.len();
     let rule_order_issue_count = rule_order_issues.len();
     Ok(json!({
@@ -11819,11 +12721,15 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
         "missingRuleTargets": missing_rule_targets,
         "ruleOrderIssues": rule_order_issues,
         "recentRules": recent_rules,
+        "lastApply": last_apply,
         "summary": {
             "groupCount": group_count,
             "autoGroupCount": auto_group_count,
             "recentRuleHits": recent_rule_hits,
             "ruleCount": rule_count,
+            "userRuleCount": user_rule_count,
+            "systemRuleCount": system_rule_count,
+            "configRuleCount": config_rule_count,
             "missingRuleTargets": missing_rule_target_count,
             "ruleOrderIssues": rule_order_issue_count
         }
@@ -11832,23 +12738,15 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
 
 #[tauri::command]
 fn active_connection_count(state: State<AppState>) -> Result<JsonValue, String> {
-    let (running, controller_port, secret) = {
+    let (running, controller) = {
         let core = state.core.lock().unwrap();
         (
             core.process.is_some(),
-            core.settings.controller_port,
-            core.settings.secret.clone(),
+            core.core_controller(),
         )
     };
     let count = if running {
-        controller_request(controller_port, &secret, "GET", "/connections", None, 350)
-            .ok()
-            .and_then(|data| {
-                data.get("connections")
-                    .and_then(|value| value.as_array())
-                    .map(|items| items.len())
-            })
-            .unwrap_or(0)
+        controller.active_connection_count(350).unwrap_or(0)
     } else {
         0
     };
@@ -11860,49 +12758,33 @@ fn active_connection_count(state: State<AppState>) -> Result<JsonValue, String> 
 
 #[tauri::command]
 fn close_connection(state: State<AppState>, id: String) -> Result<bool, String> {
-    let (running, controller_port, secret) = {
+    let (running, controller) = {
         let core = state.core.lock().unwrap();
         (
             core.process.is_some(),
-            core.settings.controller_port,
-            core.settings.secret.clone(),
+            core.core_controller(),
         )
     };
     if !running {
         return Ok(true);
     }
-    controller_request(
-        controller_port,
-        &secret,
-        "DELETE",
-        &format!("/connections/{id}"),
-        None,
-        2000,
-    )?;
+    controller.close_connection(&id, 2000)?;
     Ok(true)
 }
 
 #[tauri::command]
 fn close_connections(state: State<AppState>) -> Result<bool, String> {
-    let (running, controller_port, secret) = {
+    let (running, controller) = {
         let core = state.core.lock().unwrap();
         (
             core.process.is_some(),
-            core.settings.controller_port,
-            core.settings.secret.clone(),
+            core.core_controller(),
         )
     };
     if !running {
         return Ok(true);
     }
-    controller_request(
-        controller_port,
-        &secret,
-        "DELETE",
-        "/connections",
-        None,
-        3000,
-    )?;
+    controller.close_connections(3000)?;
     Ok(true)
 }
 
@@ -11997,6 +12879,7 @@ fn main() {
             job_status,
             cancel_job,
             app_status,
+            core_runtime_info,
             update_settings,
             relaunch_as_admin,
             proxy_groups,

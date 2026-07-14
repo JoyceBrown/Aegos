@@ -4,6 +4,9 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
+const coreRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'core_runtime.rs'), 'utf8');
+const profileCompilerRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'profile_compiler.rs'), 'utf8');
+const configPipelineRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'config_pipeline.rs'), 'utf8');
 
 const fail = [];
 const pass = [];
@@ -19,6 +22,14 @@ const speedEnd = mainRs.indexOf('fn test_single_proxy_delay', speedStart);
 const speedTestBody = speedStart >= 0 && speedEnd > speedStart ? mainRs.slice(speedStart, speedEnd) : '';
 const speedCommandBody = mainRs.match(/fn start_proxy_delay_test\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 const singleSpeedCommandBody = mainRs.match(/fn test_single_proxy_delay\(state: State<AppState>, name: String\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
+
+function hasControllerCall(method, timeout) {
+  return new RegExp(`controller\\s*\\.\\s*${method}\\(\\s*${timeout}\\s*\\)`).test(mainRs);
+}
+
+function hasControllerCallWithArg(method, arg, timeout) {
+  return new RegExp(`controller\\s*\\.\\s*${method}\\(\\s*${arg}\\s*,\\s*${timeout}\\s*\\)`).test(mainRs);
+}
 
 check(
   'status snapshot avoids controller version probe',
@@ -97,21 +108,23 @@ check(
 );
 check(
   'runtime DNS is isolated from local fake-ip resolvers',
-  mainRs.includes('const AEGOS_DNS_LISTEN: &str = "127.0.0.1:1054"') &&
-    mainRs.includes('const AEGOS_DIRECT_NAMESERVERS') &&
-    mainRs.includes('https://223.5.5.5/dns-query') &&
-    mainRs.includes('https://1.1.1.1/dns-query') &&
-    mainRs.includes('fn harden_runtime_dns') &&
-    mainRs.includes('proxy-server-nameserver') &&
-    mainRs.includes('fn is_local_or_fake_nameserver') &&
+  configPipelineRs.includes('pub(crate) const AEGOS_DNS_LISTEN: &str = "127.0.0.1:1054"') &&
+    configPipelineRs.includes('const AEGOS_DIRECT_NAMESERVERS') &&
+    configPipelineRs.includes('https://223.5.5.5/dns-query') &&
+    configPipelineRs.includes('https://1.1.1.1/dns-query') &&
+    configPipelineRs.includes('pub(crate) fn harden_runtime_dns') &&
+    configPipelineRs.includes('proxy-server-nameserver') &&
+    configPipelineRs.includes('pub(crate) fn is_local_or_fake_nameserver') &&
+    mainRs.includes('config_pipeline::harden_runtime_dns(&mut config)') &&
     mainRs.includes('runtime_dns_is_isolated_from_local_fake_ip_resolvers'),
   'proxy server domains must not resolve through 127.0.0.1:1053 or 198.18/198.19 fake-ip DNS'
 );
 check(
   'runtime outbound interface avoids nested virtual adapter routing',
   mainRs.includes('fn detect_windows_primary_interface_name') &&
-    mainRs.includes('fn apply_runtime_interface_binding_name') &&
-    mainRs.includes('"interface-name"') &&
+    coreRuntimeRs.includes('fn apply_interface_binding') &&
+    coreRuntimeRs.includes('"interface-name"') &&
+    mainRs.includes('core_runtime::render_runtime_profile_yaml') &&
     mainRs.includes('flclash|clash|mihomo|aegos|tun|tap|wintun') &&
     mainRs.includes('Get-NetRoute -DestinationPrefix') &&
     mainRs.includes('Get-NetAdapter -InterfaceIndex') &&
@@ -164,9 +177,11 @@ check(
   'core startup failures include actionable diagnostics',
   mainRs.includes('fn start_failure_message') &&
     mainRs.includes('recent_log_summary') &&
-    mainRs.includes('配置生成失败') &&
-    mainRs.includes('核心进程启动失败') &&
-    mainRs.includes('控制接口未在 6 秒内就绪'),
+    mainRs.includes('Core startup failed: {reason}') &&
+    mainRs.includes('Config generation failed: {err}') &&
+    mainRs.includes('Core process spawn failed: {err}') &&
+    mainRs.includes('mihomo controller did not become ready within 6 seconds') &&
+    mainRs.includes('Stopping failed mihomo startup'),
   'startup failure context'
 );
 
@@ -223,11 +238,11 @@ check(
 
 check(
   'active connection count uses short controller query',
-  mainRs.includes('fn controller_request(') &&
+  coreRuntimeRs.includes('pub fn active_connection_count(&self, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn connections_snapshot(&self, timeout_ms: u64)') &&
     mainRs.includes('fn active_connection_count(state: State<AppState>)') &&
     mainRs.includes('active_connection_count,') &&
-    mainRs.includes('"/connections"') &&
-    mainRs.includes('350') &&
+    hasControllerCall('active_connection_count', 350) &&
     !mainRs.includes('fn active_connection_count(&self) -> JsonValue'),
   'home active connection metric should stay lightweight and avoid holding the core lock during HTTP'
 );
@@ -243,6 +258,9 @@ check(
     mainRs.includes('speed_test_snapshot_from_state(&state.speed_test)') &&
     mainRs.includes('export_logs_from_state(&state.logs, &state.app_data)') &&
     mainRs.includes('state.logs.lock().unwrap().clear()') &&
+    hasControllerCall('connections_snapshot', 900) &&
+    hasControllerCallWithArg('close_connection', '&id', 2000) &&
+    hasControllerCall('close_connections', 3000) &&
     !mainRs.includes('fn export_logs(&self) -> Result<JsonValue, String>') &&
     !mainRs.includes('fn connections(&self) -> JsonValue') &&
     !mainRs.includes('fn close_connections(&self) -> Result<bool, String>'),
@@ -266,6 +284,36 @@ check(
 );
 
 check(
+  'proxy controller APIs are typed and keep speed tests measurement-only',
+  coreRuntimeRs.includes('pub fn proxies_snapshot(&self, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn select_proxy(&self, group: &str, proxy: &str, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn proxy_delay_with_client(') &&
+    mainRs.includes('.proxies_snapshot(1200)') &&
+    mainRs.includes('.proxy_delay_with_client(client, name, test_url, timeout_ms)') &&
+    mainRs.includes('.select_proxy(AEGOS_OUTBOUND_IP_GROUP, &proxy, 1500)') &&
+    mainRs.includes('.select_proxy(group, proxy, 5000)') &&
+    !mainRs.includes('controller_request(controller_port, secret, "GET", "/proxies"') &&
+    !mainRs.includes('http://127.0.0.1:{}/proxies/{}/delay') &&
+    !speedTestBody.includes('select_proxy(') &&
+    !speedTestBody.includes('change_proxy'),
+  'proxy snapshot/delay/select controller endpoints should not leak back into main.rs or speed-test switching paths'
+);
+
+check(
+  'generic CoreManager controller escape hatch is removed',
+  coreRuntimeRs.includes('pub fn version_probe(&self, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn set_mode(&self, mode: &str, timeout_ms: u64)') &&
+    mainRs.includes('self.core_controller().version_probe(900)') &&
+    mainRs.includes('self.core_controller().version_probe(300)') &&
+    mainRs.includes('self.core_controller().set_mode(mode, 3000)') &&
+    mainRs.includes('self.core_controller().close_connections(1500)') &&
+    !mainRs.includes('fn controller(') &&
+    !mainRs.includes('fn controller_request(') &&
+    !mainRs.includes('self.controller('),
+  'readiness, mode, and connection cleanup should use typed CoreController methods'
+);
+
+check(
   'port conflict diagnostics include owner lookup',
   mainRs.includes('fn port_owner_detail') &&
     mainRs.includes('Get-NetTCPConnection') &&
@@ -277,11 +325,14 @@ check(
 check(
   'runtime config preflight validates real launch config',
   mainRs.includes('fn preflight_runtime_config') &&
-    mainRs.includes('订阅没有可用 proxies 节点') &&
-    mainRs.includes('代理组引用了不存在的节点') &&
-    mainRs.includes('mixed-port 应为') &&
-    mainRs.includes('YAML 解析失败') &&
-    mainRs.includes('Config preflight passed'),
+    mainRs.includes('Config preflight failed: root YAML value must be an object') &&
+    mainRs.includes('Config preflight failed: subscription has no usable proxies') &&
+    mainRs.includes('Config preflight failed: proxy group references missing target(s)') &&
+    mainRs.includes('Config preflight failed: mixed-port should be') &&
+    mainRs.includes('Config preflight failed: external-controller should end with') &&
+    mainRs.includes('Config preflight passed') &&
+    configPipelineRs.includes('pub(crate) fn preflight_profile_source') &&
+    profileCompilerRs.includes('config_pipeline::preflight_profile_source(source, profile, settings)'),
   'profile/config preflight'
 );
 
@@ -314,7 +365,8 @@ check(
     mainRs.includes('struct ProfileSourceSummary') &&
     mainRs.includes('fn summarize_profile_source') &&
     mainRs.includes('subscription download returned empty content') &&
-    mainRs.includes('preflight_runtime_config(&patched, &profile, &settings).map_err') &&
+    mainRs.includes('config_pipeline::preflight_profile_source(source.config, &profile, &settings)') &&
+    mainRs.includes('let patched = runtime.config') &&
     mainRs.includes('"runtime-preflight"') &&
     mainRs.includes('node_count') &&
     mainRs.includes('fn profile_file_summary') &&
@@ -342,9 +394,14 @@ check(
     mainRs.includes('fn hot_reload_profile') &&
     mainRs.includes('fn patch_profile_file') &&
     mainRs.includes('fn launch_runtime_yaml') &&
-    mainRs.includes('atomic_write_text_confined(&runtime_path, &self.home_dir, &runtime_yaml)') &&
+    coreRuntimeRs.includes('pub fn write_runtime_profile') &&
+    coreRuntimeRs.includes('fn atomic_write_text_confined') &&
+    mainRs.includes('core_runtime::write_runtime_profile') &&
     mainRs.includes('proxy_group_name_set') &&
-    mainRs.includes('/configs?force=true') &&
+    coreRuntimeRs.includes('pub struct CoreRuntimeApplyTransaction') &&
+    coreRuntimeRs.includes('/configs?force=true') &&
+    mainRs.includes('CoreRuntimeApplyTransaction::new') &&
+    mainRs.includes('apply_transaction.apply(&self.core_controller())') &&
     mainRs.includes('Profile hot reload failed; falling back to restart') &&
     mainRs.includes('Profile switch preflight failed') &&
     mainRs.includes('let previous_profile_id = self.settings.active_profile_id.clone()') &&
@@ -369,8 +426,35 @@ check(
 
 check(
   'profile apply uses digest no-op strategy',
-  mainRs.includes('fn sha256_text') &&
-    mainRs.includes('struct RenderedProfile') &&
+  mainRs.includes('mod profile_compiler') &&
+    mainRs.includes('mod config_pipeline') &&
+    configPipelineRs.includes('pub(crate) fn patch_config') &&
+    configPipelineRs.includes('pub(crate) fn patch_direct_profile') &&
+    configPipelineRs.includes('pub(crate) fn patch_profile_source') &&
+    configPipelineRs.includes('pub(crate) fn patch_speed_test_source') &&
+    configPipelineRs.includes('pub(crate) fn speed_test_firewall_ports_from_source') &&
+    configPipelineRs.includes('pub(crate) fn preflight_config') &&
+    configPipelineRs.includes('pub(crate) fn patch_and_preflight') &&
+    configPipelineRs.includes('pub(crate) fn preflight_profile_source') &&
+    profileCompilerRs.includes('pub(crate) struct RenderedProfile') &&
+    profileCompilerRs.includes('pub(crate) fn compile_profile_file') &&
+    profileCompilerRs.includes('pub(crate) fn compile_profile_source') &&
+    profileCompilerRs.includes('config_pipeline::preflight_profile_source(source, profile, settings)') &&
+    !profileCompilerRs.includes('patch_config_with_settings') &&
+    !profileCompilerRs.includes('preflight_runtime_config') &&
+    profileCompilerRs.includes('digest: sha256_text(&yaml)') &&
+    mainRs.includes('profile_compiler::compile_profile_file(profile, settings)') &&
+    mainRs.includes('config_pipeline::preflight_profile_source(source.config, &profile, &settings)') &&
+    mainRs.includes('config_pipeline::preflight_profile_source(source.clone(), &profile, &settings)') &&
+    mainRs.includes('config_pipeline::patch_profile_source(source, profile, &settings)') &&
+    mainRs.includes('config_pipeline::patch_direct_profile(&self.settings)') &&
+    mainRs.includes('config_pipeline::speed_test_firewall_ports_from_source(') &&
+    !mainRs.includes('config_pipeline::patch_speed_test_source(') &&
+    !mainRs.includes('proxy_ports_from_config') &&
+    !mainRs.includes('config_pipeline::patch_config(') &&
+    !mainRs.includes('config_pipeline::patch_and_preflight(') &&
+    !mainRs.includes('config_pipeline::preflight_config(') &&
+    !mainRs.includes('let patched = patch_config_with_settings(source, settings, Some(&profile.id))?') &&
     mainRs.includes('runtime_config_digest') &&
     mainRs.includes('Profile apply skipped; unchanged runtime config digest') &&
     mainRs.includes('"skipped": true') &&

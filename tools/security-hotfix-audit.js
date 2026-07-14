@@ -35,7 +35,7 @@ const applyTakeoverBody = sliceBetween(mainRs, 'fn apply_takeover_after_core_rea
 const stopBody = sliceBetween(mainRs, 'fn stop(&mut self)', 'fn shutdown_for_exit');
 const speedBody = sliceBetween(mainRs, 'fn start_proxy_delay_test', 'fn test_single_proxy_delay');
 const singleSpeedBody = sliceBetween(mainRs, 'fn test_single_proxy_delay_for_run', 'fn probe_proxy_network');
-const exportLogsBody = sliceBetween(mainRs, 'fn export_logs_from_state', 'fn controller_request');
+const exportLogsBody = sliceBetween(mainRs, 'fn export_logs_from_state', 'fn controller_proxy_groups_snapshot');
 const startBody = sliceBetween(mainRs, 'fn start_with_takeover', 'fn terminate_core_process');
 const renderNodeBody = sliceBetween(appJs, 'function renderNodeRow', 'function renderHomeNodeRow');
 const renderLogsBody = sliceBetween(appJs, 'function renderLogs', 'function setOutboundIpText');
@@ -151,9 +151,9 @@ check(
 
 check(
   'subscription and runtime preflight still guard malformed profiles',
-  mainRs.includes('parse_profile_source_text_diagnostic') &&
+    mainRs.includes('parse_profile_source_text_diagnostic') &&
     mainRs.includes('download_profile_source_url_diagnostic') &&
-    mainRs.includes('preflight_runtime_config(&patched') &&
+    mainRs.includes('config_pipeline::preflight_profile_source(source.config, &profile, &settings)') &&
     mainRs.includes('Profile switch failed and rolled back') &&
     backendAudit.includes('subscription import/update validate before applying') &&
     backendAudit.includes('profile switch validates, hot-reloads, and rolls back on failure'),

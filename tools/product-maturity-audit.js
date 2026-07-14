@@ -22,6 +22,18 @@ function check(name, ok, detail = '') {
   (ok ? pass : fail).push({ name, ok, detail });
 }
 
+function versionAtLeast(version, minimum) {
+  const parse = (value) => String(value).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const current = parse(version);
+  const target = parse(minimum);
+  for (let index = 0; index < Math.max(current.length, target.length); index += 1) {
+    const left = current[index] || 0;
+    const right = target[index] || 0;
+    if (left !== right) return left > right;
+  }
+  return true;
+}
+
 const pkg = readJson('package.json');
 const packageJson = read('package.json');
 const roadmap = read('ROADMAP_3.0.0_TO_3.6.4.md');
@@ -73,7 +85,7 @@ const singleSpeedBody = bodyBetween(mainRs, 'fn test_single_proxy_delay_for_run'
 check('product maturity audit is exposed as package script', packageJson.includes('"audit:product-maturity": "node tools/product-maturity-audit.js"'), 'package.json');
 check('release audit knows product maturity gate', releaseAudit.includes('product maturity audit script exists'), 'tools/release-audit.js');
 check('maturity audit knows 3.4.11 to 3.4.20 recovery lane', versions.every((version) => maturityAudit.includes(version)), 'tools/maturity-gate-audit.js');
-check('package version is inside product maturity recovery lane', /^3\.4\.(?:1[1-9]|20)$/.test(pkg.version), pkg.version);
+check('package version is inside product maturity recovery/stabilization lane', versionAtLeast(pkg.version, '3.4.11') && !versionAtLeast(pkg.version, '3.5.0'), pkg.version);
 check('main roadmap pauses 3.5.x until whole-product maturity passes', roadmap.includes('全软件产品成熟度补课路线') && roadmap.includes('3.5.x 在 3.4.20 通过前暂停推进'), 'roadmap stop gate');
 check('recovery plan references detailed execution table', recovery.includes('PRODUCT_MATURITY_3.4.11_TO_3.4.20_DETAILED.md'), 'PRODUCT_MATURITY_RECOVERY_PLAN.md');
 check('detailed plan covers every 3.4.11 to 3.4.20 checkpoint', versions.every((version) => detailed.includes(`## ${version}`)), versions.join(', '));

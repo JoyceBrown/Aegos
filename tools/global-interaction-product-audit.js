@@ -18,7 +18,19 @@ function check(name, ok, detail = '') {
   else failures.push(`${name}${detail ? ` (${detail})` : ''}`);
 }
 
-check('version is at least 3.4.19 interaction/performance checkpoint', /^3\.4\.(19|20)$/.test(pkg.version), pkg.version);
+function versionAtLeast(version, minimum) {
+  const parse = (value) => String(value).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const current = parse(version);
+  const target = parse(minimum);
+  for (let index = 0; index < Math.max(current.length, target.length); index += 1) {
+    const left = current[index] || 0;
+    const right = target[index] || 0;
+    if (left !== right) return left > right;
+  }
+  return true;
+}
+
+check('version is at least 3.4.19 interaction/performance checkpoint', versionAtLeast(pkg.version, '3.4.19'), pkg.version);
 check(
   'settings background probes cannot pile up during rapid navigation',
   appJs.includes('let environmentReadinessBusy = false') &&
@@ -50,10 +62,15 @@ check(
 );
 check(
   'large visible lists stay bounded',
-  appJs.includes('nodeRenderLimit = 36') &&
+  appJs.includes('nodeInitialRenderLimit = 36') &&
+    appJs.includes('nodeRenderLimit = 96') &&
+    appJs.includes('interactiveNodeRenderLimit = 24') &&
+    appJs.includes('interactiveNodeCandidateLimit = 48') &&
+    appJs.includes('const visibleNodeLimit = interactiveRender ? interactiveNodeRenderLimit : nodeRenderLimit') &&
+    appJs.includes('const nodeVisibleLimit = largeList ? visibleNodeLimit : Math.max(nodeInitialRenderLimit, nodeRows.length)') &&
     appJs.includes('homeNodeRenderLimit = 8') &&
     appJs.includes('logRenderLimit') &&
-    appJs.includes('rules.slice(0, 40)') &&
+    appJs.includes('const ruleRows = visibleRules.map') &&
     stylesCss.includes('scrollbar-gutter: stable'),
   'bounded list rendering'
 );

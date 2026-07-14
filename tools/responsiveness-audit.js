@@ -61,7 +61,14 @@ check(
     appJs.includes('const largeNodeScanLimit = 120') &&
     appJs.includes('const eagerNodeIndexLimit = 360') &&
     appJs.includes('function summaryRowsFromLatestGroup(limit = 160)') &&
-    appJs.includes('nodeRows.length < nodeRenderLimit') &&
+    appJs.includes('nodeCandidateLimit') &&
+    appJs.includes('nodeRows.length < nodeCandidateLimit') &&
+    appJs.includes('interactiveNodeRenderLimit') &&
+    appJs.includes('interactiveNodeCandidateLimit') &&
+    appJs.includes('const interactiveRender = largeList && (isForegroundHot() || isSpeedTestActive())') &&
+    appJs.includes('const visibleNodeLimit = interactiveRender ? interactiveNodeRenderLimit : nodeRenderLimit') &&
+    appJs.includes('const nodeVisibleLimit = largeList ? visibleNodeLimit : Math.max(nodeInitialRenderLimit, nodeRows.length)') &&
+    appJs.includes('sortNodeRows(nodeRows).slice(0, nodeVisibleLimit)') &&
     appJs.includes('homeNodeRenderLimit') &&
     appJs.includes('function renderRows') &&
     appJs.includes('matchingNodeCount = Math.max(matchingNodeCount, nodeRows.length + 1)'),

@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
+const coreRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'core_runtime.rs'), 'utf8');
+const configPipelineRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'config_pipeline.rs'), 'utf8');
 const appJs = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
 const backendAudit = fs.readFileSync(path.join(root, 'tools', 'backend-audit.js'), 'utf8');
@@ -136,17 +138,17 @@ check(
   mainRs.includes('last_failure_reason') &&
     mainRs.includes('lastFailureReason') &&
     mainRs.includes('DelayTestResult') &&
-    mainRs.includes('classify_failure_reason(&err.to_string())') &&
+    mainRs.includes('classify_failure_reason(&err.message)') &&
+    mainRs.includes('.map(classify_failure_reason)') &&
     mainRs.includes('fn classify_delay_http_failure') &&
     mainRs.includes('controller-delay-error') &&
     appJs.includes('function speedFailureReasonLabel') &&
     appJs.includes('function nodeSpeedNoteInfo') &&
     appJs.includes('speedFailureReasonLabel(failureReason)') &&
     appJs.includes('className: \'node-note note-bad\'') &&
-    indexHtml.includes('<span>状态</span>'),
+    /<span>\u72b6\u6001<\/span>/u.test(indexHtml),
   'tested failed nodes must show timeout/DNS/TLS/auth/etc. in a dedicated status column instead of reverting to untested'
 );
-
 check(
   'speed preflight fails fast on unsafe targets',
   mainRs.includes('fn speed_test_preflight') &&
@@ -176,26 +178,26 @@ check(
 
 check(
   'runtime DNS avoids FlClash local fake-ip resolver contamination',
-  mainRs.includes('fn harden_runtime_dns') &&
-    mainRs.includes('const AEGOS_DNS_LISTEN: &str = "127.0.0.1:1054"') &&
-    mainRs.includes('fn runtime_dns_safety_report') &&
+  configPipelineRs.includes('pub(crate) fn harden_runtime_dns') &&
+    configPipelineRs.includes('pub(crate) const AEGOS_DNS_LISTEN: &str = "127.0.0.1:1054"') &&
+    configPipelineRs.includes('pub(crate) fn runtime_dns_safety_report') &&
     mainRs.includes('"Speed test DNS isolation"') &&
-    mainRs.includes('proxy-server-nameserver') &&
-    mainRs.includes('https://223.5.5.5/dns-query') &&
-    mainRs.includes('https://1.1.1.1/dns-query') &&
+    configPipelineRs.includes('proxy-server-nameserver') &&
+    configPipelineRs.includes('https://223.5.5.5/dns-query') &&
+    configPipelineRs.includes('https://1.1.1.1/dns-query') &&
     mainRs.includes('runtime_dns_is_isolated_from_local_fake_ip_resolvers'),
   'proxy server domain lookup must use direct upstream resolvers, not 127.0.0.1:1053 or fake-ip DNS'
 );
 check(
   'runtime outbound avoids FlClash virtual adapter route nesting',
   mainRs.includes('fn detect_windows_primary_interface_name') &&
-    mainRs.includes('fn apply_runtime_interface_binding_name') &&
-    mainRs.includes('"interface-name"') &&
+    coreRuntimeRs.includes('fn apply_interface_binding') &&
+    coreRuntimeRs.includes('"interface-name"') &&
+    mainRs.includes('core_runtime::render_runtime_profile_yaml') &&
     mainRs.includes('flclash|clash|mihomo|aegos|tun|tap|wintun') &&
     mainRs.includes('runtime_interface_binding_sets_mihomo_interface_name'),
   'SS/TUIC/AnyTLS/Trojan delay probes must leave through the physical default adapter when another client TUN is enabled'
 );
-
 check(
   'advanced protocols have explicit adaptive scheduling',
   mainRs.includes('protocol_family("hysteria2")') &&

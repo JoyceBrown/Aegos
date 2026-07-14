@@ -138,11 +138,12 @@ check(
 check(
   'proxy-group references are hidden from ordinary nodes and speed targets',
   appJs.includes('function isProxyGroupReferenceItem') &&
-    appJs.includes('if (isProxyGroupReferenceItem(item)) continue;') &&
+    appJs.includes('function isRealProxyNodeItem') &&
+    appJs.includes('!isRealProxyNodeItem(item)') &&
     mainRs.includes('fn is_proxy_group_reference_item') &&
     mainRs.includes('speed_targets_skip_proxy_group_references') &&
     speedAudit.includes('speed-test targets exclude proxy-group references'),
-  'HK/JP/SG/TW/US strategy references are future routing data, not selectable nodes'
+  'strategy references and builtin policies are future routing data, not ordinary proxy nodes'
 );
 
 check(

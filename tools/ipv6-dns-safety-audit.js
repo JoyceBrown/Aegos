@@ -20,6 +20,7 @@ function check(name, ok, detail = '') {
 
 const pkg = readJson('package.json');
 const mainRs = read('src-tauri/src/main.rs');
+const configPipelineRs = read('src-tauri/src/config_pipeline.rs');
 const appJs = read('src/app.js');
 const stylesCss = read('src/styles.css');
 const releaseAudit = read('tools/release-audit.js');
@@ -34,8 +35,8 @@ check('3.4.2 current-node IPv4 outlet check exists', mainRs.includes('fn query_o
 check('3.4.3 current-node IPv6 outlet check exists', mainRs.includes('currentNodeIpv6') && mainRs.includes('https://api6.ipify.org') && mainRs.includes('v6.ident.me'), 'IPv6 outlet');
 check('3.4.4 node IPv6 support is classified', mainRs.includes('nodeIpv6Support') && mainRs.includes('"supported"') && mainRs.includes('"unsupported"'), 'node IPv6 support');
 check('3.4.5 IPv6 leak detection is separated from unsupported node', mainRs.includes('"ipv6Leak"') && mainRs.includes('"blockedOrFallback"') && mainRs.includes('"risk"'), 'IPv6 leak');
-check('3.4.6 DNS leak detection is classified', mainRs.includes('"dnsLeak"') && mainRs.includes('runtime_dns_safety_report') && mainRs.includes('AEGOS_DNS_LISTEN'), 'DNS leak');
-check('3.4.7 user-facing IPv6 mode is automatic', mainRs.includes('"mode": "auto"') && appJs.includes('ipv6AutoModeState') && appJs.includes('IPv6 模式') && appJs.includes('ipv6Toggle').valueOf(), 'auto mode');
+check('3.4.6 DNS leak detection is classified', mainRs.includes('"dnsLeak"') && mainRs.includes('config_pipeline::runtime_dns_safety_report') && configPipelineRs.includes('AEGOS_DNS_LISTEN'), 'DNS leak');
+check('3.4.7 user-facing IPv6 mode is automatic', mainRs.includes('"mode": "auto"') && appJs.includes('ipv6AutoModeState') && (appJs.includes('IPv6 模式') || appJs.includes('IPv6 \\u6a21\\u5f0f')) && appJs.includes('ipv6Toggle').valueOf(), 'auto mode');
 check('3.4.8 unsupported IPv6 falls back or blocks safely', mainRs.includes('"fallback-ipv4"') && mainRs.includes('"block-ipv6-leak"') && mainRs.includes('ipv6_dns_safety_auto_falls_back_without_connection_changes'), 'fallback/block');
 check('3.4.9 plain user prompt exists', mainRs.includes('"plainPrompt"') && appJs.includes('ipv6PlainPrompt'), 'plain prompt');
 check('3.4.10 command is read-only and registered', mainRs.includes('fn ipv6_dns_safety_snapshot') && mainRs.includes('ipv6_dns_safety_snapshot,') && mainRs.includes('"changesConnection": false') && !commandBody.includes('patch_config_with_settings(source, &settings, Some(&profile.id))?;\\n            atomic_write') && !commandBody.includes('set_active_profile') && !commandBody.includes('select_best_proxy'), 'read-only command');
