@@ -102,6 +102,7 @@ const mainRs = readText('src-tauri/src/main.rs');
 const coreRuntimeRs = readText('src-tauri/src/core_runtime.rs');
 const profileCompilerRs = readText('src-tauri/src/profile_compiler.rs');
 const configPipelineRs = readText('src-tauri/src/config_pipeline.rs');
+const activeConnectionCommandBody = mainRs.match(/fn active_connection_count\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 const powershellCalls = (mainRs.match(/Command::new\("powershell\.exe"\)/g) || []).length;
 check(
   'PowerShell commands are hidden on Windows',
@@ -185,12 +186,15 @@ check('fake node metrics are removed from node surfaces', indexHtml.includes('<s
 check(
   'active connection count is lightweight and wired through CoreController',
   coreRuntimeRs.includes('pub fn active_connection_count(&self, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn active_connection_count_snapshot_or_idle(') &&
     coreRuntimeRs.includes('pub fn connections_snapshot(&self, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn connections_snapshot_or_empty(&self, running: bool, timeout_ms: u64)') &&
     mainRs.includes('fn active_connection_count(state: State<AppState>)') &&
     !mainRs.includes('fn active_connection_count(&self) -> JsonValue') &&
     mainRs.includes('active_connection_count,') &&
-    hasControllerCall('active_connection_count', 350) &&
-    hasControllerCall('connections_snapshot', 900) &&
+    mainRs.includes('controller.active_connection_count_snapshot_or_idle(running, 350)') &&
+    mainRs.includes('controller.connections_snapshot_or_empty(running, 900)') &&
+    !activeConnectionCommandBody.includes('now_secs') &&
     hasControllerCallWithArg('close_connection', '&id', 2000) &&
     hasControllerCall('close_connections', 3000) &&
     appJs.includes('function refreshActiveConnectionCount') &&

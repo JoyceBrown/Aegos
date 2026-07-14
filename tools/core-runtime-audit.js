@@ -34,6 +34,7 @@ const tauri = readJson('src-tauri/tauri.conf.json');
 const mainRs = read('src-tauri/src/main.rs');
 const coreRuntimeRs = read('src-tauri/src/core_runtime.rs');
 const releaseAudit = read('tools/release-audit.js');
+const activeConnectionCommandBody = mainRs.match(/fn active_connection_count\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 
 function hasControllerCall(method, timeout) {
   return new RegExp(`controller\\s*\\.\\s*${method}\\(\\s*${timeout}\\s*\\)`).test(mainRs);
@@ -87,7 +88,9 @@ check(
     coreRuntimeRs.includes('pub fn controller_request') &&
     coreRuntimeRs.includes('pub fn traffic_snapshot(&self, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn connections_snapshot(&self, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn connections_snapshot_or_empty(&self, running: bool, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn active_connection_count(&self, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn active_connection_count_snapshot_or_idle(') &&
     coreRuntimeRs.includes('pub fn close_connection(&self, id: &str, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn close_connections(&self, timeout_ms: u64)') &&
     mainRs.includes('fn core_controller(&self) -> core_runtime::CoreController') &&
@@ -97,8 +100,9 @@ check(
     !mainRs.includes('fn controller_request(') &&
     !mainRs.includes('self.controller(') &&
     mainRs.includes('self.core_controller().traffic_snapshot(timeout_ms)') &&
-    hasControllerCall('connections_snapshot', 900) &&
-    hasControllerCall('active_connection_count', 350) &&
+    mainRs.includes('controller.connections_snapshot_or_empty(running, 900)') &&
+    mainRs.includes('controller.active_connection_count_snapshot_or_idle(running, 350)') &&
+    !activeConnectionCommandBody.includes('now_secs') &&
     hasControllerCallWithArg('close_connection', '&id', 2000) &&
     hasControllerCall('close_connections', 3000) &&
     !mainRs.includes('Client::builder()\n        .no_proxy()\n        .timeout(Duration::from_millis(timeout_ms))\n        .build()'),

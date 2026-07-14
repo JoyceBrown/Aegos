@@ -272,12 +272,36 @@ impl CoreController {
             })
     }
 
+    pub fn connections_snapshot_or_empty(&self, running: bool, timeout_ms: u64) -> JsonValue {
+        if !running {
+            return json!([]);
+        }
+        self.connections_snapshot(timeout_ms)
+            .unwrap_or_else(|_| json!([]))
+    }
+
     pub fn active_connection_count(&self, timeout_ms: u64) -> Result<usize, String> {
         self.connections_snapshot(timeout_ms).map(|items| {
             items
                 .as_array()
                 .map(|connections| connections.len())
                 .unwrap_or(0)
+        })
+    }
+
+    pub fn active_connection_count_snapshot_or_idle(
+        &self,
+        running: bool,
+        timeout_ms: u64,
+    ) -> JsonValue {
+        let count = if running {
+            self.active_connection_count(timeout_ms).unwrap_or(0)
+        } else {
+            0
+        };
+        json!({
+            "count": count,
+            "checkedAt": runtime_now_secs()
         })
     }
 
@@ -323,6 +347,13 @@ fn normalize_proxy_item(mut proxy: JsonValue) -> JsonValue {
         }
     }
     proxy
+}
+
+fn runtime_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or_default()
 }
 
 fn url_path_encode(input: &str) -> String {
@@ -645,6 +676,24 @@ mod tests {
         assert!(is_controller_proxy_group(&json!({ "type": "Selector" })));
         assert!(is_controller_proxy_group(&json!({ "type": "URLTest" })));
         assert!(!is_controller_proxy_group(&json!({ "type": "ss" })));
+    }
+
+    #[test]
+    fn controller_connection_idle_snapshots_are_runtime_shaped() {
+        let controller = CoreController::new(0, "");
+        assert_eq!(
+            controller.connections_snapshot_or_empty(false, 1),
+            json!([])
+        );
+        let snapshot = controller.active_connection_count_snapshot_or_idle(false, 1);
+        assert_eq!(snapshot.get("count").and_then(JsonValue::as_u64), Some(0));
+        assert!(
+            snapshot
+                .get("checkedAt")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or_default()
+                > 0
+        );
     }
 
     #[test]

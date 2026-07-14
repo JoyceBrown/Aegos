@@ -22,6 +22,7 @@ const speedEnd = mainRs.indexOf('fn test_single_proxy_delay', speedStart);
 const speedTestBody = speedStart >= 0 && speedEnd > speedStart ? mainRs.slice(speedStart, speedEnd) : '';
 const speedCommandBody = mainRs.match(/fn start_proxy_delay_test\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 const singleSpeedCommandBody = mainRs.match(/fn test_single_proxy_delay\(state: State<AppState>, name: String\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
+const activeConnectionCommandBody = mainRs.match(/fn active_connection_count\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 
 function hasControllerCall(method, timeout) {
   return new RegExp(`controller\\s*\\.\\s*${method}\\(\\s*${timeout}\\s*\\)`).test(mainRs);
@@ -240,10 +241,14 @@ check(
 check(
   'active connection count uses short controller query',
   coreRuntimeRs.includes('pub fn active_connection_count(&self, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn active_connection_count_snapshot_or_idle(') &&
     coreRuntimeRs.includes('pub fn connections_snapshot(&self, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn connections_snapshot_or_empty(&self, running: bool, timeout_ms: u64)') &&
     mainRs.includes('fn active_connection_count(state: State<AppState>)') &&
     mainRs.includes('active_connection_count,') &&
-    hasControllerCall('active_connection_count', 350) &&
+    mainRs.includes('controller.active_connection_count_snapshot_or_idle(running, 350)') &&
+    mainRs.includes('controller.connections_snapshot_or_empty(running, 900)') &&
+    !activeConnectionCommandBody.includes('now_secs') &&
     !mainRs.includes('fn active_connection_count(&self) -> JsonValue'),
   'home active connection metric should stay lightweight and avoid holding the core lock during HTTP'
 );
@@ -259,7 +264,7 @@ check(
     mainRs.includes('speed_test_snapshot_from_state(&state.speed_test)') &&
     mainRs.includes('export_logs_from_state(&state.logs, &state.app_data)') &&
     mainRs.includes('state.logs.lock().unwrap().clear()') &&
-    hasControllerCall('connections_snapshot', 900) &&
+    mainRs.includes('controller.connections_snapshot_or_empty(running, 900)') &&
     hasControllerCallWithArg('close_connection', '&id', 2000) &&
     hasControllerCall('close_connections', 3000) &&
     !mainRs.includes('fn export_logs(&self) -> Result<JsonValue, String>') &&

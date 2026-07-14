@@ -11551,12 +11551,7 @@ fn connections(state: State<AppState>) -> Result<JsonValue, String> {
         let core = state.core.lock().unwrap();
         (core.process.is_some(), core.core_controller())
     };
-    if !running {
-        return Ok(json!([]));
-    }
-    Ok(controller
-        .connections_snapshot(900)
-        .unwrap_or_else(|_| json!([])))
+    Ok(controller.connections_snapshot_or_empty(running, 900))
 }
 
 fn canonical_strategy_type(value: &str) -> String {
@@ -12678,15 +12673,7 @@ fn active_connection_count(state: State<AppState>) -> Result<JsonValue, String> 
         let core = state.core.lock().unwrap();
         (core.process.is_some(), core.core_controller())
     };
-    let count = if running {
-        controller.active_connection_count(350).unwrap_or(0)
-    } else {
-        0
-    };
-    Ok(json!({
-        "count": count,
-        "checkedAt": now_secs()
-    }))
+    Ok(controller.active_connection_count_snapshot_or_idle(running, 350))
 }
 
 #[tauri::command]
