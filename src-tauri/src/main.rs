@@ -8007,18 +8007,15 @@ impl CoreManager {
         };
         self.last_traffic = traffic.clone();
         let lan_ip = self.cached_lan_ip();
-        json!({
+        let runtime_status = core_runtime::runtime_status_json(
+            self.core_runtime_info(),
+            running,
+            self.traffic_takeover,
+        );
+        let mut status = json!({
             "product": "Aegos",
             "appVersion": env!("CARGO_PKG_VERSION"),
-            "runtime": "mihomo",
-            "runtimeInfo": self.core_runtime_info(),
             "shell": "tauri",
-            "running": running,
-            "coreReady": running,
-            "trafficTakeover": self.traffic_takeover,
-            "standby": running && !self.traffic_takeover,
-            "controller": running,
-            "version": JsonValue::Null,
             "traffic": traffic,
             "mode": self.settings.mode,
             "systemProxy": self.settings.system_proxy,
@@ -8037,7 +8034,15 @@ impl CoreManager {
             "connection": self.connection_status_summary(),
             "protection": self.protection_status(),
             "logs": self.recent_logs(120)
-        })
+        });
+        if let (Some(status_map), Some(runtime_map)) =
+            (status.as_object_mut(), runtime_status.as_object())
+        {
+            for (key, value) in runtime_map {
+                status_map.insert(key.clone(), value.clone());
+            }
+        }
+        status
     }
 
     fn cached_lan_ip(&mut self) -> String {

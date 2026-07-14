@@ -75,6 +75,23 @@ impl CoreRuntimeContract {
     }
 }
 
+pub fn runtime_status_json(
+    runtime_info: JsonValue,
+    running: bool,
+    traffic_takeover: bool,
+) -> JsonValue {
+    json!({
+        "runtime": ENGINE,
+        "runtimeInfo": runtime_info,
+        "running": running,
+        "coreReady": running,
+        "trafficTakeover": traffic_takeover,
+        "standby": running && !traffic_takeover,
+        "controller": running,
+        "version": JsonValue::Null,
+    })
+}
+
 #[derive(Clone, Debug)]
 pub struct CoreController {
     pub controller_port: u16,
@@ -829,6 +846,43 @@ mod tests {
         assert_eq!(
             normalize_delay_probe_response(&json!({ "message": "tls handshake failed" })),
             CoreDelayProbeResult::failed("tls")
+        );
+    }
+
+    #[test]
+    fn runtime_status_json_keeps_legacy_status_fields_stable() {
+        let status = runtime_status_json(json!({ "engine": ENGINE }), true, false);
+        assert_eq!(
+            status.get("runtime").and_then(JsonValue::as_str),
+            Some(ENGINE)
+        );
+        assert_eq!(
+            status.get("running").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            status.get("coreReady").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            status.get("trafficTakeover").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            status.get("standby").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            status.get("controller").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert!(status.get("version").is_some_and(JsonValue::is_null));
+        assert_eq!(
+            status
+                .get("runtimeInfo")
+                .and_then(|value| value.get("engine"))
+                .and_then(JsonValue::as_str),
+            Some(ENGINE)
         );
     }
 
