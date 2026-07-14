@@ -107,9 +107,13 @@ check(
 check(
   'Aegos routes proxy control APIs through typed CoreController methods',
   coreRuntimeRs.includes('pub fn proxies_snapshot(&self, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn proxy_groups_snapshot(') &&
+    coreRuntimeRs.includes('fn normalize_proxy_item') &&
     coreRuntimeRs.includes('pub fn select_proxy(&self, group: &str, proxy: &str, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn proxy_delay_with_client(') &&
-    mainRs.includes('.proxies_snapshot(1200)') &&
+    mainRs.includes('.proxy_groups_snapshot(1200, &[AEGOS_OUTBOUND_IP_GROUP])') &&
+    !mainRs.includes('.proxies_snapshot(1200)') &&
+    !mainRs.includes('fn normalize_proxy_item') &&
     mainRs.includes('.proxy_delay_with_client(client, name, test_url, timeout_ms)') &&
     mainRs.includes('.select_proxy(AEGOS_OUTBOUND_IP_GROUP, &proxy, 1500)') &&
     mainRs.includes('.select_proxy(group, proxy, 5000)') &&

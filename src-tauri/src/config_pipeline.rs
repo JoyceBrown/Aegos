@@ -26,7 +26,11 @@ pub(crate) fn patch_config(
 }
 
 pub(crate) fn patch_direct_profile(settings: &Settings) -> Result<YamlValue, String> {
-    patch_config(YamlValue::Mapping(Default::default()), settings, Some("direct"))
+    patch_config(
+        YamlValue::Mapping(Default::default()),
+        settings,
+        Some("direct"),
+    )
 }
 
 pub(crate) fn patch_profile_source(

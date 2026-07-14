@@ -195,7 +195,8 @@ check(
     coreRuntimeRs.includes('"interface-name"') &&
     mainRs.includes('core_runtime::render_runtime_profile_yaml') &&
     mainRs.includes('flclash|clash|mihomo|aegos|tun|tap|wintun') &&
-    mainRs.includes('runtime_interface_binding_sets_mihomo_interface_name'),
+    coreRuntimeRs.includes('runtime_interface_binding_sets_mihomo_interface_name') &&
+    !mainRs.includes('fn apply_runtime_interface_binding_name'),
   'SS/TUIC/AnyTLS/Trojan delay probes must leave through the physical default adapter when another client TUN is enabled'
 );
 check(

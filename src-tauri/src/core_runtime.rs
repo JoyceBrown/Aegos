@@ -89,6 +89,13 @@ pub struct CoreControllerHttpFailure {
 }
 
 impl CoreController {
+    pub fn new(controller_port: u16, secret: impl Into<String>) -> Self {
+        Self {
+            controller_port,
+            secret: secret.into(),
+        }
+    }
+
     pub fn request(
         &self,
         method: &str,
@@ -131,6 +138,63 @@ impl CoreController {
         self.request("GET", "/proxies", None, timeout_ms)
     }
 
+    pub fn proxy_groups_snapshot(
+        &self,
+        timeout_ms: u64,
+        hidden_group_names: &[&str],
+    ) -> Result<JsonValue, String> {
+        let data = self.proxies_snapshot(timeout_ms)?;
+        let proxies = data
+            .get("proxies")
+            .and_then(|value| value.as_object())
+            .ok_or_else(|| "Controller proxies response missing proxies object".to_string())?;
+        let groups = proxies
+            .values()
+            .filter(|item| is_controller_proxy_group(item))
+            .filter(|item| {
+                let name = item
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                !hidden_group_names.iter().any(|hidden| name == *hidden)
+            })
+            .filter(|item| {
+                item.get("all")
+                    .and_then(|value| value.as_array())
+                    .map(|items| !items.is_empty())
+                    .unwrap_or(false)
+            })
+            .map(|group| {
+                let items = group
+                    .get("all")
+                    .and_then(|value| value.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|name| {
+                        name.as_str().map(|name| {
+                            normalize_proxy_item(proxies.get(name).cloned().unwrap_or_else(|| {
+                                json!({
+                                    "name": name,
+                                    "type": "Unknown",
+                                    "alive": true,
+                                    "delay": -1
+                                })
+                            }))
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                json!({
+                    "name": group.get("name").cloned().unwrap_or(json!("")),
+                    "type": group.get("type").cloned().unwrap_or(json!("Selector")),
+                    "now": group.get("now").cloned().unwrap_or(json!("")),
+                    "items": items
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(json!(groups))
+    }
+
     pub fn version_probe(&self, timeout_ms: u64) -> Result<JsonValue, String> {
         self.request("GET", "/version", None, timeout_ms)
     }
@@ -168,13 +232,15 @@ impl CoreController {
             timeout_ms,
             url_path_encode(test_url)
         );
-        let response = client.get(url).bearer_auth(&self.secret).send().map_err(|err| {
-            CoreControllerHttpFailure {
+        let response = client
+            .get(url)
+            .bearer_auth(&self.secret)
+            .send()
+            .map_err(|err| CoreControllerHttpFailure {
                 status: None,
                 body: String::new(),
                 message: err.to_string(),
-            }
-        })?;
+            })?;
         let status = response.status();
         if !status.is_success() {
             let body = response.text().unwrap_or_default();
@@ -199,7 +265,11 @@ impl CoreController {
 
     pub fn connections_snapshot(&self, timeout_ms: u64) -> Result<JsonValue, String> {
         self.request("GET", "/connections", None, timeout_ms)
-            .map(|data| data.get("connections").cloned().unwrap_or_else(|| json!([])))
+            .map(|data| {
+                data.get("connections")
+                    .cloned()
+                    .unwrap_or_else(|| json!([]))
+            })
     }
 
     pub fn active_connection_count(&self, timeout_ms: u64) -> Result<usize, String> {
@@ -212,12 +282,7 @@ impl CoreController {
     }
 
     pub fn close_connection(&self, id: &str, timeout_ms: u64) -> Result<(), String> {
-        self.request(
-            "DELETE",
-            &format!("/connections/{id}"),
-            None,
-            timeout_ms,
-        )?;
+        self.request("DELETE", &format!("/connections/{id}"), None, timeout_ms)?;
         Ok(())
     }
 
@@ -225,6 +290,39 @@ impl CoreController {
         self.request("DELETE", "/connections", None, timeout_ms)?;
         Ok(())
     }
+}
+
+fn is_controller_proxy_group(item: &JsonValue) -> bool {
+    matches!(
+        item.get("type").and_then(|value| value.as_str()),
+        Some("Selector" | "URLTest" | "Fallback" | "LoadBalance" | "Relay")
+    )
+}
+
+fn proxy_delay(proxy: &JsonValue) -> i64 {
+    proxy
+        .get("delay")
+        .and_then(|value| value.as_i64())
+        .or_else(|| {
+            proxy
+                .get("history")
+                .and_then(|value| value.as_array())
+                .and_then(|items| items.last())
+                .and_then(|item| item.get("delay"))
+                .and_then(|value| value.as_i64())
+        })
+        .unwrap_or(-1)
+}
+
+fn normalize_proxy_item(mut proxy: JsonValue) -> JsonValue {
+    let delay = proxy_delay(&proxy);
+    if let Some(map) = proxy.as_object_mut() {
+        map.insert("delay".to_string(), json!(delay));
+        if !map.contains_key("alive") {
+            map.insert("alive".to_string(), json!(delay >= 0));
+        }
+    }
+    proxy
 }
 
 fn url_path_encode(input: &str) -> String {
@@ -458,7 +556,10 @@ fn atomic_write_text_confined(path: &Path, root: &Path, content: &str) -> Result
     }
     fs::rename(&temp_path, path).map_err(|err| {
         let _ = fs::remove_file(&temp_path);
-        format!("runtime profile atomic replace failed {}: {err}", path.display())
+        format!(
+            "runtime profile atomic replace failed {}: {err}",
+            path.display()
+        )
     })
 }
 
@@ -512,4 +613,61 @@ fn sha256_text(text: &str) -> String {
 
 pub fn digest_prefix(digest: &str) -> &str {
     &digest[..12.min(digest.len())]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn controller_proxy_item_normalization_uses_latest_history_delay() {
+        let proxy = json!({
+            "name": "HK 01",
+            "type": "ss",
+            "history": [
+                { "delay": 120 },
+                { "delay": 42 }
+            ]
+        });
+        let normalized = normalize_proxy_item(proxy);
+        assert_eq!(
+            normalized.get("delay").and_then(JsonValue::as_i64),
+            Some(42)
+        );
+        assert_eq!(
+            normalized.get("alive").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn controller_proxy_group_detection_stays_inside_runtime_boundary() {
+        assert!(is_controller_proxy_group(&json!({ "type": "Selector" })));
+        assert!(is_controller_proxy_group(&json!({ "type": "URLTest" })));
+        assert!(!is_controller_proxy_group(&json!({ "type": "ss" })));
+    }
+
+    #[test]
+    fn runtime_interface_binding_sets_mihomo_interface_name() {
+        let mut config: YamlValue = serde_yaml::from_str(
+            r#"
+mixed-port: 7891
+proxies: []
+proxy-groups: []
+rules:
+  - MATCH,DIRECT
+"#,
+        )
+        .expect("yaml");
+        assert_eq!(
+            apply_interface_binding(&mut config, "Ethernet 2"),
+            Some("Ethernet 2".to_string())
+        );
+        assert_eq!(
+            config
+                .get(YamlValue::String("interface-name".to_string()))
+                .and_then(|value| value.as_str()),
+            Some("Ethernet 2")
+        );
+    }
 }

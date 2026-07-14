@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod core_runtime;
 mod config_pipeline;
+mod core_runtime;
 mod profile_compiler;
 
 use base64::{engine::general_purpose, Engine as _};
@@ -746,54 +746,9 @@ fn controller_proxy_groups_snapshot(
     if !running {
         return None;
     }
-    let data = core_runtime::CoreController {
-        controller_port,
-        secret: secret.to_string(),
-    }
-    .proxies_snapshot(1200)
-    .ok()?;
-    let proxies = data.get("proxies").and_then(|value| value.as_object())?;
-    let groups: Vec<JsonValue> = proxies
-        .values()
-        .filter(|item| {
-            matches!(
-                item.get("type").and_then(|value| value.as_str()),
-                Some("Selector" | "URLTest" | "Fallback" | "LoadBalance" | "Relay")
-            )
-        })
-        .filter(|item| {
-            item.get("name").and_then(|value| value.as_str()) != Some(AEGOS_OUTBOUND_IP_GROUP)
-        })
-        .filter(|item| {
-            item.get("all")
-                .and_then(|value| value.as_array())
-                .map(|items| !items.is_empty())
-                .unwrap_or(false)
-        })
-        .map(|group| {
-            let items = group
-                .get("all")
-                .and_then(|value| value.as_array())
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|name| {
-                    name.as_str().map(|name| {
-                        normalize_proxy_item(proxies.get(name).cloned().unwrap_or_else(|| {
-                            json!({ "name": name, "type": "Unknown", "alive": true, "delay": -1 })
-                        }))
-                    })
-                })
-                .collect::<Vec<_>>();
-            json!({
-                "name": group.get("name").cloned().unwrap_or(json!("")),
-                "type": group.get("type").cloned().unwrap_or(json!("Selector")),
-                "now": group.get("now").cloned().unwrap_or(json!("")),
-                "items": items
-            })
-        })
-        .collect();
-    Some(json!(groups))
+    core_runtime::CoreController::new(controller_port, secret)
+        .proxy_groups_snapshot(1200, &[AEGOS_OUTBOUND_IP_GROUP])
+        .ok()
 }
 
 fn profile_proxy_groups_for_profile_snapshot(
@@ -1663,7 +1618,10 @@ fn ensure_auto_select_group_contains_all_nodes(config: &mut Mapping, proxy_names
             })
             .map(|index| index.saturating_add(1))
             .unwrap_or(0);
-        groups.insert(insert_index, url_test_proxy_group("鑷姩閫夋嫨", proxy_names));
+        groups.insert(
+            insert_index,
+            url_test_proxy_group("鑷姩閫夋嫨", proxy_names),
+        );
         return;
     };
     let Some(map) = groups[index].as_mapping_mut() else {
@@ -1879,7 +1837,10 @@ fn port_from_value(value: &JsonValue, fallback: u16, label: &str) -> Result<u16,
 fn mixed_port_from_value(value: &JsonValue, fallback: u16) -> Result<u16, String> {
     let port = port_from_value(value, fallback, "Mixed proxy port")?;
     if RESERVED_MIXED_PORTS.contains(&port) {
-        return Err("Port 7890 is reserved for FlClash/Codex traffic; use 7891 or another port for Aegos.".to_string());
+        return Err(
+            "Port 7890 is reserved for FlClash/Codex traffic; use 7891 or another port for Aegos."
+                .to_string(),
+        );
     }
     Ok(port)
 }
@@ -1923,10 +1884,7 @@ fn test_proxy_delay_request(
     test_url: &str,
     timeout_ms: u64,
 ) -> DelayTestResult {
-    let controller = core_runtime::CoreController {
-        controller_port,
-        secret: secret.to_string(),
-    };
+    let controller = core_runtime::CoreController::new(controller_port, secret);
     let data = match controller.proxy_delay_with_client(client, name, test_url, timeout_ms) {
         Ok(data) => data,
         Err(err) => {
@@ -3961,7 +3919,10 @@ fn preflight_runtime_config(
         ));
     }
     if !missing_fields.is_empty() {
-        return Err(format!("Config preflight failed: {}", missing_fields.join(", ")));
+        return Err(format!(
+            "Config preflight failed: {}",
+            missing_fields.join(", ")
+        ));
     }
     if !unsupported_proxy_types.is_empty() {
         unsupported_proxy_types.sort();
@@ -3973,7 +3934,9 @@ fn preflight_runtime_config(
         ));
     }
     if !proxies.is_empty() && proxy_groups.is_empty() {
-        return Err("Config preflight failed: proxy-groups is required when proxies exist".to_string());
+        return Err(
+            "Config preflight failed: proxy-groups is required when proxies exist".to_string(),
+        );
     }
     if rules.is_empty() {
         return Err("Config preflight failed: rules is empty".to_string());
@@ -5486,7 +5449,8 @@ dns:
 "#,
         )
         .unwrap();
-        let err = config_pipeline::runtime_dns_safety_report(&config).expect_err("local resolver should fail");
+        let err = config_pipeline::runtime_dns_safety_report(&config)
+            .expect_err("local resolver should fail");
         assert!(err.contains("unsafe"));
     }
 
@@ -5536,30 +5500,6 @@ rules:
         let changed = patch_config_with_settings(first, &settings, None).expect("changed patch");
         let changed_yaml = serde_yaml::to_string(&changed).expect("changed yaml");
         assert_ne!(sha256_text(&second_yaml), sha256_text(&changed_yaml));
-    }
-
-    #[test]
-    fn runtime_interface_binding_sets_mihomo_interface_name() {
-        let mut config: YamlValue = serde_yaml::from_str(
-            r#"
-mixed-port: 7891
-proxies: []
-proxy-groups: []
-rules:
-  - MATCH,DIRECT
-"#,
-        )
-        .expect("yaml");
-        assert!(apply_runtime_interface_binding_name(
-            &mut config,
-            "Ethernet 2"
-        ));
-        assert_eq!(
-            config
-                .get(yaml_key("interface-name"))
-                .and_then(|value| value.as_str()),
-            Some("Ethernet 2")
-        );
     }
 
     #[test]
@@ -6077,32 +6017,6 @@ fn find_free_port(current: u16, fallback: u16, reserved: &[u16]) -> Result<u16, 
     Err(format!("鏈壘鍒板彲鐢ㄧ鍙? {fallback}-{}", fallback + 79))
 }
 
-fn proxy_delay(proxy: &JsonValue) -> i64 {
-    proxy
-        .get("delay")
-        .and_then(|value| value.as_i64())
-        .or_else(|| {
-            proxy
-                .get("history")
-                .and_then(|value| value.as_array())
-                .and_then(|items| items.last())
-                .and_then(|item| item.get("delay"))
-                .and_then(|value| value.as_i64())
-        })
-        .unwrap_or(-1)
-}
-
-fn normalize_proxy_item(mut proxy: JsonValue) -> JsonValue {
-    let delay = proxy_delay(&proxy);
-    if let Some(map) = proxy.as_object_mut() {
-        map.insert("delay".to_string(), json!(delay));
-        if !map.contains_key("alive") {
-            map.insert("alive".to_string(), json!(delay >= 0));
-        }
-    }
-    proxy
-}
-
 fn builtin_proxy_item(name: &str) -> JsonValue {
     json!({
         "name": name,
@@ -6295,7 +6209,14 @@ fn is_recovery_candidate_name(name: &str) -> bool {
     }
     let lower = text.to_ascii_lowercase();
     ![
-        "traffic", "expire", "鍓╀綑", "鍒版湡", "濂楅", "瀹樼綉", "娴侀噺", "杩囨湡",
+        "traffic",
+        "expire",
+        "鍓╀綑",
+        "鍒版湡",
+        "濂楅",
+        "瀹樼綉",
+        "娴侀噺",
+        "杩囨湡",
     ]
     .iter()
     .any(|needle| lower.contains(&needle.to_ascii_lowercase()))
@@ -6853,10 +6774,10 @@ impl CoreManager {
     }
 
     fn core_controller(&self) -> core_runtime::CoreController {
-        core_runtime::CoreController {
-            controller_port: self.settings.controller_port,
-            secret: self.settings.secret.clone(),
-        }
+        core_runtime::CoreController::new(
+            self.settings.controller_port,
+            self.settings.secret.clone(),
+        )
     }
 
     fn clear_system_proxy_snapshot(&self) {
@@ -7100,13 +7021,17 @@ impl CoreManager {
             .active_profile()
             .ok_or_else(|| "No active profile; routing rules cannot be applied.".to_string())?;
         if profile.profile_type == "builtin" {
-            return Err("The built-in direct profile cannot be edited; import a subscription first.".to_string());
+            return Err(
+                "The built-in direct profile cannot be edited; import a subscription first."
+                    .to_string(),
+            );
         }
         let profile_path = PathBuf::from(&profile.path);
         let previous_raw = fs::read_to_string(&profile_path)
             .map_err(|err| format!("鍒嗘祦瑙勫垯搴旂敤澶辫触锛氳鍙栧綋鍓嶉厤缃け璐ワ細{err}"))?;
-        let mut source: YamlValue = serde_yaml::from_str(&previous_raw)
-            .map_err(|err| format!("Routing apply failed: active profile YAML parse failed: {err}"))?;
+        let mut source: YamlValue = serde_yaml::from_str(&previous_raw).map_err(|err| {
+            format!("Routing apply failed: active profile YAML parse failed: {err}")
+        })?;
         let targets = routing_rule_target_catalog(&source);
         let mut applied_rules = Vec::new();
         let mut applied_details = Vec::new();
@@ -7141,11 +7066,12 @@ impl CoreManager {
             rules.insert(insert_at + offset, yaml_str(rule));
         }
         let settings = self.settings.clone();
-        let runtime = config_pipeline::preflight_profile_source(source.clone(), &profile, &settings)
-            .map_err(|err| format!("Routing preflight failed: {err}"))?;
+        let runtime =
+            config_pipeline::preflight_profile_source(source.clone(), &profile, &settings)
+                .map_err(|err| format!("Routing preflight failed: {err}"))?;
         let runtime_preflight = runtime.report;
-        let next_raw =
-            serde_yaml::to_string(&source).map_err(|err| format!("鍒嗘祦瑙勫垯搴忓垪鍖栧け璐ワ細{err}"))?;
+        let next_raw = serde_yaml::to_string(&source)
+            .map_err(|err| format!("鍒嗘祦瑙勫垯搴忓垪鍖栧け璐ワ細{err}"))?;
         let (backup_path, backup_meta_path) = self.routing_apply_backup_paths();
         atomic_write_text_confined(&backup_path, &self.app_data, &previous_raw)?;
         let previous_digest = sha256_text(&previous_raw);
@@ -7182,7 +7108,9 @@ impl CoreManager {
             return Err(match restore_runtime {
                 Ok(_) => format!("Routing hot reload failed and config was rolled back: {err}"),
                 Err(rollback_err) => {
-                    format!("Routing hot reload failed: {err}; rollback also failed: {rollback_err}")
+                    format!(
+                        "Routing hot reload failed: {err}; rollback also failed: {rollback_err}"
+                    )
                 }
             });
         }
@@ -7221,7 +7149,10 @@ impl CoreManager {
             .and_then(JsonValue::as_str)
             .ok_or_else(|| "Routing undo record is incomplete: missing profile id.".to_string())?;
         if self.settings.active_profile_id != profile_id {
-            return Err("Switch back to the profile used for the routing apply before undoing it.".to_string());
+            return Err(
+                "Switch back to the profile used for the routing apply before undoing it."
+                    .to_string(),
+            );
         }
         let profile = self
             .settings
@@ -7233,14 +7164,16 @@ impl CoreManager {
         let restored_config: YamlValue = serde_yaml::from_str(&backup_raw)
             .map_err(|err| format!("Routing undo failed: backup YAML parse failed: {err}"))?;
         let settings = self.settings.clone();
-        let runtime = config_pipeline::preflight_profile_source(restored_config, &profile, &settings)
-            .map_err(|err| format!("Routing undo preflight failed: {err}"))?;
+        let runtime =
+            config_pipeline::preflight_profile_source(restored_config, &profile, &settings)
+                .map_err(|err| format!("Routing undo preflight failed: {err}"))?;
         let runtime_preflight = runtime.report;
         let profile_path = PathBuf::from(&profile.path);
         atomic_write_text_confined(&profile_path, &self.profile_dir, &backup_raw)?;
         if self.process.is_some() {
-            self.hot_reload_profile(&profile)
-                .map_err(|err| format!("Routing undo restored the file, but hot reload failed: {err}"))?;
+            self.hot_reload_profile(&profile).map_err(|err| {
+                format!("Routing undo restored the file, but hot reload failed: {err}")
+            })?;
         }
         let _ = remove_file_confined(&backup_path, &self.app_data);
         let _ = remove_file_confined(&backup_meta_path, &self.app_data);
@@ -7686,11 +7619,13 @@ impl CoreManager {
             let path = PathBuf::from(&profile.path);
             if let Ok(raw) = fs::read_to_string(&path) {
                 if let Ok(source) = serde_yaml::from_str::<YamlValue>(&raw) {
-                    if let Ok(profile_ports) = config_pipeline::speed_test_firewall_ports_from_source(
-                        source,
-                        &profile,
-                        &self.standby_settings(),
-                    ) {
+                    if let Ok(profile_ports) =
+                        config_pipeline::speed_test_firewall_ports_from_source(
+                            source,
+                            &profile,
+                            &self.standby_settings(),
+                        )
+                    {
                         ports.extend(profile_ports);
                     }
                 }
@@ -7909,21 +7844,24 @@ impl CoreManager {
                 self.core_path.display()
             ));
         }
-        self.ensure_runtime_ports()
-            .map_err(|err| self.start_failure_message(None, &format!("Port preparation failed: {err}")))?;
+        self.ensure_runtime_ports().map_err(|err| {
+            self.start_failure_message(None, &format!("Port preparation failed: {err}"))
+        })?;
         let profile = self
             .active_profile()
             .ok_or_else(|| "娌℃湁娲诲姩閰嶇疆".to_string())?;
         let config_digest = self
             .prepare_runtime_profile(&profile, enable_takeover)
             .map_err(|err| {
-                self.start_failure_message(Some(&profile), &format!("Config generation failed: {err}"))
+                self.start_failure_message(
+                    Some(&profile),
+                    &format!("Config generation failed: {err}"),
+                )
             })?;
         if self.process.is_some() {
             let same_profile = self.runtime_profile_id.as_deref() == Some(profile.id.as_str());
             let same_config = self.runtime_config_digest.as_deref() == Some(config_digest.as_str());
-            if same_profile && same_config && self.core_controller().version_probe(900).is_ok()
-            {
+            if same_profile && same_config && self.core_controller().version_probe(900).is_ok() {
                 self.apply_takeover_after_core_ready(enable_takeover);
                 return Ok(json!({
                     "ok": true,
@@ -7946,7 +7884,10 @@ impl CoreManager {
             thread::sleep(Duration::from_millis(250));
         }
         ensure_dir(&self.home_dir).map_err(|err| {
-            self.start_failure_message(Some(&profile), &format!("Runtime directory preparation failed: {err}"))
+            self.start_failure_message(
+                Some(&profile),
+                &format!("Runtime directory preparation failed: {err}"),
+            )
         })?;
         let launch_plan = core_runtime::CoreLaunchPlan::new(
             self.core_runtime_paths(),
@@ -8083,7 +8024,10 @@ impl CoreManager {
             }
             thread::sleep(Duration::from_millis(250));
         }
-        Err("mihomo controller did not become ready within 6 seconds; check core logs for details.".to_string())
+        Err(
+            "mihomo controller did not become ready within 6 seconds; check core logs for details."
+                .to_string(),
+        )
     }
 
     fn traffic_snapshot(&self, timeout_ms: u64) -> Result<JsonValue, String> {
@@ -8655,9 +8599,9 @@ impl CoreManager {
         }
         let groups = self.proxy_groups();
         let proxy = self.current_outbound_ip_proxy_name(&groups)?;
-        if let Err(err) =
-            self.core_controller()
-                .select_proxy(AEGOS_OUTBOUND_IP_GROUP, &proxy, 1500)
+        if let Err(err) = self
+            .core_controller()
+            .select_proxy(AEGOS_OUTBOUND_IP_GROUP, &proxy, 1500)
         {
             self.add_log(
                 format!("Outbound IP lookup group sync failed: {err}"),
@@ -9674,7 +9618,8 @@ impl CoreManager {
             if let Err(err) = self.hot_reload_profile(&profile) {
                 self.settings = previous_settings;
                 let _ = self.save_settings();
-                let message = format!("Fixed node hot reload failed after save; rolled back: {err}");
+                let message =
+                    format!("Fixed node hot reload failed after save; rolled back: {err}");
                 self.add_log(&message, "error");
                 return Err(message);
             }
@@ -10041,11 +9986,8 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             let source: YamlValue = serde_yaml::from_str(&raw).map_err(|err| {
                 format!("DNS preflight YAML parse failed {}: {err}", path.display())
             })?;
-            let patched = config_pipeline::patch_profile_source(
-                source,
-                profile,
-                &snapshot.settings,
-            )?;
+            let patched =
+                config_pipeline::patch_profile_source(source, profile, &snapshot.settings)?;
             config_pipeline::runtime_dns_safety_report(&patched)
         });
     let runtime_dns_safety_ok = runtime_dns_safety.is_ok();
@@ -11607,10 +11549,7 @@ fn select_best_proxy(state: State<AppState>) -> Result<JsonValue, String> {
 fn connections(state: State<AppState>) -> Result<JsonValue, String> {
     let (running, controller) = {
         let core = state.core.lock().unwrap();
-        (
-            core.process.is_some(),
-            core.core_controller(),
-        )
+        (core.process.is_some(), core.core_controller())
     };
     if !running {
         return Ok(json!([]));
@@ -12616,11 +12555,8 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
         })
         .collect::<Vec<_>>();
     let recent_connections = if running {
-        core_runtime::CoreController {
-            controller_port,
-            secret: secret.clone(),
-        }
-        .connections_snapshot(550)
+        core_runtime::CoreController::new(controller_port, secret.clone())
+            .connections_snapshot(550)
             .ok()
             .and_then(|value| value.as_array().cloned())
             .unwrap_or_default()
@@ -12740,10 +12676,7 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
 fn active_connection_count(state: State<AppState>) -> Result<JsonValue, String> {
     let (running, controller) = {
         let core = state.core.lock().unwrap();
-        (
-            core.process.is_some(),
-            core.core_controller(),
-        )
+        (core.process.is_some(), core.core_controller())
     };
     let count = if running {
         controller.active_connection_count(350).unwrap_or(0)
@@ -12760,10 +12693,7 @@ fn active_connection_count(state: State<AppState>) -> Result<JsonValue, String> 
 fn close_connection(state: State<AppState>, id: String) -> Result<bool, String> {
     let (running, controller) = {
         let core = state.core.lock().unwrap();
-        (
-            core.process.is_some(),
-            core.core_controller(),
-        )
+        (core.process.is_some(), core.core_controller())
     };
     if !running {
         return Ok(true);
@@ -12776,10 +12706,7 @@ fn close_connection(state: State<AppState>, id: String) -> Result<bool, String> 
 fn close_connections(state: State<AppState>) -> Result<bool, String> {
     let (running, controller) = {
         let core = state.core.lock().unwrap();
-        (
-            core.process.is_some(),
-            core.core_controller(),
-        )
+        (core.process.is_some(), core.core_controller())
     };
     if !running {
         return Ok(true);
