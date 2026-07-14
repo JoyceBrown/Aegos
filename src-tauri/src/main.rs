@@ -54,24 +54,6 @@ const AEGOS_URI_PROTOCOLS: &[&str] = &[
     "anytls",
     "tuic",
 ];
-const MIHOMO_PROXY_TYPES: &[&str] = &[
-    "direct",
-    "reject",
-    "ss",
-    "ssr",
-    "vmess",
-    "vless",
-    "trojan",
-    "hysteria",
-    "hysteria2",
-    "anytls",
-    "tuic",
-    "http",
-    "socks5",
-    "snell",
-    "wireguard",
-    "ssh",
-];
 
 fn default_reliability_auto() -> bool {
     true
@@ -135,27 +117,6 @@ fn subscription_diagnostic(stage: &str, reason: impl AsRef<str>, suggestion: &st
 fn is_supported_uri_scheme(scheme: &str) -> bool {
     let scheme = scheme.to_ascii_lowercase();
     AEGOS_URI_PROTOCOLS.contains(&scheme.as_str())
-}
-
-fn normalize_proxy_type(value: &str) -> String {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "hy2" => "hysteria2".to_string(),
-        "socks" => "socks5".to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn mihomo_supports_proxy_type(value: &str) -> bool {
-    let normalized = normalize_proxy_type(value);
-    MIHOMO_PROXY_TYPES.contains(&normalized.as_str())
-}
-
-fn protocol_capability_summary() -> String {
-    format!(
-        "Aegos URI parser: {}; bundled Mihomo proxy types: {}",
-        AEGOS_URI_PROTOCOLS.join(", "),
-        MIHOMO_PROXY_TYPES.join(", ")
-    )
 }
 
 fn classify_failure_reason(reason: &str) -> &'static str {
@@ -3539,7 +3500,7 @@ fn normalize_manual_node(input: &JsonValue) -> Result<JsonValue, String> {
         .and_then(|value| value.as_str())
         .unwrap_or("")
         .trim();
-    let node_type = normalize_proxy_type(
+    let node_type = core_runtime::normalize_proxy_type(
         map.get("type")
             .and_then(|value| value.as_str())
             .unwrap_or("ss")
@@ -3565,10 +3526,10 @@ fn normalize_manual_node(input: &JsonValue) -> Result<JsonValue, String> {
     if port == 0 || port > 65535 {
         return Err("鍥哄畾鑺傜偣绔彛蹇呴』鍦?1-65535 涔嬮棿".to_string());
     }
-    if !mihomo_supports_proxy_type(&node_type) {
+    if !core_runtime::supports_proxy_type(&node_type) {
         return Err(format!(
             "Unsupported manual node protocol: {node_type}; {}",
-            protocol_capability_summary()
+            core_runtime::protocol_capability_summary(AEGOS_URI_PROTOCOLS)
         ));
     }
     if !matches!(
@@ -3864,7 +3825,7 @@ fn preflight_runtime_config(
             .and_then(|value| value.as_str())
             .unwrap_or("")
             .trim();
-        if !proxy_type.is_empty() && !mihomo_supports_proxy_type(proxy_type) {
+        if !proxy_type.is_empty() && !core_runtime::supports_proxy_type(proxy_type) {
             unsupported_proxy_types.push(format!(
                 "{} ({})",
                 if name.is_empty() { "proxy" } else { name },
@@ -3896,7 +3857,7 @@ fn preflight_runtime_config(
         return Err(format!(
             "Config preflight failed: unsupported proxy type(s): {}. {}",
             unsupported_proxy_types.join(", "),
-            protocol_capability_summary()
+            core_runtime::protocol_capability_summary(AEGOS_URI_PROTOCOLS)
         ));
     }
     if !proxies.is_empty() && proxy_groups.is_empty() {
@@ -3986,11 +3947,7 @@ fn preflight_runtime_config(
         "rules": rules.len(),
         "mixedPort": settings.mixed_port,
         "controllerPort": settings.controller_port,
-        "protocolCapabilities": {
-            "uriParser": AEGOS_URI_PROTOCOLS,
-            "mihomoProxyTypes": MIHOMO_PROXY_TYPES,
-            "core": "Mihomo Meta v1.19.27 bundled"
-        }
+        "protocolCapabilities": core_runtime::protocol_capabilities_json(AEGOS_URI_PROTOCOLS)
     }))
 }
 fn normalize_outbound_ip_response(text: &str) -> Option<String> {
@@ -5002,7 +4959,7 @@ rules:
             .expect_err("unsupported core protocol should fail preflight");
         assert!(err.contains("unsupported proxy type"));
         assert!(err.contains("shadowtls"));
-        assert!(err.contains("bundled Mihomo proxy types"));
+        assert!(err.contains("Aegos runtime proxy types"));
     }
 
     #[test]
@@ -5020,8 +4977,11 @@ rules:
             node.get("type").and_then(JsonValue::as_str),
             Some("hysteria2")
         );
-        assert!(mihomo_supports_proxy_type("anytls"));
-        assert!(protocol_capability_summary().contains("Aegos URI parser"));
+        assert!(core_runtime::supports_proxy_type("anytls"));
+        assert!(
+            core_runtime::protocol_capability_summary(AEGOS_URI_PROTOCOLS)
+                .contains("Aegos URI parser")
+        );
     }
 
     #[test]
@@ -5989,7 +5949,7 @@ fn builtin_proxy_item(name: &str) -> JsonValue {
 }
 
 fn proxy_speed_protocol(protocol: &str, map: &Mapping) -> String {
-    let normalized = normalize_proxy_type(protocol);
+    let normalized = core_runtime::normalize_proxy_type(protocol);
     if normalized == "ss" {
         if let Some(plugin) = map
             .get(yaml_key("plugin"))

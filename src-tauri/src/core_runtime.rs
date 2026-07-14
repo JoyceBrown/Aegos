@@ -21,6 +21,24 @@ pub const EXPECTED_SHA256: &str =
 pub const MANAGED_BY: &str = "Aegos";
 pub const CONTROL_PLANE: &str = "Aegos";
 pub const CREATE_NO_WINDOW: u32 = 0x08000000;
+pub const SUPPORTED_PROXY_TYPES: &[&str] = &[
+    "direct",
+    "reject",
+    "ss",
+    "ssr",
+    "vmess",
+    "vless",
+    "trojan",
+    "hysteria",
+    "hysteria2",
+    "anytls",
+    "tuic",
+    "http",
+    "socks5",
+    "snell",
+    "wireguard",
+    "ssh",
+];
 
 #[derive(Clone, Debug)]
 pub struct CoreRuntimePaths {
@@ -89,6 +107,42 @@ pub fn runtime_status_json(
         "standby": running && !traffic_takeover,
         "controller": running,
         "version": JsonValue::Null,
+    })
+}
+
+pub fn normalize_proxy_type(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "hy2" => "hysteria2".to_string(),
+        "socks" => "socks5".to_string(),
+        other => other.to_string(),
+    }
+}
+
+pub fn supports_proxy_type(value: &str) -> bool {
+    let normalized = normalize_proxy_type(value);
+    SUPPORTED_PROXY_TYPES.contains(&normalized.as_str())
+}
+
+pub fn protocol_capability_summary(uri_protocols: &[&str]) -> String {
+    format!(
+        "Aegos URI parser: {}; Aegos runtime proxy types: {}",
+        uri_protocols.join(", "),
+        SUPPORTED_PROXY_TYPES.join(", ")
+    )
+}
+
+pub fn protocol_capabilities_json(uri_protocols: &[&str]) -> JsonValue {
+    json!({
+        "uriParser": uri_protocols,
+        "runtimeProxyTypes": SUPPORTED_PROXY_TYPES,
+        "runtime": {
+            "engine": ENGINE,
+            "role": ROLE,
+            "version": EXPECTED_VERSION,
+            "managedBy": MANAGED_BY,
+            "controlPlane": CONTROL_PLANE,
+        },
+        "core": format!("{ENGINE} {EXPECTED_VERSION} bundled")
     })
 }
 
@@ -829,6 +883,36 @@ mod tests {
         assert!(is_controller_proxy_group(&json!({ "type": "Selector" })));
         assert!(is_controller_proxy_group(&json!({ "type": "URLTest" })));
         assert!(!is_controller_proxy_group(&json!({ "type": "ss" })));
+    }
+
+    #[test]
+    fn runtime_protocol_capabilities_normalize_and_report_current_contract() {
+        assert_eq!(normalize_proxy_type("hy2"), "hysteria2");
+        assert_eq!(normalize_proxy_type("SOCKS"), "socks5");
+        assert!(supports_proxy_type("anytls"));
+        assert!(supports_proxy_type("hy2"));
+        assert!(!supports_proxy_type("shadowtls"));
+
+        let summary = protocol_capability_summary(&["ss", "hy2", "anytls"]);
+        assert!(summary.contains("Aegos URI parser"));
+        assert!(summary.contains("Aegos runtime proxy types"));
+        assert!(summary.contains("hysteria2"));
+
+        let capabilities = protocol_capabilities_json(&["ss", "hy2"]);
+        assert_eq!(
+            capabilities
+                .get("runtime")
+                .and_then(|value| value.get("version"))
+                .and_then(JsonValue::as_str),
+            Some(EXPECTED_VERSION)
+        );
+        assert_eq!(
+            capabilities
+                .get("runtimeProxyTypes")
+                .and_then(JsonValue::as_array)
+                .map(Vec::len),
+            Some(SUPPORTED_PROXY_TYPES.len())
+        );
     }
 
     #[test]

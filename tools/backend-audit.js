@@ -514,14 +514,21 @@ check(
 check(
   'protocol capability matrix rejects core-unsupported proxy types',
   mainRs.includes('const AEGOS_URI_PROTOCOLS') &&
-    mainRs.includes('const MIHOMO_PROXY_TYPES') &&
-    mainRs.includes('fn mihomo_supports_proxy_type') &&
-    mainRs.includes('fn protocol_capability_summary') &&
+    !mainRs.includes('const MIHOMO_PROXY_TYPES') &&
+    !mainRs.includes('fn mihomo_supports_proxy_type') &&
+    !mainRs.includes('fn protocol_capability_summary') &&
+    coreRuntimeRs.includes('pub const SUPPORTED_PROXY_TYPES') &&
+    coreRuntimeRs.includes('pub fn supports_proxy_type') &&
+    coreRuntimeRs.includes('pub fn protocol_capability_summary') &&
+    coreRuntimeRs.includes('pub fn protocol_capabilities_json') &&
+    mainRs.includes('core_runtime::supports_proxy_type') &&
+    mainRs.includes('core_runtime::protocol_capabilities_json') &&
     mainRs.includes('unsupported_proxy_types') &&
     mainRs.includes('Config preflight failed: unsupported proxy type(s)') &&
     mainRs.includes('preflight_rejects_core_unsupported_proxy_type') &&
-    mainRs.includes('manual_hy2_node_is_normalized_to_hysteria2'),
-  'parser/core/manual protocol support stays explicit'
+    mainRs.includes('manual_hy2_node_is_normalized_to_hysteria2') &&
+    coreRuntimeRs.includes('runtime_protocol_capabilities_normalize_and_report_current_contract'),
+  'parser/runtime/manual protocol support stays explicit at runtime boundary'
 );
 
 check(
