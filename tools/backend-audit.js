@@ -342,11 +342,15 @@ check(
 check(
   'runtime config preflight validates real launch config',
   mainRs.includes('fn preflight_runtime_config') &&
-    mainRs.includes('Config preflight failed: root YAML value must be an object') &&
-    mainRs.includes('Config preflight failed: subscription has no usable proxies') &&
-    mainRs.includes('Config preflight failed: proxy group references missing target(s)') &&
-    mainRs.includes('Config preflight failed: mixed-port should be') &&
-    mainRs.includes('Config preflight failed: external-controller should end with') &&
+    mainRs.includes('core_runtime::preflight_runtime_config') &&
+    coreRuntimeRs.includes('pub struct RuntimeConfigPreflightInput') &&
+    coreRuntimeRs.includes('pub fn preflight_runtime_config') &&
+    coreRuntimeRs.includes('Config preflight failed: root YAML value must be an object') &&
+    coreRuntimeRs.includes('Config preflight failed: subscription has no usable proxies') &&
+    coreRuntimeRs.includes('Config preflight failed: proxy group references missing target(s)') &&
+    coreRuntimeRs.includes('Config preflight failed: mixed-port should be') &&
+    coreRuntimeRs.includes('Config preflight failed: external-controller should end with') &&
+    coreRuntimeRs.includes('runtime_config_preflight_validates_runtime_contract_inside_boundary') &&
     mainRs.includes('Config preflight passed') &&
     configPipelineRs.includes('pub(crate) fn preflight_profile_source') &&
     profileCompilerRs.includes('config_pipeline::preflight_profile_source(source, profile, settings)'),
@@ -414,7 +418,7 @@ check(
     coreRuntimeRs.includes('pub fn write_runtime_profile') &&
     coreRuntimeRs.includes('fn atomic_write_text_confined') &&
     mainRs.includes('core_runtime::write_runtime_profile') &&
-    mainRs.includes('proxy_group_name_set') &&
+    coreRuntimeRs.includes('proxy_group_name_set') &&
     coreRuntimeRs.includes('pub struct CoreRuntimeApplyTransaction') &&
     coreRuntimeRs.includes('/configs?force=true') &&
     mainRs.includes('CoreRuntimeApplyTransaction::new') &&
@@ -522,9 +526,9 @@ check(
     coreRuntimeRs.includes('pub fn protocol_capability_summary') &&
     coreRuntimeRs.includes('pub fn protocol_capabilities_json') &&
     mainRs.includes('core_runtime::supports_proxy_type') &&
-    mainRs.includes('core_runtime::protocol_capabilities_json') &&
-    mainRs.includes('unsupported_proxy_types') &&
-    mainRs.includes('Config preflight failed: unsupported proxy type(s)') &&
+    coreRuntimeRs.includes('protocol_capabilities_json') &&
+    coreRuntimeRs.includes('unsupported_proxy_types') &&
+    coreRuntimeRs.includes('Config preflight failed: unsupported proxy type(s)') &&
     mainRs.includes('preflight_rejects_core_unsupported_proxy_type') &&
     mainRs.includes('manual_hy2_node_is_normalized_to_hysteria2') &&
     coreRuntimeRs.includes('runtime_protocol_capabilities_normalize_and_report_current_contract'),

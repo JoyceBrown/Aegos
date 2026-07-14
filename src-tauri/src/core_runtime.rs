@@ -3,6 +3,7 @@ use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashSet,
     fs,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
@@ -21,6 +22,10 @@ pub const EXPECTED_SHA256: &str =
 pub const MANAGED_BY: &str = "Aegos";
 pub const CONTROL_PLANE: &str = "Aegos";
 pub const CREATE_NO_WINDOW: u32 = 0x08000000;
+pub const RESOURCE_SUBDIR: &str = "core";
+pub const BINARY_NAME: &str = "mihomo.exe";
+pub const MISSING_RESOURCE_HINT: &str =
+    "Core file is missing or unavailable. Restore resources/core/mihomo.exe and restart Aegos.";
 pub const SUPPORTED_PROXY_TYPES: &[&str] = &[
     "direct",
     "reject",
@@ -144,6 +149,229 @@ pub fn protocol_capabilities_json(uri_protocols: &[&str]) -> JsonValue {
         },
         "core": format!("{ENGINE} {EXPECTED_VERSION} bundled")
     })
+}
+
+pub fn bundled_core_path(resource_dir: &Path) -> PathBuf {
+    resource_dir.join(RESOURCE_SUBDIR).join(BINARY_NAME)
+}
+
+pub fn development_core_path(current_dir: &Path) -> PathBuf {
+    current_dir
+        .join("resources")
+        .join(RESOURCE_SUBDIR)
+        .join(BINARY_NAME)
+}
+
+pub fn resolve_core_path(resource_dir: &Path, current_dir: &Path) -> PathBuf {
+    let bundled = bundled_core_path(resource_dir);
+    if bundled.exists() {
+        bundled
+    } else {
+        development_core_path(current_dir)
+    }
+}
+
+pub struct RuntimeConfigPreflightInput<'a> {
+    pub profile_id: &'a str,
+    pub profile_type: &'a str,
+    pub profile_name: &'a str,
+    pub mixed_port: u16,
+    pub controller_port: u16,
+    pub uri_protocols: &'a [&'a str],
+}
+
+pub fn preflight_runtime_config(
+    config: &YamlValue,
+    input: RuntimeConfigPreflightInput<'_>,
+) -> Result<JsonValue, String> {
+    let root = config
+        .as_mapping()
+        .ok_or_else(|| "Config preflight failed: root YAML value must be an object".to_string())?;
+    let proxies = yaml_sequence(config, "proxies")
+        .cloned()
+        .unwrap_or_default();
+    let proxy_groups = yaml_sequence(config, "proxy-groups")
+        .cloned()
+        .unwrap_or_default();
+    let rules = yaml_sequence(config, "rules").cloned().unwrap_or_default();
+    let builtin_direct = input.profile_id == "direct" || input.profile_type == "builtin";
+    let mut names = HashSet::new();
+    let mut duplicate_names = Vec::new();
+    let mut missing_fields = Vec::new();
+    let mut unsupported_proxy_types = Vec::new();
+
+    for (index, proxy) in proxies.iter().enumerate() {
+        let Some(map) = proxy.as_mapping() else {
+            missing_fields.push(format!("proxies[{index}] is not an object"));
+            continue;
+        };
+        let name = map
+            .get(yaml_key("name"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim();
+        if name.is_empty() {
+            missing_fields.push(format!("proxies[{index}] missing name"));
+        } else if !names.insert(name.to_string()) {
+            duplicate_names.push(name.to_string());
+        }
+        if map
+            .get(yaml_key("type"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
+            missing_fields.push(format!(
+                "{} missing type",
+                if name.is_empty() { "proxy" } else { name }
+            ));
+        }
+        let proxy_type = map
+            .get(yaml_key("type"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim();
+        if !proxy_type.is_empty() && !supports_proxy_type(proxy_type) {
+            unsupported_proxy_types.push(format!(
+                "{} ({})",
+                if name.is_empty() { "proxy" } else { name },
+                proxy_type
+            ));
+        }
+    }
+
+    if !builtin_direct && proxies.is_empty() {
+        return Err("Config preflight failed: subscription has no usable proxies".to_string());
+    }
+    if !duplicate_names.is_empty() {
+        duplicate_names.sort();
+        duplicate_names.dedup();
+        return Err(format!(
+            "Config preflight failed: duplicate proxy name(s): {}",
+            duplicate_names.join(", ")
+        ));
+    }
+    if !missing_fields.is_empty() {
+        return Err(format!(
+            "Config preflight failed: {}",
+            missing_fields.join(", ")
+        ));
+    }
+    if !unsupported_proxy_types.is_empty() {
+        unsupported_proxy_types.sort();
+        unsupported_proxy_types.dedup();
+        return Err(format!(
+            "Config preflight failed: unsupported proxy type(s): {}. {}",
+            unsupported_proxy_types.join(", "),
+            protocol_capability_summary(input.uri_protocols)
+        ));
+    }
+    if !proxies.is_empty() && proxy_groups.is_empty() {
+        return Err(
+            "Config preflight failed: proxy-groups is required when proxies exist".to_string(),
+        );
+    }
+    if rules.is_empty() {
+        return Err("Config preflight failed: rules is empty".to_string());
+    }
+
+    let proxy_name_set = proxies
+        .iter()
+        .filter_map(yaml_mapping_name)
+        .map(|name| name.to_string())
+        .collect::<HashSet<_>>();
+    let proxy_group_name_set = proxy_groups
+        .iter()
+        .filter_map(yaml_mapping_name)
+        .map(|name| name.to_string())
+        .collect::<HashSet<_>>();
+    let mut bad_refs = Vec::new();
+    for group in &proxy_groups {
+        let Some(map) = group.as_mapping() else {
+            continue;
+        };
+        let group_name = map
+            .get(yaml_key("name"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("proxy-group");
+        if let Some(items) = map
+            .get(yaml_key("proxies"))
+            .and_then(|value| value.as_sequence())
+        {
+            for item in items {
+                let Some(name) = item.as_str() else {
+                    continue;
+                };
+                let upper = name.to_ascii_uppercase();
+                if matches!(
+                    upper.as_str(),
+                    "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS" | "COMPATIBLE"
+                ) || proxy_name_set.contains(name)
+                    || proxy_group_name_set.contains(name)
+                {
+                    continue;
+                }
+                bad_refs.push(format!("{group_name}->{name}"));
+            }
+        }
+    }
+    if !bad_refs.is_empty() {
+        bad_refs.sort();
+        bad_refs.dedup();
+        return Err(format!(
+            "Config preflight failed: proxy group references missing target(s): {}",
+            bad_refs.join(", ")
+        ));
+    }
+
+    let mixed_port = root
+        .get(yaml_key("mixed-port"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    if mixed_port != u64::from(input.mixed_port) {
+        return Err(format!(
+            "Config preflight failed: mixed-port should be {}, got {}",
+            input.mixed_port, mixed_port
+        ));
+    }
+    let controller = root
+        .get(yaml_key("external-controller"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if !controller.ends_with(&format!(":{}", input.controller_port)) {
+        return Err(format!(
+            "Config preflight failed: external-controller should end with :{}",
+            input.controller_port
+        ));
+    }
+
+    Ok(json!({
+        "ok": true,
+        "profile": input.profile_name,
+        "proxies": proxies.len(),
+        "proxyGroups": proxy_groups.len(),
+        "rules": rules.len(),
+        "mixedPort": input.mixed_port,
+        "controllerPort": input.controller_port,
+        "protocolCapabilities": protocol_capabilities_json(input.uri_protocols)
+    }))
+}
+
+fn yaml_key(name: &str) -> YamlValue {
+    YamlValue::String(name.to_string())
+}
+
+fn yaml_sequence<'a>(config: &'a YamlValue, key: &str) -> Option<&'a Vec<YamlValue>> {
+    config
+        .get(yaml_key(key))
+        .and_then(|value| value.as_sequence())
+}
+
+fn yaml_mapping_name(item: &YamlValue) -> Option<&str> {
+    item.as_mapping()?
+        .get(yaml_key("name"))
+        .and_then(|value| value.as_str())
 }
 
 #[derive(Clone, Debug)]
@@ -913,6 +1141,139 @@ mod tests {
                 .map(Vec::len),
             Some(SUPPORTED_PROXY_TYPES.len())
         );
+    }
+
+    #[test]
+    fn runtime_core_resource_paths_are_owned_by_runtime_boundary() {
+        let resource_dir = PathBuf::from(r"C:\Program Files\Aegos");
+        let current_dir = PathBuf::from(r"E:\workspace\aegos");
+        assert_eq!(
+            bundled_core_path(&resource_dir),
+            resource_dir.join(RESOURCE_SUBDIR).join(BINARY_NAME)
+        );
+        assert_eq!(
+            development_core_path(&current_dir),
+            current_dir
+                .join("resources")
+                .join(RESOURCE_SUBDIR)
+                .join(BINARY_NAME)
+        );
+        assert!(MISSING_RESOURCE_HINT.contains("resources/core/mihomo.exe"));
+    }
+
+    fn test_preflight_input<'a>() -> RuntimeConfigPreflightInput<'a> {
+        RuntimeConfigPreflightInput {
+            profile_id: "url-test",
+            profile_type: "url",
+            profile_name: "test",
+            mixed_port: 7891,
+            controller_port: 19091,
+            uri_protocols: &["ss", "hy2", "anytls"],
+        }
+    }
+
+    #[test]
+    fn runtime_config_preflight_validates_runtime_contract_inside_boundary() {
+        let config: YamlValue = serde_yaml::from_str(
+            r#"
+mixed-port: 7891
+external-controller: 127.0.0.1:19091
+proxies:
+  - name: Node A
+    type: ss
+    server: example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: Auto
+    type: select
+    proxies:
+      - Node A
+  - name: Final
+    type: select
+    proxies:
+      - Auto
+      - DIRECT
+      - PASS
+rules:
+  - MATCH,Final
+"#,
+        )
+        .expect("yaml");
+
+        let report = preflight_runtime_config(&config, test_preflight_input())
+            .expect("runtime preflight should accept group-to-group references");
+        assert_eq!(report.get("proxies").and_then(JsonValue::as_u64), Some(1));
+        assert_eq!(
+            report.get("proxyGroups").and_then(JsonValue::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            report.get("mixedPort").and_then(JsonValue::as_u64),
+            Some(7891)
+        );
+        assert_eq!(
+            report
+                .get("protocolCapabilities")
+                .and_then(|value| value.get("runtime"))
+                .and_then(|value| value.get("version"))
+                .and_then(JsonValue::as_str),
+            Some(EXPECTED_VERSION)
+        );
+    }
+
+    #[test]
+    fn runtime_config_preflight_rejects_unsupported_and_bad_runtime_ports() {
+        let unsupported: YamlValue = serde_yaml::from_str(
+            r#"
+mixed-port: 7891
+external-controller: 127.0.0.1:19091
+proxies:
+  - name: Experimental
+    type: shadowtls
+    server: example.com
+    port: 443
+proxy-groups:
+  - name: Final
+    type: select
+    proxies:
+      - Experimental
+rules:
+  - MATCH,Final
+"#,
+        )
+        .expect("yaml");
+        let err = preflight_runtime_config(&unsupported, test_preflight_input())
+            .expect_err("unsupported proxy type should fail");
+        assert!(err.contains("unsupported proxy type"));
+        assert!(err.contains("shadowtls"));
+        assert!(err.contains("Aegos runtime proxy types"));
+
+        let wrong_port: YamlValue = serde_yaml::from_str(
+            r#"
+mixed-port: 7890
+external-controller: 127.0.0.1:19091
+proxies:
+  - name: Node A
+    type: ss
+    server: example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: Final
+    type: select
+    proxies:
+      - Node A
+rules:
+  - MATCH,Final
+"#,
+        )
+        .expect("yaml");
+        let err = preflight_runtime_config(&wrong_port, test_preflight_input())
+            .expect_err("mixed-port drift should fail");
+        assert!(err.contains("mixed-port should be 7891"));
     }
 
     #[test]

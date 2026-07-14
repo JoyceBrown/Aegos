@@ -3777,178 +3777,17 @@ fn preflight_runtime_config(
     profile: &Profile,
     settings: &Settings,
 ) -> Result<JsonValue, String> {
-    let root = config
-        .as_mapping()
-        .ok_or_else(|| "Config preflight failed: root YAML value must be an object".to_string())?;
-    let proxies = yaml_sequence(config, "proxies")
-        .cloned()
-        .unwrap_or_default();
-    let proxy_groups = yaml_sequence(config, "proxy-groups")
-        .cloned()
-        .unwrap_or_default();
-    let rules = yaml_sequence(config, "rules").cloned().unwrap_or_default();
-    let builtin_direct = profile.id == "direct" || profile.profile_type == "builtin";
-    let mut names = HashSet::new();
-    let mut duplicate_names = Vec::new();
-    let mut missing_fields = Vec::new();
-    let mut unsupported_proxy_types = Vec::new();
-
-    for (index, proxy) in proxies.iter().enumerate() {
-        let Some(map) = proxy.as_mapping() else {
-            missing_fields.push(format!("proxies[{index}] is not an object"));
-            continue;
-        };
-        let name = map
-            .get(yaml_key("name"))
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .trim();
-        if name.is_empty() {
-            missing_fields.push(format!("proxies[{index}] missing name"));
-        } else if !names.insert(name.to_string()) {
-            duplicate_names.push(name.to_string());
-        }
-        if map
-            .get(yaml_key("type"))
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .trim()
-            .is_empty()
-        {
-            missing_fields.push(format!(
-                "{} missing type",
-                if name.is_empty() { "proxy" } else { name }
-            ));
-        }
-        let proxy_type = map
-            .get(yaml_key("type"))
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .trim();
-        if !proxy_type.is_empty() && !core_runtime::supports_proxy_type(proxy_type) {
-            unsupported_proxy_types.push(format!(
-                "{} ({})",
-                if name.is_empty() { "proxy" } else { name },
-                proxy_type
-            ));
-        }
-    }
-
-    if !builtin_direct && proxies.is_empty() {
-        return Err("Config preflight failed: subscription has no usable proxies".to_string());
-    }
-    if !duplicate_names.is_empty() {
-        duplicate_names.sort();
-        duplicate_names.dedup();
-        return Err(format!(
-            "Config preflight failed: duplicate proxy name(s): {}",
-            duplicate_names.join(", ")
-        ));
-    }
-    if !missing_fields.is_empty() {
-        return Err(format!(
-            "Config preflight failed: {}",
-            missing_fields.join(", ")
-        ));
-    }
-    if !unsupported_proxy_types.is_empty() {
-        unsupported_proxy_types.sort();
-        unsupported_proxy_types.dedup();
-        return Err(format!(
-            "Config preflight failed: unsupported proxy type(s): {}. {}",
-            unsupported_proxy_types.join(", "),
-            core_runtime::protocol_capability_summary(AEGOS_URI_PROTOCOLS)
-        ));
-    }
-    if !proxies.is_empty() && proxy_groups.is_empty() {
-        return Err(
-            "Config preflight failed: proxy-groups is required when proxies exist".to_string(),
-        );
-    }
-    if rules.is_empty() {
-        return Err("Config preflight failed: rules is empty".to_string());
-    }
-
-    let proxy_name_set = proxies
-        .iter()
-        .filter_map(yaml_mapping_name)
-        .map(|name| name.to_string())
-        .collect::<HashSet<_>>();
-    let proxy_group_name_set = proxy_groups
-        .iter()
-        .filter_map(yaml_mapping_name)
-        .map(|name| name.to_string())
-        .collect::<HashSet<_>>();
-    let mut bad_refs = Vec::new();
-    for group in &proxy_groups {
-        let Some(map) = group.as_mapping() else {
-            continue;
-        };
-        let group_name = map
-            .get(yaml_key("name"))
-            .and_then(|value| value.as_str())
-            .unwrap_or("proxy-group");
-        if let Some(items) = map
-            .get(yaml_key("proxies"))
-            .and_then(|value| value.as_sequence())
-        {
-            for item in items {
-                let Some(name) = item.as_str() else {
-                    continue;
-                };
-                let upper = name.to_ascii_uppercase();
-                if matches!(
-                    upper.as_str(),
-                    "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS" | "COMPATIBLE"
-                ) || proxy_name_set.contains(name)
-                    || proxy_group_name_set.contains(name)
-                {
-                    continue;
-                }
-                bad_refs.push(format!("{group_name}->{name}"));
-            }
-        }
-    }
-    if !bad_refs.is_empty() {
-        bad_refs.sort();
-        bad_refs.dedup();
-        return Err(format!(
-            "Config preflight failed: proxy group references missing target(s): {}",
-            bad_refs.join(", ")
-        ));
-    }
-
-    let mixed_port = root
-        .get(yaml_key("mixed-port"))
-        .and_then(|value| value.as_u64())
-        .unwrap_or(0);
-    if mixed_port != u64::from(settings.mixed_port) {
-        return Err(format!(
-            "Config preflight failed: mixed-port should be {}, got {}",
-            settings.mixed_port, mixed_port
-        ));
-    }
-    let controller = root
-        .get(yaml_key("external-controller"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    if !controller.ends_with(&format!(":{}", settings.controller_port)) {
-        return Err(format!(
-            "Config preflight failed: external-controller should end with :{}",
-            settings.controller_port
-        ));
-    }
-
-    Ok(json!({
-        "ok": true,
-        "profile": profile.name,
-        "proxies": proxies.len(),
-        "proxyGroups": proxy_groups.len(),
-        "rules": rules.len(),
-        "mixedPort": settings.mixed_port,
-        "controllerPort": settings.controller_port,
-        "protocolCapabilities": core_runtime::protocol_capabilities_json(AEGOS_URI_PROTOCOLS)
-    }))
+    core_runtime::preflight_runtime_config(
+        config,
+        core_runtime::RuntimeConfigPreflightInput {
+            profile_id: &profile.id,
+            profile_type: &profile.profile_type,
+            profile_name: &profile.name,
+            mixed_port: settings.mixed_port,
+            controller_port: settings.controller_port,
+            uri_protocols: AEGOS_URI_PROTOCOLS,
+        },
+    )
 }
 fn normalize_outbound_ip_response(text: &str) -> Option<String> {
     let candidate = text
@@ -6597,17 +6436,8 @@ impl CoreManager {
             .path()
             .resource_dir()
             .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
-        let dev_core = std::env::current_dir()
-            .unwrap_or_default()
-            .join("resources")
-            .join("core")
-            .join("mihomo.exe");
-        let bundled_core = resource_dir.join("core").join("mihomo.exe");
-        let core_path = if bundled_core.exists() {
-            bundled_core
-        } else {
-            dev_core
-        };
+        let current_dir = std::env::current_dir().unwrap_or_default();
+        let core_path = core_runtime::resolve_core_path(&resource_dir, &current_dir);
         let home_dir = app_data.join("core-home");
         let profile_dir = app_data.join("profiles");
         let settings_path = app_data.join("settings.json");
@@ -9971,7 +9801,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             snapshot.core_path.to_string_lossy().to_string(),
             "error",
             "runtime",
-            "Core file is missing or unavailable. Restore resources/core/mihomo.exe and restart Aegos.",
+            core_runtime::MISSING_RESOURCE_HINT,
         ),
         check(
             "Active profile config",
@@ -11420,7 +11250,7 @@ fn environment_readiness(state: State<AppState>) -> Result<JsonValue, String> {
             "ok": core_path.exists(),
             "level": if core_path.exists() { "ok" } else { "error" },
             "detail": core_path.to_string_lossy(),
-            "action": if core_path.exists() { "Core resource exists." } else { "Reinstall or check resources/core/mihomo.exe." }
+            "action": if core_path.exists() { "Core resource exists." } else { core_runtime::MISSING_RESOURCE_HINT }
         }),
         json!({
             "id": "proxy-restore",
