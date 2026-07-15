@@ -229,11 +229,14 @@ check(
     coreRuntimeRs.includes('pub const AUXILIARY_PROXY_SELECT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const STALE_CONNECTION_CLEANUP_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub fn ui_proxy_groups_snapshot(') &&
+    coreRuntimeRs.includes('pub fn ui_proxy_groups_snapshot_or_none(') &&
     coreRuntimeRs.includes('pub const PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub fn proxy_delay_with_client(') &&
     coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
     coreRuntimeRs.includes('pub fn classify_delay_http_failure(') &&
-    mainRs.includes('.ui_proxy_groups_snapshot(&[AEGOS_OUTBOUND_IP_GROUP])') &&
+    mainRs.includes('.ui_proxy_groups_snapshot_or_none(running, &[AEGOS_OUTBOUND_IP_GROUP])') &&
+    !mainRs.includes('fn controller_proxy_groups_snapshot') &&
+    !mainRs.includes('.ui_proxy_groups_snapshot(&[AEGOS_OUTBOUND_IP_GROUP])') &&
     !mainRs.includes('.proxy_groups_snapshot(1200, &[AEGOS_OUTBOUND_IP_GROUP])') &&
     !mainRs.includes('.proxies_snapshot(1200)') &&
     !mainRs.includes('fn normalize_proxy_item') &&

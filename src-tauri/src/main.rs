@@ -685,19 +685,6 @@ fn export_diagnostics_report_from_state(
     }))
 }
 
-fn controller_proxy_groups_snapshot(
-    running: bool,
-    controller_port: u16,
-    secret: &str,
-) -> Option<JsonValue> {
-    if !running {
-        return None;
-    }
-    core_runtime::CoreController::new(controller_port, secret)
-        .ui_proxy_groups_snapshot(&[AEGOS_OUTBOUND_IP_GROUP])
-        .ok()
-}
-
 fn profile_proxy_groups_for_profile_snapshot(
     profile: &Profile,
     selected_map: &HashMap<String, String>,
@@ -1180,7 +1167,8 @@ fn assemble_proxy_groups_snapshot(
     manual_names: HashSet<String>,
     speed: SpeedTestState,
 ) -> JsonValue {
-    let mut groups = controller_proxy_groups_snapshot(running, controller_port, secret)
+    let mut groups = core_runtime::CoreController::new(controller_port, secret)
+        .ui_proxy_groups_snapshot_or_none(running, &[AEGOS_OUTBOUND_IP_GROUP])
         .unwrap_or_else(|| {
             active_profile
                 .as_ref()

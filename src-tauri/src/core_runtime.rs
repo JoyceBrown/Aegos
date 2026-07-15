@@ -593,6 +593,17 @@ impl CoreController {
         self.proxy_groups_snapshot(PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS, hidden_group_names)
     }
 
+    pub fn ui_proxy_groups_snapshot_or_none(
+        &self,
+        running: bool,
+        hidden_group_names: &[&str],
+    ) -> Option<JsonValue> {
+        if !running {
+            return None;
+        }
+        self.ui_proxy_groups_snapshot(hidden_group_names).ok()
+    }
+
     pub fn version_probe(&self, timeout_ms: u64) -> Result<JsonValue, String> {
         self.request("GET", "/version", None, timeout_ms)
     }
