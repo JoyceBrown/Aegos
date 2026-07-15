@@ -425,6 +425,30 @@ check(
   'main.rs may read/write Windows proxy state, but snapshot shape and matching policy belong to core_runtime',
 );
 check(
+  'disconnect protection firewall policy is owned by the core runtime boundary',
+  coreRuntimeRs.includes('pub const FIREWALL_DISCONNECT_PROTECTION_GROUP') &&
+    coreRuntimeRs.includes('pub const FIREWALL_SPEED_TEST_GROUP') &&
+    coreRuntimeRs.includes('pub const FIREWALL_PROFILE_SNAPSHOT_FILE') &&
+    coreRuntimeRs.includes('pub const FIREWALL_SPEED_TEST_MARKER_FILE') &&
+    coreRuntimeRs.includes('pub struct CoreFirewallPolicyPlan') &&
+    coreRuntimeRs.includes('pub fn disconnect_protection()') &&
+    coreRuntimeRs.includes('pub fn speed_test()') &&
+    coreRuntimeRs.includes('pub fn speed_test_firewall_enabled') &&
+    coreRuntimeRs.includes('pub fn speed_test_firewall_ports') &&
+    coreRuntimeRs.includes('pub fn firewall_remote_port_list') &&
+    coreRuntimeRs.includes('firewall_policy_contract_is_owned_by_runtime_boundary') &&
+    mainRs.includes('CoreFirewallPolicyPlan::disconnect_protection') &&
+    mainRs.includes('CoreFirewallPolicyPlan::speed_test') &&
+    mainRs.includes('core_runtime::speed_test_firewall_enabled') &&
+    mainRs.includes('core_runtime::speed_test_firewall_ports') &&
+    mainRs.includes('core_runtime::firewall_remote_port_list') &&
+    !mainRs.includes('format!("{APP_NAME} Kill Switch') &&
+    !mainRs.includes('kill-switch-firewall-profile.json') &&
+    !mainRs.includes('kill-switch-speed-test-rules.marker') &&
+    !mainRs.includes('fn ps_port_list'),
+  'main.rs may execute firewall scripts, but group names, state files, and speed-test firewall policy belong to core_runtime',
+);
+check(
   'release gate requires core runtime audit',
   packageJson.scripts?.['audit:core-runtime'] === 'node tools/core-runtime-audit.js' &&
     releaseAudit.includes('core runtime audit script exists'),

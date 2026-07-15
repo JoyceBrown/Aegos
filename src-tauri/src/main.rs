@@ -43,7 +43,6 @@ use tauri::{AppHandle, Manager, State, Window, WindowEvent};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-const APP_NAME: &str = "Aegos";
 const AEGOS_DEFAULT_MIXED_PORT: u16 = 7891;
 const AEGOS_DEFAULT_CONTROLLER_PORT: u16 = 19091;
 const RESERVED_MIXED_PORTS: &[u16] = &[7890];
@@ -4947,14 +4946,6 @@ fn ps_array_literal(items: &[String]) -> String {
     format!("@({quoted})")
 }
 
-fn ps_port_list(ports: &[u16]) -> String {
-    ports
-        .iter()
-        .map(|port| port.to_string())
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
 fn run_powershell(script: &str) -> Result<String, String> {
     let wrapped_script = format!(
         "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;\n{script}"
@@ -5174,8 +5165,9 @@ public static class WinInet {{
 }
 
 fn build_kill_switch_script(enable: bool, user_data: &Path, core_path: &Path) -> String {
-    let group = format!("{APP_NAME} Kill Switch");
-    let snapshot = user_data.join("kill-switch-firewall-profile.json");
+    let plan = core_runtime::CoreFirewallPolicyPlan::disconnect_protection();
+    let group = plan.group_name;
+    let snapshot = plan.state_path(user_data);
     let exe = std::env::current_exe().unwrap_or_default();
     let programs = [exe, core_path.to_path_buf()]
         .into_iter()
@@ -5291,15 +5283,16 @@ fn build_speed_test_firewall_script(
     core_path: &Path,
     ports: &[u16],
 ) -> String {
-    let group = format!("{APP_NAME} Kill Switch Speed Test");
+    let plan = core_runtime::CoreFirewallPolicyPlan::speed_test();
+    let group = plan.group_name;
     let exe = std::env::current_exe().unwrap_or_default();
     let programs = [exe, core_path.to_path_buf()]
         .into_iter()
         .filter_map(|path| firewall_program_path(&path))
         .collect::<Vec<_>>();
     let program_array = ps_array_literal(&programs);
-    let port_list = ps_port_list(ports);
-    let marker = user_data.join("kill-switch-speed-test-rules.marker");
+    let port_list = core_runtime::firewall_remote_port_list(ports);
+    let marker = plan.state_path(user_data);
     if enable {
         format!(
             r#"
@@ -7408,12 +7401,12 @@ impl CoreManager {
             };
         }
 
-        let speed_firewall_enabled = self.settings.kill_switch_enabled;
-        let speed_firewall_ports = if speed_firewall_enabled {
-            self.speed_test_firewall_ports()
-        } else {
-            Vec::new()
-        };
+        let speed_firewall_enabled =
+            core_runtime::speed_test_firewall_enabled(self.settings.kill_switch_enabled);
+        let speed_firewall_ports = core_runtime::speed_test_firewall_ports(
+            speed_firewall_enabled,
+            &self.speed_test_firewall_ports(),
+        );
         self.add_log(format!("Speed test started: {total} nodes"), "info");
         let speed_firewall_app_data = self.app_data.clone();
         let speed_firewall_core_path = self.core_path.clone();
@@ -7577,12 +7570,12 @@ impl CoreManager {
         let controller = self.core_controller();
         let speed_test = self.speed_test.clone();
         let targets_for_recommendation = targets.clone();
-        let speed_firewall_enabled = self.settings.kill_switch_enabled;
-        let speed_firewall_ports = if speed_firewall_enabled {
-            self.speed_test_firewall_ports()
-        } else {
-            Vec::new()
-        };
+        let speed_firewall_enabled =
+            core_runtime::speed_test_firewall_enabled(self.settings.kill_switch_enabled);
+        let speed_firewall_ports = core_runtime::speed_test_firewall_ports(
+            speed_firewall_enabled,
+            &self.speed_test_firewall_ports(),
+        );
         let speed_firewall_app_data = self.app_data.clone();
         let speed_firewall_core_path = self.core_path.clone();
         let run_id;

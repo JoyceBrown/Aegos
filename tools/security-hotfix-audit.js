@@ -100,7 +100,8 @@ check(
   'disconnect protection speed-test firewall window is scoped and cleaned',
   speedBody.includes('build_speed_test_firewall_script(') &&
     speedBody.includes('cleanup_speed_firewall') &&
-    mainRs.includes('kill-switch-speed-test-rules.marker') &&
+    coreRuntimeRs.includes('FIREWALL_SPEED_TEST_MARKER_FILE') &&
+    mainRs.includes('CoreFirewallPolicyPlan::speed_test') &&
     mainRs.includes('build_speed_test_firewall_script(') &&
     mainRs.includes('remoteport=$portList') &&
     backendAudit.includes('disconnect protection allows speed tests without disabling protection') &&

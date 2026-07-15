@@ -47,6 +47,11 @@ pub const CONFIG_FORCE_APPLY_TIMEOUT_MS: u64 = 8000;
 pub const CONFIG_APPLY_VERSION_PROBE_TIMEOUT_MS: u64 = 900;
 pub const RESOURCE_SUBDIR: &str = "core";
 pub const BINARY_NAME: &str = "mihomo.exe";
+pub const FIREWALL_DISCONNECT_PROTECTION_GROUP: &str = "Aegos Kill Switch";
+pub const FIREWALL_SPEED_TEST_GROUP: &str = "Aegos Kill Switch Speed Test";
+pub const FIREWALL_RULE_PREFIX_SUFFIX: &str = " Allow";
+pub const FIREWALL_PROFILE_SNAPSHOT_FILE: &str = "kill-switch-firewall-profile.json";
+pub const FIREWALL_SPEED_TEST_MARKER_FILE: &str = "kill-switch-speed-test-rules.marker";
 pub const MISSING_RESOURCE_HINT: &str =
     "Core file is missing or unavailable. Restore resources/core/mihomo.exe and restart Aegos.";
 pub const TERMINATE_FAILED_STARTUP_MESSAGE: &str = "Stopping failed mihomo startup";
@@ -1828,6 +1833,13 @@ pub struct SystemProxySnapshot {
     pub captured_at: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreFirewallPolicyPlan {
+    pub group_name: &'static str,
+    pub rule_prefix: String,
+    pub state_file_name: &'static str,
+}
+
 impl CoreLaunchPlan {
     pub fn new(paths: CoreRuntimePaths, profile_name: impl Into<String>, standby: bool) -> Self {
         Self {
@@ -1958,6 +1970,50 @@ pub fn should_capture_system_proxy_snapshot(
     mixed_port: u16,
 ) -> bool {
     !snapshot_file_exists && !system_proxy_snapshot_points_to_aegos(snapshot, mixed_port)
+}
+
+impl CoreFirewallPolicyPlan {
+    pub fn disconnect_protection() -> Self {
+        Self {
+            group_name: FIREWALL_DISCONNECT_PROTECTION_GROUP,
+            rule_prefix: format!(
+                "{FIREWALL_DISCONNECT_PROTECTION_GROUP}{FIREWALL_RULE_PREFIX_SUFFIX}"
+            ),
+            state_file_name: FIREWALL_PROFILE_SNAPSHOT_FILE,
+        }
+    }
+
+    pub fn speed_test() -> Self {
+        Self {
+            group_name: FIREWALL_SPEED_TEST_GROUP,
+            rule_prefix: format!("{FIREWALL_SPEED_TEST_GROUP}{FIREWALL_RULE_PREFIX_SUFFIX}"),
+            state_file_name: FIREWALL_SPEED_TEST_MARKER_FILE,
+        }
+    }
+
+    pub fn state_path(&self, user_data: &Path) -> PathBuf {
+        user_data.join(self.state_file_name)
+    }
+}
+
+pub fn speed_test_firewall_enabled(disconnect_protection_enabled: bool) -> bool {
+    disconnect_protection_enabled
+}
+
+pub fn speed_test_firewall_ports(disconnect_protection_enabled: bool, ports: &[u16]) -> Vec<u16> {
+    if disconnect_protection_enabled {
+        ports.to_vec()
+    } else {
+        Vec::new()
+    }
+}
+
+pub fn firewall_remote_port_list(ports: &[u16]) -> String {
+    ports
+        .iter()
+        .map(|port| port.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 impl CoreStartFailureContext {
@@ -2450,6 +2506,34 @@ mod tests {
         };
         assert!(!system_proxy_snapshot_points_to_aegos(&disabled, 7891));
         assert!(should_capture_system_proxy_snapshot(false, &disabled, 7891));
+    }
+
+    #[test]
+    fn firewall_policy_contract_is_owned_by_runtime_boundary() {
+        let disconnect = CoreFirewallPolicyPlan::disconnect_protection();
+        assert_eq!(disconnect.group_name, FIREWALL_DISCONNECT_PROTECTION_GROUP);
+        assert_eq!(disconnect.rule_prefix, "Aegos Kill Switch Allow");
+        assert_eq!(disconnect.state_file_name, FIREWALL_PROFILE_SNAPSHOT_FILE);
+        assert_eq!(
+            disconnect.state_path(Path::new("C:/Aegos")),
+            PathBuf::from("C:/Aegos").join(FIREWALL_PROFILE_SNAPSHOT_FILE)
+        );
+
+        let speed = CoreFirewallPolicyPlan::speed_test();
+        assert_eq!(speed.group_name, FIREWALL_SPEED_TEST_GROUP);
+        assert_eq!(speed.rule_prefix, "Aegos Kill Switch Speed Test Allow");
+        assert_eq!(speed.state_file_name, FIREWALL_SPEED_TEST_MARKER_FILE);
+        assert_eq!(
+            firewall_remote_port_list(&[443, 8443, 10015]),
+            "443,8443,10015"
+        );
+        assert_eq!(speed_test_firewall_enabled(true), true);
+        assert_eq!(speed_test_firewall_enabled(false), false);
+        assert_eq!(
+            speed_test_firewall_ports(true, &[443, 8443]),
+            vec![443, 8443]
+        );
+        assert!(speed_test_firewall_ports(false, &[443, 8443]).is_empty());
     }
 
     fn test_preflight_input<'a>() -> RuntimeConfigPreflightInput<'a> {
