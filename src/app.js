@@ -4676,7 +4676,7 @@ function routingConflictExplanation(existing = {}, draft = {}) {
   const newTarget = routingTargetDisplayLabel(draft.target || '');
   if (category === 'system') {
     return {
-      level: 'warn',
+      level: 'bad',
       text: `系统保护规则已占用这个目标，当前走 ${oldTarget || 'Aegos 内部链路'}。这类规则用于落地 IP 查询、Aegos 自身服务或防泄漏保护，普通用户规则不能覆盖；请在系统规则里查看原因。`
     };
   }
@@ -4688,7 +4688,7 @@ function routingConflictExplanation(existing = {}, draft = {}) {
       };
     }
     return {
-      level: 'warn',
+      level: 'bad',
       text: `已有用户规则把它指定到 ${oldTarget}，新目标是 ${newTarget}。用户规则优先，但同一个网站/应用只应保留一条明确规则；请先编辑或删除旧规则，避免误判。`
     };
   }
@@ -4709,7 +4709,7 @@ function classifyRoutingDraft(draft = {}) {
   const existing = existingRoutingRules().find((item) => routingRuleKey({ kind: item.kind, condition: item.condition }) === key);
   const duplicateDraft = routingAssistantDrafts.find((item) => item.id !== draft.id && routingRuleKey(item) === key);
   if (existing) return routingConflictExplanation(existing, draft);
-  if (duplicateDraft) return { level: 'warn', text: '\u8349\u7a3f\u4e2d\u5df2\u6709\u76f8\u540c\u6761\u4ef6\uff0c\u5efa\u8bae\u5148\u64a4\u9500\u91cd\u590d\u9879\u3002' };
+  if (duplicateDraft) return { level: 'bad', text: '草稿中已有相同条件。请先撤销重复项，避免同一网站/应用出现多个目标。' };
   return { level: 'ok', text: '未发现直接冲突。应用后用户规则优先，会先于订阅兜底规则判断。' };
 }
 
@@ -4775,6 +4775,51 @@ function routingDraftPayload(item = {}) {
   };
 }
 
+function validateRoutingDraftBeforeApply(item = {}) {
+  const allowedKinds = new Set(['DOMAIN', 'DOMAIN-SUFFIX', 'DOMAIN-KEYWORD', 'PROCESS-NAME', 'PROCESS-PATH', 'GEOIP', 'GEOSITE', 'IP-CIDR']);
+  const kind = String(item.kind || '').toUpperCase();
+  const condition = String(item.condition || '').trim();
+  const target = String(item.target || '').trim();
+  if (!allowedKinds.has(kind)) return { ok: false, reason: `规则类型不可用：${kind || '-'}` };
+  if (!condition) return { ok: false, reason: '规则目标为空，请先填写网站、应用或 IP。' };
+  if (!target) return { ok: false, reason: '线路目标为空，请先选择自动最快、手动选择、固定节点、直连或阻止。' };
+  const targetExists = routingTargetOptions().some((option) => option.value === target);
+  if (!targetExists) return { ok: false, reason: `目标不存在：${target}。请重新选择一个当前订阅中存在的线路或节点。` };
+  const classification = classifyRoutingDraft(item);
+  if (classification.level === 'bad') return { ok: false, reason: classification.text, classification };
+  return { ok: true, classification };
+}
+
+function precheckRoutingDraftsBeforeApply() {
+  let firstFailure = null;
+  routingAssistantDrafts = routingAssistantDrafts.map((item) => {
+    const validation = validateRoutingDraftBeforeApply(item);
+    const classification = validation.classification || classifyRoutingDraft(item);
+    if (!validation.ok && !firstFailure) firstFailure = { item, reason: validation.reason };
+    return {
+      ...item,
+      verified: validation.ok,
+      classification,
+      precheckError: validation.ok ? '' : validation.reason,
+      verifiedAt: Date.now()
+    };
+  });
+  renderRoutingDraftList();
+  if (firstFailure) {
+    routingApplyStatus = {
+      state: 'error',
+      profileName: latestRoutingSnapshot?.lastApply?.profileName || '',
+      appliedCount: 0,
+      rollbackAvailable: false,
+      detail: `应用前检查未通过：${firstFailure.reason}`
+    };
+    renderRoutingApplyStatus();
+    setNotice(`规则未应用：${firstFailure.reason}`);
+    return false;
+  }
+  return true;
+}
+
 function renderRoutingApplyStatus() {
   const box = $('#routingApplyStatus');
   if (!box) return;
@@ -4811,7 +4856,7 @@ async function applyRoutingDrafts() {
     setNotice('\u8bf7\u5148\u751f\u6210\u89c4\u5219\u8349\u7a3f\u3002');
     return null;
   }
-  verifyAllRoutingDrafts();
+  if (!precheckRoutingDraftsBeforeApply()) return null;
   const result = await runBackgroundJob('applyRoutingDrafts', {
     drafts: routingAssistantDrafts.map(routingDraftPayload)
   }, {
@@ -5150,8 +5195,10 @@ function renderRoutingDraftList() {
     const priorityText = ['website', 'app', 'connection'].includes(item.source)
       ? '优先级：用户规则优先，越具体的网站/应用规则越先判断'
       : '优先级：用户规则优先于订阅兜底规则';
-    const nextStep = classification.level === 'warn'
-      ? '\u4e0b\u4e00\u6b65\uff1a\u5904\u7406\u98ce\u9669\u540e\u518d\u5e94\u7528'
+    const nextStep = classification.level === 'bad'
+      ? '下一步：先修正，不能应用'
+      : classification.level === 'warn'
+        ? '\u4e0b\u4e00\u6b65\uff1a\u5904\u7406\u98ce\u9669\u540e\u518d\u5e94\u7528'
       : item.verified
         ? '\u4e0b\u4e00\u6b65\uff1a\u53ef\u5e94\u7528'
         : '\u4e0b\u4e00\u6b65\uff1a\u5148\u9a8c\u8bc1';
@@ -5160,7 +5207,7 @@ function renderRoutingDraftList() {
       el('div', { className: 'routing-draft-main' }, [
         el('div', {}, [
           el('b', { textContent: item.label || `${routingKindLabel(item.kind)} ${item.condition}` }),
-          el('small', { textContent: `${sourceLabel} \u00b7 ${classification.text} \u00b7 ${nextStep}` })
+          el('small', { textContent: `${sourceLabel} \u00b7 ${item.precheckError || classification.text} \u00b7 ${nextStep}` })
         ]),
         el('span', { className: item.verified ? 'ok' : 'muted', textContent: item.verified ? '\u5df2\u9a8c\u8bc1' : '\u672a\u751f\u6548' }),
         el('button', { className: 'ghost compact', dataset: { toggleRoutingDraftDetail: item.id }, textContent: detailOpen ? '\u6536\u8d77' : '\u8be6\u60c5' }),
@@ -5175,14 +5222,15 @@ function renderRoutingDraftList() {
         el('span', { textContent: `\u5f71\u54cd\uff1a\u53ea\u5f71\u54cd ${item.condition || item.label || '\u8be5\u6761\u4ef6'}\uff0c\u5e94\u7528\u524d\u4ecd\u53ef\u64a4\u9500\u8349\u7a3f\u3002` })
       ]));
     }
-    return el('div', { className: `routing-draft-row ${classification.level === 'warn' ? 'warn' : ''} ${detailOpen ? 'open' : ''}` }, children);
+    return el('div', { className: `routing-draft-row ${classification.level === 'bad' ? 'bad' : classification.level === 'warn' ? 'warn' : ''} ${detailOpen ? 'open' : ''}` }, children);
   });
   replaceChildrenSafe(list, rows.length ? rows : [emptyState('\u6682\u65e0\u8349\u7a3f\u3002')]);
   const conflicts = routingAssistantDrafts.filter((item) => classifyRoutingDraft(item).level === 'warn').length;
+  const blocked = routingAssistantDrafts.filter((item) => classifyRoutingDraft(item).level === 'bad').length;
   summary.textContent = routingAssistantDrafts.length
-    ? `${routingAssistantDrafts.length} \u6761\u8349\u7a3f\uff0c${conflicts} \u6761\u9700\u8981\u6ce8\u610f\u3002`
+    ? `${routingAssistantDrafts.length} 条草稿，${blocked} 条不能应用，${conflicts} 条需要注意。`
     : '\u6682\u65e0\u8349\u7a3f\u3002';
-  summary.className = `routing-draft-preview ${conflicts ? 'warn' : 'ok'}`;
+  summary.className = `routing-draft-preview ${blocked ? 'bad' : conflicts ? 'warn' : 'ok'}`;
 }
 
 function regionRoutingDraftPreset(value = '', target = 'Proxies') {

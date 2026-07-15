@@ -23,6 +23,7 @@ const appJs = read('src/app.js');
 const styles = read('src/styles.css');
 const releaseAudit = read('tools/release-audit.js');
 const release = exists(`RELEASE_${pkg.version}.md`) ? read(`RELEASE_${pkg.version}.md`) : '';
+const originalRelease = exists('RELEASE_3.5.92.md') ? read('RELEASE_3.5.92.md') : '';
 const previewStart = appJs.indexOf('function renderRoutingDraftPreview');
 const previewEnd = appJs.indexOf('function previewWebsiteRoutingDraft', previewStart);
 const previewBody = previewStart >= 0 && previewEnd > previewStart ? appJs.slice(previewStart, previewEnd) : '';
@@ -33,7 +34,19 @@ const appStart = appJs.indexOf('function previewAppRoutingDraft');
 const appEnd = appJs.indexOf('function previewRegionRoutingDraft', appStart);
 const appBody = appStart >= 0 && appEnd > appStart ? appJs.slice(appStart, appEnd) : '';
 
-check('version is the 3.5.92 rule preview checkpoint', pkg.version === '3.5.92', pkg.version);
+function versionAtLeast(version, minimum) {
+  const parse = (value) => String(value).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const current = parse(version);
+  const target = parse(minimum);
+  for (let index = 0; index < Math.max(current.length, target.length); index += 1) {
+    const left = current[index] || 0;
+    const right = target[index] || 0;
+    if (left !== right) return left > right;
+  }
+  return true;
+}
+
+check('version keeps the 3.5.92+ rule preview active', versionAtLeast(pkg.version, '3.5.92'), pkg.version);
 check('package exposes the stage 3 rule preview audit', pkg.scripts?.['audit:stage3-rule-preview'] === 'node tools/stage3-rule-preview-audit.js', 'npm run audit:stage3-rule-preview');
 
 check(
@@ -85,13 +98,13 @@ check(
 );
 
 check(
-  'release note records plan and verification for 3.5.92',
-  release.includes('3.5.92') &&
-    release.includes('规则预览') &&
+  'release history records 3.5.92 rule preview and current release keeps verification',
+  originalRelease.includes('3.5.92') &&
+    originalRelease.includes('规则预览') &&
     release.includes('用户规则优先') &&
     release.includes('npm run audit:stage3-rule-preview') &&
     release.includes('Source-only'),
-  `RELEASE_${pkg.version}.md`
+  `RELEASE_3.5.92.md / RELEASE_${pkg.version}.md`
 );
 
 const result = { ok: fail.length === 0, failed: fail, passed: pass, generatedAt: new Date().toISOString() };

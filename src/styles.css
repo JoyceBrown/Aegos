@@ -2150,6 +2150,11 @@ h1 {
   background: rgba(255, 245, 218, .72);
 }
 
+.routing-draft-preview.bad {
+  color: #b42318;
+  background: rgba(255, 232, 229, .78);
+}
+
 .routing-draft-preview.is-rich {
   display: grid;
   align-items: start;
@@ -2229,6 +2234,10 @@ h1 {
 
 .routing-draft-row.warn {
   box-shadow: inset 3px 0 0 rgba(235, 171, 52, .58), inset 0 0 0 1px rgba(235, 171, 52, .16);
+}
+
+.routing-draft-row.bad {
+  box-shadow: inset 3px 0 0 rgba(220, 38, 38, .56), inset 0 0 0 1px rgba(220, 38, 38, .14);
 }
 
 .routing-draft-main > *,
