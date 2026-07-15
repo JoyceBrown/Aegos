@@ -135,6 +135,12 @@ check(
     coreRuntimeRs.includes('pub fn proxy_groups_snapshot(') &&
     coreRuntimeRs.includes('fn normalize_proxy_item') &&
     coreRuntimeRs.includes('pub fn select_proxy(&self, group: &str, proxy: &str, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn apply_proxy_selection(&self, group: &str, proxy: &str)') &&
+    coreRuntimeRs.includes('pub fn apply_auxiliary_proxy_selection(&self, group: &str, proxy: &str)') &&
+    coreRuntimeRs.includes('pub fn cleanup_stale_connections_after_selection(&self)') &&
+    coreRuntimeRs.includes('pub const PROXY_SELECT_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const AUXILIARY_PROXY_SELECT_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const STALE_CONNECTION_CLEANUP_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub fn proxy_delay_with_client(') &&
     coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
     coreRuntimeRs.includes('pub fn classify_delay_http_failure(') &&
@@ -143,8 +149,12 @@ check(
     !mainRs.includes('fn normalize_proxy_item') &&
     mainRs.includes('.proxy_delay_result_with_client(client, name, test_url, timeout_ms)') &&
     !mainRs.includes('fn classify_delay_http_failure') &&
-    mainRs.includes('.select_proxy(AEGOS_OUTBOUND_IP_GROUP, &proxy, 1500)') &&
-    mainRs.includes('.select_proxy(group, proxy, 5000)') &&
+    mainRs.includes('.apply_auxiliary_proxy_selection(') &&
+    mainRs.includes('.apply_proxy_selection(group, proxy)') &&
+    mainRs.includes('.cleanup_stale_connections_after_selection()') &&
+    !mainRs.includes('.select_proxy(AEGOS_OUTBOUND_IP_GROUP, &proxy, 1500)') &&
+    !mainRs.includes('.select_proxy(group, proxy, 5000)') &&
+    !mainRs.includes('.close_connections(1500)') &&
     !mainRs.includes('controller_request(controller_port, secret, "GET", "/proxies"') &&
     !mainRs.includes('http://127.0.0.1:{}/proxies/{}/delay') &&
     !/self\.controller\(\s*"PUT"\s*,\s*&format!\("\/proxies\//.test(mainRs),
@@ -161,11 +171,13 @@ check(
     coreRuntimeRs.includes('pub const READY_RETRY_INTERVAL_MS') &&
     coreRuntimeRs.includes('pub const RUNTIME_RESTART_SETTLE_MS') &&
     coreRuntimeRs.includes('pub fn set_mode(&self, mode: &str, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn apply_mode(&self, mode: &str)') &&
+    coreRuntimeRs.includes('pub const MODE_APPLY_TIMEOUT_MS') &&
     mainRs.includes('.wait_until_ready(||') &&
     mainRs.includes('core_runtime::READY_REUSE_PROBE_TIMEOUT_MS') &&
     mainRs.includes('core_runtime::RUNTIME_RESTART_SETTLE_MS') &&
-    mainRs.includes('self.core_controller().set_mode(mode, 3000)') &&
-    mainRs.includes('self.core_controller().close_connections(1500)') &&
+    mainRs.includes('self.core_controller().apply_mode(mode)') &&
+    !mainRs.includes('self.core_controller().set_mode(mode, 3000)') &&
     !mainRs.includes('version_probe(900)') &&
     !mainRs.includes('version_probe(300)') &&
     !mainRs.includes('for _ in 0..24') &&

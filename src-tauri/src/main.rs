@@ -8219,7 +8219,7 @@ impl CoreManager {
         self.settings.mode = mode.to_string();
         self.save_settings()?;
         if self.process.is_some() {
-            let _ = self.core_controller().set_mode(mode, 3000);
+            let _ = self.core_controller().apply_mode(mode);
         }
         Ok(mode.to_string())
     }
@@ -8347,7 +8347,7 @@ impl CoreManager {
         let proxy = self.current_outbound_ip_proxy_name(&groups)?;
         if let Err(err) = self
             .core_controller()
-            .select_proxy(AEGOS_OUTBOUND_IP_GROUP, &proxy, 1500)
+            .apply_auxiliary_proxy_selection(AEGOS_OUTBOUND_IP_GROUP, &proxy)
         {
             self.add_log(
                 format!("Outbound IP lookup group sync failed: {err}"),
@@ -9152,7 +9152,7 @@ impl CoreManager {
             .insert(group.to_string(), proxy.to_string());
         self.save_settings()?;
         if self.process.is_some() {
-            if let Err(err) = self.core_controller().select_proxy(group, proxy, 5000) {
+            if let Err(err) = self.core_controller().apply_proxy_selection(group, proxy) {
                 match previous {
                     Some(value) => {
                         self.settings
@@ -9167,7 +9167,8 @@ impl CoreManager {
                 return Err(classified_error("Node switch", err));
             }
             let _ = self.sync_outbound_ip_group_selection();
-            let _ = self.core_controller().close_connections(1500);
+            self.core_controller()
+                .cleanup_stale_connections_after_selection();
         }
         Ok(true)
     }

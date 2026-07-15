@@ -27,6 +27,10 @@ pub const READY_PROBE_TIMEOUT_MS: u64 = 300;
 pub const READY_RETRY_INTERVAL_MS: u64 = 250;
 pub const READY_REUSE_PROBE_TIMEOUT_MS: u64 = 900;
 pub const RUNTIME_RESTART_SETTLE_MS: u64 = 250;
+pub const MODE_APPLY_TIMEOUT_MS: u64 = 3000;
+pub const PROXY_SELECT_TIMEOUT_MS: u64 = 5000;
+pub const AUXILIARY_PROXY_SELECT_TIMEOUT_MS: u64 = 1500;
+pub const STALE_CONNECTION_CLEANUP_TIMEOUT_MS: u64 = 1500;
 pub const RESOURCE_SUBDIR: &str = "core";
 pub const BINARY_NAME: &str = "mihomo.exe";
 pub const MISSING_RESOURCE_HINT: &str =
@@ -596,6 +600,10 @@ impl CoreController {
         )
     }
 
+    pub fn apply_mode(&self, mode: &str) -> Result<JsonValue, String> {
+        self.set_mode(mode, MODE_APPLY_TIMEOUT_MS)
+    }
+
     pub fn select_proxy(&self, group: &str, proxy: &str, timeout_ms: u64) -> Result<(), String> {
         self.request(
             "PUT",
@@ -604,6 +612,18 @@ impl CoreController {
             timeout_ms,
         )?;
         Ok(())
+    }
+
+    pub fn apply_proxy_selection(&self, group: &str, proxy: &str) -> Result<(), String> {
+        self.select_proxy(group, proxy, PROXY_SELECT_TIMEOUT_MS)
+    }
+
+    pub fn apply_auxiliary_proxy_selection(&self, group: &str, proxy: &str) -> Result<(), String> {
+        self.select_proxy(group, proxy, AUXILIARY_PROXY_SELECT_TIMEOUT_MS)
+    }
+
+    pub fn cleanup_stale_connections_after_selection(&self) {
+        let _ = self.close_connections(STALE_CONNECTION_CLEANUP_TIMEOUT_MS);
     }
 
     pub fn proxy_delay_with_client(
@@ -1269,6 +1289,10 @@ mod tests {
         assert_eq!(READY_RETRY_INTERVAL_MS, 250);
         assert_eq!(READY_REUSE_PROBE_TIMEOUT_MS, 900);
         assert_eq!(RUNTIME_RESTART_SETTLE_MS, 250);
+        assert_eq!(MODE_APPLY_TIMEOUT_MS, 3000);
+        assert_eq!(PROXY_SELECT_TIMEOUT_MS, 5000);
+        assert_eq!(AUXILIARY_PROXY_SELECT_TIMEOUT_MS, 1500);
+        assert_eq!(STALE_CONNECTION_CLEANUP_TIMEOUT_MS, 1500);
     }
 
     fn test_preflight_input<'a>() -> RuntimeConfigPreflightInput<'a> {
