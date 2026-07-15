@@ -290,11 +290,14 @@ check(
 
 check(
   'diagnostics include severity summary and actionable hints',
-  mainRs.includes('"severity"') &&
-    mainRs.includes('"hint"') &&
-    mainRs.includes('"actionable"') &&
-    mainRs.includes('"summary"') &&
-    mainRs.includes('"nextActions"') &&
+  coreRuntimeRs.includes('pub fn diagnostic_check_json') &&
+    coreRuntimeRs.includes('pub fn diagnostic_summary_json') &&
+    coreRuntimeRs.includes('"severity"') &&
+    coreRuntimeRs.includes('"hint"') &&
+    coreRuntimeRs.includes('"actionable"') &&
+    coreRuntimeRs.includes('"nextActions"') &&
+    mainRs.includes('"summary": summary') &&
+    mainRs.includes('core_runtime::diagnostic_summary_json(&checks)') &&
     mainRs.includes('let admin_required = snapshot.settings.tun_enabled || snapshot.settings.kill_switch_enabled') &&
     mainRs.includes('let admin_ok = is_admin || !admin_required'),
   'diagnostic metadata'

@@ -459,6 +459,63 @@ pub fn validate_runtime_ports(mixed_port: u16, controller_port: u16) -> Result<(
     Ok(())
 }
 
+pub fn diagnostic_check_json(
+    name: &str,
+    ok: bool,
+    detail: impl Into<String>,
+    severity: &str,
+    category: &str,
+    hint: &str,
+) -> JsonValue {
+    json!({
+        "name": name,
+        "ok": ok,
+        "detail": detail.into(),
+        "severity": if ok { "ok" } else { severity },
+        "category": category,
+        "hint": if ok { "" } else { hint },
+        "actionable": !ok && !hint.is_empty()
+    })
+}
+
+pub fn diagnostic_summary_json(checks: &[JsonValue]) -> JsonValue {
+    let failed = checks
+        .iter()
+        .filter(|item| !item.get("ok").and_then(JsonValue::as_bool).unwrap_or(false))
+        .count();
+    let errors = checks
+        .iter()
+        .filter(|item| item.get("severity").and_then(JsonValue::as_str) == Some("error"))
+        .count();
+    let warnings = checks
+        .iter()
+        .filter(|item| item.get("severity").and_then(JsonValue::as_str) == Some("warning"))
+        .count();
+    let next_actions = checks
+        .iter()
+        .filter(|item| {
+            !item.get("ok").and_then(JsonValue::as_bool).unwrap_or(false)
+                && item
+                    .get("actionable")
+                    .and_then(JsonValue::as_bool)
+                    .unwrap_or(false)
+        })
+        .filter_map(|item| {
+            item.get("hint")
+                .and_then(JsonValue::as_str)
+                .map(str::to_string)
+        })
+        .take(3)
+        .collect::<Vec<_>>();
+    json!({
+        "total": checks.len(),
+        "failed": failed,
+        "errors": errors,
+        "warnings": warnings,
+        "nextActions": next_actions
+    })
+}
+
 pub fn normalize_proxy_type(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
         "hy2" => "hysteria2".to_string(),
@@ -3517,6 +3574,44 @@ rules:
         assert!(validate_runtime_ports(7891, 7891)
             .unwrap_err()
             .contains("cannot equal controller port"));
+    }
+
+    #[test]
+    fn diagnostic_check_and_summary_are_runtime_shaped() {
+        let checks = vec![
+            diagnostic_check_json("Runtime", true, "ready", "error", "runtime", "restart"),
+            diagnostic_check_json("Port", false, "occupied", "error", "network", "change port"),
+            diagnostic_check_json(
+                "Permission",
+                false,
+                "not elevated",
+                "warning",
+                "permission",
+                "restart as admin",
+            ),
+            diagnostic_check_json("Logs", false, "warning", "warning", "logs", "open logs"),
+            diagnostic_check_json("Extra", false, "warning", "warning", "logs", "extra"),
+        ];
+        assert_eq!(
+            checks[0].get("severity").and_then(JsonValue::as_str),
+            Some("ok")
+        );
+        assert_eq!(
+            checks[0].get("actionable").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        let summary = diagnostic_summary_json(&checks);
+        assert_eq!(summary.get("total").and_then(JsonValue::as_u64), Some(5));
+        assert_eq!(summary.get("failed").and_then(JsonValue::as_u64), Some(4));
+        assert_eq!(summary.get("errors").and_then(JsonValue::as_u64), Some(1));
+        assert_eq!(summary.get("warnings").and_then(JsonValue::as_u64), Some(3));
+        assert_eq!(
+            summary
+                .get("nextActions")
+                .and_then(JsonValue::as_array)
+                .map(Vec::len),
+            Some(3)
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 {
   "name": "aegos",
-  "version": "3.5.59",
+  "version": "3.5.60",
   "description": "Aegos is a lightweight Tauri desktop proxy client derived from the Aegis 2.0 reliability line.",
   "type": "module",
   "private": true,

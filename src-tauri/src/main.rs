@@ -8552,20 +8552,8 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
         .unwrap_or_else(|err| format!("read failed: {err}"));
     let mixed_port_free = is_port_free(snapshot.settings.mixed_port);
     let controller_port_free = is_port_free(snapshot.settings.controller_port);
-    let check =
-        |name: &str, ok: bool, detail: String, severity: &str, category: &str, hint: &str| {
-            json!({
-                "name": name,
-                "ok": ok,
-                "detail": detail,
-                "severity": if ok { "ok" } else { severity },
-                "category": category,
-                "hint": if ok { "" } else { hint },
-                "actionable": !ok && !hint.is_empty()
-            })
-        };
     let checks = vec![
-        check(
+        core_runtime::diagnostic_check_json(
             "mihomo core",
             snapshot.core_path.exists(),
             snapshot.core_path.to_string_lossy().to_string(),
@@ -8573,7 +8561,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             "runtime",
             core_runtime::MISSING_RESOURCE_HINT,
         ),
-        check(
+        core_runtime::diagnostic_check_json(
             "Active profile config",
             active_profile_exists,
             active_profile_path
@@ -8584,7 +8572,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             "profile",
             "The active profile config file does not exist. Switch to another profile or import the subscription again.",
         ),
-        check(
+        core_runtime::diagnostic_check_json(
             "Profile preflight",
             profile_preflight_ok,
             profile_preflight_detail,
@@ -8592,7 +8580,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             "profile",
             "Profile preflight failed. Check subscription content, proxy-group references, and port settings first.",
         ),
-        check(
+        core_runtime::diagnostic_check_json(
             "Speed test DNS isolation",
             runtime_dns_safety_ok,
             runtime_dns_safety_detail,
@@ -8600,22 +8588,22 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             "speed",
             "Speed-test DNS isolation is abnormal. Restart Aegos to regenerate runtime config; if it repeats, check DNS port conflicts.",
         ),
-        check("Tauri shell", true, "Aegos".to_string(), "warning", "app", ""),
-        check(
+        core_runtime::diagnostic_check_json("Tauri shell", true, "Aegos".to_string(), "warning", "app", ""),
+        core_runtime::diagnostic_check_json(
             "Administrator",
             admin_ok,
             if is_admin {
                 "elevated".to_string()
             } else if admin_required {
-                "not elevated; TUN and 鏂綉淇濇姢 require admin restart".to_string()
+                "not elevated; TUN and Disconnect protection require admin restart".to_string()
             } else {
-                "not elevated; only required when TUN or 鏂綉淇濇姢 is enabled".to_string()
+                "not elevated; only required when TUN or Disconnect protection is enabled".to_string()
             },
             "warning",
             "permission",
             "TUN or disconnect protection requires restarting Aegos as administrator from settings.",
         ),
-        check(
+        core_runtime::diagnostic_check_json(
             "FlClash/Codex port isolation",
             snapshot.settings.mixed_port != 7890,
             format!(
@@ -8626,7 +8614,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             "network",
             "Aegos must not use port 7890. Keep mixed port at 7891 or another free port to avoid FlClash/Codex conflicts.",
         ),
-        check(
+        core_runtime::diagnostic_check_json(
             "Controller port",
             snapshot.settings.controller_port != snapshot.settings.mixed_port,
             format!("127.0.0.1:{}", snapshot.settings.controller_port),
@@ -8634,7 +8622,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             "network",
             "Controller port cannot equal the proxy port. Use 19091 or another free port in settings.",
         ),
-        check(
+        core_runtime::diagnostic_check_json(
             "System Proxy",
             true,
             if snapshot.settings.system_proxy {
@@ -8647,7 +8635,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             "network",
             "",
         ),
-        check(
+        core_runtime::diagnostic_check_json(
             "Mixed port availability",
             snapshot.running || mixed_port_free,
             port_owner_detail(snapshot.settings.mixed_port),
@@ -8655,7 +8643,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             "network",
             "Aegos core is not running, but the mixed proxy port is already occupied. Change Aegos mixed port or close the conflicting proxy app.",
         ),
-        check(
+        core_runtime::diagnostic_check_json(
             "Controller port availability",
             snapshot.running || controller_port_free,
             port_owner_detail(snapshot.settings.controller_port),
@@ -8663,7 +8651,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             "network",
             "Aegos core is not running, but the controller port is already occupied. Change Aegos controller port or close the conflicting app.",
         ),
-        check(
+        core_runtime::diagnostic_check_json(
             "Windows System Proxy takeover",
             current_proxy_ok,
             current_proxy_detail,
@@ -8671,7 +8659,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             "network",
             "Aegos system proxy is enabled in settings, but Windows is not pointing at the Aegos endpoint. Toggle system proxy off/on or use repair takeover.",
         ),
-        check(
+        core_runtime::diagnostic_check_json(
             "TUN",
             !snapshot.settings.tun_enabled || is_admin,
             if snapshot.settings.tun_enabled {
@@ -8684,8 +8672,8 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             "permission",
             "TUN is enabled but Aegos is not elevated. Restart as administrator from settings.",
         ),
-        check(
-            "鏂綉淇濇姢",
+        core_runtime::diagnostic_check_json(
+            "Disconnect protection",
             !snapshot.settings.kill_switch_enabled || is_admin,
             if snapshot.settings.kill_switch_enabled {
                 "enabled"
@@ -8697,7 +8685,7 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             "permission",
             "Disconnect protection is enabled but Aegos is not elevated. Restart as administrator from settings.",
         ),
-        check(
+        core_runtime::diagnostic_check_json(
             "Recent core logs",
             recent_logs_ok,
             recent_log_detail,
@@ -8706,53 +8694,12 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             "Recent core logs contain warning/error entries. Open Logs for startup or proxy failure context.",
         ),
     ];
-    let failed_count = checks
-        .iter()
-        .filter(|item| {
-            !item
-                .get("ok")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false)
-        })
-        .count();
-    let error_count = checks
-        .iter()
-        .filter(|item| item.get("severity").and_then(|value| value.as_str()) == Some("error"))
-        .count();
-    let warning_count = checks
-        .iter()
-        .filter(|item| item.get("severity").and_then(|value| value.as_str()) == Some("warning"))
-        .count();
-    let next_actions = checks
-        .iter()
-        .filter(|item| {
-            !item
-                .get("ok")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false)
-                && item
-                    .get("actionable")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false)
-        })
-        .filter_map(|item| {
-            item.get("hint")
-                .and_then(|value| value.as_str())
-                .map(str::to_string)
-        })
-        .take(3)
-        .collect::<Vec<_>>();
+    let summary = core_runtime::diagnostic_summary_json(&checks);
     json!({
         "generatedAt": now_iso(),
         "appVersion": env!("CARGO_PKG_VERSION"),
         "status": diagnostics_status_from_snapshot(&snapshot, is_admin),
-        "summary": {
-            "total": checks.len(),
-            "failed": failed_count,
-            "errors": error_count,
-            "warnings": warning_count,
-            "nextActions": next_actions
-        },
+        "summary": summary,
         "checks": checks
     })
 }

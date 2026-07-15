@@ -493,6 +493,19 @@ check(
   'main.rs may apply settings, but runtime port bounds, reserved ports, and pair validation belong to core_runtime',
 );
 check(
+  'diagnostic check and summary shaping are owned by the core runtime boundary',
+  coreRuntimeRs.includes('pub fn diagnostic_check_json') &&
+    coreRuntimeRs.includes('pub fn diagnostic_summary_json') &&
+    coreRuntimeRs.includes('diagnostic_check_and_summary_are_runtime_shaped') &&
+    mainRs.includes('core_runtime::diagnostic_check_json(') &&
+    mainRs.includes('core_runtime::diagnostic_summary_json(&checks)') &&
+    !mainRs.includes('let check =') &&
+    !mainRs.includes('let failed_count = checks') &&
+    !mainRs.includes('let next_actions = checks') &&
+    !mainRs.includes('閺傤厾缍夋穱婵囧Б'),
+  'main.rs may collect diagnostic facts, but check row shape, summary counts, next actions, and permission labels belong to core_runtime',
+);
+check(
   'system proxy takeover plan is owned by the core runtime boundary',
   coreRuntimeRs.includes('pub const WINDOWS_PROXY_BYPASS_LIST') &&
     coreRuntimeRs.includes('pub struct CoreSystemProxyTakeoverPlan') &&
