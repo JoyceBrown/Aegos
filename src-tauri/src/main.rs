@@ -8148,9 +8148,9 @@ impl CoreManager {
         }
         self.settings.mode = mode.to_string();
         self.save_settings()?;
-        if self.process.is_some() {
-            let _ = self.core_controller().apply_mode(mode);
-        }
+        let _ = self
+            .core_controller()
+            .apply_mode_if_running(self.process.is_some(), mode);
         Ok(mode.to_string())
     }
 

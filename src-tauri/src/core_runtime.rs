@@ -741,6 +741,18 @@ impl CoreController {
         self.set_mode(mode, MODE_APPLY_TIMEOUT_MS)
     }
 
+    pub fn apply_mode_if_running(
+        &self,
+        running: bool,
+        mode: &str,
+    ) -> Option<Result<JsonValue, String>> {
+        if running {
+            Some(self.apply_mode(mode))
+        } else {
+            None
+        }
+    }
+
     pub fn select_proxy(&self, group: &str, proxy: &str, timeout_ms: u64) -> Result<(), String> {
         self.request(
             "PUT",
@@ -1965,6 +1977,15 @@ rules:
             .apply_proxy_selection_with_cleanup("Proxy", "HK 01")
             .is_err());
         assert_eq!(STALE_CONNECTION_CLEANUP_TIMEOUT_MS, 1500);
+    }
+
+    #[test]
+    fn controller_mode_apply_running_guard_is_owned_by_runtime_boundary() {
+        let controller = CoreController::new(0, "");
+        assert!(controller.apply_mode_if_running(false, "rule").is_none());
+        assert!(controller
+            .apply_mode_if_running(true, "rule")
+            .is_some_and(|result| result.is_err()));
     }
 
     #[test]

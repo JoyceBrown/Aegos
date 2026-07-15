@@ -204,12 +204,15 @@ check(
     coreRuntimeRs.includes('pub const RUNTIME_RESTART_SETTLE_MS') &&
     coreRuntimeRs.includes('pub fn set_mode(&self, mode: &str, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn apply_mode(&self, mode: &str)') &&
+    coreRuntimeRs.includes('pub fn apply_mode_if_running(') &&
+    coreRuntimeRs.includes('Some(self.apply_mode(mode))') &&
     coreRuntimeRs.includes('pub const MODE_APPLY_TIMEOUT_MS') &&
     mainRs.includes('.wait_until_ready(||') &&
     mainRs.includes('.runtime_reuse_ready()') &&
     !mainRs.includes('core_runtime::READY_REUSE_PROBE_TIMEOUT_MS') &&
     mainRs.includes('core_runtime::RUNTIME_RESTART_SETTLE_MS') &&
-    mainRs.includes('self.core_controller().apply_mode(mode)') &&
+    mainRs.includes('.apply_mode_if_running(self.process.is_some(), mode)') &&
+    !mainRs.includes('self.core_controller().apply_mode(mode)') &&
     !mainRs.includes('self.core_controller().set_mode(mode, 3000)') &&
     !mainRs.includes('version_probe(900)') &&
     !mainRs.includes('version_probe(300)') &&
