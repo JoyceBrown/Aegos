@@ -6440,17 +6440,15 @@ impl CoreManager {
     }
 
     fn start_failure_message(&self, profile: Option<&Profile>, reason: &str) -> String {
-        let profile_name = profile
-            .map(|item| item.name.as_str())
-            .unwrap_or("鏈€夋嫨璁㈤槄");
-        let profile_path = profile.map(|item| item.path.as_str()).unwrap_or("-");
-        format!(
-            "Core startup failed: {reason}; profile: {profile_name}; config: {profile_path}; core: {}; ports: mixed {} / controller {}; recent logs: {}",
-            self.core_path.display(),
+        core_runtime::CoreStartFailureContext::new(
+            self.core_path.clone(),
+            profile.map(|item| item.name.clone()),
+            profile.map(|item| item.path.clone()),
             self.settings.mixed_port,
             self.settings.controller_port,
-            self.recent_log_summary(8)
+            self.recent_log_summary(8),
         )
+        .message(reason)
     }
 
     fn prepare_runtime_profile(

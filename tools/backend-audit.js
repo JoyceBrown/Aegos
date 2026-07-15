@@ -261,7 +261,11 @@ check(
   'core startup failures include actionable diagnostics',
   mainRs.includes('fn start_failure_message') &&
     mainRs.includes('recent_log_summary') &&
-    mainRs.includes('Core startup failed: {reason}') &&
+    mainRs.includes('CoreStartFailureContext::new') &&
+    mainRs.includes('.message(reason)') &&
+    coreRuntimeRs.includes('pub struct CoreStartFailureContext') &&
+    coreRuntimeRs.includes('Core startup failed: {reason}') &&
+    coreRuntimeRs.includes('profile: no active profile') &&
     mainRs.includes('Config generation failed: {err}') &&
     mainRs.includes('Core process spawn failed: {err}') &&
     mainRs.includes('self.wait_for_controller()?') &&

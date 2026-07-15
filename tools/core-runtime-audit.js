@@ -358,6 +358,19 @@ check(
   'core/controller/node failure classes must not be rebuilt in main.rs',
 );
 check(
+  'core startup failure message shaping is owned by the core runtime boundary',
+  coreRuntimeRs.includes('pub struct CoreStartFailureContext') &&
+    coreRuntimeRs.includes('pub fn message(&self, reason: &str) -> String') &&
+    coreRuntimeRs.includes('profile: no active profile') &&
+    coreRuntimeRs.includes('Core startup failed: {reason}') &&
+    coreRuntimeRs.includes('runtime_lifecycle_messages_are_owned_by_runtime_boundary') &&
+    mainRs.includes('CoreStartFailureContext::new') &&
+    mainRs.includes('.message(reason)') &&
+    !mainRs.includes('Core startup failed: {reason}; profile:') &&
+    !mainRs.includes('unwrap_or("no active profile")'),
+  'main.rs may collect runtime facts, but startup failure wording belongs to core_runtime',
+);
+check(
   'release gate requires core runtime audit',
   packageJson.scripts?.['audit:core-runtime'] === 'node tools/core-runtime-audit.js' &&
     releaseAudit.includes('core runtime audit script exists'),

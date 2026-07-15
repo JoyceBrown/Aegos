@@ -1782,6 +1782,16 @@ pub struct CoreRuntimeApplyResult {
     pub digest: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct CoreStartFailureContext {
+    pub core_path: PathBuf,
+    pub profile_name: Option<String>,
+    pub profile_path: Option<String>,
+    pub mixed_port: u16,
+    pub controller_port: u16,
+    pub recent_logs: String,
+}
+
 impl CoreLaunchPlan {
     pub fn new(paths: CoreRuntimePaths, profile_name: impl Into<String>, standby: bool) -> Self {
         Self {
@@ -1804,6 +1814,38 @@ impl CoreLaunchPlan {
             &self.paths.core_path,
             &self.paths.home_dir,
             &self.paths.runtime_profile_path,
+        )
+    }
+}
+
+impl CoreStartFailureContext {
+    pub fn new(
+        core_path: PathBuf,
+        profile_name: Option<String>,
+        profile_path: Option<String>,
+        mixed_port: u16,
+        controller_port: u16,
+        recent_logs: String,
+    ) -> Self {
+        Self {
+            core_path,
+            profile_name,
+            profile_path,
+            mixed_port,
+            controller_port,
+            recent_logs,
+        }
+    }
+
+    pub fn message(&self, reason: &str) -> String {
+        format!(
+            "Core startup failed: {reason}; profile: {}; config: {}; core: {}; ports: mixed {} / controller {}; recent logs: {}",
+            self.profile_name.as_deref().unwrap_or("no active profile"),
+            self.profile_path.as_deref().unwrap_or("-"),
+            self.core_path.display(),
+            self.mixed_port,
+            self.controller_port,
+            self.recent_logs
         )
     }
 }
@@ -2087,6 +2129,29 @@ mod tests {
         assert!(CONTROLLER_READY_TIMEOUT_MESSAGE.contains("did not become ready"));
         assert!(STANDBY_SPEED_START_MESSAGE.contains("standby without traffic takeover"));
         assert!(RUNTIME_DRIFT_RESTART_MESSAGE.contains("drift detected"));
+        let start_failure = CoreStartFailureContext::new(
+            core_path.clone(),
+            Some("Profile A".to_string()),
+            Some(r"C:\Users\Aegos\profile.yaml".to_string()),
+            7897,
+            19097,
+            "[core] last line".to_string(),
+        )
+        .message("controller timeout");
+        assert!(start_failure.contains("Core startup failed: controller timeout"));
+        assert!(start_failure.contains("profile: Profile A"));
+        assert!(start_failure.contains("ports: mixed 7897 / controller 19097"));
+        assert!(start_failure.contains("recent logs: [core] last line"));
+        assert!(CoreStartFailureContext::new(
+            core_path,
+            None,
+            None,
+            7897,
+            19097,
+            "No recent logs.".to_string(),
+        )
+        .message("missing profile")
+        .contains("profile: no active profile"));
     }
 
     #[test]
