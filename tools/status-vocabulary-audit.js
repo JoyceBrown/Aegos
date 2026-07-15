@@ -114,6 +114,16 @@ check(
     coreRuntimeRs.includes('"takeoverComplete"'),
   'snapshot contract fields'
 );
+check(
+  'backend status matrix test covers stage-one status combinations',
+  coreRuntimeRs.includes('status_surface_snapshot_covers_stage_one_state_matrix') &&
+    coreRuntimeRs.includes('Some("disconnected")') &&
+    coreRuntimeRs.includes('Some("connected-system-proxy")') &&
+    coreRuntimeRs.includes('Some("stale")') &&
+    coreRuntimeRs.includes('Some("unavailable")') &&
+    coreRuntimeRs.includes('/connection/systemProxyApplied'),
+  'stage-one status matrix'
+);
 check('frontend visible text has no abnormal Unicode fragments', frontendSuspicious.length === 0, JSON.stringify(frontendSuspicious.slice(0, 12)));
 check('release audit wires status vocabulary gate', releaseAudit.includes('audit:status-vocabulary'), 'tools/release-audit.js');
 check('frontend keeps dynamic HTML injection banned', !/\b(innerHTML\s*=|outerHTML\s*=|insertAdjacentHTML\s*\(|document\.write\s*\(|eval\s*\(|new Function\s*\()/m.test(appJs), 'src/app.js');

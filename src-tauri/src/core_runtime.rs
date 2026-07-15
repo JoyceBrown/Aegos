@@ -3884,6 +3884,115 @@ rules:
     }
 
     #[test]
+    fn status_surface_snapshot_covers_stage_one_state_matrix() {
+        let make_status = |running: bool,
+                           takeover: bool,
+                           system_proxy: bool,
+                           tun: bool,
+                           outbound_ip: &str,
+                           checked_at: u64,
+                           now: u64| {
+            status_surface_json(
+                json!({ "engine": ENGINE }),
+                running,
+                takeover,
+                json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 }),
+                "rule",
+                system_proxy,
+                7891,
+                "192.168.1.7",
+                outbound_ip,
+                false,
+                json!({ "name": "profile" }),
+                json!({ "running": false }),
+                json!({ "systemProxy": system_proxy, "tunEnabled": tun }),
+                connection_status_json(running, takeover, system_proxy, tun),
+                protection_status_json(running, takeover, false, tun, system_proxy),
+                network_availability_json(running, takeover, outbound_ip, checked_at, now),
+                json!([]),
+            )
+        };
+
+        let stopped = make_status(false, false, false, false, "-", 0, 120);
+        assert_eq!(
+            stopped.get("coreReady").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            stopped
+                .pointer("/connection/phase")
+                .and_then(JsonValue::as_str),
+            Some("disconnected")
+        );
+        assert_eq!(
+            stopped
+                .pointer("/network/availability/state")
+                .and_then(JsonValue::as_str),
+            Some("unverified")
+        );
+
+        let standby = make_status(true, false, true, false, "-", 0, 120);
+        assert_eq!(
+            standby.get("standby").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            standby
+                .pointer("/connection/systemProxyWanted")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            standby
+                .pointer("/connection/systemProxyApplied")
+                .and_then(JsonValue::as_bool),
+            Some(false)
+        );
+
+        let available = make_status(true, true, true, false, "203.0.113.9", 100, 120);
+        assert_eq!(
+            available
+                .pointer("/connection/phase")
+                .and_then(JsonValue::as_str),
+            Some("connected-system-proxy")
+        );
+        assert_eq!(
+            available
+                .pointer("/network/availability/state")
+                .and_then(JsonValue::as_str),
+            Some("available")
+        );
+        assert_eq!(
+            available
+                .pointer("/network/availability/networkUsable")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+
+        let stale = make_status(true, true, true, false, "203.0.113.9", 100, 900);
+        assert_eq!(
+            stale
+                .pointer("/network/availability/state")
+                .and_then(JsonValue::as_str),
+            Some("stale")
+        );
+
+        let unavailable = make_status(true, true, true, false, "-", 100, 120);
+        assert_eq!(
+            unavailable
+                .pointer("/network/availability/state")
+                .and_then(JsonValue::as_str),
+            Some("unavailable")
+        );
+        assert_eq!(
+            unavailable
+                .pointer("/network/availability/networkUsable")
+                .and_then(JsonValue::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
     fn network_availability_separates_runtime_from_usable_network() {
         let stopped = network_availability_json(false, false, "-", 0, 10);
         assert_eq!(
