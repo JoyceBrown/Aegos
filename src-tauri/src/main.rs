@@ -8270,14 +8270,15 @@ impl CoreManager {
     }
 
     fn sync_outbound_ip_group_selection(&mut self) -> Option<String> {
-        if self.process.is_none() {
-            return None;
-        }
         let groups = self.proxy_groups();
         let proxy = self.current_outbound_ip_proxy_name(&groups)?;
-        if let Err(err) = self
+        if let Some(Err(err)) = self
             .core_controller()
-            .apply_auxiliary_proxy_selection(AEGOS_OUTBOUND_IP_GROUP, &proxy)
+            .apply_auxiliary_proxy_selection_if_running(
+                self.process.is_some(),
+                AEGOS_OUTBOUND_IP_GROUP,
+                &proxy,
+            )
         {
             self.add_log(
                 format!("Outbound IP lookup group sync failed: {err}"),
@@ -8285,7 +8286,7 @@ impl CoreManager {
             );
             return None;
         }
-        Some(proxy)
+        self.process.is_some().then_some(proxy)
     }
 
     fn speed_test_snapshot(&self) -> JsonValue {

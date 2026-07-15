@@ -781,6 +781,19 @@ impl CoreController {
         self.select_proxy(group, proxy, AUXILIARY_PROXY_SELECT_TIMEOUT_MS)
     }
 
+    pub fn apply_auxiliary_proxy_selection_if_running(
+        &self,
+        running: bool,
+        group: &str,
+        proxy: &str,
+    ) -> Option<Result<(), String>> {
+        if running {
+            Some(self.apply_auxiliary_proxy_selection(group, proxy))
+        } else {
+            None
+        }
+    }
+
     pub fn cleanup_stale_connections_after_selection(&self) {
         let _ = self.close_connections(STALE_CONNECTION_CLEANUP_TIMEOUT_MS);
     }
@@ -1985,6 +1998,17 @@ rules:
         assert!(controller.apply_mode_if_running(false, "rule").is_none());
         assert!(controller
             .apply_mode_if_running(true, "rule")
+            .is_some_and(|result| result.is_err()));
+    }
+
+    #[test]
+    fn controller_auxiliary_proxy_selection_running_guard_is_owned_by_runtime_boundary() {
+        let controller = CoreController::new(0, "");
+        assert!(controller
+            .apply_auxiliary_proxy_selection_if_running(false, "Aegos Landing IP", "HK 01")
+            .is_none());
+        assert!(controller
+            .apply_auxiliary_proxy_selection_if_running(true, "Aegos Landing IP", "HK 01")
             .is_some_and(|result| result.is_err()));
     }
 

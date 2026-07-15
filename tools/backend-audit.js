@@ -333,6 +333,8 @@ check(
     coreRuntimeRs.includes('self.apply_proxy_selection(group, proxy)?') &&
     coreRuntimeRs.includes('self.cleanup_stale_connections_after_selection();') &&
     coreRuntimeRs.includes('pub fn apply_auxiliary_proxy_selection(&self, group: &str, proxy: &str)') &&
+    coreRuntimeRs.includes('pub fn apply_auxiliary_proxy_selection_if_running(') &&
+    coreRuntimeRs.includes('Some(self.apply_auxiliary_proxy_selection(group, proxy))') &&
     coreRuntimeRs.includes('pub fn cleanup_stale_connections_after_selection(&self)') &&
     coreRuntimeRs.includes('pub const PROXY_SELECT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const AUXILIARY_PROXY_SELECT_TIMEOUT_MS') &&
@@ -350,7 +352,8 @@ check(
     !mainRs.includes('fn normalize_proxy_item') &&
     mainRs.includes('.proxy_delay_result_with_client(client, name, test_url, timeout_ms)') &&
     !mainRs.includes('fn classify_delay_http_failure') &&
-    mainRs.includes('.apply_auxiliary_proxy_selection(') &&
+    mainRs.includes('.apply_auxiliary_proxy_selection_if_running(') &&
+    !mainRs.includes('.apply_auxiliary_proxy_selection(AEGOS_OUTBOUND_IP_GROUP, &proxy)') &&
     mainRs.includes('.apply_proxy_selection_with_cleanup(group, proxy)') &&
     !mainRs.includes('.apply_proxy_selection(group, proxy)') &&
     !mainRs.includes('.cleanup_stale_connections_after_selection()') &&
