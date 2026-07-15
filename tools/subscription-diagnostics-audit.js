@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
+const subscriptionRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'subscription_runtime.rs'), 'utf8');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 
 const fail = [];
@@ -16,8 +17,9 @@ function check(name, ok, detail = '') {
 check(
   'subscription diagnostics helper exists',
   mainRs.includes('fn subscription_diagnostic') &&
-    mainRs.includes('Open Logs or Diagnostics for details') &&
-    mainRs.includes('Subscription diagnostics [{stage}]'),
+    mainRs.includes('subscription_runtime::diagnostic(stage, reason, suggestion)') &&
+    subscriptionRuntimeRs.includes('Open Logs or Diagnostics for details') &&
+    subscriptionRuntimeRs.includes('Subscription diagnostics [{stage}]'),
   'stable user-facing diagnostic format'
 );
 

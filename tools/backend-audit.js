@@ -14,6 +14,7 @@ const configPipelineRs = readSource('src-tauri', 'src', 'config_pipeline.rs');
 const taskRuntimeRs = readSource('src-tauri', 'src', 'task_runtime.rs');
 const speedRuntimeRs = readSource('src-tauri', 'src', 'speed_runtime.rs');
 const diagnosticsRuntimeRs = readSource('src-tauri', 'src', 'diagnostics_runtime.rs');
+const subscriptionRuntimeRs = readSource('src-tauri', 'src', 'subscription_runtime.rs');
 
 const fail = [];
 const pass = [];
@@ -552,8 +553,12 @@ check(
 
 check(
   'subscription import/update validate before applying',
-    mainRs.includes('struct ProfileSourceSummary') &&
+    subscriptionRuntimeRs.includes('pub(crate) struct ProfileSourceSummary') &&
+    subscriptionRuntimeRs.includes('pub(crate) struct ProfileSource') &&
+    subscriptionRuntimeRs.includes('pub(crate) fn summarize_source(') &&
+    mainRs.includes('use subscription_runtime::{ProfileSource, ProfileSourceSummary};') &&
     mainRs.includes('fn summarize_profile_source') &&
+    mainRs.includes('subscription_runtime::summarize_source(config, format, unsupported_lines)') &&
     mainRs.includes('subscription download returned empty content') &&
     mainRs.includes('config_pipeline::preflight_profile_source(source.config, &profile, &settings)') &&
     mainRs.includes('let patched = runtime.config') &&

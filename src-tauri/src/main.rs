@@ -5,6 +5,7 @@ mod core_runtime;
 mod diagnostics_runtime;
 mod profile_compiler;
 mod speed_runtime;
+mod subscription_runtime;
 mod task_runtime;
 
 use base64::{engine::general_purpose, Engine as _};
@@ -32,6 +33,7 @@ use std::{
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use subscription_runtime::{ProfileSource, ProfileSourceSummary};
 use task_runtime::{
     finish_cancelled, finish_job, job_cancel_requested, job_status_snapshot, new_job_record,
     request_job_cancel, set_job_state, JobStore,
@@ -104,26 +106,8 @@ struct Profile {
     digest: String,
 }
 
-#[derive(Clone, Default, Debug)]
-struct ProfileSourceSummary {
-    format: String,
-    proxies: usize,
-    proxy_groups: usize,
-    rules: usize,
-    unsupported_lines: usize,
-}
-
-#[derive(Debug)]
-struct ProfileSource {
-    config: YamlValue,
-    summary: ProfileSourceSummary,
-}
-
 fn subscription_diagnostic(stage: &str, reason: impl AsRef<str>, suggestion: &str) -> String {
-    format!(
-        "Subscription diagnostics [{stage}]: {}. Suggestion: {suggestion}. Open Logs or Diagnostics for details.",
-        reason.as_ref()
-    )
+    subscription_runtime::diagnostic(stage, reason, suggestion)
 }
 
 fn is_supported_uri_scheme(scheme: &str) -> bool {
@@ -2257,25 +2241,7 @@ fn summarize_profile_source(
     format: &str,
     unsupported_lines: usize,
 ) -> Result<ProfileSourceSummary, String> {
-    let proxies = yaml_sequence(config, "proxies")
-        .map(|items| items.len())
-        .unwrap_or(0);
-    let proxy_groups = yaml_sequence(config, "proxy-groups")
-        .map(|items| items.len())
-        .unwrap_or(0);
-    let rules = yaml_sequence(config, "rules")
-        .map(|items| items.len())
-        .unwrap_or(0);
-    if proxies == 0 {
-        return Err("璁㈤槄瑙ｆ瀽鎴愬姛锛屼絾娌℃湁鍙敤 proxies 鑺傜偣".to_string());
-    }
-    Ok(ProfileSourceSummary {
-        format: format.to_string(),
-        proxies,
-        proxy_groups,
-        rules,
-        unsupported_lines,
-    })
+    subscription_runtime::summarize_source(config, format, unsupported_lines)
 }
 
 fn profile_file_summary(profile: &Profile) -> Result<ProfileSourceSummary, String> {
