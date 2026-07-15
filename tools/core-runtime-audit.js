@@ -385,6 +385,20 @@ check(
   'main.rs must not rebuild runtime identity/reuse/drift decisions',
 );
 check(
+  'core restart takeover preservation is planned inside the core runtime boundary',
+  coreRuntimeRs.includes('pub enum CoreRuntimeRestartAction') &&
+    coreRuntimeRs.includes('pub struct CoreRuntimeRestartPlan') &&
+    coreRuntimeRs.includes('pub fn for_runtime_drift') &&
+    coreRuntimeRs.includes('pub fn preserving_proxy') &&
+    coreRuntimeRs.includes('pub fn next_action(&self) -> CoreRuntimeRestartAction') &&
+    coreRuntimeRs.includes('runtime_restart_plan_preserves_takeover_intent_inside_runtime_boundary') &&
+    mainRs.includes('CoreRuntimeRestartPlan::for_runtime_drift') &&
+    mainRs.includes('CoreRuntimeRestartPlan::preserving_proxy') &&
+    mainRs.includes('restart_plan.next_action()') &&
+    mainRs.includes('CoreRuntimeRestartAction::StartWithTakeover'),
+  'main.rs may execute stop/start, but restore-takeover restart intent belongs to core_runtime',
+);
+check(
   'release gate requires core runtime audit',
   packageJson.scripts?.['audit:core-runtime'] === 'node tools/core-runtime-audit.js' &&
     releaseAudit.includes('core runtime audit script exists'),

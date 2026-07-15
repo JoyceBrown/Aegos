@@ -6566,16 +6566,17 @@ impl CoreManager {
                 }));
             }
             core_runtime::CoreRuntimeStartAction::RestartForDrift => {
-                let restore_system_proxy = self.settings.system_proxy;
-                let restore_takeover = self.traffic_takeover && enable_takeover;
+                let restart_plan = core_runtime::CoreRuntimeRestartPlan::for_runtime_drift(
+                    self.settings.system_proxy,
+                    self.traffic_takeover,
+                    enable_takeover,
+                );
                 self.add_log(core_runtime::RUNTIME_DRIFT_RESTART_MESSAGE, "warn");
                 self.stop()?;
-                if restore_takeover {
-                    self.restore_system_proxy_preference(restore_system_proxy);
+                if restart_plan.should_restore_proxy_preference() {
+                    self.restore_system_proxy_preference(restart_plan.restore_system_proxy);
                 }
-                thread::sleep(Duration::from_millis(
-                    core_runtime::RUNTIME_RESTART_SETTLE_MS,
-                ));
+                thread::sleep(Duration::from_millis(restart_plan.delay_ms));
             }
         }
         ensure_dir(&self.home_dir).map_err(|err| {
@@ -6671,17 +6672,19 @@ impl CoreManager {
     }
 
     fn restart_core_preserving_proxy(&mut self, delay_ms: u64) -> Result<JsonValue, String> {
-        let restore_system_proxy = self.settings.system_proxy;
-        let restore_takeover = self.traffic_takeover;
+        let restart_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(
+            self.settings.system_proxy,
+            self.traffic_takeover,
+            delay_ms,
+        );
         self.stop()?;
-        if restore_takeover {
-            self.restore_system_proxy_preference(restore_system_proxy);
+        if restart_plan.should_restore_proxy_preference() {
+            self.restore_system_proxy_preference(restart_plan.restore_system_proxy);
         }
-        thread::sleep(Duration::from_millis(delay_ms));
-        if restore_takeover {
-            self.start()
-        } else {
-            self.start_standby()
+        thread::sleep(Duration::from_millis(restart_plan.delay_ms));
+        match restart_plan.next_action() {
+            core_runtime::CoreRuntimeRestartAction::StartWithTakeover => self.start(),
+            core_runtime::CoreRuntimeRestartAction::StartStandby => self.start_standby(),
         }
     }
 

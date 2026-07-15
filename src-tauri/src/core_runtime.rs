@@ -1799,6 +1799,19 @@ pub enum CoreRuntimeStartAction {
     RestartForDrift,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CoreRuntimeRestartAction {
+    StartWithTakeover,
+    StartStandby,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct CoreRuntimeRestartPlan {
+    pub restore_system_proxy: bool,
+    pub restore_takeover: bool,
+    pub delay_ms: u64,
+}
+
 impl CoreLaunchPlan {
     pub fn new(paths: CoreRuntimePaths, profile_name: impl Into<String>, standby: bool) -> Self {
         Self {
@@ -1847,6 +1860,44 @@ pub fn decide_runtime_start(
         CoreRuntimeStartAction::ReuseRunning
     } else {
         CoreRuntimeStartAction::RestartForDrift
+    }
+}
+
+impl CoreRuntimeRestartPlan {
+    pub fn for_runtime_drift(
+        system_proxy_enabled: bool,
+        traffic_takeover: bool,
+        requested_takeover: bool,
+    ) -> Self {
+        Self {
+            restore_system_proxy: system_proxy_enabled,
+            restore_takeover: traffic_takeover && requested_takeover,
+            delay_ms: RUNTIME_RESTART_SETTLE_MS,
+        }
+    }
+
+    pub fn preserving_proxy(
+        system_proxy_enabled: bool,
+        traffic_takeover: bool,
+        delay_ms: u64,
+    ) -> Self {
+        Self {
+            restore_system_proxy: system_proxy_enabled,
+            restore_takeover: traffic_takeover,
+            delay_ms,
+        }
+    }
+
+    pub fn should_restore_proxy_preference(&self) -> bool {
+        self.restore_takeover
+    }
+
+    pub fn next_action(&self) -> CoreRuntimeRestartAction {
+        if self.restore_takeover {
+            CoreRuntimeRestartAction::StartWithTakeover
+        } else {
+            CoreRuntimeRestartAction::StartStandby
+        }
     }
 }
 
@@ -2252,6 +2303,36 @@ mod tests {
         assert_eq!(
             decide_runtime_start(true, false, false),
             CoreRuntimeStartAction::RestartForDrift
+        );
+    }
+
+    #[test]
+    fn runtime_restart_plan_preserves_takeover_intent_inside_runtime_boundary() {
+        let drift = CoreRuntimeRestartPlan::for_runtime_drift(true, true, true);
+        assert_eq!(drift.restore_system_proxy, true);
+        assert_eq!(drift.restore_takeover, true);
+        assert_eq!(drift.delay_ms, RUNTIME_RESTART_SETTLE_MS);
+        assert!(drift.should_restore_proxy_preference());
+        assert_eq!(
+            drift.next_action(),
+            CoreRuntimeRestartAction::StartWithTakeover
+        );
+
+        let standby_drift = CoreRuntimeRestartPlan::for_runtime_drift(true, true, false);
+        assert_eq!(standby_drift.restore_takeover, false);
+        assert!(!standby_drift.should_restore_proxy_preference());
+        assert_eq!(
+            standby_drift.next_action(),
+            CoreRuntimeRestartAction::StartStandby
+        );
+
+        let manual_restart = CoreRuntimeRestartPlan::preserving_proxy(false, true, 350);
+        assert_eq!(manual_restart.restore_system_proxy, false);
+        assert_eq!(manual_restart.restore_takeover, true);
+        assert_eq!(manual_restart.delay_ms, 350);
+        assert_eq!(
+            manual_restart.next_action(),
+            CoreRuntimeRestartAction::StartWithTakeover
         );
     }
 
