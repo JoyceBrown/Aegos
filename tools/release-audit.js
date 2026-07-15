@@ -219,6 +219,19 @@ check(
   'active connection metric',
 );
 check(
+  'routing group row model is owned by core_runtime',
+  coreRuntimeRs.includes('pub fn canonical_strategy_type(') &&
+    coreRuntimeRs.includes('pub fn routing_group_rows(') &&
+    coreRuntimeRs.includes('pub fn routing_group_counts(') &&
+    coreRuntimeRs.includes('fn is_internal_routing_group_name') &&
+    coreRuntimeRs.includes('routing_group_rows_are_shaped_inside_runtime_boundary') &&
+    mainRs.includes('core_runtime::routing_group_rows(&groups') &&
+    mainRs.includes('core_runtime::routing_group_counts(&group_rows)') &&
+    !mainRs.includes('fn canonical_strategy_type') &&
+    !mainRs.includes('let group_type = canonical_strategy_type(group_type_raw)'),
+  'routing group type normalization, automatic classification, filtering, and counts must stay out of main.rs',
+);
+check(
   'proxy controller APIs are typed through CoreController',
   coreRuntimeRs.includes('pub fn proxies_snapshot(&self, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn proxy_groups_snapshot(') &&
@@ -244,7 +257,8 @@ check(
     coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
     coreRuntimeRs.includes('pub fn classify_delay_http_failure(') &&
     coreRuntimeRs.includes('#[derive(Clone, Debug)]\npub struct CoreController') &&
-    mainRs.includes('.ui_proxy_groups_snapshot_or_else(running, &[AEGOS_OUTBOUND_IP_GROUP], ||') &&
+    mainRs.includes('controller.ui_proxy_groups_snapshot_or_else(') &&
+    mainRs.includes('&[AEGOS_OUTBOUND_IP_GROUP]') &&
     !mainRs.includes('.ui_proxy_groups_snapshot_or_none(running, &[AEGOS_OUTBOUND_IP_GROUP])') &&
     !mainRs.includes('fn controller_proxy_groups_snapshot') &&
     !mainRs.includes('.ui_proxy_groups_snapshot(&[AEGOS_OUTBOUND_IP_GROUP])') &&
@@ -255,6 +269,10 @@ check(
     mainRs.includes('fn test_proxy_delay_plan(\n    client: &Client,\n    controller: &core_runtime::CoreController,') &&
     mainRs.includes('fn test_proxy_delay_with_retry(\n    client: &Client,\n    controller: &core_runtime::CoreController,') &&
     mainRs.includes('fn test_proxy_delay_fast(\n    client: &Client,\n    controller: &core_runtime::CoreController,') &&
+    mainRs.includes('controller: core_runtime::CoreController') &&
+    mainRs.includes('core.core_controller()') &&
+    !mainRs.includes('fn assemble_proxy_groups_snapshot(\n    running: bool,\n    controller_port: u16') &&
+    !mainRs.includes('fn assemble_proxy_groups_snapshot(\n    running: bool,\n    controller: core_runtime::CoreController,\n    secret:') &&
     !mainRs.includes('fn test_proxy_delay_plan(\n    client: &Client,\n    controller_port: u16,') &&
     !mainRs.includes('fn test_proxy_delay_with_retry(\n    client: &Client,\n    controller_port: u16,') &&
     mainRs.includes('.proxy_delay_result_with_client(client, name, test_url, timeout_ms)') &&

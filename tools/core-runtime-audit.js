@@ -160,6 +160,19 @@ check(
   'controller calls must go through core_runtime instead of rebuilding ad-hoc clients',
 );
 check(
+  'Aegos owns routing group row shaping inside the core runtime boundary',
+  coreRuntimeRs.includes('pub fn canonical_strategy_type(') &&
+    coreRuntimeRs.includes('pub fn routing_group_rows(') &&
+    coreRuntimeRs.includes('pub fn routing_group_counts(') &&
+    coreRuntimeRs.includes('fn is_internal_routing_group_name') &&
+    coreRuntimeRs.includes('routing_group_rows_are_shaped_inside_runtime_boundary') &&
+    mainRs.includes('core_runtime::routing_group_rows(&groups') &&
+    mainRs.includes('core_runtime::routing_group_counts(&group_rows)') &&
+    !mainRs.includes('fn canonical_strategy_type') &&
+    !mainRs.includes('let group_type = canonical_strategy_type(group_type_raw)'),
+  'routing group type normalization, automatic classification, filtering, and counts must not be rebuilt in main.rs',
+);
+check(
   'Aegos routes proxy control APIs through typed CoreController methods',
   coreRuntimeRs.includes('pub fn proxies_snapshot(&self, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn proxy_groups_snapshot(') &&
@@ -184,7 +197,12 @@ check(
     coreRuntimeRs.includes('pub fn proxy_delay_with_client(') &&
     coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
     coreRuntimeRs.includes('pub fn classify_delay_http_failure(') &&
-    mainRs.includes('.ui_proxy_groups_snapshot_or_else(running, &[AEGOS_OUTBOUND_IP_GROUP], ||') &&
+    mainRs.includes('controller.ui_proxy_groups_snapshot_or_else(') &&
+    mainRs.includes('&[AEGOS_OUTBOUND_IP_GROUP]') &&
+    mainRs.includes('controller: core_runtime::CoreController') &&
+    mainRs.includes('core.core_controller()') &&
+    !mainRs.includes('fn assemble_proxy_groups_snapshot(\n    running: bool,\n    controller_port: u16') &&
+    !mainRs.includes('fn assemble_proxy_groups_snapshot(\n    running: bool,\n    controller: core_runtime::CoreController,\n    secret:') &&
     !mainRs.includes('.ui_proxy_groups_snapshot_or_none(running, &[AEGOS_OUTBOUND_IP_GROUP])') &&
     !mainRs.includes('fn controller_proxy_groups_snapshot') &&
     !mainRs.includes('.ui_proxy_groups_snapshot(&[AEGOS_OUTBOUND_IP_GROUP])') &&

@@ -1160,15 +1160,14 @@ fn apply_speed_test_delays_from_state(groups: &mut JsonValue, speed: &SpeedTestS
 
 fn assemble_proxy_groups_snapshot(
     running: bool,
-    controller_port: u16,
-    secret: &str,
+    controller: core_runtime::CoreController,
     active_profile: Option<Profile>,
     selected_map: HashMap<String, String>,
     manual_names: HashSet<String>,
     speed: SpeedTestState,
 ) -> JsonValue {
-    let mut groups = core_runtime::CoreController::new(controller_port, secret)
-        .ui_proxy_groups_snapshot_or_else(running, &[AEGOS_OUTBOUND_IP_GROUP], || {
+    let mut groups =
+        controller.ui_proxy_groups_snapshot_or_else(running, &[AEGOS_OUTBOUND_IP_GROUP], || {
             active_profile
                 .as_ref()
                 .map(|profile| {
@@ -8128,8 +8127,7 @@ impl CoreManager {
         let speed = self.speed_test.lock().unwrap().clone();
         assemble_proxy_groups_snapshot(
             self.process.is_some(),
-            self.settings.controller_port,
-            &self.settings.secret,
+            self.core_controller(),
             self.active_profile(),
             self.settings.selected_proxy_map.clone(),
             manual_names,
@@ -10650,7 +10648,7 @@ fn relaunch_as_admin(app: AppHandle) -> Result<bool, String> {
 
 #[tauri::command]
 fn proxy_groups(state: State<AppState>) -> Result<JsonValue, String> {
-    let (running, controller_port, secret, active_profile, selected_map, manual_names, speed) = {
+    let (running, controller, active_profile, selected_map, manual_names, speed) = {
         let core = state.core.lock().unwrap();
         let active_profile = core.active_profile();
         let manual_names = active_profile
@@ -10661,8 +10659,7 @@ fn proxy_groups(state: State<AppState>) -> Result<JsonValue, String> {
         let speed = core.speed_test.lock().unwrap().clone();
         (
             core.process.is_some(),
-            core.settings.controller_port,
-            core.settings.secret.clone(),
+            core.core_controller(),
             active_profile,
             core.settings.selected_proxy_map.clone(),
             manual_names,
@@ -10671,8 +10668,7 @@ fn proxy_groups(state: State<AppState>) -> Result<JsonValue, String> {
     };
     Ok(assemble_proxy_groups_snapshot(
         running,
-        controller_port,
-        &secret,
+        controller,
         active_profile,
         selected_map,
         manual_names,
@@ -10948,16 +10944,7 @@ fn test_single_proxy_delay(state: State<AppState>, name: String) -> Result<JsonV
 #[tauri::command]
 fn node_diagnostics(state: State<AppState>, name: String) -> Result<JsonValue, String> {
     let logs = state.logs.clone();
-    let (
-        running,
-        controller_port,
-        secret,
-        active_profile,
-        selected_map,
-        manual_names,
-        speed,
-        max_delay_ms,
-    ) = {
+    let (running, controller, active_profile, selected_map, manual_names, speed, max_delay_ms) = {
         let core = state.core.lock().unwrap();
         let active_profile = core.active_profile();
         let manual_names = active_profile
@@ -10968,8 +10955,7 @@ fn node_diagnostics(state: State<AppState>, name: String) -> Result<JsonValue, S
         let speed = core.speed_test.lock().unwrap().clone();
         (
             core.process.is_some(),
-            core.settings.controller_port,
-            core.settings.secret.clone(),
+            core.core_controller(),
             active_profile,
             core.settings.selected_proxy_map.clone(),
             manual_names,
@@ -10979,8 +10965,7 @@ fn node_diagnostics(state: State<AppState>, name: String) -> Result<JsonValue, S
     };
     let groups = assemble_proxy_groups_snapshot(
         running,
-        controller_port,
-        &secret,
+        controller,
         active_profile,
         selected_map,
         manual_names,
@@ -11186,22 +11171,6 @@ fn connections(state: State<AppState>) -> Result<JsonValue, String> {
         (core.process.is_some(), core.core_controller())
     };
     Ok(controller.ui_connections_snapshot_or_empty(running))
-}
-
-fn canonical_strategy_type(value: &str) -> String {
-    match value
-        .chars()
-        .filter(|ch| !ch.is_ascii_whitespace() && *ch != '-' && *ch != '_')
-        .collect::<String>()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "urltest" => "url-test".to_string(),
-        "loadbalance" => "load-balance".to_string(),
-        "fallback" => "fallback".to_string(),
-        "select" => "select".to_string(),
-        _ => value.to_string(),
-    }
 }
 
 fn split_rule_segments(rule: &str) -> Vec<String> {
@@ -12148,40 +12117,8 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
             core.routing_apply_metadata(),
         )
     };
-    let group_rows = groups
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|group| {
-            group
-                .get("name")
-                .and_then(|value| value.as_str())
-                .map(|name| !is_internal_proxy_group_name(name))
-                .unwrap_or(true)
-        })
-        .map(|group| {
-            let group_type_raw = group
-                .get("type")
-                .and_then(|value| value.as_str())
-                .unwrap_or("select");
-            let group_type = canonical_strategy_type(group_type_raw);
-            let item_count = group
-                .get("items")
-                .and_then(|value| value.as_array())
-                .map(|items| items.len())
-                .unwrap_or(0);
-            json!({
-                "name": group.get("name").and_then(|value| value.as_str()).unwrap_or("-"),
-                "type": group_type,
-                "now": group.get("now").and_then(|value| value.as_str()).unwrap_or("-"),
-                "items": group.get("items").cloned().unwrap_or_else(|| json!([])),
-                "itemCount": item_count,
-                "automatic": matches!(group_type.as_str(), "url-test" | "fallback" | "load-balance"),
-                "editable": !is_internal_proxy_group_name(group.get("name").and_then(|value| value.as_str()).unwrap_or(""))
-            })
-        })
-        .collect::<Vec<_>>();
+    let group_rows =
+        core_runtime::routing_group_rows(&groups, &[AEGOS_OUTBOUND_IP_GROUP, "GLOBAL"]);
     let recent_rules = controller.routing_recent_rule_hits_snapshot_or_empty(running);
     let (mut static_rules, missing_rule_targets, rule_order_issues, rule_error) =
         routing_rules_for_profile(active_profile.as_ref());
@@ -12209,15 +12146,7 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
             "explanation": "Aegos internal rule used to query the current node outbound IP; it is generated at runtime and cannot be edited."
         }));
     }
-    let group_count = group_rows.len();
-    let auto_group_count = group_rows
-        .iter()
-        .filter(|item| {
-            item.get("automatic")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false)
-        })
-        .count();
+    let (group_count, auto_group_count) = core_runtime::routing_group_counts(&group_rows);
     let recent_rule_hits = recent_rules
         .as_array()
         .map(|items| items.len())

@@ -1115,6 +1115,84 @@ pub fn recent_rule_hits_from_connections(connections: &JsonValue, limit: usize) 
         .collect::<Vec<_>>())
 }
 
+pub fn canonical_strategy_type(value: &str) -> String {
+    match value
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace() && *ch != '-' && *ch != '_')
+        .collect::<String>()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "urltest" => "url-test".to_string(),
+        "loadbalance" => "load-balance".to_string(),
+        "fallback" => "fallback".to_string(),
+        "select" => "select".to_string(),
+        _ => value.to_string(),
+    }
+}
+
+pub fn routing_group_rows(groups: &JsonValue, internal_group_names: &[&str]) -> JsonValue {
+    json!(groups
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|group| {
+            group
+                .get("name")
+                .and_then(JsonValue::as_str)
+                .map(|name| !is_internal_routing_group_name(name, internal_group_names))
+                .unwrap_or(true)
+        })
+        .map(|group| {
+            let group_type_raw = group
+                .get("type")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("select");
+            let group_type = canonical_strategy_type(group_type_raw);
+            let item_count = group
+                .get("items")
+                .and_then(JsonValue::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            let name = group
+                .get("name")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("-");
+            json!({
+                "name": name,
+                "type": group_type,
+                "now": group.get("now").and_then(JsonValue::as_str).unwrap_or("-"),
+                "items": group.get("items").cloned().unwrap_or_else(|| json!([])),
+                "itemCount": item_count,
+                "automatic": matches!(group_type.as_str(), "url-test" | "fallback" | "load-balance"),
+                "editable": !is_internal_routing_group_name(name, internal_group_names)
+            })
+        })
+        .collect::<Vec<_>>())
+}
+
+pub fn routing_group_counts(group_rows: &JsonValue) -> (usize, usize) {
+    let Some(rows) = group_rows.as_array() else {
+        return (0, 0);
+    };
+    let auto_count = rows
+        .iter()
+        .filter(|item| {
+            item.get("automatic")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false)
+        })
+        .count();
+    (rows.len(), auto_count)
+}
+
+fn is_internal_routing_group_name(name: &str, internal_group_names: &[&str]) -> bool {
+    internal_group_names
+        .iter()
+        .any(|internal| name.eq_ignore_ascii_case(internal))
+}
+
 fn sanitize_runtime_display_text(value: &str) -> String {
     let mut redacted = value.to_string();
     for key in [
@@ -1750,6 +1828,61 @@ rules:
             items[1].get("chains").and_then(JsonValue::as_str),
             Some("-")
         );
+    }
+
+    #[test]
+    fn routing_group_rows_are_shaped_inside_runtime_boundary() {
+        let groups = json!([
+            {
+                "name": "GLOBAL",
+                "type": "select",
+                "now": "HK 01",
+                "items": ["HK 01"]
+            },
+            {
+                "name": "Aegos Landing IP",
+                "type": "select",
+                "now": "HK 01",
+                "items": ["HK 01"]
+            },
+            {
+                "name": "Auto",
+                "type": "URLTest",
+                "now": "JP 01",
+                "items": ["HK 01", "JP 01"]
+            },
+            {
+                "name": "Manual",
+                "type": "load_balance",
+                "now": "US 01",
+                "items": ["US 01"]
+            }
+        ]);
+
+        let rows = routing_group_rows(&groups, &["Aegos Landing IP", "GLOBAL"]);
+        let items = rows.as_array().expect("routing group rows");
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0].get("name").and_then(JsonValue::as_str),
+            Some("Auto")
+        );
+        assert_eq!(
+            items[0].get("type").and_then(JsonValue::as_str),
+            Some("url-test")
+        );
+        assert_eq!(
+            items[0].get("automatic").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            items[0].get("itemCount").and_then(JsonValue::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            items[1].get("type").and_then(JsonValue::as_str),
+            Some("load-balance")
+        );
+        assert_eq!(routing_group_counts(&rows), (2, 2));
     }
 
     #[test]

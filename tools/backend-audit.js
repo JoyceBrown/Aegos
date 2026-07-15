@@ -309,14 +309,18 @@ check(
 check(
   'proxy group refresh and preview avoid holding the CoreManager mutex during controller/YAML work',
   mainRs.includes('fn assemble_proxy_groups_snapshot') &&
+    mainRs.includes('controller: core_runtime::CoreController') &&
     coreRuntimeRs.includes('pub fn ui_proxy_groups_snapshot_or_none(') &&
     mainRs.includes('fn profile_proxy_groups_for_profile_snapshot') &&
     mainRs.includes('fn apply_group_resolution_with_selected_map') &&
     mainRs.includes('fn apply_speed_test_delays_from_state') &&
     mainRs.includes('fn proxy_groups(state: State<AppState>)') &&
     mainRs.includes('assemble_proxy_groups_snapshot(') &&
+    mainRs.includes('core.core_controller()') &&
     mainRs.includes('fn preview_profile_groups(state: State<AppState>, id: String)') &&
     mainRs.includes('profile_proxy_groups_for_profile_snapshot(') &&
+    !mainRs.includes('fn assemble_proxy_groups_snapshot(\n    running: bool,\n    controller_port: u16') &&
+    !mainRs.includes('fn assemble_proxy_groups_snapshot(\n    running: bool,\n    controller: core_runtime::CoreController,\n    secret:') &&
     !mainRs.includes('state.core.lock().unwrap().proxy_groups()') &&
     !mainRs.includes('state.core.lock().unwrap().preview_profile_groups(&id)'),
   'node list refresh and subscription preview should snapshot core state, then do controller/file parsing outside the core lock'
@@ -346,7 +350,8 @@ check(
     coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
     coreRuntimeRs.includes('pub fn classify_delay_http_failure(') &&
     coreRuntimeRs.includes('#[derive(Clone, Debug)]\npub struct CoreController') &&
-    mainRs.includes('.ui_proxy_groups_snapshot_or_else(running, &[AEGOS_OUTBOUND_IP_GROUP], ||') &&
+    mainRs.includes('controller.ui_proxy_groups_snapshot_or_else(') &&
+    mainRs.includes('&[AEGOS_OUTBOUND_IP_GROUP]') &&
     !mainRs.includes('.ui_proxy_groups_snapshot_or_none(running, &[AEGOS_OUTBOUND_IP_GROUP])') &&
     !mainRs.includes('fn controller_proxy_groups_snapshot') &&
     !mainRs.includes('.ui_proxy_groups_snapshot(&[AEGOS_OUTBOUND_IP_GROUP])') &&

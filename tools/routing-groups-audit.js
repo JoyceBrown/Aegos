@@ -22,6 +22,7 @@ const pkg = readJson('package.json');
 const indexHtml = read('src/index.html');
 const appJs = read('src/app.js');
 const mainRs = read('src-tauri/src/main.rs');
+const coreRuntimeRs = read('src-tauri/src/core_runtime.rs');
 const speedAudit = read('tools/speed-closure-audit.js');
 const releaseAudit = read('tools/release-audit.js');
 
@@ -38,8 +39,9 @@ const renderBody = renderStart >= 0
 
 check('package version keeps 3.x routing group gate active', /^3\.\d+\.\d+$/.test(pkg.version), pkg.version);
 check('routing page labels strategy groups as separate from nodes', indexHtml.includes('aria-label="策略组列表，不是普通节点列表"') && indexHtml.includes('<span>说明</span>'), 'routing group table copy');
-check('routing snapshot groups come from proxy groups, not ordinary node rows', routingBody.includes('core.proxy_groups()') && routingBody.includes('"itemCount"') && routingBody.includes('"automatic"'), 'proxy_groups snapshot');
-check('routing page excludes internal proxy groups from strategy group count and rows', mainRs.includes('fn is_internal_proxy_group_name') && routingBody.includes('!is_internal_proxy_group_name(name)') && routingBody.includes('group_rows.len()'), 'GLOBAL and Aegos Landing IP are internal');
+check('routing snapshot groups come from proxy groups, not ordinary node rows', routingBody.includes('core.proxy_groups()') && routingBody.includes('core_runtime::routing_group_rows(&groups') && routingBody.includes('core_runtime::routing_group_counts(&group_rows)'), 'proxy_groups snapshot');
+check('routing group shaping is owned by the runtime boundary', coreRuntimeRs.includes('pub fn routing_group_rows(') && coreRuntimeRs.includes('pub fn routing_group_counts(') && coreRuntimeRs.includes('"itemCount"') && coreRuntimeRs.includes('"automatic"') && coreRuntimeRs.includes('routing_group_rows_are_shaped_inside_runtime_boundary'), 'runtime-owned group row model');
+check('routing page excludes internal proxy groups from strategy group count and rows', routingBody.includes('&[AEGOS_OUTBOUND_IP_GROUP, "GLOBAL"]') && coreRuntimeRs.includes('fn is_internal_routing_group_name') && coreRuntimeRs.includes('name.eq_ignore_ascii_case(internal)'), 'GLOBAL and Aegos Landing IP are internal');
 check('routing group renderer only renders group rows in routing table', renderBody.includes('const groups = Array.isArray(data.groups)') && renderBody.includes("replaceChildrenSafe($('#routingGroupRows')") && !renderBody.includes("replaceChildrenSafe($('#nodeRows')"), 'routingGroupRows only');
 check('ordinary node lists still exclude proxy-group references', appJs.includes('function isProxyGroupReferenceItem') && appJs.includes('function isRealProxyNodeItem') && appJs.includes('!isRealProxyNodeItem(item)'), 'node list proxy-group/builtin policy filter');
 check('speed tests still exclude proxy-group references', mainRs.includes('fn is_proxy_group_reference_item') && mainRs.includes('speed_targets_skip_proxy_group_references') && speedAudit.includes('speed-test targets exclude proxy-group references'), 'speed target proxy-group filter');

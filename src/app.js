@@ -4190,15 +4190,6 @@ async function refreshConnections(token = null) {
   }
 }
 
-function strategyTypeLabel(kind = '') {
-  const value = String(kind || '').replace(/[\s_-]/g, '').toLowerCase();
-  if (value === 'select') return 'ֶѡ';
-  if (value === 'urltest') return 'Զ';
-  if (value === 'fallback') return 'л';
-  if (value === 'loadbalance') return 'ؾ';
-  return kind ? String(kind) : '-';
-}
-
 function routingStrategyTypeLabel(kind = '') {
   const value = String(kind || '').replace(/[\s_-]/g, '').toLowerCase();
   if (value === 'select') return '\u624b\u52a8\u9009\u62e9';
