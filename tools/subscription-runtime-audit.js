@@ -61,6 +61,21 @@ check(
 );
 
 check(
+  'subscription text normalization is owned by subscription_runtime',
+  subscriptionRuntimeRs.includes('pub(crate) fn is_ignorable_line(') &&
+    subscriptionRuntimeRs.includes('pub(crate) fn decoded_body(') &&
+    subscriptionRuntimeRs.includes('pub(crate) fn unsupported_uri_schemes(') &&
+    subscriptionRuntimeRs.includes('pub(crate) fn looks_like_clash_yaml(') &&
+    subscriptionRuntimeRs.includes('fn decode_base64_text(') &&
+    mainRs.includes('subscription_runtime::is_ignorable_line(line)') &&
+    mainRs.includes('subscription_runtime::decoded_body(text)') &&
+    mainRs.includes('subscription_runtime::unsupported_uri_schemes(text, AEGOS_URI_PROTOCOLS)') &&
+    mainRs.includes('subscription_runtime::looks_like_clash_yaml(text)') &&
+    !mainRs.includes('fn is_supported_uri_scheme'),
+  'BOM/base64/metadata/protocol filtering boundary',
+);
+
+check(
   'subscription runtime audit is wired into package and release gate',
   pkg.scripts?.['audit:subscription-runtime'] === 'node tools/subscription-runtime-audit.js' &&
     releaseAudit.includes('subscription runtime audit script exists'),

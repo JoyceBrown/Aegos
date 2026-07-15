@@ -110,11 +110,6 @@ fn subscription_diagnostic(stage: &str, reason: impl AsRef<str>, suggestion: &st
     subscription_runtime::diagnostic(stage, reason, suggestion)
 }
 
-fn is_supported_uri_scheme(scheme: &str) -> bool {
-    let scheme = scheme.to_ascii_lowercase();
-    AEGOS_URI_PROTOCOLS.contains(&scheme.as_str())
-}
-
 fn classify_failure_reason(reason: &str) -> &'static str {
     let text = reason.to_ascii_lowercase();
     if text.contains("198.18.")
@@ -215,56 +210,19 @@ fn classified_error(context: &str, reason: impl AsRef<str>) -> String {
 }
 
 fn is_ignorable_subscription_line(line: &str) -> bool {
-    let line = line.trim().trim_start_matches('\u{feff}');
-    if line.is_empty() || line.starts_with('#') || line.starts_with("//") || line.starts_with(';') {
-        return true;
-    }
-    let lower = line.to_ascii_lowercase();
-    lower.starts_with("subscription-userinfo:")
-        || lower.starts_with("profile-title:")
-        || lower.starts_with("profile-update-interval:")
-        || lower.starts_with("profile-web-page-url:")
-        || lower.starts_with("support-url:")
-        || lower.starts_with("upload=")
-        || lower.starts_with("download=")
-        || lower.starts_with("total=")
-        || lower.starts_with("expire=")
+    subscription_runtime::is_ignorable_line(line)
 }
 
 fn decoded_subscription_body(text: &str) -> String {
-    let raw = text.trim_start_matches('\u{feff}').trim();
-    if raw.contains("://") || looks_like_clash_yaml(raw) {
-        raw.to_string()
-    } else {
-        b64_decode_text(raw).unwrap_or_else(|| raw.to_string())
-    }
+    subscription_runtime::decoded_body(text)
 }
 
 fn unsupported_uri_schemes(text: &str) -> Vec<String> {
-    let body = decoded_subscription_body(text);
-    let mut schemes = body
-        .lines()
-        .map(str::trim)
-        .filter(|line| !is_ignorable_subscription_line(line))
-        .filter_map(|line| line.split_once("://").map(|(scheme, _)| scheme.trim()))
-        .filter(|scheme| !scheme.is_empty() && !is_supported_uri_scheme(scheme))
-        .map(|scheme| scheme.to_ascii_lowercase())
-        .collect::<Vec<_>>();
-    schemes.sort();
-    schemes.dedup();
-    schemes
+    subscription_runtime::unsupported_uri_schemes(text, AEGOS_URI_PROTOCOLS)
 }
 
 fn looks_like_clash_yaml(text: &str) -> bool {
-    text.lines().take(48).any(|line| {
-        let line = line.trim_start();
-        line.starts_with("proxies:")
-            || line.starts_with("proxy-groups:")
-            || line.starts_with("rules:")
-            || line.starts_with("mixed-port:")
-            || line.starts_with("port:")
-            || line.starts_with("socks-port:")
-    })
+    subscription_runtime::looks_like_clash_yaml(text)
 }
 
 #[derive(Clone, Serialize, Deserialize)]

@@ -53,6 +53,10 @@ check(
 check(
   'subscription text normalization is shared and testable',
   mainRs.includes('fn decoded_subscription_body') &&
+    mainRs.includes('subscription_runtime::decoded_body(text)') &&
+    subscriptionRuntimeRs.includes('pub(crate) fn decoded_body') &&
+    subscriptionRuntimeRs.includes("trim_start_matches('\\u{feff}')") &&
+    subscriptionRuntimeRs.includes('decode_base64_text(raw).unwrap_or_else') &&
     mainRs.includes('fn parse_profile_source_text_diagnostic') &&
     mainRs.includes('download_profile_source_url_diagnostic') &&
     mainRs.includes('parse_profile_source_text_diagnostic(&text)'),
@@ -62,9 +66,10 @@ check(
 check(
   'airport metadata and comments are ignored in URI subscriptions',
   mainRs.includes('fn is_ignorable_subscription_line') &&
-    mainRs.includes('subscription-userinfo:') &&
-    mainRs.includes('profile-title:') &&
-    mainRs.includes('profile-update-interval:') &&
+    mainRs.includes('subscription_runtime::is_ignorable_line(line)') &&
+    subscriptionRuntimeRs.includes('subscription-userinfo:') &&
+    subscriptionRuntimeRs.includes('profile-title:') &&
+    subscriptionRuntimeRs.includes('profile-update-interval:') &&
     mainRs.includes('subscription_parser_ignores_metadata_comments_and_blank_lines'),
   'comments/airport info lines do not count as unsupported proxy lines'
 );
@@ -72,7 +77,8 @@ check(
 check(
   'unsupported URI protocols are detected before generic format failure',
   mainRs.includes('fn unsupported_uri_schemes') &&
-    mainRs.includes('fn is_supported_uri_scheme') &&
+    mainRs.includes('subscription_runtime::unsupported_uri_schemes(text, AEGOS_URI_PROTOCOLS)') &&
+    subscriptionRuntimeRs.includes('pub(crate) fn unsupported_uri_schemes') &&
     mainRs.includes('unsupported URI protocol(s)') &&
     mainRs.includes('ssr://example-one') &&
     mainRs.includes('wireguard://example-two'),
@@ -93,8 +99,8 @@ check(
   'mixed base64 URI and BOM Clash YAML variants are covered',
   mainRs.includes('subscription_parser_accepts_base64_mixed_uri_sources') &&
     mainRs.includes('subscription_parser_accepts_bom_prefixed_clash_yaml') &&
-    mainRs.includes("trim_start_matches('\\u{feff}')") &&
-    mainRs.includes('b64_decode_text(raw).unwrap_or_else'),
+    subscriptionRuntimeRs.includes("trim_start_matches('\\u{feff}')") &&
+    subscriptionRuntimeRs.includes('decode_base64_text(raw).unwrap_or_else'),
   'common airport response wrappers'
 );
 
