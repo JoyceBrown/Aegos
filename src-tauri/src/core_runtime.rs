@@ -52,6 +52,8 @@ pub const FIREWALL_SPEED_TEST_GROUP: &str = "Aegos Kill Switch Speed Test";
 pub const FIREWALL_RULE_PREFIX_SUFFIX: &str = " Allow";
 pub const FIREWALL_PROFILE_SNAPSHOT_FILE: &str = "kill-switch-firewall-profile.json";
 pub const FIREWALL_SPEED_TEST_MARKER_FILE: &str = "kill-switch-speed-test-rules.marker";
+pub const WINDOWS_PROXY_BYPASS_LIST: &str =
+    "<local>;localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.2*;172.30.*;172.31.*;192.168.*";
 pub const MISSING_RESOURCE_HINT: &str =
     "Core file is missing or unavailable. Restore resources/core/mihomo.exe and restart Aegos.";
 pub const TERMINATE_FAILED_STARTUP_MESSAGE: &str = "Stopping failed mihomo startup";
@@ -1840,6 +1842,14 @@ pub struct CoreFirewallPolicyPlan {
     pub state_file_name: &'static str,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreSystemProxyTakeoverPlan {
+    pub enable: bool,
+    pub proxy_enable_value: u8,
+    pub proxy_server: Option<String>,
+    pub proxy_override: &'static str,
+}
+
 impl CoreLaunchPlan {
     pub fn new(paths: CoreRuntimePaths, profile_name: impl Into<String>, standby: bool) -> Self {
         Self {
@@ -2014,6 +2024,25 @@ pub fn firewall_remote_port_list(ports: &[u16]) -> String {
         .map(|port| port.to_string())
         .collect::<Vec<_>>()
         .join(",")
+}
+
+pub fn windows_proxy_server(mixed_port: u16) -> String {
+    format!("127.0.0.1:{mixed_port}")
+}
+
+impl CoreSystemProxyTakeoverPlan {
+    pub fn new(enable: bool, mixed_port: u16) -> Self {
+        Self {
+            enable,
+            proxy_enable_value: if enable { 1 } else { 0 },
+            proxy_server: enable.then(|| windows_proxy_server(mixed_port)),
+            proxy_override: WINDOWS_PROXY_BYPASS_LIST,
+        }
+    }
+
+    pub fn should_write_proxy_server(&self) -> bool {
+        self.proxy_server.is_some()
+    }
 }
 
 impl CoreStartFailureContext {
@@ -2534,6 +2563,25 @@ mod tests {
             vec![443, 8443]
         );
         assert!(speed_test_firewall_ports(false, &[443, 8443]).is_empty());
+    }
+
+    #[test]
+    fn system_proxy_takeover_plan_is_owned_by_runtime_boundary() {
+        assert_eq!(windows_proxy_server(7891), "127.0.0.1:7891");
+
+        let enable = CoreSystemProxyTakeoverPlan::new(true, 7891);
+        assert!(enable.enable);
+        assert_eq!(enable.proxy_enable_value, 1);
+        assert_eq!(enable.proxy_server.as_deref(), Some("127.0.0.1:7891"));
+        assert_eq!(enable.proxy_override, WINDOWS_PROXY_BYPASS_LIST);
+        assert!(enable.should_write_proxy_server());
+
+        let disable = CoreSystemProxyTakeoverPlan::new(false, 7891);
+        assert!(!disable.enable);
+        assert_eq!(disable.proxy_enable_value, 0);
+        assert!(disable.proxy_server.is_none());
+        assert_eq!(disable.proxy_override, WINDOWS_PROXY_BYPASS_LIST);
+        assert!(!disable.should_write_proxy_server());
     }
 
     fn test_preflight_input<'a>() -> RuntimeConfigPreflightInput<'a> {

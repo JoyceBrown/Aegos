@@ -5137,19 +5137,21 @@ public static class WinInet {{
 }
 
 fn build_proxy_script(enable: bool, mixed_port: u16) -> String {
-    let server = format!("127.0.0.1:{mixed_port}");
-    let flag = if enable { 1 } else { 0 };
-    let set_server = if enable {
+    let plan = core_runtime::CoreSystemProxyTakeoverPlan::new(enable, mixed_port);
+    let flag = plan.proxy_enable_value;
+    let set_server = if plan.should_write_proxy_server() {
+        let server = plan.proxy_server.as_deref().unwrap_or_default();
         format!("Set-ItemProperty -Path $path -Name ProxyServer -Type String -Value '{server}'")
     } else {
         String::new()
     };
+    let proxy_override = plan.proxy_override;
     format!(
         r#"
 $path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
 Set-ItemProperty -Path $path -Name ProxyEnable -Type DWord -Value {flag}
 {set_server}
-Set-ItemProperty -Path $path -Name ProxyOverride -Type String -Value '<local>;localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.2*;172.30.*;172.31.*;192.168.*'
+Set-ItemProperty -Path $path -Name ProxyOverride -Type String -Value '{proxy_override}'
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;

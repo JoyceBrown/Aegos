@@ -38,8 +38,12 @@ check(
   coreRuntimeRs.includes('pub struct SystemProxySnapshot') &&
     coreRuntimeRs.includes('pub fn system_proxy_snapshot_points_to_aegos') &&
     coreRuntimeRs.includes('pub fn should_capture_system_proxy_snapshot') &&
+    coreRuntimeRs.includes('pub struct CoreSystemProxyTakeoverPlan') &&
+    coreRuntimeRs.includes('pub const WINDOWS_PROXY_BYPASS_LIST') &&
+    coreRuntimeRs.includes('system_proxy_takeover_plan_is_owned_by_runtime_boundary') &&
     coreRuntimeRs.includes('system_proxy_snapshot_policy_is_owned_by_runtime_boundary') &&
     !mainRs.includes('struct SystemProxySnapshot') &&
+    mainRs.includes('CoreSystemProxyTakeoverPlan::new') &&
     mainRs.includes('fn read_windows_proxy_snapshot') &&
     mainRs.includes('fn write_windows_proxy_snapshot') &&
     mainRs.includes('fn capture_proxy_snapshot_before_takeover') &&
