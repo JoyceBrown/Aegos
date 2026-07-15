@@ -82,6 +82,17 @@ check(
   'statusSurfaceNotice'
 );
 check(
+  'connection button has explicit pending labels and reconciles from status snapshot',
+  appJs.includes('let corePowerPendingKind') &&
+    appJs.includes('function connectionButtonLabel') &&
+    appJs.includes("pendingKind === 'startCore'") &&
+    appJs.includes("pendingKind === 'stopCore'") &&
+    appJs.includes("$('#connectBtn').textContent = connectionButtonLabel(status)") &&
+    appJs.includes("corePowerPendingKind = stopping ? 'stopCore' : 'startCore'") &&
+    appJs.includes("corePowerPendingKind = ''"),
+  'connectionButtonLabel'
+);
+check(
   'backend exposes non-blocking network availability in status surface',
   coreRuntimeRs.includes('pub fn network_availability_json(') &&
     coreRuntimeRs.includes('"networkUsable"') &&

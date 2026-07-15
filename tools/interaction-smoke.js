@@ -473,8 +473,9 @@ try {
     if (document.querySelector('#pageTitle')) throw new Error('duplicate top-left page title still renders');
     if (![...document.querySelectorAll('.status-card div')].some((item) => item.querySelector('dd#lanIpState') && item.querySelector('dt')?.textContent.includes('IP'))) throw new Error('network status did not render LAN IP label/value pair');
     if (document.querySelector('#lanIpState')?.textContent.trim() !== '192.168.1.2') throw new Error('network status did not render real LAN IP value');
-    if (document.querySelector('#connectBtn')?.textContent.trim() !== '\u65ad\u5f00\u8fde\u63a5') throw new Error('connect button did not optimistically show disconnect');
+    if (document.querySelector('#connectBtn')?.textContent.trim() !== '\u8fde\u63a5\u4e2d') throw new Error('connect button did not show pending connect feedback');
     await new Promise((resolve) => setTimeout(resolve, 1000));
+    if (document.querySelector('#connectBtn')?.textContent.trim() !== '\u65ad\u5f00\u8fde\u63a5') throw new Error('connect button did not reconcile to disconnect after start');
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'refreshOutboundIp')) throw new Error('first connect did not auto refresh outbound IP');
     if (document.querySelector('#quickIpBtn')) throw new Error('manual outbound IP quick action still renders');
     await click('#quickKillBtn');

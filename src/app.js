@@ -77,6 +77,7 @@ let latestRecommendedName = '';
 let outboundIpRequestSeq = 0;
 let outboundIpPendingSeq = 0;
 let outboundIpLastStable = '-';
+let corePowerPendingKind = '';
 let recoveryBusy = false;
 let lastRecoveryAt = 0;
 let pageLoadTimer = null;
@@ -189,6 +190,12 @@ function runtimeSummaryLabel(status = {}, settings = {}) {
     return STATUS_TEXT.takeoverActive;
   }
   return status.coreReady ? STATUS_TEXT.coreStandby : STATUS_TEXT.coreStopped;
+}
+
+function connectionButtonLabel(status = {}, pendingKind = corePowerPendingKind) {
+  if (pendingKind === 'startCore') return '\u8fde\u63a5\u4e2d';
+  if (pendingKind === 'stopCore') return '\u65ad\u5f00\u4e2d';
+  return status.trafficTakeover ? '\u65ad\u5f00\u8fde\u63a5' : '\u8fde\u63a5';
 }
 
 function networkAvailabilityInfo(status = {}) {
@@ -3255,7 +3262,7 @@ function renderStatus(status) {
   $('#nodeName').textContent = selectedNode || latestGroup?.now || activeProfile.name || '等待节点数据';
   const nodeHost = $('#nodeHost');
   if (nodeHost) nodeHost.textContent = status.network?.proxyEndpoint || '-';
-  $('#connectBtn').textContent = trafficTakeover ? '断开连接' : '连接';
+  $('#connectBtn').textContent = connectionButtonLabel(status);
   $('#modeLabel').textContent = modeText;
   setNotice(statusSurfaceNotice(status, settings, protection, availability));
 
@@ -3958,9 +3965,11 @@ async function updateActiveProfile() {
 async function toggleCore() {
   const button = $('#connectBtn');
   if (button?.dataset.busy === 'true') return;
+  const stopping = Boolean(latestStatus?.trafficTakeover);
+  corePowerPendingKind = stopping ? 'stopCore' : 'startCore';
+  if (button) button.textContent = connectionButtonLabel(latestStatus, corePowerPendingKind);
   setButtonBusy(button, true, '', { preserveContent: true });
   try {
-    const stopping = Boolean(latestStatus?.trafficTakeover);
     setNotice(stopping ? '正在断开连接...' : '正在建立连接...');
     await corePowerJob(stopping ? 'stopCore' : 'startCore', {
       pendingNotice: stopping ? '正在后台断开连接...' : '正在后台建立连接...',
@@ -3971,8 +3980,10 @@ async function toggleCore() {
   } catch (err) {
     setNotice(`操作失败：${err.message || err}`);
   } finally {
+    corePowerPendingKind = '';
     setButtonBusy(button, false, '', { preserveContent: true });
     if (latestStatus) renderStatus(latestStatus);
+    else if (button) button.textContent = connectionButtonLabel({ trafficTakeover: false }, '');
   }
 }
 
