@@ -430,6 +430,22 @@ check(
   'main.rs may read/write Windows proxy state, but snapshot shape and matching policy belong to core_runtime',
 );
 check(
+  'protection status shaping is owned by the core runtime boundary',
+  coreRuntimeRs.includes('pub fn protection_phase') &&
+    coreRuntimeRs.includes('pub fn protection_status_json') &&
+    coreRuntimeRs.includes('protection_status_is_runtime_shaped_without_mojibake_labels') &&
+    coreRuntimeRs.includes('"Disconnect protected"') &&
+    coreRuntimeRs.includes('"TUN tunnel"') &&
+    coreRuntimeRs.includes('"System proxy"') &&
+    mainRs.includes('core_runtime::protection_status_json(') &&
+    !mainRs.includes('let level = if !running') &&
+    !mainRs.includes('let level = if !snapshot.running') &&
+    !mainRs.includes('"閺傤厾缍夋穱婵囧Б"') &&
+    !mainRs.includes('"閸忋劌鐪') &&
+    !mainRs.includes('"缁崵绮'),
+  'home and diagnostics protection state must use one runtime-owned model without mojibake labels',
+);
+check(
   'system proxy takeover plan is owned by the core runtime boundary',
   coreRuntimeRs.includes('pub const WINDOWS_PROXY_BYPASS_LIST') &&
     coreRuntimeRs.includes('pub struct CoreSystemProxyTakeoverPlan') &&

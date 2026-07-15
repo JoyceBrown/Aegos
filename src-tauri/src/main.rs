@@ -6836,32 +6836,13 @@ impl CoreManager {
     }
 
     fn protection_status(&self) -> JsonValue {
-        let running = self.process.is_some();
-        let level = if !running {
-            "idle"
-        } else if !self.traffic_takeover {
-            "standby"
-        } else if self.settings.kill_switch_enabled && self.settings.tun_enabled {
-            "strict"
-        } else if self.settings.kill_switch_enabled {
-            "guarded"
-        } else if self.settings.tun_enabled {
-            "tunnel"
-        } else if self.settings.system_proxy {
-            "proxy"
-        } else {
-            "partial"
-        };
-        let label = match level {
-            "strict" => "Protected",
-            "guarded" => "Disconnect protected",
-            "tunnel" => "鍏ㄥ眬鎺ョ",
-            "proxy" => "绯荤粺浠ｇ悊",
-            "standby" => "鏍稿績寰呭懡",
-            "partial" => "Core only",
-            _ => "Not taken over",
-        };
-        json!({ "level": level, "label": label })
+        core_runtime::protection_status_json(
+            self.process.is_some(),
+            self.traffic_takeover,
+            self.settings.kill_switch_enabled,
+            self.settings.tun_enabled,
+            self.settings.system_proxy,
+        )
     }
 
     fn set_system_proxy(&mut self, enable: bool) -> Result<bool, String> {
@@ -8441,31 +8422,13 @@ fn diagnostics_speed_snapshot(speed: &SpeedTestState) -> JsonValue {
 }
 
 fn diagnostics_protection_status(snapshot: &DiagnosticsSnapshot) -> JsonValue {
-    let level = if !snapshot.running {
-        "idle"
-    } else if !snapshot.traffic_takeover {
-        "standby"
-    } else if snapshot.settings.kill_switch_enabled && snapshot.settings.tun_enabled {
-        "strict"
-    } else if snapshot.settings.kill_switch_enabled {
-        "guarded"
-    } else if snapshot.settings.tun_enabled {
-        "tunnel"
-    } else if snapshot.settings.system_proxy {
-        "proxy"
-    } else {
-        "partial"
-    };
-    let label = match level {
-        "strict" => "Protected",
-        "guarded" => "鏂綉淇濇姢",
-        "tunnel" => "鍏ㄥ眬鎺ョ",
-        "proxy" => "绯荤粺浠ｇ悊",
-        "standby" => "鏍稿績寰呭懡",
-        "partial" => "Core only",
-        _ => "Not taken over",
-    };
-    json!({ "level": level, "label": label })
+    core_runtime::protection_status_json(
+        snapshot.running,
+        snapshot.traffic_takeover,
+        snapshot.settings.kill_switch_enabled,
+        snapshot.settings.tun_enabled,
+        snapshot.settings.system_proxy,
+    )
 }
 
 fn diagnostics_public_settings(snapshot: &DiagnosticsSnapshot) -> JsonValue {

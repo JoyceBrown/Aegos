@@ -242,6 +242,51 @@ pub fn connection_closure_json(
     summary
 }
 
+pub fn protection_phase(
+    core_running: bool,
+    traffic_takeover: bool,
+    disconnect_protection_enabled: bool,
+    tun_enabled: bool,
+    system_proxy_enabled: bool,
+) -> (&'static str, &'static str) {
+    if !core_running {
+        return ("idle", "Not taken over");
+    }
+    if !traffic_takeover {
+        return ("standby", "Core standby");
+    }
+    if disconnect_protection_enabled && tun_enabled {
+        return ("strict", "Protected");
+    }
+    if disconnect_protection_enabled {
+        return ("guarded", "Disconnect protected");
+    }
+    if tun_enabled {
+        return ("tunnel", "TUN tunnel");
+    }
+    if system_proxy_enabled {
+        return ("proxy", "System proxy");
+    }
+    ("partial", "Core only")
+}
+
+pub fn protection_status_json(
+    core_running: bool,
+    traffic_takeover: bool,
+    disconnect_protection_enabled: bool,
+    tun_enabled: bool,
+    system_proxy_enabled: bool,
+) -> JsonValue {
+    let (level, label) = protection_phase(
+        core_running,
+        traffic_takeover,
+        disconnect_protection_enabled,
+        tun_enabled,
+        system_proxy_enabled,
+    );
+    json!({ "level": level, "label": label })
+}
+
 pub fn normalize_proxy_type(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
         "hy2" => "hysteria2".to_string(),
@@ -3089,6 +3134,36 @@ rules:
                 .and_then(JsonValue::as_bool),
             Some(false)
         );
+    }
+
+    #[test]
+    fn protection_status_is_runtime_shaped_without_mojibake_labels() {
+        let cases = [
+            (false, false, false, false, false, "idle", "Not taken over"),
+            (true, false, false, false, true, "standby", "Core standby"),
+            (true, true, true, true, true, "strict", "Protected"),
+            (
+                true,
+                true,
+                true,
+                false,
+                true,
+                "guarded",
+                "Disconnect protected",
+            ),
+            (true, true, false, true, false, "tunnel", "TUN tunnel"),
+            (true, true, false, false, true, "proxy", "System proxy"),
+            (true, true, false, false, false, "partial", "Core only"),
+        ];
+        for (running, takeover, protection, tun, system_proxy, level, label) in cases {
+            let status = protection_status_json(running, takeover, protection, tun, system_proxy);
+            assert_eq!(status.get("level").and_then(JsonValue::as_str), Some(level));
+            assert_eq!(status.get("label").and_then(JsonValue::as_str), Some(label));
+            assert!(status
+                .get("label")
+                .and_then(JsonValue::as_str)
+                .is_some_and(str::is_ascii));
+        }
     }
 
     #[test]
