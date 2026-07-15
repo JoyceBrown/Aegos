@@ -5204,6 +5204,19 @@ function normalizeWebsiteRuleInput(value = '') {
   return { ok: true, domain: input };
 }
 
+function renderRoutingDraftPreview(preview, draft = {}, next = {}, subject = '') {
+  const classification = draft.classification || classifyRoutingDraft(draft);
+  const warning = classification.level === 'warn';
+  preview.dataset.rule = draft.rule || '';
+  preview.className = `routing-draft-preview is-rich ${warning ? 'warn' : 'ok'}`;
+  replaceChildrenSafe(preview, [
+    el('span', { className: 'routing-preview-result', textContent: `结果：${subject} 将 ${next.label}。` }),
+    el('span', { textContent: '状态：已生成未生效草稿，应用前可以验证或撤销。' }),
+    el('span', { textContent: `提示：${classification.text}` }),
+    el('span', { className: 'muted', textContent: `内部规则：${draft.rule || '-'}` })
+  ]);
+}
+
 function previewWebsiteRoutingDraft() {
   const preview = $('#routingDraftPreview');
   const input = $('#routingWebsiteInput');
@@ -5224,9 +5237,7 @@ function previewWebsiteRoutingDraft() {
     label: `${parsed.domain} \u2192 ${next.label}`,
     source: 'website'
   });
-  preview.textContent = `\u9884\u89c8\uff1a${parsed.domain} \u5c06 ${next.label}\u3002\u5df2\u751f\u6210\u672a\u751f\u6548\u8349\u7a3f\uff0c\u5e94\u7528\u524d\u8fd8\u53ef\u4ee5\u5148\u9a8c\u8bc1\u6216\u64a4\u9500\u3002${draft.classification.text}`;
-  preview.dataset.rule = draft.rule;
-  preview.className = 'routing-draft-preview ok';
+  renderRoutingDraftPreview(preview, draft, next, parsed.domain);
 }
 
 function normalizeAppRuleInput(value = '') {
@@ -5265,9 +5276,7 @@ function previewAppRoutingDraft() {
     label: `${parsed.value} \u2192 ${next.label}`,
     source: 'app'
   });
-  preview.textContent = `\u9884\u89c8\uff1a${parsed.value} \u5c06 ${next.label}\u3002\u5df2\u751f\u6210\u672a\u751f\u6548\u8349\u7a3f\uff0c\u5e94\u7528\u524d\u8fd8\u53ef\u4ee5\u5148\u9a8c\u8bc1\u6216\u64a4\u9500\u3002${draft.classification.text}`;
-  preview.dataset.rule = draft.rule;
-  preview.className = 'routing-draft-preview ok';
+  renderRoutingDraftPreview(preview, draft, next, parsed.value);
 }
 
 function previewRegionRoutingDraft() {

@@ -26,6 +26,9 @@ const originalRelease = exists('RELEASE_3.5.88.md') ? read('RELEASE_3.5.88.md') 
 const previewStart = appJs.indexOf('function previewWebsiteRoutingDraft');
 const previewEnd = appJs.indexOf('function normalizeAppRuleInput', previewStart);
 const previewBody = previewStart >= 0 && previewEnd > previewStart ? appJs.slice(previewStart, previewEnd) : '';
+const sharedPreviewStart = appJs.indexOf('function renderRoutingDraftPreview');
+const sharedPreviewEnd = appJs.indexOf('function previewWebsiteRoutingDraft', sharedPreviewStart);
+const sharedPreviewBody = sharedPreviewStart >= 0 && sharedPreviewEnd > sharedPreviewStart ? appJs.slice(sharedPreviewStart, sharedPreviewEnd) : '';
 
 function versionAtLeast(version, minimum) {
   const parse = (value) => String(value).split('.').map((part) => Number.parseInt(part, 10) || 0);
@@ -63,11 +66,13 @@ check(
 
 check(
   'website preview speaks in user language instead of exposing DOMAIN-SUFFIX first',
-  previewBody.includes('\\u9884\\u89c8\\uff1a') &&
-    previewBody.includes('\\u5c06 ') &&
-    previewBody.includes('\\u5df2\\u751f\\u6210\\u672a\\u751f\\u6548\\u8349\\u7a3f') &&
+  sharedPreviewBody.includes('结果：') &&
+    sharedPreviewBody.includes(' 将 ') &&
+    sharedPreviewBody.includes('状态：已生成未生效草稿') &&
+    sharedPreviewBody.includes('内部规则：') &&
     previewBody.includes("kind: 'DOMAIN-SUFFIX'") &&
-    previewBody.includes('preview.dataset.rule = draft.rule'),
+    previewBody.includes('renderRoutingDraftPreview(preview, draft, next, parsed.domain)') &&
+    sharedPreviewBody.includes('preview.dataset.rule = draft.rule'),
   'plain preview plus generated rule kept as draft metadata'
 );
 

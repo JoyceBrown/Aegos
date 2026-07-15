@@ -26,6 +26,9 @@ const originalRelease = exists('RELEASE_3.5.89.md') ? read('RELEASE_3.5.89.md') 
 const previewStart = appJs.indexOf('function previewAppRoutingDraft');
 const previewEnd = appJs.indexOf('function previewRegionRoutingDraft', previewStart);
 const previewBody = previewStart >= 0 && previewEnd > previewStart ? appJs.slice(previewStart, previewEnd) : '';
+const sharedPreviewStart = appJs.indexOf('function renderRoutingDraftPreview');
+const sharedPreviewEnd = appJs.indexOf('function previewWebsiteRoutingDraft', sharedPreviewStart);
+const sharedPreviewBody = sharedPreviewStart >= 0 && sharedPreviewEnd > sharedPreviewStart ? appJs.slice(sharedPreviewStart, sharedPreviewEnd) : '';
 
 function versionAtLeast(version, minimum) {
   const parse = (value) => String(value).split('.').map((part) => Number.parseInt(part, 10) || 0);
@@ -66,11 +69,13 @@ check(
 
 check(
   'app preview speaks in user language while generated rule stays internal',
-  previewBody.includes('\\u9884\\u89c8\\uff1a') &&
-    previewBody.includes('\\u5c06 ') &&
-    previewBody.includes('\\u5df2\\u751f\\u6210\\u672a\\u751f\\u6548\\u8349\\u7a3f') &&
+  sharedPreviewBody.includes('结果：') &&
+    sharedPreviewBody.includes(' 将 ') &&
+    sharedPreviewBody.includes('状态：已生成未生效草稿') &&
+    sharedPreviewBody.includes('内部规则：') &&
     previewBody.includes('kind: parsed.kind') &&
-    previewBody.includes('preview.dataset.rule = draft.rule'),
+    previewBody.includes('renderRoutingDraftPreview(preview, draft, next, parsed.value)') &&
+    sharedPreviewBody.includes('preview.dataset.rule = draft.rule'),
   'plain preview plus generated rule metadata'
 );
 

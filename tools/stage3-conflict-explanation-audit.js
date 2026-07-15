@@ -22,6 +22,7 @@ const pkg = JSON.parse(read('package.json'));
 const appJs = read('src/app.js');
 const releaseAudit = read('tools/release-audit.js');
 const release = exists(`RELEASE_${pkg.version}.md`) ? read(`RELEASE_${pkg.version}.md`) : '';
+const originalRelease = exists('RELEASE_3.5.91.md') ? read('RELEASE_3.5.91.md') : '';
 const classifierStart = appJs.indexOf('function routingConflictExplanation');
 const classifierEnd = appJs.indexOf('function classifyRoutingDraft', classifierStart);
 const classifierBody = classifierStart >= 0 && classifierEnd > classifierStart ? appJs.slice(classifierStart, classifierEnd) : '';
@@ -29,7 +30,19 @@ const nodeConflictStart = appJs.indexOf('function nodeTargetRuleConflict');
 const nodeConflictEnd = appJs.indexOf('function updateNodeTargetInputHint', nodeConflictStart);
 const nodeConflictBody = nodeConflictStart >= 0 && nodeConflictEnd > nodeConflictStart ? appJs.slice(nodeConflictStart, nodeConflictEnd) : '';
 
-check('version is the 3.5.91 conflict explanation checkpoint', pkg.version === '3.5.91', pkg.version);
+function versionAtLeast(version, minimum) {
+  const parse = (value) => String(value).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const current = parse(version);
+  const target = parse(minimum);
+  for (let index = 0; index < Math.max(current.length, target.length); index += 1) {
+    const left = current[index] || 0;
+    const right = target[index] || 0;
+    if (left !== right) return left > right;
+  }
+  return true;
+}
+
+check('version keeps the 3.5.91+ conflict explanation active', versionAtLeast(pkg.version, '3.5.91'), pkg.version);
 check('package exposes the stage 3 conflict explanation audit', pkg.scripts?.['audit:stage3-conflict-explanation'] === 'node tools/stage3-conflict-explanation-audit.js', 'npm run audit:stage3-conflict-explanation');
 
 check(
@@ -75,13 +88,13 @@ check(
 );
 
 check(
-  'release note records plan and verification for 3.5.91',
-  release.includes('3.5.91') &&
-    release.includes('规则冲突解释') &&
+  'release history records 3.5.91 conflict explanation and current release keeps verification',
+  originalRelease.includes('3.5.91') &&
+    originalRelease.includes('规则冲突解释') &&
     release.includes('用户规则优先') &&
     release.includes('npm run audit:stage3-conflict-explanation') &&
     release.includes('Source-only'),
-  `RELEASE_${pkg.version}.md`
+  `RELEASE_3.5.91.md / RELEASE_${pkg.version}.md`
 );
 
 const result = { ok: fail.length === 0, failed: fail, passed: pass, generatedAt: new Date().toISOString() };

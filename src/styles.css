@@ -2150,6 +2150,28 @@ h1 {
   background: rgba(255, 245, 218, .72);
 }
 
+.routing-draft-preview.is-rich {
+  display: grid;
+  align-items: start;
+  gap: 4px;
+}
+
+.routing-draft-preview.is-rich span {
+  min-width: 0;
+}
+
+.routing-preview-result {
+  color: #12315c;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.routing-draft-preview.is-rich .muted {
+  color: #7d8aa0;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .routing-draft-list-card {
   grid-template-rows: auto minmax(52px, auto) auto auto;
 }
