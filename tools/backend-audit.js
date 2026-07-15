@@ -72,6 +72,8 @@ check(
     outboundIpRefreshBody.includes('current_outbound_ip_proxy_name(&groups)') &&
     outboundIpRefreshBody.includes('current_proxy != selected_proxy') &&
     outboundIpRefreshBody.includes('Outbound IP refresh result ignored because the selected node changed.') &&
+    outboundIpRefreshBody.includes('Outbound IP query expired after node changed; retrying will use the current node.') &&
+    !/current_proxy != selected_proxy[\s\S]*?return Ok\(fallback\)/.test(outboundIpRefreshBody) &&
     mainRs.includes('Unable to query outbound IP') &&
     !outboundIpRefreshBody.includes('鐠囧嘲') &&
     !mainRs.includes('閺冪姵纭堕懢宄板絿'),

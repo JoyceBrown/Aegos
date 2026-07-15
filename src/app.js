@@ -2554,7 +2554,8 @@ async function retryJob(id) {
 }
 
 async function runBackgroundJob(kind, payload = {}, options = {}) {
-  backgroundJobBusy += 1;
+  const blockRefresh = options.blockRefresh === true;
+  if (blockRefresh) backgroundJobBusy += 1;
   try {
     if (options.pendingNotice) setNotice(options.pendingNotice);
     const started = await invoke('start_job', { kind, payload });
@@ -2593,7 +2594,7 @@ async function runBackgroundJob(kind, payload = {}, options = {}) {
     setNotice(`操作失败：${err.message || err}`);
     return null;
   } finally {
-    backgroundJobBusy = Math.max(0, backgroundJobBusy - 1);
+    if (blockRefresh) backgroundJobBusy = Math.max(0, backgroundJobBusy - 1);
   }
 }
 

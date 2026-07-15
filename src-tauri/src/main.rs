@@ -8905,10 +8905,6 @@ fn refresh_outbound_ip_detached(core: Arc<Mutex<CoreManager>>) -> Result<String,
             "Outbound IP refresh result ignored because the selected node changed.",
             "info",
         );
-        let fallback = core.cached_outbound_ip();
-        if fallback != "-" {
-            return Ok(fallback);
-        }
         return Err(
             "Outbound IP query expired after node changed; retrying will use the current node."
                 .to_string(),
