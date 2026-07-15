@@ -755,6 +755,16 @@ impl CoreController {
         self.select_proxy(group, proxy, PROXY_SELECT_TIMEOUT_MS)
     }
 
+    pub fn apply_proxy_selection_with_cleanup(
+        &self,
+        group: &str,
+        proxy: &str,
+    ) -> Result<(), String> {
+        self.apply_proxy_selection(group, proxy)?;
+        self.cleanup_stale_connections_after_selection();
+        Ok(())
+    }
+
     pub fn apply_auxiliary_proxy_selection(&self, group: &str, proxy: &str) -> Result<(), String> {
         self.select_proxy(group, proxy, AUXILIARY_PROXY_SELECT_TIMEOUT_MS)
     }
@@ -1946,6 +1956,15 @@ rules:
         assert_eq!(READY_REUSE_PROBE_TIMEOUT_MS, 900);
         let controller = CoreController::new(0, "");
         assert!(!controller.runtime_reuse_ready());
+    }
+
+    #[test]
+    fn controller_proxy_selection_cleanup_is_owned_by_runtime_boundary() {
+        let controller = CoreController::new(0, "");
+        assert!(controller
+            .apply_proxy_selection_with_cleanup("Proxy", "HK 01")
+            .is_err());
+        assert_eq!(STALE_CONNECTION_CLEANUP_TIMEOUT_MS, 1500);
     }
 
     #[test]

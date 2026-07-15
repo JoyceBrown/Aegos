@@ -9077,7 +9077,10 @@ impl CoreManager {
             .insert(group.to_string(), proxy.to_string());
         self.save_settings()?;
         if self.process.is_some() {
-            if let Err(err) = self.core_controller().apply_proxy_selection(group, proxy) {
+            if let Err(err) = self
+                .core_controller()
+                .apply_proxy_selection_with_cleanup(group, proxy)
+            {
                 match previous {
                     Some(value) => {
                         self.settings
@@ -9092,8 +9095,6 @@ impl CoreManager {
                 return Err(classified_error("Node switch", err));
             }
             let _ = self.sync_outbound_ip_group_selection();
-            self.core_controller()
-                .cleanup_stale_connections_after_selection();
         }
         Ok(true)
     }
