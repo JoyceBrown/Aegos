@@ -238,8 +238,15 @@ check(
   coreRuntimeRs.includes('pub struct CoreRuntimeApplyTransaction') &&
     coreRuntimeRs.includes('pub struct CoreRuntimeApplyResult') &&
     coreRuntimeRs.includes('pub fn apply(&self, controller: &CoreController)') &&
-    coreRuntimeRs.includes('"/configs?force=true"') &&
-    coreRuntimeRs.includes('controller.request("GET", "/version", None, 900)') &&
+    coreRuntimeRs.includes('pub const CONFIG_FORCE_APPLY_ENDPOINT') &&
+    coreRuntimeRs.includes('pub const CONFIG_FORCE_APPLY_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const CONFIG_APPLY_VERSION_PROBE_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub fn apply_runtime_config_path(&self, path: &Path)') &&
+    coreRuntimeRs.includes('pub fn config_apply_version_probe(&self)') &&
+    coreRuntimeRs.includes('controller.apply_runtime_config_path(&self.runtime_profile_path)') &&
+    coreRuntimeRs.includes('controller.config_apply_version_probe()') &&
+    !coreRuntimeRs.includes('controller.request("GET", "/version", None, 900)') &&
+    !coreRuntimeRs.includes('Some(json!({ "path": self.runtime_profile_path.to_string_lossy().to_string() })),\n            8000') &&
     mainRs.includes('CoreRuntimeApplyTransaction::new') &&
     mainRs.includes('apply_transaction.apply(&self.core_controller())') &&
     !mainRs.includes('"/configs?force=true"'),

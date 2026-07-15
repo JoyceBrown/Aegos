@@ -38,6 +38,9 @@ pub const DIAGNOSTIC_CONNECTIONS_TIMEOUT_MS: u64 = 550;
 pub const ACTIVE_CONNECTION_COUNT_TIMEOUT_MS: u64 = 350;
 pub const CLOSE_CONNECTION_TIMEOUT_MS: u64 = 2000;
 pub const CLOSE_ALL_CONNECTIONS_TIMEOUT_MS: u64 = 3000;
+pub const CONFIG_FORCE_APPLY_ENDPOINT: &str = "/configs?force=true";
+pub const CONFIG_FORCE_APPLY_TIMEOUT_MS: u64 = 8000;
+pub const CONFIG_APPLY_VERSION_PROBE_TIMEOUT_MS: u64 = 900;
 pub const RESOURCE_SUBDIR: &str = "core";
 pub const BINARY_NAME: &str = "mihomo.exe";
 pub const MISSING_RESOURCE_HINT: &str =
@@ -781,6 +784,19 @@ impl CoreController {
     pub fn close_all_connections_for_ui(&self) -> Result<(), String> {
         self.close_connections(CLOSE_ALL_CONNECTIONS_TIMEOUT_MS)
     }
+
+    pub fn apply_runtime_config_path(&self, path: &Path) -> Result<JsonValue, String> {
+        self.request(
+            "PUT",
+            CONFIG_FORCE_APPLY_ENDPOINT,
+            Some(json!({ "path": path.to_string_lossy().to_string() })),
+            CONFIG_FORCE_APPLY_TIMEOUT_MS,
+        )
+    }
+
+    pub fn config_apply_version_probe(&self) -> Result<JsonValue, String> {
+        self.version_probe(CONFIG_APPLY_VERSION_PROBE_TIMEOUT_MS)
+    }
 }
 
 pub fn classify_delay_http_failure(status: u16, body: &str) -> &'static str {
@@ -1050,13 +1066,9 @@ impl CoreRuntimeApplyTransaction {
     }
 
     pub fn apply(&self, controller: &CoreController) -> Result<CoreRuntimeApplyResult, String> {
-        let controller_response = controller.request(
-            "PUT",
-            "/configs?force=true",
-            Some(json!({ "path": self.runtime_profile_path.to_string_lossy().to_string() })),
-            8000,
-        )?;
-        let version_probe = controller.request("GET", "/version", None, 900)?;
+        let controller_response =
+            controller.apply_runtime_config_path(&self.runtime_profile_path)?;
+        let version_probe = controller.config_apply_version_probe()?;
         Ok(CoreRuntimeApplyResult {
             controller_response,
             version_probe,
@@ -1338,6 +1350,9 @@ mod tests {
         assert_eq!(ACTIVE_CONNECTION_COUNT_TIMEOUT_MS, 350);
         assert_eq!(CLOSE_CONNECTION_TIMEOUT_MS, 2000);
         assert_eq!(CLOSE_ALL_CONNECTIONS_TIMEOUT_MS, 3000);
+        assert_eq!(CONFIG_FORCE_APPLY_ENDPOINT, "/configs?force=true");
+        assert_eq!(CONFIG_FORCE_APPLY_TIMEOUT_MS, 8000);
+        assert_eq!(CONFIG_APPLY_VERSION_PROBE_TIMEOUT_MS, 900);
     }
 
     fn test_preflight_input<'a>() -> RuntimeConfigPreflightInput<'a> {

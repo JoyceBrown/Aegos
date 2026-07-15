@@ -471,7 +471,14 @@ check(
     mainRs.includes('core_runtime::write_runtime_profile') &&
     coreRuntimeRs.includes('proxy_group_name_set') &&
     coreRuntimeRs.includes('pub struct CoreRuntimeApplyTransaction') &&
-    coreRuntimeRs.includes('/configs?force=true') &&
+    coreRuntimeRs.includes('pub const CONFIG_FORCE_APPLY_ENDPOINT') &&
+    coreRuntimeRs.includes('pub const CONFIG_FORCE_APPLY_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const CONFIG_APPLY_VERSION_PROBE_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub fn apply_runtime_config_path(&self, path: &Path)') &&
+    coreRuntimeRs.includes('pub fn config_apply_version_probe(&self)') &&
+    coreRuntimeRs.includes('controller.apply_runtime_config_path(&self.runtime_profile_path)') &&
+    coreRuntimeRs.includes('controller.config_apply_version_probe()') &&
+    !coreRuntimeRs.includes('controller.request("GET", "/version", None, 900)') &&
     mainRs.includes('CoreRuntimeApplyTransaction::new') &&
     mainRs.includes('apply_transaction.apply(&self.core_controller())') &&
     mainRs.includes('Profile hot reload failed; falling back to restart') &&
