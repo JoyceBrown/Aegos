@@ -45,7 +45,6 @@ use std::os::windows::process::CommandExt;
 
 const AEGOS_DEFAULT_MIXED_PORT: u16 = 7891;
 const AEGOS_DEFAULT_CONTROLLER_PORT: u16 = 19091;
-const RESERVED_MIXED_PORTS: &[u16] = &[7890];
 const AEGOS_OUTBOUND_IP_GROUP: &str = "Aegos Landing IP";
 const FLCLASH_STYLE_TEST_URL: &str = "https://www.gstatic.com/generate_204";
 const FLCLASH_STYLE_SPEED_BATCH_SIZE: usize = 100;
@@ -965,11 +964,11 @@ fn port_from_value(value: &JsonValue, fallback: u16, label: &str) -> Result<u16,
 
 fn mixed_port_from_value(value: &JsonValue, fallback: u16) -> Result<u16, String> {
     let port = port_from_value(value, fallback, "Mixed proxy port")?;
-    if RESERVED_MIXED_PORTS.contains(&port) {
-        return Err(
-            "Port 7890 is reserved for FlClash/Codex traffic; use 7891 or another port for Aegos."
-                .to_string(),
-        );
+    if core_runtime::RESERVED_MIXED_PORTS.contains(&port) {
+        return Err(format!(
+            "{}; use 7891 or another port for Aegos.",
+            core_runtime::RESERVED_MIXED_PORTS_REASON
+        ));
     }
     Ok(port)
 }
@@ -5550,7 +5549,7 @@ impl CoreManager {
     }
 
     fn validate_port_settings_snapshot(settings: &Settings) -> Result<(), String> {
-        if RESERVED_MIXED_PORTS.contains(&settings.mixed_port) {
+        if core_runtime::RESERVED_MIXED_PORTS.contains(&settings.mixed_port) {
             return Err(
                 "Mixed proxy port 7890 is reserved for FlClash/Codex; use 7891 or another free port"
                     .to_string(),
@@ -6373,7 +6372,7 @@ impl CoreManager {
         self.settings.mixed_port = find_free_port(
             self.settings.mixed_port,
             AEGOS_DEFAULT_MIXED_PORT,
-            RESERVED_MIXED_PORTS,
+            core_runtime::RESERVED_MIXED_PORTS,
         )?;
         let controller_reserved = [self.settings.mixed_port];
         self.settings.controller_port = find_free_port(
@@ -6775,42 +6774,33 @@ impl CoreManager {
     }
 
     fn public_settings(&self) -> JsonValue {
-        json!({
-            "activeProfileId": self.settings.active_profile_id,
-            "mixedPort": self.settings.mixed_port,
-            "controllerPort": self.settings.controller_port,
-            "profiles": self.public_profiles(),
-            "startWithSystemProxy": self.settings.start_with_system_proxy,
-            "systemProxy": self.settings.system_proxy,
-            "killSwitchEnabled": self.settings.kill_switch_enabled,
-            "tunEnabled": self.settings.tun_enabled,
-            "tunStack": self.settings.tun_stack,
-            "dnsHijackEnabled": self.settings.dns_hijack_enabled,
-            "ipv6Enabled": self.settings.ipv6_enabled,
-            "allowLan": self.settings.allow_lan,
-            "logLevel": self.settings.log_level,
-            "selectedProxyMap": &self.settings.selected_proxy_map,
-            "manualNodes": &self.settings.manual_nodes,
-            "reliability": {
-                "auto": self.settings.reliability_auto,
-                "profileFailover": self.settings.reliability_profile_failover,
-                "failureThreshold": self.settings.reliability_failure_threshold,
-                "maxDelayMs": self.settings.reliability_max_delay_ms,
-                "candidateLimit": self.settings.reliability_candidate_limit,
-                "failures": self.reliability_failures
-            },
-            "runtimes": { "mihomo": self.core_path.exists() },
-            "reservedPorts": {
-                "mixed": RESERVED_MIXED_PORTS,
-                "reason": "7890 is reserved for FlClash/Codex traffic"
-            },
-            "proxyTakeover": core_runtime::proxy_takeover_status_json(
-                self.settings.mixed_port,
-                self.process.is_some(),
-                self.traffic_takeover,
-                self.proxy_snapshot_path.exists()
-            )
-        })
+        core_runtime::public_settings_surface_json(
+            &self.settings.active_profile_id,
+            self.settings.mixed_port,
+            self.settings.controller_port,
+            json!(self.public_profiles()),
+            self.settings.start_with_system_proxy,
+            self.settings.system_proxy,
+            self.settings.kill_switch_enabled,
+            self.settings.tun_enabled,
+            &self.settings.tun_stack,
+            self.settings.dns_hijack_enabled,
+            self.settings.ipv6_enabled,
+            self.settings.allow_lan,
+            &self.settings.log_level,
+            json!(&self.settings.selected_proxy_map),
+            json!(&self.settings.manual_nodes),
+            self.settings.reliability_auto,
+            self.settings.reliability_profile_failover,
+            self.settings.reliability_failure_threshold,
+            self.settings.reliability_max_delay_ms,
+            self.settings.reliability_candidate_limit,
+            self.reliability_failures,
+            self.core_path.exists(),
+            self.process.is_some(),
+            self.traffic_takeover,
+            self.proxy_snapshot_path.exists(),
+        )
     }
 
     fn public_profiles(&self) -> Vec<JsonValue> {
@@ -8415,42 +8405,38 @@ fn diagnostics_protection_status(snapshot: &DiagnosticsSnapshot) -> JsonValue {
 }
 
 fn diagnostics_public_settings(snapshot: &DiagnosticsSnapshot) -> JsonValue {
-    json!({
-        "activeProfileId": snapshot.settings.active_profile_id,
-        "mixedPort": snapshot.settings.mixed_port,
-        "controllerPort": snapshot.settings.controller_port,
-        "profiles": snapshot.settings.profiles.iter().map(public_profile).collect::<Vec<_>>(),
-        "startWithSystemProxy": snapshot.settings.start_with_system_proxy,
-        "systemProxy": snapshot.settings.system_proxy,
-        "killSwitchEnabled": snapshot.settings.kill_switch_enabled,
-        "tunEnabled": snapshot.settings.tun_enabled,
-        "tunStack": snapshot.settings.tun_stack,
-        "dnsHijackEnabled": snapshot.settings.dns_hijack_enabled,
-        "ipv6Enabled": snapshot.settings.ipv6_enabled,
-        "allowLan": snapshot.settings.allow_lan,
-        "logLevel": snapshot.settings.log_level,
-        "selectedProxyMap": &snapshot.settings.selected_proxy_map,
-        "manualNodes": &snapshot.settings.manual_nodes,
-        "reliability": {
-            "auto": snapshot.settings.reliability_auto,
-            "profileFailover": snapshot.settings.reliability_profile_failover,
-            "failureThreshold": snapshot.settings.reliability_failure_threshold,
-            "maxDelayMs": snapshot.settings.reliability_max_delay_ms,
-            "candidateLimit": snapshot.settings.reliability_candidate_limit,
-            "failures": snapshot.reliability_failures
-        },
-        "runtimes": { "mihomo": snapshot.core_path.exists() },
-        "reservedPorts": {
-            "mixed": RESERVED_MIXED_PORTS,
-            "reason": "7890 is reserved for FlClash/Codex traffic"
-        },
-        "proxyTakeover": core_runtime::proxy_takeover_status_json(
-            snapshot.settings.mixed_port,
-            snapshot.running,
-            snapshot.traffic_takeover,
-            snapshot.proxy_snapshot_path.exists()
-        )
-    })
+    core_runtime::public_settings_surface_json(
+        &snapshot.settings.active_profile_id,
+        snapshot.settings.mixed_port,
+        snapshot.settings.controller_port,
+        json!(snapshot
+            .settings
+            .profiles
+            .iter()
+            .map(public_profile)
+            .collect::<Vec<_>>()),
+        snapshot.settings.start_with_system_proxy,
+        snapshot.settings.system_proxy,
+        snapshot.settings.kill_switch_enabled,
+        snapshot.settings.tun_enabled,
+        &snapshot.settings.tun_stack,
+        snapshot.settings.dns_hijack_enabled,
+        snapshot.settings.ipv6_enabled,
+        snapshot.settings.allow_lan,
+        &snapshot.settings.log_level,
+        json!(&snapshot.settings.selected_proxy_map),
+        json!(&snapshot.settings.manual_nodes),
+        snapshot.settings.reliability_auto,
+        snapshot.settings.reliability_profile_failover,
+        snapshot.settings.reliability_failure_threshold,
+        snapshot.settings.reliability_max_delay_ms,
+        snapshot.settings.reliability_candidate_limit,
+        snapshot.reliability_failures,
+        snapshot.core_path.exists(),
+        snapshot.running,
+        snapshot.traffic_takeover,
+        snapshot.proxy_snapshot_path.exists(),
+    )
 }
 
 fn diagnostics_status_from_snapshot(snapshot: &DiagnosticsSnapshot, is_admin: bool) -> JsonValue {

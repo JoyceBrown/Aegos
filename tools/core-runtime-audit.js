@@ -460,11 +460,24 @@ check(
   'proxy takeover public status is owned by the core runtime boundary',
   coreRuntimeRs.includes('pub fn proxy_takeover_status_json') &&
     coreRuntimeRs.includes('proxy_takeover_status_is_runtime_shaped') &&
-    (mainRs.match(/"proxyTakeover": core_runtime::proxy_takeover_status_json\(/g) || []).length === 2 &&
+    coreRuntimeRs.includes('public_settings_surface_json') &&
+    !mainRs.includes('core_runtime::proxy_takeover_status_json(') &&
     !(mainRs.match(/"proxyTakeover":\s*json!\s*\(\s*\{/g) || []).length &&
     !mainRs.includes('"active": self.traffic_takeover') &&
     !mainRs.includes('"active": snapshot.traffic_takeover'),
   'home and diagnostics proxy takeover status must not rebuild runtime endpoint/active/standby state',
+);
+check(
+  'public settings surfaces are owned by the core runtime boundary',
+  coreRuntimeRs.includes('pub fn public_settings_surface_json') &&
+    coreRuntimeRs.includes('public_settings_surface_json_is_runtime_shaped') &&
+    (mainRs.match(/core_runtime::public_settings_surface_json\(/g) || []).length === 2 &&
+    coreRuntimeRs.includes('pub const RESERVED_MIXED_PORTS') &&
+    coreRuntimeRs.includes('pub const RESERVED_MIXED_PORTS_REASON') &&
+    !mainRs.includes('"reservedPorts":') &&
+    !mainRs.includes('"runtimes": { "mihomo"') &&
+    !mainRs.includes('"reliability": {'),
+  'home and diagnostics settings must not rebuild runtime ports, runtime presence, reliability, or proxy takeover fields',
 );
 check(
   'system proxy takeover plan is owned by the core runtime boundary',

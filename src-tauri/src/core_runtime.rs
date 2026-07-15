@@ -35,6 +35,8 @@ pub const PROXY_SELECT_TIMEOUT_MS: u64 = 5000;
 pub const AUXILIARY_PROXY_SELECT_TIMEOUT_MS: u64 = 1500;
 pub const STALE_CONNECTION_CLEANUP_TIMEOUT_MS: u64 = 1500;
 pub const STATUS_TRAFFIC_TIMEOUT_MS: u64 = 120;
+pub const RESERVED_MIXED_PORTS: &[u16] = &[7890];
+pub const RESERVED_MIXED_PORTS_REASON: &str = "7890 is reserved for FlClash/Codex traffic";
 pub const PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS: u64 = 1200;
 pub const CONNECTIONS_SNAPSHOT_TIMEOUT_MS: u64 = 900;
 pub const ROUTING_RECENT_RULES_TIMEOUT_MS: u64 = 550;
@@ -352,6 +354,72 @@ pub fn proxy_takeover_status_json(
         "standby": core_running && !traffic_takeover,
         "snapshotCaptured": snapshot_captured,
         "restoresPreviousProxy": true
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn public_settings_surface_json(
+    active_profile_id: &str,
+    mixed_port: u16,
+    controller_port: u16,
+    profiles: JsonValue,
+    start_with_system_proxy: bool,
+    system_proxy: bool,
+    kill_switch_enabled: bool,
+    tun_enabled: bool,
+    tun_stack: &str,
+    dns_hijack_enabled: bool,
+    ipv6_enabled: bool,
+    allow_lan: bool,
+    log_level: &str,
+    selected_proxy_map: JsonValue,
+    manual_nodes: JsonValue,
+    reliability_auto: bool,
+    reliability_profile_failover: bool,
+    reliability_failure_threshold: u64,
+    reliability_max_delay_ms: u64,
+    reliability_candidate_limit: u64,
+    reliability_failures: u64,
+    core_exists: bool,
+    core_running: bool,
+    traffic_takeover: bool,
+    proxy_snapshot_captured: bool,
+) -> JsonValue {
+    json!({
+        "activeProfileId": active_profile_id,
+        "mixedPort": mixed_port,
+        "controllerPort": controller_port,
+        "profiles": profiles,
+        "startWithSystemProxy": start_with_system_proxy,
+        "systemProxy": system_proxy,
+        "killSwitchEnabled": kill_switch_enabled,
+        "tunEnabled": tun_enabled,
+        "tunStack": tun_stack,
+        "dnsHijackEnabled": dns_hijack_enabled,
+        "ipv6Enabled": ipv6_enabled,
+        "allowLan": allow_lan,
+        "logLevel": log_level,
+        "selectedProxyMap": selected_proxy_map,
+        "manualNodes": manual_nodes,
+        "reliability": {
+            "auto": reliability_auto,
+            "profileFailover": reliability_profile_failover,
+            "failureThreshold": reliability_failure_threshold,
+            "maxDelayMs": reliability_max_delay_ms,
+            "candidateLimit": reliability_candidate_limit,
+            "failures": reliability_failures
+        },
+        "runtimes": { "mihomo": core_exists },
+        "reservedPorts": {
+            "mixed": RESERVED_MIXED_PORTS,
+            "reason": RESERVED_MIXED_PORTS_REASON
+        },
+        "proxyTakeover": proxy_takeover_status_json(
+            mixed_port,
+            core_running,
+            traffic_takeover,
+            proxy_snapshot_captured,
+        )
     })
 }
 
@@ -3322,6 +3390,71 @@ rules:
         assert_eq!(
             active.get("standby").and_then(JsonValue::as_bool),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn public_settings_surface_json_is_runtime_shaped() {
+        let settings = public_settings_surface_json(
+            "profile-1",
+            7891,
+            19091,
+            json!([{ "id": "profile-1", "name": "Demo" }]),
+            false,
+            true,
+            true,
+            false,
+            "gvisor",
+            true,
+            false,
+            false,
+            "warning",
+            json!({ "Proxies": "HK 1" }),
+            json!([{ "name": "Manual" }]),
+            true,
+            true,
+            3,
+            800,
+            24,
+            2,
+            true,
+            true,
+            false,
+            true,
+        );
+        assert_eq!(
+            settings.get("activeProfileId").and_then(JsonValue::as_str),
+            Some("profile-1")
+        );
+        assert_eq!(
+            settings
+                .pointer("/reservedPorts/mixed/0")
+                .and_then(JsonValue::as_u64),
+            Some(7890)
+        );
+        assert_eq!(
+            settings
+                .pointer("/reservedPorts/reason")
+                .and_then(JsonValue::as_str),
+            Some(RESERVED_MIXED_PORTS_REASON)
+        );
+        assert_eq!(
+            settings
+                .pointer("/runtimes/mihomo")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            settings
+                .pointer("/reliability/failures")
+                .and_then(JsonValue::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            settings
+                .pointer("/proxyTakeover/standby")
+                .and_then(JsonValue::as_bool),
+            Some(true)
         );
     }
 
