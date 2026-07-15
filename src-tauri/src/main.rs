@@ -12137,12 +12137,11 @@ fn routing_assistant_gate_contract() -> JsonValue {
 
 #[tauri::command]
 fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
-    let (running, controller_port, secret, mode, groups, active_profile, last_apply) = {
+    let (running, controller, mode, groups, active_profile, last_apply) = {
         let core = state.core.lock().unwrap();
         (
             core.process.is_some(),
-            core.settings.controller_port,
-            core.settings.secret.clone(),
+            core.core_controller(),
             core.settings.mode.clone(),
             core.proxy_groups(),
             core.active_profile(),
@@ -12183,8 +12182,7 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
             })
         })
         .collect::<Vec<_>>();
-    let recent_rules = core_runtime::CoreController::new(controller_port, secret.clone())
-        .routing_recent_rule_hits_snapshot_or_empty(running);
+    let recent_rules = controller.routing_recent_rule_hits_snapshot_or_empty(running);
     let (mut static_rules, missing_rule_targets, rule_order_issues, rule_error) =
         routing_rules_for_profile(active_profile.as_ref());
     if let Some(profile) = active_profile.as_ref() {
