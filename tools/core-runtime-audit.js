@@ -118,6 +118,8 @@ check(
     coreRuntimeRs.includes('pub fn close_connection(&self, id: &str, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn close_connections(&self, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn status_traffic_snapshot(&self)') &&
+    coreRuntimeRs.includes('pub fn status_traffic_snapshot_or_idle(') &&
+    coreRuntimeRs.includes('pub fn idle_traffic_snapshot()') &&
     coreRuntimeRs.includes('pub fn ui_connections_snapshot_or_empty(&self, running: bool)') &&
     coreRuntimeRs.includes('pub fn home_active_connection_count_snapshot_or_idle(&self, running: bool)') &&
     coreRuntimeRs.includes('pub const STATUS_TRAFFIC_TIMEOUT_MS') &&
@@ -131,7 +133,8 @@ check(
     !mainRs.includes('fn controller(') &&
     !mainRs.includes('fn controller_request(') &&
     !mainRs.includes('self.controller(') &&
-    mainRs.includes('self.core_controller().status_traffic_snapshot()') &&
+    !mainRs.includes('fn traffic_snapshot(&self)') &&
+    mainRs.includes('.status_traffic_snapshot_or_idle(running, &self.last_traffic)') &&
     mainRs.includes('controller.ui_connections_snapshot_or_empty(running)') &&
     mainRs.includes('controller.home_active_connection_count_snapshot_or_idle(running)') &&
     mainRs.includes('.routing_recent_rule_hits_snapshot_or_empty(running)') &&

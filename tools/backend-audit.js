@@ -45,9 +45,12 @@ check(
 );
 check(
   'status traffic timeout stays short',
-  statusBody.includes('traffic_snapshot()') &&
+  statusBody.includes('status_traffic_snapshot_or_idle(running, &self.last_traffic)') &&
     coreRuntimeRs.includes('pub fn status_traffic_snapshot(&self)') &&
+    coreRuntimeRs.includes('pub fn status_traffic_snapshot_or_idle(') &&
+    coreRuntimeRs.includes('pub fn idle_traffic_snapshot()') &&
     coreRuntimeRs.includes('pub const STATUS_TRAFFIC_TIMEOUT_MS') &&
+    !mainRs.includes('fn traffic_snapshot(&self)') &&
     !statusBody.includes('traffic_snapshot(120)') &&
     !statusBody.includes('traffic_snapshot(450)'),
   'traffic snapshot timeout'

@@ -7759,21 +7759,14 @@ impl CoreManager {
         })
     }
 
-    fn traffic_snapshot(&self) -> Result<JsonValue, String> {
-        self.core_controller().status_traffic_snapshot()
-    }
-
     fn status(&mut self) -> JsonValue {
         if let Some(reason) = self.reap_exited_core() {
             self.add_log(reason, "warn");
         }
         let running = self.process.is_some();
-        let traffic = if running {
-            self.traffic_snapshot()
-                .unwrap_or_else(|_| self.last_traffic.clone())
-        } else {
-            json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 })
-        };
+        let traffic = self
+            .core_controller()
+            .status_traffic_snapshot_or_idle(running, &self.last_traffic);
         self.last_traffic = traffic.clone();
         let lan_ip = self.cached_lan_ip();
         let runtime_status = core_runtime::runtime_status_json(

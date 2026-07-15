@@ -144,6 +144,10 @@ pub fn runtime_status_json(
     })
 }
 
+pub fn idle_traffic_snapshot() -> JsonValue {
+    json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 })
+}
+
 pub fn connection_phase(
     core_running: bool,
     traffic_takeover: bool,
@@ -607,6 +611,18 @@ impl CoreController {
 
     pub fn status_traffic_snapshot(&self) -> Result<JsonValue, String> {
         self.traffic_snapshot(STATUS_TRAFFIC_TIMEOUT_MS)
+    }
+
+    pub fn status_traffic_snapshot_or_idle(
+        &self,
+        running: bool,
+        last_traffic: &JsonValue,
+    ) -> JsonValue {
+        if !running {
+            return idle_traffic_snapshot();
+        }
+        self.status_traffic_snapshot()
+            .unwrap_or_else(|_| last_traffic.clone())
     }
 
     pub fn proxies_snapshot(&self, timeout_ms: u64) -> Result<JsonValue, String> {
@@ -1904,6 +1920,20 @@ rules:
                 .and_then(JsonValue::as_u64)
                 .unwrap_or_default()
                 > 0
+        );
+    }
+
+    #[test]
+    fn controller_status_traffic_snapshot_uses_runtime_idle_and_fallback_contract() {
+        let controller = CoreController::new(0, "");
+        let previous = json!({ "up": 7, "down": 8, "upTotal": 70, "downTotal": 80 });
+        assert_eq!(
+            controller.status_traffic_snapshot_or_idle(false, &previous),
+            idle_traffic_snapshot()
+        );
+        assert_eq!(
+            controller.status_traffic_snapshot_or_idle(true, &previous),
+            previous
         );
     }
 
