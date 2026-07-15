@@ -4478,20 +4478,21 @@ function ensureRoutingAssistantUi() {
         el('p', { id: 'routingDraftPreview', className: 'routing-draft-preview', textContent: '\u8f93\u5165\u7f51\u7ad9\u540e\uff0c\u8fd9\u91cc\u4f1a\u544a\u8bc9\u4f60\u5b83\u5c06\u8d70\u54ea\u6761\u7ebf\u8def\u3002' })
       ]),
       el('section', { className: 'routing-builder-panel', id: 'routingPanelApp', dataset: { routingPanel: 'app' } }, [
-        panelHeader('\u5e94\u7528\u5206\u6d41', '\u7528\u8fdb\u7a0b\u540d\u5339\u914d\uff0c\u540d\u79f0\u4e0d\u5bf9\u65f6\u53ef\u80fd\u4e0d\u751f\u6548\u3002'),
+        panelHeader('\u5e94\u7528\u89c4\u5219\u5411\u5bfc', '\u8f93\u5165\u5e94\u7528\u540d\u6216 .exe \u8def\u5f84\uff0cAegos \u4f1a\u5224\u65ad\u662f\u6309\u5e94\u7528\u540d\u8fd8\u662f\u8def\u5f84\u5339\u914d\u3002'),
         el('label', { className: 'routing-field' }, [
-          el('span', { textContent: '\u5e94\u7528\u8fdb\u7a0b' }),
-          el('input', { id: 'routingAppInput', attrs: { placeholder: 'Telegram.exe', autocomplete: 'off', spellcheck: 'false' } })
+          el('span', { textContent: '\u76ee\u6807\u5e94\u7528' }),
+          el('input', { id: 'routingAppInput', attrs: { placeholder: 'Telegram.exe 或 C:\\Program Files\\App\\app.exe', autocomplete: 'off', spellcheck: 'false' } }),
+          el('small', { textContent: '\u4e0d\u5fc5\u77e5\u9053\u8fdb\u7a0b\u89c4\u5219\uff1b\u8f93\u5165 Telegram \u4e5f\u4f1a\u81ea\u52a8\u8865\u6210 Telegram.exe\u3002' })
         ]),
         el('div', { className: 'routing-draft-form' }, [
           el('label', { className: 'routing-field' }, [
-            el('span', { textContent: '\u8d70\u5411' }),
+            el('span', { textContent: '\u8fd9\u4e2a\u5e94\u7528' }),
             el('select', { id: 'routingAppAction', attrs: { 'aria-label': '\u8d70\u5411' } }, actionOptions())
           ]),
           targetField('routingAppTargetSelect'),
-          el('button', { id: 'previewAppRuleBtn', className: 'primary compact', attrs: { type: 'button' }, textContent: '\u751f\u6210\u8349\u7a3f' })
+          el('button', { id: 'previewAppRuleBtn', className: 'primary compact', attrs: { type: 'button' }, textContent: '\u9884\u89c8\u89c4\u5219' })
         ]),
-        el('p', { id: 'routingAppDraftPreview', className: 'routing-draft-preview', textContent: '\u7b49\u5f85\u8f93\u5165\u5e94\u7528\u3002' })
+        el('p', { id: 'routingAppDraftPreview', className: 'routing-draft-preview', textContent: '\u8f93\u5165\u5e94\u7528\u540e\uff0c\u8fd9\u91cc\u4f1a\u544a\u8bc9\u4f60\u5b83\u5c06\u8d70\u54ea\u6761\u7ebf\u8def\u3002' })
       ]),
       el('section', { className: 'routing-builder-panel', id: 'routingPanelSystem', dataset: { routingPanel: 'system' } }, [
         panelHeader('\u7cfb\u7edf\u89c4\u5219', '\u8fd9\u4e9b\u89c4\u5219\u7531 Aegos \u81ea\u52a8\u7ef4\u62a4\uff0c\u7528\u6765\u4fdd\u8bc1\u68c0\u6d4b\u3001\u8bca\u65ad\u548c\u9632\u6cc4\u9732\u884c\u4e3a\u53ef\u63a7\u3002'),
@@ -5211,7 +5212,7 @@ function previewAppRoutingDraft() {
     label: `${parsed.value} \u2192 ${next.label}`,
     source: 'app'
   });
-  preview.textContent = `\u8349\u7a3f\uff1a${draft.label}\u3002${draft.classification.text}`;
+  preview.textContent = `\u9884\u89c8\uff1a${parsed.value} \u5c06 ${next.label}\u3002\u5df2\u751f\u6210\u672a\u751f\u6548\u8349\u7a3f\uff0c\u5e94\u7528\u524d\u8fd8\u53ef\u4ee5\u5148\u9a8c\u8bc1\u6216\u64a4\u9500\u3002${draft.classification.text}`;
   preview.dataset.rule = draft.rule;
   preview.className = 'routing-draft-preview ok';
 }
