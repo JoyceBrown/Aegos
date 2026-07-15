@@ -413,15 +413,20 @@ check(
 );
 check(
   'system proxy snapshot policy is owned by the core runtime boundary',
-  coreRuntimeRs.includes('pub struct SystemProxySnapshot') &&
+    coreRuntimeRs.includes('pub struct SystemProxySnapshot') &&
     coreRuntimeRs.includes('pub fn system_proxy_snapshot_points_to_aegos') &&
     coreRuntimeRs.includes('pub fn should_capture_system_proxy_snapshot') &&
+    coreRuntimeRs.includes('pub fn verify_system_proxy_snapshot') &&
     coreRuntimeRs.includes('system_proxy_snapshot_policy_is_owned_by_runtime_boundary') &&
+    coreRuntimeRs.includes('system_proxy_verification_is_owned_by_runtime_boundary') &&
     mainRs.includes('core_runtime::SystemProxySnapshot') &&
     mainRs.includes('core_runtime::system_proxy_snapshot_points_to_aegos') &&
     mainRs.includes('core_runtime::should_capture_system_proxy_snapshot') &&
+    mainRs.includes('core_runtime::verify_system_proxy_snapshot') &&
     !mainRs.includes('struct SystemProxySnapshot') &&
-    !mainRs.includes('fn proxy_points_to_aegos'),
+    !mainRs.includes('fn proxy_points_to_aegos') &&
+    !mainRs.includes('Windows system proxy verification failed: current') &&
+    !mainRs.includes('Windows system proxy restore verification failed'),
   'main.rs may read/write Windows proxy state, but snapshot shape and matching policy belong to core_runtime',
 );
 check(

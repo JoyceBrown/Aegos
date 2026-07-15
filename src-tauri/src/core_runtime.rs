@@ -1982,6 +1982,28 @@ pub fn should_capture_system_proxy_snapshot(
     !snapshot_file_exists && !system_proxy_snapshot_points_to_aegos(snapshot, mixed_port)
 }
 
+pub fn verify_system_proxy_snapshot(
+    snapshot: &SystemProxySnapshot,
+    expected_to_point_to_aegos: bool,
+    mixed_port: u16,
+) -> Result<(), String> {
+    let points_to_aegos = system_proxy_snapshot_points_to_aegos(snapshot, mixed_port);
+    if expected_to_point_to_aegos && !points_to_aegos {
+        return Err(format!(
+            "Windows system proxy verification failed: current '{}', expected {}",
+            snapshot.proxy_server,
+            windows_proxy_server(mixed_port)
+        ));
+    }
+    if !expected_to_point_to_aegos && points_to_aegos {
+        return Err(format!(
+            "Windows system proxy restore verification failed: still points to '{}'",
+            snapshot.proxy_server
+        ));
+    }
+    Ok(())
+}
+
 impl CoreFirewallPolicyPlan {
     pub fn disconnect_protection() -> Self {
         Self {
@@ -2582,6 +2604,31 @@ mod tests {
         assert!(disable.proxy_server.is_none());
         assert_eq!(disable.proxy_override, WINDOWS_PROXY_BYPASS_LIST);
         assert!(!disable.should_write_proxy_server());
+    }
+
+    #[test]
+    fn system_proxy_verification_is_owned_by_runtime_boundary() {
+        let aegos = SystemProxySnapshot {
+            proxy_enable: true,
+            proxy_server: "127.0.0.1:7891".to_string(),
+            proxy_override: WINDOWS_PROXY_BYPASS_LIST.to_string(),
+            captured_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        assert!(verify_system_proxy_snapshot(&aegos, true, 7891).is_ok());
+        assert!(verify_system_proxy_snapshot(&aegos, false, 7891)
+            .unwrap_err()
+            .contains("restore verification failed"));
+
+        let external = SystemProxySnapshot {
+            proxy_enable: true,
+            proxy_server: "127.0.0.1:7890".to_string(),
+            proxy_override: "<local>".to_string(),
+            captured_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        assert!(verify_system_proxy_snapshot(&external, false, 7891).is_ok());
+        let failure = verify_system_proxy_snapshot(&external, true, 7891).unwrap_err();
+        assert!(failure.contains("verification failed"));
+        assert!(failure.contains("expected 127.0.0.1:7891"));
     }
 
     fn test_preflight_input<'a>() -> RuntimeConfigPreflightInput<'a> {

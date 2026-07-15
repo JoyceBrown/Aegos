@@ -68,6 +68,9 @@ check(
 check(
   'Windows system proxy takeover is verified and restore failures are surfaced',
   mainRs.includes('fn verify_system_proxy_points_to_aegos') &&
+    coreRuntimeRs.includes('pub fn verify_system_proxy_snapshot') &&
+    coreRuntimeRs.includes('system_proxy_verification_is_owned_by_runtime_boundary') &&
+    mainRs.includes('core_runtime::verify_system_proxy_snapshot') &&
     setSystemProxyBody.includes('verify_system_proxy_points_to_aegos(true)') &&
     setSystemProxyBody.includes('verify_system_proxy_points_to_aegos(false)') &&
     applyTakeoverBody.includes('system_proxy_applied') &&

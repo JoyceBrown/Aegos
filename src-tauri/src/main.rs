@@ -5483,21 +5483,7 @@ impl CoreManager {
 
     fn verify_system_proxy_points_to_aegos(&self, expected: bool) -> Result<(), String> {
         let current = read_windows_proxy_snapshot()?;
-        let points_to_aegos =
-            core_runtime::system_proxy_snapshot_points_to_aegos(&current, self.settings.mixed_port);
-        if expected && !points_to_aegos {
-            return Err(format!(
-                "Windows system proxy verification failed: current '{}', expected 127.0.0.1:{}",
-                current.proxy_server, self.settings.mixed_port
-            ));
-        }
-        if !expected && points_to_aegos {
-            return Err(format!(
-                "Windows system proxy restore verification failed: still points to '{}'",
-                current.proxy_server
-            ));
-        }
-        Ok(())
+        core_runtime::verify_system_proxy_snapshot(&current, expected, self.settings.mixed_port)
     }
 
     fn ensure_direct_profile(&mut self) -> Result<(), String> {
