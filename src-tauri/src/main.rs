@@ -3,6 +3,7 @@
 mod config_pipeline;
 mod core_runtime;
 mod profile_compiler;
+mod task_runtime;
 
 use base64::{engine::general_purpose, Engine as _};
 use rand::random;
@@ -21,6 +22,10 @@ use std::{
     sync::{mpsc, Arc, Mutex, OnceLock},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
+};
+use task_runtime::{
+    finish_cancelled, finish_job, job_cancel_requested, job_status_snapshot, new_job_record,
+    request_job_cancel, set_job_state, JobStore,
 };
 use tauri::{AppHandle, Manager, State, Window, WindowEvent};
 
@@ -967,7 +972,7 @@ struct AppState {
     speed_test: Arc<Mutex<SpeedTestState>>,
     logs: Arc<Mutex<Vec<LogEntry>>>,
     app_data: PathBuf,
-    jobs: Arc<Mutex<HashMap<String, JobRecord>>>,
+    jobs: JobStore,
     operations: Arc<Mutex<()>>,
 }
 
@@ -986,22 +991,6 @@ struct DiagnosticsSnapshot {
     reliability_failures: u64,
     recent_logs: Vec<LogEntry>,
     status_logs: Vec<LogEntry>,
-}
-
-#[derive(Clone, Serialize)]
-struct JobRecord {
-    id: String,
-    kind: String,
-    label: String,
-    state: String,
-    started_at: u64,
-    updated_at: u64,
-    progress: u64,
-    total: u64,
-    message: String,
-    result: Option<JsonValue>,
-    error: Option<String>,
-    cancel_requested: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -9631,7 +9620,7 @@ fn refresh_outbound_ip_detached(core: Arc<Mutex<CoreManager>>) -> Result<String,
 fn update_all_profiles_detached(
     core: Arc<Mutex<CoreManager>>,
     operations: Arc<Mutex<()>>,
-    jobs: Arc<Mutex<HashMap<String, JobRecord>>>,
+    jobs: JobStore,
     job_id: &str,
 ) -> Result<JsonValue, String> {
     let profile_ids = {
@@ -9719,68 +9708,6 @@ fn job_label(kind: &str) -> String {
     .to_string()
 }
 
-fn set_job_state(
-    jobs: &Arc<Mutex<HashMap<String, JobRecord>>>,
-    id: &str,
-    state: &str,
-    progress: u64,
-    total: u64,
-    message: &str,
-) {
-    if let Some(job) = jobs.lock().unwrap().get_mut(id) {
-        if job.cancel_requested && job.state == "cancelled" {
-            return;
-        }
-        job.state = state.to_string();
-        job.progress = progress;
-        job.total = total;
-        job.message = message.to_string();
-        job.updated_at = now_secs();
-    }
-}
-
-fn job_cancel_requested(jobs: &Arc<Mutex<HashMap<String, JobRecord>>>, id: &str) -> bool {
-    jobs.lock()
-        .unwrap()
-        .get(id)
-        .map(|job| job.cancel_requested)
-        .unwrap_or(false)
-}
-
-fn finish_cancelled(jobs: &Arc<Mutex<HashMap<String, JobRecord>>>, id: &str, message: &str) {
-    if let Some(job) = jobs.lock().unwrap().get_mut(id) {
-        job.state = "cancelled".to_string();
-        job.message = message.to_string();
-        job.updated_at = now_secs();
-        job.error = None;
-    }
-}
-
-fn finish_job(
-    jobs: &Arc<Mutex<HashMap<String, JobRecord>>>,
-    id: &str,
-    result: Result<JsonValue, String>,
-) {
-    if let Some(job) = jobs.lock().unwrap().get_mut(id) {
-        job.updated_at = now_secs();
-        match result {
-            Ok(value) => {
-                job.state = "succeeded".to_string();
-                job.progress = job.total.max(1);
-                job.total = job.progress;
-                job.message = "瀹屾垚".to_string();
-                job.result = Some(value);
-                job.error = None;
-            }
-            Err(err) => {
-                job.state = "failed".to_string();
-                job.message = err.clone();
-                job.error = Some(err);
-            }
-        }
-    }
-}
-
 #[tauri::command]
 fn start_job(
     state: State<AppState>,
@@ -9816,21 +9743,8 @@ fn start_job(
         return Err(format!("Unsupported job kind: {kind}"));
     }
     let id = format!("job-{}-{}", now_secs(), hex_random(4));
-    let now = now_secs();
-    let record = JobRecord {
-        id: id.clone(),
-        kind: kind.clone(),
-        label: job_label(&kind),
-        state: "queued".to_string(),
-        started_at: now,
-        updated_at: now,
-        progress: 0,
-        total: 1,
-        message: "绛夊緟鎵ц".to_string(),
-        result: None,
-        error: None,
-        cancel_requested: false,
-    };
+    let record = new_job_record(id.clone(), kind.clone(), job_label(&kind));
+
     state
         .jobs
         .lock()
@@ -10091,41 +10005,12 @@ fn start_job(
 
 #[tauri::command]
 fn job_status(state: State<AppState>, id: Option<String>) -> Result<JsonValue, String> {
-    let mut jobs = state.jobs.lock().unwrap();
-    let now = now_secs();
-    jobs.retain(|_, job| {
-        matches!(job.state.as_str(), "queued" | "running")
-            || now.saturating_sub(job.updated_at) < 600
-    });
-    if let Some(id) = id {
-        return jobs
-            .get(&id)
-            .cloned()
-            .map(|job| json!(job))
-            .ok_or_else(|| "Job not found".to_string());
-    }
-    let mut items = jobs.values().cloned().collect::<Vec<_>>();
-    items.sort_by_key(|job| job.started_at);
-    Ok(json!(items))
+    job_status_snapshot(&state.jobs, id)
 }
 
 #[tauri::command]
 fn cancel_job(state: State<AppState>, id: String) -> Result<JsonValue, String> {
-    let mut jobs = state.jobs.lock().unwrap();
-    let job = jobs
-        .get_mut(&id)
-        .ok_or_else(|| "Job not found".to_string())?;
-    job.cancel_requested = true;
-    if job.state == "queued" {
-        job.state = "cancelled".to_string();
-        job.message = "Cancelled".to_string();
-        job.updated_at = now_secs();
-    }
-    if job.state == "running" {
-        job.message = "cancel requested".to_string();
-        job.updated_at = now_secs();
-    }
-    Ok(json!(job.clone()))
+    request_job_cancel(&state.jobs, &id)
 }
 
 #[tauri::command]

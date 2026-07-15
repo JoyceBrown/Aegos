@@ -7,7 +7,7 @@ const pass = [];
 const fail = [];
 
 function read(rel) {
-  return fs.readFileSync(path.join(root, rel), 'utf8');
+  return fs.readFileSync(path.join(root, rel), 'utf8').replace(/\r\n/g, '\n');
 }
 
 function readJson(rel) {
@@ -27,6 +27,7 @@ const tauri = readJson('src-tauri/tauri.conf.json');
 const capabilities = read('src-tauri/capabilities/default.json');
 const mainRs = read('src-tauri/src/main.rs');
 const coreRuntimeRs = read('src-tauri/src/core_runtime.rs');
+const taskRuntimeRs = read('src-tauri/src/task_runtime.rs');
 const appJs = read('src/app.js');
 const indexHtml = read('src/index.html');
 const stylesCss = read('src/styles.css');
@@ -73,6 +74,7 @@ check('debt-audit gate is wired for post-freeze cleanup', pkg.scripts?.['audit:d
 
 check('frontend does not call legacy synchronous core commands directly', directLegacyInvokes.every((name) => !appJs.includes(`invoke('${name}'`) && !appJs.includes(`invoke("${name}"`)), directLegacyInvokes.join(', '));
 check('backend exposes unified background job entrypoints', ['fn start_job', 'fn job_status', 'fn cancel_job', 'fn lock_operation_queue'].every((token) => mainRs.includes(token)), 'start_job/job_status/cancel_job/operation queue');
+check('background job state model is centralized in task_runtime', mainRs.includes('jobs: JobStore') && mainRs.includes('job_status_snapshot(&state.jobs, id)') && mainRs.includes('request_job_cancel(&state.jobs, &id)') && taskRuntimeRs.includes('pub struct JobRecord') && taskRuntimeRs.includes('pub fn finish_job(') && taskRuntimeRs.includes('pub fn request_job_cancel(') && !mainRs.includes('struct JobRecord') && !mainRs.includes('fn finish_job('), 'task_runtime job state/cancel/status model');
 check('foreground and detached frontend task helpers are present', ['runBackgroundJob', 'runForegroundAction', 'runDetachedButtonAction', 'foregroundBusy', 'backgroundJobBusy'].every((token) => appJs.includes(token)), 'frontend task model');
 check('optimistic UI model is centralized', ['runOptimisticAction', 'snapshotUiState', 'restoreUiState', 'applyOptimisticSetting', 'renderUiState', 'uiStore'].every((token) => appJs.includes(token)), 'optimistic UI layer');
 check('buttons use non-blocking pending state instead of disabling', appJs.includes('function setButtonBusy') && appJs.includes("aria-busy") && appJs.includes("dataset.busy") && !appJs.includes('button.disabled = busy'), 'setButtonBusy');

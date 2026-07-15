@@ -11,6 +11,7 @@ const mainRs = readSource('src-tauri', 'src', 'main.rs');
 const coreRuntimeRs = readSource('src-tauri', 'src', 'core_runtime.rs');
 const profileCompilerRs = readSource('src-tauri', 'src', 'profile_compiler.rs');
 const configPipelineRs = readSource('src-tauri', 'src', 'config_pipeline.rs');
+const taskRuntimeRs = readSource('src-tauri', 'src', 'task_runtime.rs');
 
 const fail = [];
 const pass = [];
@@ -184,6 +185,26 @@ check(
   ['start_job', 'job_status', 'cancel_job'].every((name) => commandSection.includes(`fn ${name}`)) &&
     ['addProfileUrl', 'updateProfile', 'setActiveProfile', 'updateSetting', 'updateSettings', 'setMode', 'changeProxy', 'recoverNetwork', 'refreshOutboundIp', 'diagnostics', 'startCore', 'stopCore', 'restartCore'].every((name) => mainRs.includes(name)),
   'background jobs for core power, settings, mode/proxy, subscription, recovery, diagnostics, and outbound IP'
+);
+check(
+  'background job state model is owned by task_runtime',
+  mainRs.includes('mod task_runtime') &&
+    mainRs.includes('jobs: JobStore') &&
+    mainRs.includes('new_job_record(id.clone(), kind.clone(), job_label(&kind))') &&
+    mainRs.includes('job_status_snapshot(&state.jobs, id)') &&
+    mainRs.includes('request_job_cancel(&state.jobs, &id)') &&
+    taskRuntimeRs.includes('pub type JobStore') &&
+    taskRuntimeRs.includes('pub struct JobRecord') &&
+    taskRuntimeRs.includes('pub fn set_job_state(') &&
+    taskRuntimeRs.includes('pub fn job_cancel_requested(') &&
+    taskRuntimeRs.includes('pub fn finish_job(') &&
+    taskRuntimeRs.includes('pub fn job_status_snapshot(') &&
+    taskRuntimeRs.includes('pub fn request_job_cancel(') &&
+    taskRuntimeRs.includes('job_store_cancels_and_prunes_finished_jobs') &&
+    !mainRs.includes('struct JobRecord') &&
+    !mainRs.includes('fn finish_job(') &&
+    !mainRs.includes('fn request_job_cancel('),
+  'job records, cancellation, pruning, and terminal state updates should not be duplicated in main.rs'
 );
 
 check(
