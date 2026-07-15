@@ -40,12 +40,18 @@ check(
     coreRuntimeRs.includes('pub fn should_capture_system_proxy_snapshot') &&
     coreRuntimeRs.includes('pub fn verify_system_proxy_snapshot') &&
     coreRuntimeRs.includes('pub struct CoreSystemProxyTakeoverPlan') &&
+    coreRuntimeRs.includes('pub struct WindowsSystemProxyScriptPlan') &&
+    coreRuntimeRs.includes('pub fn windows_proxy_snapshot_script_plan') &&
+    coreRuntimeRs.includes('pub fn windows_proxy_takeover_script_plan') &&
     coreRuntimeRs.includes('pub const WINDOWS_PROXY_BYPASS_LIST') &&
     coreRuntimeRs.includes('system_proxy_verification_is_owned_by_runtime_boundary') &&
     coreRuntimeRs.includes('system_proxy_takeover_plan_is_owned_by_runtime_boundary') &&
     coreRuntimeRs.includes('system_proxy_snapshot_policy_is_owned_by_runtime_boundary') &&
     !mainRs.includes('struct SystemProxySnapshot') &&
-    mainRs.includes('CoreSystemProxyTakeoverPlan::new') &&
+    mainRs.includes('core_runtime::windows_proxy_snapshot_script_plan') &&
+    mainRs.includes('core_runtime::windows_proxy_takeover_script_plan') &&
+    !mainRs.includes('CoreSystemProxyTakeoverPlan::new') &&
+    !mainRs.includes('let server = ps_escape(&snapshot.proxy_server)') &&
     mainRs.includes('fn read_windows_proxy_snapshot') &&
     mainRs.includes('fn write_windows_proxy_snapshot') &&
     mainRs.includes('fn capture_proxy_snapshot_before_takeover') &&

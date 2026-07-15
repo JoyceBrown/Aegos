@@ -624,20 +624,28 @@ check(
 );
 check(
   'system proxy takeover plan is owned by the core runtime boundary',
-  coreRuntimeRs.includes('pub const WINDOWS_PROXY_BYPASS_LIST') &&
+    coreRuntimeRs.includes('pub const WINDOWS_PROXY_BYPASS_LIST') &&
     coreRuntimeRs.includes('pub struct CoreSystemProxyTakeoverPlan') &&
+    coreRuntimeRs.includes('pub struct WindowsSystemProxyScriptPlan') &&
     coreRuntimeRs.includes('pub fn windows_proxy_server') &&
+    coreRuntimeRs.includes('pub fn windows_proxy_snapshot_script_plan') &&
+    coreRuntimeRs.includes('pub fn windows_proxy_takeover_script_plan') &&
     coreRuntimeRs.includes('pub fn new(enable: bool, mixed_port: u16)') &&
     coreRuntimeRs.includes('pub fn should_write_proxy_server') &&
     coreRuntimeRs.includes('system_proxy_takeover_plan_is_owned_by_runtime_boundary') &&
-    mainRs.includes('CoreSystemProxyTakeoverPlan::new') &&
+    mainRs.includes('core_runtime::windows_proxy_snapshot_script_plan') &&
+    mainRs.includes('core_runtime::windows_proxy_takeover_script_plan') &&
     mainRs.includes('plan.proxy_enable_value') &&
     mainRs.includes('plan.should_write_proxy_server()') &&
-    mainRs.includes('plan.proxy_server.as_deref()') &&
-    mainRs.includes('plan.proxy_override') &&
+    mainRs.includes('plan.proxy_server_literal.as_deref()') &&
+    mainRs.includes('plan.proxy_override_literal') &&
+    !mainRs.includes('CoreSystemProxyTakeoverPlan::new') &&
+    !mainRs.includes('let server = ps_escape(&snapshot.proxy_server)') &&
+    !mainRs.includes("Value '{server}'") &&
+    !mainRs.includes("Value '{proxy_override}'") &&
     !mainRs.includes('format!("127.0.0.1:{mixed_port}")') &&
     !mainRs.includes('<local>;localhost;127.*;10.*;172.16.*'),
-  'main.rs may write Windows registry values, but proxy server/bypass policy belongs to core_runtime',
+  'main.rs may write Windows registry values, but proxy server/bypass policy and script input literals belong to core_runtime',
 );
 check(
   'disconnect protection firewall policy is owned by the core runtime boundary',

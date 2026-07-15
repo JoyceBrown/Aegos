@@ -2469,6 +2469,20 @@ pub struct CoreSystemProxyTakeoverPlan {
     pub proxy_override: &'static str,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WindowsSystemProxyScriptPlan {
+    pub proxy_enable_value: u8,
+    pub proxy_server_literal: Option<String>,
+    pub proxy_override_literal: String,
+    pub write_proxy_server: bool,
+}
+
+impl WindowsSystemProxyScriptPlan {
+    pub fn should_write_proxy_server(&self) -> bool {
+        self.write_proxy_server
+    }
+}
+
 impl CoreLaunchPlan {
     pub fn new(paths: CoreRuntimePaths, profile_name: impl Into<String>, standby: bool) -> Self {
         Self {
@@ -2651,10 +2665,14 @@ pub fn powershell_single_quote_escape(value: impl AsRef<str>) -> String {
     value.as_ref().replace('\'', "''")
 }
 
+pub fn powershell_single_quoted_literal(value: impl AsRef<str>) -> String {
+    format!("'{}'", powershell_single_quote_escape(value))
+}
+
 pub fn powershell_string_array_literal(items: &[String]) -> String {
     let quoted = items
         .iter()
-        .map(|item| format!("'{}'", powershell_single_quote_escape(item)))
+        .map(powershell_single_quoted_literal)
         .collect::<Vec<_>>()
         .join(", ");
     format!("@({quoted})")
@@ -2709,6 +2727,33 @@ pub fn firewall_remote_port_list(ports: &[u16]) -> String {
 
 pub fn windows_proxy_server(mixed_port: u16) -> String {
     format!("127.0.0.1:{mixed_port}")
+}
+
+pub fn windows_proxy_snapshot_script_plan(
+    snapshot: &SystemProxySnapshot,
+) -> WindowsSystemProxyScriptPlan {
+    WindowsSystemProxyScriptPlan {
+        proxy_enable_value: u8::from(snapshot.proxy_enable),
+        proxy_server_literal: Some(powershell_single_quoted_literal(&snapshot.proxy_server)),
+        proxy_override_literal: powershell_single_quoted_literal(&snapshot.proxy_override),
+        write_proxy_server: true,
+    }
+}
+
+pub fn windows_proxy_takeover_script_plan(
+    enable: bool,
+    mixed_port: u16,
+) -> WindowsSystemProxyScriptPlan {
+    let plan = CoreSystemProxyTakeoverPlan::new(enable, mixed_port);
+    WindowsSystemProxyScriptPlan {
+        proxy_enable_value: plan.proxy_enable_value,
+        proxy_server_literal: plan
+            .proxy_server
+            .as_ref()
+            .map(powershell_single_quoted_literal),
+        proxy_override_literal: powershell_single_quoted_literal(plan.proxy_override),
+        write_proxy_server: plan.should_write_proxy_server(),
+    }
 }
 
 impl CoreSystemProxyTakeoverPlan {
@@ -3282,6 +3327,17 @@ mod tests {
         assert_eq!(enable.proxy_server.as_deref(), Some("127.0.0.1:7891"));
         assert_eq!(enable.proxy_override, WINDOWS_PROXY_BYPASS_LIST);
         assert!(enable.should_write_proxy_server());
+        let enable_script = windows_proxy_takeover_script_plan(true, 7891);
+        assert_eq!(enable_script.proxy_enable_value, 1);
+        assert_eq!(
+            enable_script.proxy_server_literal.as_deref(),
+            Some("'127.0.0.1:7891'")
+        );
+        assert_eq!(
+            enable_script.proxy_override_literal,
+            powershell_single_quoted_literal(WINDOWS_PROXY_BYPASS_LIST)
+        );
+        assert!(enable_script.should_write_proxy_server());
 
         let disable = CoreSystemProxyTakeoverPlan::new(false, 7891);
         assert!(!disable.enable);
@@ -3289,6 +3345,27 @@ mod tests {
         assert!(disable.proxy_server.is_none());
         assert_eq!(disable.proxy_override, WINDOWS_PROXY_BYPASS_LIST);
         assert!(!disable.should_write_proxy_server());
+        let disable_script = windows_proxy_takeover_script_plan(false, 7891);
+        assert_eq!(disable_script.proxy_enable_value, 0);
+        assert!(disable_script.proxy_server_literal.is_none());
+        assert_eq!(
+            disable_script.proxy_override_literal,
+            powershell_single_quoted_literal(WINDOWS_PROXY_BYPASS_LIST)
+        );
+        assert!(!disable_script.should_write_proxy_server());
+        let snapshot_script = windows_proxy_snapshot_script_plan(&SystemProxySnapshot {
+            proxy_enable: true,
+            proxy_server: "127.0.0.1:7890;http='quoted'".to_string(),
+            proxy_override: "<local>;a'b".to_string(),
+            captured_at: "2026-07-15T00:00:00Z".to_string(),
+        });
+        assert_eq!(snapshot_script.proxy_enable_value, 1);
+        assert_eq!(
+            snapshot_script.proxy_server_literal.as_deref(),
+            Some("'127.0.0.1:7890;http=''quoted'''")
+        );
+        assert_eq!(snapshot_script.proxy_override_literal, "'<local>;a''b'");
+        assert!(snapshot_script.should_write_proxy_server());
     }
 
     #[test]

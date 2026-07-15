@@ -5043,15 +5043,16 @@ $item = Get-ItemProperty -Path $path
 fn write_windows_proxy_snapshot(
     snapshot: &core_runtime::SystemProxySnapshot,
 ) -> Result<(), String> {
-    let enable = if snapshot.proxy_enable { 1 } else { 0 };
-    let server = ps_escape(&snapshot.proxy_server);
-    let override_value = ps_escape(&snapshot.proxy_override);
+    let plan = core_runtime::windows_proxy_snapshot_script_plan(snapshot);
+    let enable = plan.proxy_enable_value;
+    let server = plan.proxy_server_literal.as_deref().unwrap_or("''");
+    let override_value = plan.proxy_override_literal;
     run_powershell(&format!(
         r#"
 $path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
 Set-ItemProperty -Path $path -Name ProxyEnable -Type DWord -Value {enable}
-Set-ItemProperty -Path $path -Name ProxyServer -Type String -Value '{server}'
-Set-ItemProperty -Path $path -Name ProxyOverride -Type String -Value '{override_value}'
+Set-ItemProperty -Path $path -Name ProxyServer -Type String -Value {server}
+Set-ItemProperty -Path $path -Name ProxyOverride -Type String -Value {override_value}
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -5068,21 +5069,21 @@ public static class WinInet {{
 }
 
 fn build_proxy_script(enable: bool, mixed_port: u16) -> String {
-    let plan = core_runtime::CoreSystemProxyTakeoverPlan::new(enable, mixed_port);
+    let plan = core_runtime::windows_proxy_takeover_script_plan(enable, mixed_port);
     let flag = plan.proxy_enable_value;
     let set_server = if plan.should_write_proxy_server() {
-        let server = plan.proxy_server.as_deref().unwrap_or_default();
-        format!("Set-ItemProperty -Path $path -Name ProxyServer -Type String -Value '{server}'")
+        let server = plan.proxy_server_literal.as_deref().unwrap_or("''");
+        format!("Set-ItemProperty -Path $path -Name ProxyServer -Type String -Value {server}")
     } else {
         String::new()
     };
-    let proxy_override = plan.proxy_override;
+    let proxy_override = plan.proxy_override_literal;
     format!(
         r#"
 $path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
 Set-ItemProperty -Path $path -Name ProxyEnable -Type DWord -Value {flag}
 {set_server}
-Set-ItemProperty -Path $path -Name ProxyOverride -Type String -Value '{proxy_override}'
+Set-ItemProperty -Path $path -Name ProxyOverride -Type String -Value {proxy_override}
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
