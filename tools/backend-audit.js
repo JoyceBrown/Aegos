@@ -844,7 +844,9 @@ check(
     mainRs.includes('fn recovery_confidence_rank') &&
     mainRs.includes('"requiresConfirmation"') &&
     mainRs.includes('"sameRegion"') &&
-    mainRs.includes('"suggestions": self.recovery_suggestions(5)') &&
+    mainRs.includes('json!(self.recovery_suggestions(5))') &&
+    coreRuntimeRs.includes('"suggestions": suggestions') &&
+    coreRuntimeRs.includes('recovery_results_are_runtime_shaped') &&
     mainRs.includes('recovery_suggestions_rank_same_region_and_fresh_results'),
   'same-region suggestions require confirmation'
 );

@@ -323,6 +323,124 @@ pub fn core_stop_result_json() -> JsonValue {
     json!({ "ok": true })
 }
 
+pub fn recovery_probe_result_json(
+    ok: bool,
+    url: &str,
+    status: u16,
+    reason: impl Into<String>,
+) -> JsonValue {
+    json!({
+        "ok": ok,
+        "url": url,
+        "status": status,
+        "reason": reason.into()
+    })
+}
+
+pub fn recovery_switch_proxy_result_json(
+    group: impl Into<String>,
+    proxy: impl Into<String>,
+    delay: i64,
+    probe: JsonValue,
+) -> JsonValue {
+    json!({
+        "action": "switchProxy",
+        "group": group.into(),
+        "proxy": proxy.into(),
+        "delay": delay,
+        "probe": probe
+    })
+}
+
+pub fn recovery_healthy_result_json(
+    failures: u64,
+    probe: JsonValue,
+    suggestions: JsonValue,
+    settings: JsonValue,
+) -> JsonValue {
+    json!({
+        "ok": true,
+        "healthy": true,
+        "action": "none",
+        "failures": failures,
+        "probe": probe,
+        "suggestions": suggestions,
+        "settings": settings
+    })
+}
+
+pub fn recovery_observe_result_json(
+    failures: u64,
+    threshold: u64,
+    probe: JsonValue,
+    suggestions: JsonValue,
+    settings: JsonValue,
+) -> JsonValue {
+    json!({
+        "ok": false,
+        "healthy": false,
+        "action": "observe",
+        "failures": failures,
+        "threshold": threshold,
+        "probe": probe,
+        "suggestions": suggestions,
+        "settings": settings
+    })
+}
+
+pub fn recovery_proxy_switched_result_json(
+    failures: u64,
+    result: JsonValue,
+    suggestions: JsonValue,
+    settings: JsonValue,
+) -> JsonValue {
+    json!({
+        "ok": true,
+        "healthy": true,
+        "profileChanged": false,
+        "failures": failures,
+        "result": result,
+        "suggestions": suggestions,
+        "settings": settings
+    })
+}
+
+pub fn recovery_profile_switched_result_json(
+    failures: u64,
+    profile: JsonValue,
+    result: JsonValue,
+    suggestions: JsonValue,
+    settings: JsonValue,
+) -> JsonValue {
+    json!({
+        "ok": true,
+        "healthy": true,
+        "profileChanged": true,
+        "failures": failures,
+        "profile": profile,
+        "result": result,
+        "suggestions": suggestions,
+        "settings": settings
+    })
+}
+
+pub fn recovery_failed_result_json(
+    failures: u64,
+    probe: JsonValue,
+    suggestions: JsonValue,
+    settings: JsonValue,
+) -> JsonValue {
+    json!({
+        "ok": false,
+        "healthy": false,
+        "action": "failed",
+        "failures": failures,
+        "probe": probe,
+        "suggestions": suggestions,
+        "settings": settings
+    })
+}
+
 pub fn protection_phase(
     core_running: bool,
     traffic_takeover: bool,
@@ -3483,6 +3601,95 @@ rules:
         let stopped = core_stop_result_json();
         assert_eq!(stopped.get("ok").and_then(JsonValue::as_bool), Some(true));
         assert_eq!(stopped.as_object().map(|map| map.len()), Some(1));
+    }
+
+    #[test]
+    fn recovery_results_are_runtime_shaped() {
+        let probe = recovery_probe_result_json(true, "https://api.ipify.org", 200, "");
+        assert_eq!(probe.get("ok").and_then(JsonValue::as_bool), Some(true));
+        assert_eq!(probe.get("status").and_then(JsonValue::as_u64), Some(200));
+
+        let suggestions = json!([{"group": "Proxies", "proxy": "HK 01"}]);
+        let settings = json!({"reliability": {"failures": 0}});
+        let healthy =
+            recovery_healthy_result_json(0, probe.clone(), suggestions.clone(), settings.clone());
+        assert_eq!(healthy.get("ok").and_then(JsonValue::as_bool), Some(true));
+        assert_eq!(
+            healthy.get("action").and_then(JsonValue::as_str),
+            Some("none")
+        );
+        assert_eq!(healthy.get("suggestions"), Some(&suggestions));
+
+        let observe = recovery_observe_result_json(
+            1,
+            3,
+            recovery_probe_result_json(false, "", 0, "timeout"),
+            suggestions.clone(),
+            settings.clone(),
+        );
+        assert_eq!(observe.get("ok").and_then(JsonValue::as_bool), Some(false));
+        assert_eq!(
+            observe.get("action").and_then(JsonValue::as_str),
+            Some("observe")
+        );
+        assert_eq!(
+            observe.get("threshold").and_then(JsonValue::as_u64),
+            Some(3)
+        );
+
+        let switch_result =
+            recovery_switch_proxy_result_json("Proxies", "HK 01", 88, probe.clone());
+        assert_eq!(
+            switch_result.get("action").and_then(JsonValue::as_str),
+            Some("switchProxy")
+        );
+        assert_eq!(
+            switch_result.get("proxy").and_then(JsonValue::as_str),
+            Some("HK 01")
+        );
+
+        let proxy_switched = recovery_proxy_switched_result_json(
+            0,
+            switch_result.clone(),
+            suggestions.clone(),
+            settings.clone(),
+        );
+        assert_eq!(
+            proxy_switched
+                .get("profileChanged")
+                .and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        assert_eq!(proxy_switched.get("result"), Some(&switch_result));
+
+        let profile = json!({"id": "profile-b", "name": "Backup"});
+        let profile_switched = recovery_profile_switched_result_json(
+            0,
+            profile.clone(),
+            switch_result,
+            suggestions.clone(),
+            settings.clone(),
+        );
+        assert_eq!(
+            profile_switched
+                .get("profileChanged")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(profile_switched.get("profile"), Some(&profile));
+
+        let failed = recovery_failed_result_json(
+            4,
+            recovery_probe_result_json(false, "", 0, "network"),
+            suggestions,
+            settings,
+        );
+        assert_eq!(failed.get("ok").and_then(JsonValue::as_bool), Some(false));
+        assert_eq!(
+            failed.get("action").and_then(JsonValue::as_str),
+            Some("failed")
+        );
+        assert_eq!(failed.get("failures").and_then(JsonValue::as_u64), Some(4));
     }
 
     #[test]

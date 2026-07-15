@@ -7634,23 +7634,13 @@ impl CoreManager {
 
     fn probe_proxy_network(&self, timeout_ms: u64) -> JsonValue {
         if self.process.is_none() {
-            return json!({
-                "ok": false,
-                "url": "",
-                "status": 0,
-                "reason": "core stopped"
-            });
+            return core_runtime::recovery_probe_result_json(false, "", 0, "core stopped");
         }
         let proxy_url = format!("http://127.0.0.1:{}", self.settings.mixed_port);
         let proxy = match reqwest::Proxy::all(&proxy_url) {
             Ok(proxy) => proxy,
             Err(err) => {
-                return json!({
-                    "ok": false,
-                    "url": "",
-                    "status": 0,
-                    "reason": err.to_string()
-                })
+                return core_runtime::recovery_probe_result_json(false, "", 0, err.to_string())
             }
         };
         let client = match Client::builder()
@@ -7661,12 +7651,7 @@ impl CoreManager {
         {
             Ok(client) => client,
             Err(err) => {
-                return json!({
-                    "ok": false,
-                    "url": "",
-                    "status": 0,
-                    "reason": err.to_string()
-                })
+                return core_runtime::recovery_probe_result_json(false, "", 0, err.to_string())
             }
         };
         let mut last_error = "probe failed".to_string();
@@ -7679,24 +7664,14 @@ impl CoreManager {
                 Ok(res) => {
                     let status = res.status().as_u16();
                     if status < 500 {
-                        return json!({
-                            "ok": true,
-                            "url": url,
-                            "status": status,
-                            "reason": ""
-                        });
+                        return core_runtime::recovery_probe_result_json(true, url, status, "");
                     }
                     last_error = format!("HTTP {status}");
                 }
                 Err(err) => last_error = err.to_string(),
             }
         }
-        json!({
-            "ok": false,
-            "url": "",
-            "status": 0,
-            "reason": last_error
-        })
+        core_runtime::recovery_probe_result_json(false, "", 0, last_error)
     }
 
     fn recovery_group_rank(name: &str) -> usize {
@@ -7810,13 +7785,9 @@ impl CoreManager {
             thread::sleep(Duration::from_millis(650));
             let probe = self.probe_proxy_network(6000);
             if probe.get("ok").and_then(|value| value.as_bool()) == Some(true) {
-                return Ok(Some(json!({
-                    "action": "switchProxy",
-                    "group": group,
-                    "proxy": proxy,
-                    "delay": delay,
-                    "probe": probe
-                })));
+                return Ok(Some(core_runtime::recovery_switch_proxy_result_json(
+                    group, proxy, delay, probe,
+                )));
             }
             self.add_log(
                 format!("Recovery candidate failed after switch: {group} -> {proxy}"),
@@ -7834,15 +7805,12 @@ impl CoreManager {
         let before = self.probe_proxy_network(6000);
         if before.get("ok").and_then(|value| value.as_bool()) == Some(true) {
             self.reliability_failures = 0;
-            return Ok(json!({
-                "ok": true,
-                "healthy": true,
-                "action": "none",
-                "failures": self.reliability_failures,
-                "probe": before,
-                "suggestions": self.recovery_suggestions(5),
-                "settings": self.public_settings()
-            }));
+            return Ok(core_runtime::recovery_healthy_result_json(
+                self.reliability_failures,
+                before,
+                json!(self.recovery_suggestions(5)),
+                self.public_settings(),
+            ));
         }
         self.reliability_failures = self.reliability_failures.saturating_add(1);
         if !force && self.reliability_failures < self.settings.reliability_failure_threshold {
@@ -7853,29 +7821,23 @@ impl CoreManager {
                 ),
                 "warn",
             );
-            return Ok(json!({
-                "ok": false,
-                "healthy": false,
-                "action": "observe",
-                "failures": self.reliability_failures,
-                "threshold": self.settings.reliability_failure_threshold,
-                "probe": before,
-                "suggestions": self.recovery_suggestions(5),
-                "settings": self.public_settings()
-            }));
+            return Ok(core_runtime::recovery_observe_result_json(
+                self.reliability_failures,
+                self.settings.reliability_failure_threshold,
+                before,
+                json!(self.recovery_suggestions(5)),
+                self.public_settings(),
+            ));
         }
         if let Some(result) = self.try_recover_current_profile()? {
             self.add_log("Reliability recovery switched proxy", "info");
             self.reliability_failures = 0;
-            return Ok(json!({
-                "ok": true,
-                "healthy": true,
-                "profileChanged": false,
-                "failures": self.reliability_failures,
-                "result": result,
-                "suggestions": self.recovery_suggestions(5),
-                "settings": self.public_settings()
-            }));
+            return Ok(core_runtime::recovery_proxy_switched_result_json(
+                self.reliability_failures,
+                result,
+                json!(self.recovery_suggestions(5)),
+                self.public_settings(),
+            ));
         }
         if self.settings.reliability_profile_failover {
             let original_profile_id = self.settings.active_profile_id.clone();
@@ -7899,31 +7861,25 @@ impl CoreManager {
                         "info",
                     );
                     self.reliability_failures = 0;
-                    return Ok(json!({
-                        "ok": true,
-                        "healthy": true,
-                        "profileChanged": true,
-                        "failures": self.reliability_failures,
-                        "profile": profile,
-                        "result": result,
-                        "suggestions": self.recovery_suggestions(5),
-                        "settings": self.public_settings()
-                    }));
+                    return Ok(core_runtime::recovery_profile_switched_result_json(
+                        self.reliability_failures,
+                        json!(profile),
+                        result,
+                        json!(self.recovery_suggestions(5)),
+                        self.public_settings(),
+                    ));
                 }
             }
             if self.settings.active_profile_id != original_profile_id {
                 let _ = self.set_active_profile(&original_profile_id);
             }
         }
-        Ok(json!({
-            "ok": false,
-            "healthy": false,
-            "action": "failed",
-            "failures": self.reliability_failures,
-            "probe": before,
-            "suggestions": self.recovery_suggestions(5),
-            "settings": self.public_settings()
-        }))
+        Ok(core_runtime::recovery_failed_result_json(
+            self.reliability_failures,
+            before,
+            json!(self.recovery_suggestions(5)),
+            self.public_settings(),
+        ))
     }
 
     fn change_proxy(&mut self, group: &str, proxy: &str) -> Result<bool, String> {

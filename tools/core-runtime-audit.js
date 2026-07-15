@@ -39,6 +39,9 @@ const releaseAudit = read('tools/release-audit.js');
 const activeConnectionCommandBody = mainRs.match(/fn active_connection_count\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 const startWithTakeoverBody = mainRs.match(/fn start_with_takeover\(&mut self, enable_takeover: bool\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn terminate_core_process/)?.[1] || '';
 const stopBody = mainRs.match(/fn stop\(&mut self\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn shutdown_for_exit/)?.[1] || '';
+const probeProxyNetworkBody = mainRs.match(/fn probe_proxy_network\(&self, timeout_ms: u64\) -> JsonValue \{([\s\S]*?)\n    fn recovery_group_rank/)?.[1] || '';
+const tryRecoverCurrentProfileBody = mainRs.match(/fn try_recover_current_profile\(&mut self\) -> Result<Option<JsonValue>, String> \{([\s\S]*?)\n    fn recover_network/)?.[1] || '';
+const recoverNetworkBody = mainRs.match(/fn recover_network\(&mut self, force: bool\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn change_proxy/)?.[1] || '';
 
 function hasControllerCall(method, timeout) {
   return new RegExp(`controller\\s*\\.\\s*${method}\\(\\s*${timeout}\\s*\\)`).test(mainRs);
@@ -519,6 +522,30 @@ check(
     !startWithTakeoverBody.includes('"connection": self.connection_closure()') &&
     !stopBody.includes('Ok(json!({ "ok": true }))'),
   'main.rs may execute start/stop, but the public core power result contract belongs to core_runtime',
+);
+check(
+  'recovery probe and result shaping are owned by the core runtime boundary',
+  coreRuntimeRs.includes('pub fn recovery_probe_result_json') &&
+    coreRuntimeRs.includes('pub fn recovery_switch_proxy_result_json') &&
+    coreRuntimeRs.includes('pub fn recovery_healthy_result_json') &&
+    coreRuntimeRs.includes('pub fn recovery_observe_result_json') &&
+    coreRuntimeRs.includes('pub fn recovery_proxy_switched_result_json') &&
+    coreRuntimeRs.includes('pub fn recovery_profile_switched_result_json') &&
+    coreRuntimeRs.includes('pub fn recovery_failed_result_json') &&
+    coreRuntimeRs.includes('recovery_results_are_runtime_shaped') &&
+    probeProxyNetworkBody.includes('core_runtime::recovery_probe_result_json(') &&
+    tryRecoverCurrentProfileBody.includes('core_runtime::recovery_switch_proxy_result_json(') &&
+    recoverNetworkBody.includes('core_runtime::recovery_healthy_result_json(') &&
+    recoverNetworkBody.includes('core_runtime::recovery_observe_result_json(') &&
+    recoverNetworkBody.includes('core_runtime::recovery_proxy_switched_result_json(') &&
+    recoverNetworkBody.includes('core_runtime::recovery_profile_switched_result_json(') &&
+    recoverNetworkBody.includes('core_runtime::recovery_failed_result_json(') &&
+    !probeProxyNetworkBody.includes('"status": 0') &&
+    !tryRecoverCurrentProfileBody.includes('"action": "switchProxy"') &&
+    !recoverNetworkBody.includes('"action": "observe"') &&
+    !recoverNetworkBody.includes('"action": "failed"') &&
+    !recoverNetworkBody.includes('"profileChanged":'),
+  'main.rs may execute recovery, but probe/result fields, actions, and profileChanged semantics belong to core_runtime',
 );
 check(
   'system proxy takeover plan is owned by the core runtime boundary',
