@@ -6821,13 +6821,12 @@ impl CoreManager {
                 "mixed": RESERVED_MIXED_PORTS,
                 "reason": "7890 is reserved for FlClash/Codex traffic"
             },
-            "proxyTakeover": {
-                "endpoint": format!("127.0.0.1:{}", self.settings.mixed_port),
-                "active": self.traffic_takeover,
-                "standby": self.process.is_some() && !self.traffic_takeover,
-                "snapshotCaptured": self.proxy_snapshot_path.exists(),
-                "restoresPreviousProxy": true
-            }
+            "proxyTakeover": core_runtime::proxy_takeover_status_json(
+                self.settings.mixed_port,
+                self.process.is_some(),
+                self.traffic_takeover,
+                self.proxy_snapshot_path.exists()
+            )
         })
     }
 
@@ -8461,13 +8460,12 @@ fn diagnostics_public_settings(snapshot: &DiagnosticsSnapshot) -> JsonValue {
             "mixed": RESERVED_MIXED_PORTS,
             "reason": "7890 is reserved for FlClash/Codex traffic"
         },
-        "proxyTakeover": {
-            "endpoint": format!("127.0.0.1:{}", snapshot.settings.mixed_port),
-            "active": snapshot.traffic_takeover,
-            "standby": snapshot.running && !snapshot.traffic_takeover,
-            "snapshotCaptured": snapshot.proxy_snapshot_path.exists(),
-            "restoresPreviousProxy": true
-        }
+        "proxyTakeover": core_runtime::proxy_takeover_status_json(
+            snapshot.settings.mixed_port,
+            snapshot.running,
+            snapshot.traffic_takeover,
+            snapshot.proxy_snapshot_path.exists()
+        )
     })
 }
 

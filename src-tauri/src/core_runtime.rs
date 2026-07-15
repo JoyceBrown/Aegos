@@ -287,6 +287,21 @@ pub fn protection_status_json(
     json!({ "level": level, "label": label })
 }
 
+pub fn proxy_takeover_status_json(
+    mixed_port: u16,
+    core_running: bool,
+    traffic_takeover: bool,
+    snapshot_captured: bool,
+) -> JsonValue {
+    json!({
+        "endpoint": windows_proxy_server(mixed_port),
+        "active": traffic_takeover,
+        "standby": core_running && !traffic_takeover,
+        "snapshotCaptured": snapshot_captured,
+        "restoresPreviousProxy": true
+    })
+}
+
 pub fn normalize_proxy_type(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
         "hy2" => "hysteria2".to_string(),
@@ -3164,6 +3179,47 @@ rules:
                 .and_then(JsonValue::as_str)
                 .is_some_and(str::is_ascii));
         }
+    }
+
+    #[test]
+    fn proxy_takeover_status_is_runtime_shaped() {
+        let standby = proxy_takeover_status_json(7891, true, false, true);
+        assert_eq!(
+            standby.get("endpoint").and_then(JsonValue::as_str),
+            Some("127.0.0.1:7891")
+        );
+        assert_eq!(
+            standby.get("active").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            standby.get("standby").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            standby.get("snapshotCaptured").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            standby
+                .get("restoresPreviousProxy")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+
+        let active = proxy_takeover_status_json(7892, true, true, false);
+        assert_eq!(
+            active.get("endpoint").and_then(JsonValue::as_str),
+            Some("127.0.0.1:7892")
+        );
+        assert_eq!(
+            active.get("active").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            active.get("standby").and_then(JsonValue::as_bool),
+            Some(false)
+        );
     }
 
     #[test]

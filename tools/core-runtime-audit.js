@@ -446,6 +446,16 @@ check(
   'home and diagnostics protection state must use one runtime-owned model without mojibake labels',
 );
 check(
+  'proxy takeover public status is owned by the core runtime boundary',
+  coreRuntimeRs.includes('pub fn proxy_takeover_status_json') &&
+    coreRuntimeRs.includes('proxy_takeover_status_is_runtime_shaped') &&
+    (mainRs.match(/"proxyTakeover": core_runtime::proxy_takeover_status_json\(/g) || []).length === 2 &&
+    !(mainRs.match(/"proxyTakeover":\s*json!\s*\(\s*\{/g) || []).length &&
+    !mainRs.includes('"active": self.traffic_takeover') &&
+    !mainRs.includes('"active": snapshot.traffic_takeover'),
+  'home and diagnostics proxy takeover status must not rebuild runtime endpoint/active/standby state',
+);
+check(
   'system proxy takeover plan is owned by the core runtime boundary',
   coreRuntimeRs.includes('pub const WINDOWS_PROXY_BYPASS_LIST') &&
     coreRuntimeRs.includes('pub struct CoreSystemProxyTakeoverPlan') &&
