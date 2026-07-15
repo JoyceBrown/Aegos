@@ -126,6 +126,27 @@ const regionNames = {
   GL: '\u5168\u7403'
 };
 
+const STATUS_TEXT = Object.freeze({
+  enabled: '\u5df2\u5f00\u542f',
+  disabled: '\u672a\u5f00\u542f',
+  pending: '\u5f85\u751f\u6548',
+  pendingConnection: '\u5f85\u8fde\u63a5',
+  connected: '\u5df2\u8fde\u63a5',
+  disconnected: '\u672a\u8fde\u63a5',
+  coreStandby: '\u6838\u5fc3\u5f85\u547d',
+  coreStopped: '\u672a\u8fd0\u884c',
+  takeoverActive: '\u5df2\u63a5\u7ba1',
+  takeoverInactive: '\u672a\u63a5\u7ba1',
+  savedSnapshot: '\u5df2\u4fdd\u5b58\u539f\u72b6\u6001',
+  admin: '\u7ba1\u7406\u5458',
+  normalPermission: '\u666e\u901a\u6743\u9650',
+  unchecked: '\u672a\u68c0\u67e5',
+  ok: '\u6b63\u5e38',
+  warn: '\u8b66\u544a',
+  error: '\u9519\u8bef',
+  unknownError: '\u672a\u77e5\u9519\u8bef'
+});
+
 function protocolLabel(value = '') {
   const text = String(value || '').toLowerCase();
   if (text.includes('shadowsocks') || text === 'ss') return 'SS';
@@ -146,6 +167,24 @@ function modeLabel(mode = '') {
   if (mode === 'global') return '\u5168\u5c40\u4ee3\u7406';
   if (mode === 'direct') return '\u76f4\u8fde';
   return '\u667a\u80fd\u5206\u6d41';
+}
+
+function enabledLabel(value) {
+  return value ? STATUS_TEXT.enabled : STATUS_TEXT.disabled;
+}
+
+function systemProxyUiLabel(applied, wanted) {
+  if (applied) return STATUS_TEXT.enabled;
+  return wanted ? STATUS_TEXT.pendingConnection : STATUS_TEXT.disabled;
+}
+
+function runtimeSummaryLabel(status = {}, settings = {}) {
+  if (status.trafficTakeover) {
+    if (settings.tunEnabled) return 'TUN \u63a5\u7ba1';
+    if (settings.systemProxy) return '\u7cfb\u7edf\u4ee3\u7406\u63a5\u7ba1';
+    return STATUS_TEXT.takeoverActive;
+  }
+  return status.coreReady ? STATUS_TEXT.coreStandby : STATUS_TEXT.coreStopped;
 }
 
 function formatProxyPort(endpoint = '') {
@@ -309,10 +348,10 @@ function ensureAppDialog() {
     el('form', { id: 'appDialogForm', className: 'app-dialog' }, [
       el('header', {}, [
         el('div', {}, [
-          el('h3', { id: 'appDialogTitle', textContent: 'ȷϲ' }),
+          el('h3', { id: 'appDialogTitle', textContent: '确认操作' }),
           el('p', { id: 'appDialogMessage', textContent: '' })
         ]),
-        el('button', { id: 'appDialogCloseBtn', className: 'icon-button', attrs: { type: 'button', 'aria-label': 'ر' } }, [text('')])
+        el('button', { id: 'appDialogCloseBtn', className: 'icon-button', attrs: { type: 'button', 'aria-label': '关闭' } }, [text('')])
       ]),
       el('label', { id: 'appDialogInputRow', className: 'app-dialog-input hidden' }, [
         el('span', { id: 'appDialogInputLabel', textContent: '' }),
@@ -320,8 +359,8 @@ function ensureAppDialog() {
         el('small', { id: 'appDialogHint', textContent: '' })
       ]),
       el('footer', {}, [
-        el('button', { id: 'appDialogCancelBtn', className: 'ghost compact', attrs: { type: 'button' }, textContent: 'ȡ' }),
-        el('button', { id: 'appDialogOkBtn', className: 'primary compact', attrs: { type: 'submit' }, textContent: 'ȷ' })
+        el('button', { id: 'appDialogCancelBtn', className: 'ghost compact', attrs: { type: 'button' }, textContent: '取消' }),
+        el('button', { id: 'appDialogOkBtn', className: 'primary compact', attrs: { type: 'submit' }, textContent: '确定' })
       ])
     ])
   ]);
@@ -348,9 +387,9 @@ function requestAppInput(options = {}) {
   $('#appDialogInput').value = options.value || '';
   $('#appDialogInput').placeholder = options.placeholder || '';
   $('#appDialogHint').textContent = options.hint || '';
-  $('#appDialogOkBtn').textContent = options.okText || '';
+  $('#appDialogOkBtn').textContent = options.okText || '确定';
   $('#appDialogOkBtn').classList.remove('danger');
-  $('#appDialogCancelBtn').textContent = options.cancelText || 'ȡ';
+  $('#appDialogCancelBtn').textContent = options.cancelText || '取消';
   $('#appDialogInputRow').classList.remove('hidden');
   overlay.classList.remove('hidden');
   runWhenIdle(() => {
@@ -367,11 +406,11 @@ function requestAppConfirm(options = {}) {
   ensureAppDialog();
   const overlay = $('#appDialogOverlay');
   if (appDialogResolve) closeAppDialog(null);
-  $('#appDialogTitle').textContent = options.title || 'ȷϲ';
+  $('#appDialogTitle').textContent = options.title || '确认操作';
   $('#appDialogMessage').textContent = options.message || '';
   $('#appDialogHint').textContent = '';
-  $('#appDialogOkBtn').textContent = options.okText || 'ȷ';
-  $('#appDialogCancelBtn').textContent = options.cancelText || 'ȡ';
+  $('#appDialogOkBtn').textContent = options.okText || '确定';
+  $('#appDialogCancelBtn').textContent = options.cancelText || '取消';
   $('#appDialogInputRow').classList.add('hidden');
   $('#appDialogOkBtn').classList.toggle('danger', Boolean(options.danger));
   overlay.classList.remove('hidden');
@@ -636,7 +675,7 @@ function preferredProxyGroup(groups = latestGroups, preferredName = selectedProx
   return list.find((group) => group.name === preferredName)
     || list.find(isProxiesGroup)
     || list.find(isAutoSelectGroup)
-    || list.find((group) => /proxy|select|selector|ڵ|/i.test(`${group.name || ''} ${group.type || ''}`))
+    || list.find((group) => /proxy|select|selector/i.test(`${group.name || ''} ${group.type || ''}`))
     || list[0];
 }
 
@@ -895,16 +934,16 @@ async function editNodeGroupName(name = '') {
   if (!raw) return;
   const nextName = await requestAppInput({
     title: '',
-    message: `ֻ޸ģ${name}ʾƣı䵱ǰӽڵ㡣`,
+    message: `重命名策略组：${name}`,
     label: '',
     value: name,
-    hint: 'ʹá·Ƶ·',
+    hint: '只改显示名称，不改变节点',
     okText: ''
   });
   if (nextName == null) return;
   const trimmed = nextName.trim();
   if (!trimmed) {
-    setNotice('ƲΪ');
+    setNotice('名称不能为空');
     return;
   }
   if (trimmed === name) return;
@@ -1275,17 +1314,17 @@ async function manageNodeGroupTargets(name = '') {
 
 async function addNodeGroupFromNodesPage(anchorName = '') {
   const name = await requestAppInput({
-    title: 'Ӳ',
-    message: 'ڰһڵһ֮վӦùѡ',
+    title: '添加策略组',
+    message: '创建一个新的手动策略组',
     label: '',
-    placeholder: '磺Ƶ',
-    hint: '²Ĭ Proxiesɼѡڵ',
-    okText: 'Ӳ。'
+    placeholder: '例如：工作网站',
+    hint: '默认使用 Proxies 作为节点来源，稍后可以编辑组内节点。',
+    okText: '添加'
   });
   if (name == null) return;
   const trimmed = name.trim();
   if (!trimmed) {
-    setNotice('ƲΪ');
+    setNotice('名称不能为空');
     return;
   }
   const defaultMember = latestGroups.some(isProxiesGroup) ? 'Proxies' : anchorName;
@@ -1302,9 +1341,9 @@ async function addNodeGroupFromNodesPage(anchorName = '') {
 async function deleteNodeGroupFromNodesPage(name = '') {
   if (!name || isProxiesGroup({ name })) return;
   const confirmed = await requestAppConfirm({
-    title: 'ɾ',
-    message: `ɾ${name}йʹAegos ֹɾԭá`,
-    okText: 'ɾ',
+    title: '删除策略组',
+    message: `删除策略组 ${name}？Aegos 会先检查是否仍被规则使用。`,
+    okText: '删除',
     danger: true
   });
   if (!confirmed) return;
@@ -1767,7 +1806,7 @@ function nodeGroupStats(group = {}) {
 
 function isFixedNodeItem(item = {}) {
   const text = `${item.name || ''} ${item.server || ''} ${item.source || ''} ${item.profileType || ''} ${item.type || ''}`.toLowerCase();
-  return Boolean(item.manual || item.fixed || item.static || item.residential || /̶|סլ|̬|Խ|manual|fixed|static|residential/.test(text));
+  return Boolean(item.manual || item.fixed || item.static || item.residential || /手动|固定|静态|住宅|manual|fixed|static|residential/.test(text));
 }
 
 function rowMatchesNodeFilter(row, filter) {
@@ -1957,24 +1996,24 @@ function nodeAddressInfo(row = []) {
 
 function speedFailureReasonLabel(reason = '') {
   const key = String(reason || '').toLowerCase();
-  if (!key) return 'ʧ';
-  if (key.includes('fake-ip') || key.includes('fake ip')) return 'DNS Ⱦ';
-  if (key.includes('protection') || key.includes('firewall') || key.includes('kill')) return '';
-  if (key.includes('blocked')) return '';
-  if (key.includes('unreachable')) return '';
-  if (key.includes('node-not-found')) return 'ڵȱʧ';
-  if (key.includes('node-connect')) return 'ڵ㲻';
-  if (key.includes('controller-delay')) return 'Ĳʧ';
-  if (key.includes('probe-failed')) return '̽ʧ';
-  if (key.includes('timeout')) return 'ʱ';
-  if (key.includes('dns')) return 'DNS ʧ';
-  if (key.includes('tls')) return 'TLS ʧ';
-  if (key.includes('auth')) return '֤ʧ';
-  if (key.includes('controller')) return 'δ';
-  if (key.includes('unsupported')) return 'Э鲻֧';
-  if (key.includes('config')) return 'ô';
-  if (key.includes('network')) return 'ʧ';
-  return 'ʧ';
+  if (!key) return '失败';
+  if (key.includes('fake-ip') || key.includes('fake ip')) return 'DNS 伪 IP' ;
+  if (key.includes('protection') || key.includes('firewall') || key.includes('kill')) return '保护模式限制';
+  if (key.includes('blocked')) return '被阻断';
+  if (key.includes('unreachable')) return '不可达';
+  if (key.includes('node-not-found')) return '节点不存在';
+  if (key.includes('node-connect')) return '节点连接失败';
+  if (key.includes('controller-delay')) return '控制器测速失败';
+  if (key.includes('probe-failed')) return '探测失败';
+  if (key.includes('timeout')) return '超时';
+  if (key.includes('dns')) return 'DNS 失败';
+  if (key.includes('tls')) return 'TLS 失败';
+  if (key.includes('auth')) return '认证失败';
+  if (key.includes('controller')) return '控制器异常';
+  if (key.includes('unsupported')) return '协议不支持';
+  if (key.includes('config')) return '配置错误';
+  if (key.includes('network')) return '网络失败';
+  return '失败';
 }
 
 function nodeDelayText(row) {
@@ -2204,9 +2243,9 @@ function renderHomeNodeRow(row) {
 
 function noticeLevel(message = '') {
   const text = String(message).toLowerCase();
-  if (/ʧ|쳣|||ȱʧ|failed|error|exception/.test(text)) return 'bad';
-  if (/Ҫ||warning|not elevated|require|Ȩ|ͻ/.test(text)) return 'warn';
-  if (/|\.\.\.|||||ͬ|running|pending/.test(text)) return 'info';
+  if (/失败|异常|错误|不可达|超时|failed|error|exception/.test(text)) return 'bad';
+  if (/警告|需要|权限|未生效|warning|not elevated|require/.test(text)) return 'warn';
+  if (/\.\.\.|正在|中|running|pending/.test(text)) return 'info';
   return 'ok';
 }
 
@@ -2264,11 +2303,11 @@ function startUiFreezeWatchdog() {
 }
 
 window.addEventListener('unhandledrejection', (event) => {
-  setNotice(`쳣${event.reason?.message || event.reason || 'δ֪'}`);
+  setNotice(`操作异常：${event.reason?.message || event.reason || '未知错误'}`);
 });
 
 window.addEventListener('error', (event) => {
-  setNotice(`쳣${event.message || 'δ֪'}`);
+  setNotice(`操作异常：${event.message || '未知错误'}`);
 });
 
 ['pointerdown', 'click', 'keydown', 'input'].forEach((eventName) => {
@@ -2321,7 +2360,7 @@ function runDetachedButtonAction(button, busyLabel, action, options = {}) {
   setButtonBusy(button, true, busyLabel, options);
   Promise.resolve()
     .then(action)
-    .catch((err) => setNotice(`쳣${err.message || err}`))
+    .catch((err) => setNotice(`操作失败：${err.message || err}`))
     .finally(() => setButtonBusy(button, false, '', options));
   return null;
 }
@@ -2433,14 +2472,14 @@ async function requestJobCancel(id) {
     rememberJob(job);
     setNotice('已发送后台任务取消请求');
   } catch (err) {
-    setNotice(`取消后台任务失败：${err.message || err}`);
+    setNotice(`操作失败：${err.message || err}`);
   }
 }
 
 async function retryJob(id) {
   const job = jobRecords.get(id);
   if (!job?.kind) return;
-  setNotice(`Ժ̨${job.label || job.kind}`);
+  setNotice(`正在重试：${job.label || job.kind}`);
   await runBackgroundJob(job.kind, job.payload || {});
 }
 
@@ -2472,16 +2511,16 @@ async function runBackgroundJob(kind, payload = {}, options = {}) {
       if (options.successNotice) setNotice(resolveMessage(options.successNotice, value));
       return value;
     }
-    const reason = job?.error || job?.message || '̨ʧ';
+    const reason = job?.error || job?.message || '任务失败';
     rememberJob(job);
     lastBackgroundJobError = reason;
     if (options.failureNotice) setNotice(resolveMessage(options.failureNotice, new Error(reason)));
-    else setNotice(`${job?.label || '̨'}ʧܣ${reason}`);
+    else setNotice(`${job?.label || '任务'}失败：${reason}`);
     return null;
   } catch (err) {
     lastBackgroundJobError = err.message || String(err);
     if (options.failureNotice) setNotice(resolveMessage(options.failureNotice, err));
-    else setNotice(`̨쳣${err.message || err}`);
+    setNotice(`操作失败：${err.message || err}`);
     return null;
   } finally {
     backgroundJobBusy = Math.max(0, backgroundJobBusy - 1);
@@ -2539,7 +2578,7 @@ async function runOptimisticAction(options) {
   } catch (err) {
     if (options.rollback) options.rollback(snapshot, err);
     else restoreUiState(snapshot);
-    const failureNotice = resolveMessage(options.failureNotice, err) || `ʧܣ${err.message || err}`;
+    const failureNotice = resolveMessage(options.failureNotice, err) || `操作失败：${err.message || err}`;
     setNotice(failureNotice);
     return null;
   } finally {
@@ -2909,7 +2948,7 @@ function renderSettings(status) {
   ensureTakeoverControls();
   const adminState = $('#adminState');
   if (adminState) {
-    adminState.textContent = permissions.isAdmin ? 'Ա' : 'ͨȨ';
+    adminState.textContent = permissions.isAdmin ? STATUS_TEXT.admin : STATUS_TEXT.normalPermission;
     adminState.classList.toggle('ok', Boolean(permissions.isAdmin));
     adminState.classList.toggle('bad', !permissions.isAdmin);
   }
@@ -2920,18 +2959,14 @@ function renderSettings(status) {
   const takeover = settings.proxyTakeover || {};
   const takeoverSummary = $('#settingsTakeoverSummary');
   if (takeoverSummary) {
-    takeoverSummary.textContent = takeover.snapshotCaptured ? 'ɻָԭ' : 'ӹʱ';
+    takeoverSummary.textContent = takeover.snapshotCaptured ? STATUS_TEXT.savedSnapshot : STATUS_TEXT.takeoverInactive;
     takeoverSummary.classList.toggle('ok', Boolean(takeover.snapshotCaptured));
   }
-  $('#settingsRuntimeSummary').textContent = latestStatus?.trafficTakeover
-    ? (settings.tunEnabled ? 'TUN ӹ。' : settings.systemProxy ? 'ϵͳӹ' : '')
-    : latestStatus?.coreReady
-    ? 'Ĵ'
-    : 'δ';
-  $('#settingsProxySummary').textContent = settings.systemProxy ? 'ϵͳѿ。' : 'ϵͳδ';
+  $('#settingsRuntimeSummary').textContent = runtimeSummaryLabel(latestStatus, settings);
+  $('#settingsProxySummary').textContent = `系统代理${enabledLabel(settings.systemProxy)}`;
   $('#settingsReliabilitySummary').textContent = reliability.auto === false
-    ? 'Զر'
-    : `Զ / ${reliability.candidateLimit || 24} ѡ`;
+    ? '手动'
+    : `自动 / ${reliability.candidateLimit || 24} 个候选`;
   $('#systemProxyToggle').checked = Boolean(settings.systemProxy);
   $('#startProxyToggle').checked = Boolean(settings.startWithSystemProxy);
   $('#tunToggle').checked = Boolean(settings.tunEnabled);
@@ -2952,10 +2987,10 @@ function renderSettings(status) {
 }
 
 function readinessLevelLabel(level = '') {
-  if (level === 'error') return '账';
-  if (level === 'warn') return '';
-  if (level === 'ok') return '';
-  return 'ʾ';
+  if (level === 'error') return STATUS_TEXT.error;
+  if (level === 'warn') return STATUS_TEXT.warn;
+  if (level === 'ok') return STATUS_TEXT.ok;
+  return STATUS_TEXT.unchecked;
 }
 
 function renderEnvironmentReadiness(data = latestEnvironmentReadiness) {
@@ -2963,12 +2998,12 @@ function renderEnvironmentReadiness(data = latestEnvironmentReadiness) {
   const rowsEl = $('#environmentRows');
   if (!summaryEl || !rowsEl) return;
   if (!data) {
-    summaryEl.textContent = 'ȴ';
-    replaceChildrenSafe(rowsEl, [emptyState('ˢ¼飬ȷϰװ˿ڡȨ޺Ͱȫ¶')]);
+    summaryEl.textContent = STATUS_TEXT.unchecked;
+    replaceChildrenSafe(rowsEl, [emptyState('点击检查环境，确认安装、权限和端口状态。')]);
     return;
   }
   const summary = data.summary || {};
-  summaryEl.textContent = `${summary.label || '״̬'}  ${summary.errors || 0}  / ${summary.warnings || 0} `;
+  summaryEl.textContent = `${summary.label || '状态'}  ${summary.errors || 0}  / ${summary.warnings || 0} `;
   summaryEl.className = summary.errors ? 'bad' : summary.warnings ? 'warn' : 'ok';
   const rows = (data.checks || []).map((item) => el('article', { className: `environment-row level-${item.level || 'info'}` }, [
     el('div', {}, [
@@ -2978,12 +3013,12 @@ function renderEnvironmentReadiness(data = latestEnvironmentReadiness) {
     ]),
     el('span', { textContent: readinessLevelLabel(item.level) })
   ]));
-  replaceChildrenSafe(rowsEl, rows.length ? rows : [emptyState('޻')]);
+  replaceChildrenSafe(rowsEl, rows.length ? rows : [emptyState('暂无检查项')]);
 }
 
 async function refreshEnvironmentReadiness(showNotice = false) {
   if (environmentReadinessBusy) {
-    if (showNotice) setNotice('װ밲ȫ');
+    if (showNotice) setNotice('环境检查正在运行');
     return;
   }
   environmentReadinessBusy = true;
@@ -2991,11 +3026,11 @@ async function refreshEnvironmentReadiness(showNotice = false) {
     const data = await invoke('environment_readiness');
     latestEnvironmentReadiness = data;
     renderEnvironmentReadiness(data);
-    if (showNotice) setNotice(`װ밲ȫɣ${data.summary?.label || ''}`);
+    if (showNotice) setNotice(`环境检查完成：${data.summary?.label || ''}`);
   } catch (err) {
     latestEnvironmentReadiness = null;
-    replaceChildrenSafe($('#environmentRows'), [emptyState(`װ밲ȫ鲻ã${err.message || err}`)]);
-    if (showNotice) setNotice(`װ밲ȫʧܣ${err.message || err}`);
+    replaceChildrenSafe($('#environmentRows'), [emptyState(`环境检查失败：${err.message || err}`)]);
+    if (showNotice) setNotice(`环境检查失败：${err.message || err}`);
   } finally {
     environmentReadinessBusy = false;
   }
@@ -3086,17 +3121,17 @@ function renderDiagnosticLogPreview() {
   replaceChildrenSafe(box, [
     el('div', { className: 'diagnostic-log-head' }, [
       el('div', {}, [
-        el('b', { textContent: 'ؼ。' }),
-        el('small', { textContent: 'Ϻ־ͬһŲ·ϸ־ҳ。' })
+        el('b', { textContent: '最近异常' }),
+        el('small', { textContent: '日志统一收在这里，方便排查。' })
       ]),
-      el('button', { className: 'ghost compact', dataset: { pageJump: 'logs' }, attrs: { type: 'button' }, textContent: '鿴ȫ' })
+      el('button', { className: 'ghost compact', dataset: { pageJump: 'logs' }, attrs: { type: 'button' }, textContent: '查看日志' })
     ]),
     el('div', { className: 'diagnostic-log-rows' }, importantLogs.length
       ? importantLogs.map((entry) => el('div', { className: 'diagnostic-log-row' }, [
         el('b', { textContent: entry.level || '-' }),
         el('span', { textContent: entry.line || '-' })
       ]))
-      : [emptyState('޹ؼ־')])
+      : [emptyState('暂无异常日志')])
   ]);
 }
 
@@ -3145,32 +3180,32 @@ function renderStatus(status) {
   const modeText = modeLabel(status.mode);
 
   $('#appVersionLabel').textContent = `v${status.appVersion || defaultAppVersion}`;
-  $('.ring strong').textContent = trafficTakeover ? '已连接' : coreReady ? '核心待命' : '未连接';
+  $('.ring strong').textContent = trafficTakeover ? STATUS_TEXT.connected : coreReady ? STATUS_TEXT.coreStandby : STATUS_TEXT.disconnected;
   $('.ring').classList.toggle('offline', !trafficTakeover);
   $('#nodeName').textContent = selectedNode || latestGroup?.now || activeProfile.name || '等待节点数据';
   const nodeHost = $('#nodeHost');
   if (nodeHost) nodeHost.textContent = status.network?.proxyEndpoint || '-';
   $('#connectBtn').textContent = trafficTakeover ? '断开连接' : '连接';
   $('#modeLabel').textContent = modeText;
-  setNotice(`${protection.label || '未开启'}：${trafficTakeover ? '正在按当前策略接管流量。' : coreReady ? '可操作，但未接管系统流量。' : '核心未运行，当前没有流量接管。'}`);
+  setNotice(`${protection.label || STATUS_TEXT.disabled}：${trafficTakeover ? '正在按当前策略接管流量。' : coreReady ? '可操作，但未接管系统流量。' : '核心未运行，当前没有流量接管。'}`);
 
-  $('#protectMode').textContent = protection.label || '未开启';
-  $('#dnsState').textContent = settings.dnsHijackEnabled === false ? '未开启' : '已开启';
-  $('#tunState').textContent = settings.tunEnabled ? '已开启' : '未开启';
-  $('#killState').textContent = settings.killSwitchEnabled ? '已开启' : '未开启';
+  $('#protectMode').textContent = protection.label || STATUS_TEXT.disabled;
+  $('#dnsState').textContent = settings.dnsHijackEnabled === false ? STATUS_TEXT.disabled : STATUS_TEXT.enabled;
+  $('#tunState').textContent = enabledLabel(settings.tunEnabled);
+  $('#killState').textContent = enabledLabel(settings.killSwitchEnabled);
   $('#quickKillBtn')?.classList.toggle('active', Boolean(settings.killSwitchEnabled));
-  $('#proxyState').textContent = systemProxyApplied ? '已开启' : systemProxyWanted ? '待生效' : '未开启';
+  $('#proxyState').textContent = systemProxyApplied ? STATUS_TEXT.enabled : systemProxyWanted ? STATUS_TEXT.pending : STATUS_TEXT.disabled;
   $('#proxyState').classList.toggle('is-danger', !systemProxyApplied);
   $('#proxyStateRow').classList.remove('hidden');
   $('#protocolState').textContent = currentProtocol;
   $('#protocolMetric').textContent = currentProtocol;
   $('#tunHomeToggle').checked = Boolean(settings.tunEnabled);
-  $('#tunHomeState').textContent = settings.tunEnabled ? '已开启' : '未开启';
+  $('#tunHomeState').textContent = enabledLabel(settings.tunEnabled);
   $('#lanIpState').textContent = status.network?.lanIp || '-';
   $('#proxyPortState').textContent = formatProxyPort(status.network?.proxyEndpoint);
   renderOutboundIpFromStatus(status.network?.outboundIp || '-');
   $('#proxyMetric').textContent = formatProxyPort(status.network?.proxyEndpoint);
-  $('#systemProxyMetric').textContent = systemProxyApplied ? '已开启' : systemProxyWanted ? '待连接' : '未开启';
+  $('#systemProxyMetric').textContent = systemProxyUiLabel(systemProxyApplied, systemProxyWanted);
   $('#systemProxyMetric').classList.toggle('is-danger', !systemProxyApplied);
 
   const up = formatRate(traffic.up);
@@ -3324,18 +3359,18 @@ async function exportLogs() {
   const path = result?.path || '';
   const count = Number(result?.count || 0);
   if (path) {
-    setNotice(`־${path}${count} `);
+    setNotice(`日志已导出：${path}，共 ${count} 条`);
   } else {
-    setNotice('־');
+    setNotice('没有可导出的日志');
   }
   return result;
 }
 
 async function exportDiagnosticReport() {
   return runBackgroundJob('exportDiagnostics', {}, {
-    pendingNotice: 'ں̨ɲϱ...',
-    successNotice: (value) => `ϱ${value?.path || '-'}`,
-    failureNotice: (err) => `ϱ浼ʧܣ${err.message || err}`
+    pendingNotice: '正在导出诊断报告...',
+    successNotice: (value) => `诊断报告已导出：${value?.path || '-'}`,
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
   });
 }
 
@@ -3449,8 +3484,8 @@ async function refreshStatus(force = false) {
           candidateLimit: 24
         }
       },
-      protection: { label: 'δ' },
-      activeProfile: { name: 'Aegos Ԥ' }
+      protection: { label: '未开启' },
+      activeProfile: { name: 'Aegos 预设' }
     });
   } finally {
     statusBusy = false;
@@ -3590,15 +3625,15 @@ async function pollSpeedTest() {
     }
     applySpeedStatusToNodes(status);
     if (status.running) {
-      setNotice(`ڲ٣${status.completed || 0}/${status.total || 0} -> ${status.ok || 0}ʧ -> ${status.failed || 0}`);
+      setNotice(`测速中 ${status.completed || 0}/${status.total || 0}，成功 ${status.ok || 0}，失败 ${status.failed || 0}`);
       return;
     }
     await refreshVisibleNodesForSpeed(true);
     stopSpeedTestPolling();
-    setNotice(`ڵɣ -> ${status.ok || 0}ʧ -> ${status.failed || 0} ${status.total || 0} `);
+    setNotice(`测速完成：成功 ${status.ok || 0}，失败 ${status.failed || 0}，共 ${status.total || 0} 个`);
   } catch (err) {
     stopSpeedTestPolling();
-    setNotice(`ȡٽʧܣ${err.message || err}`);
+    setNotice(`测速状态获取失败：${err.message || err}`);
   }
 }
 
@@ -3623,7 +3658,7 @@ async function testNodes(button = null) {
     await pollSpeedTest();
   } catch (err) {
     stopSpeedTestPolling();
-    setNotice(`\u8282\u70b9\u6d4b\u901f\u5931\u8d25\uff1a${err.message || err}`);
+    setNotice(`操作失败：${err.message || err}`);
   }
 }
 async function refreshOutboundIpJob() {
@@ -3666,31 +3701,31 @@ async function recoverNetworkJob(showHealthyNotice = true, force = false) {
   lastRecoveryAt = Date.now();
   try {
     const result = await runBackgroundJob('recoverNetwork', { force }, {
-      pendingNotice: showHealthyNotice ? 'Aegos ںִ̨...' : '',
+      pendingNotice: showHealthyNotice ? 'Aegos 正在自检...' : '',
       progressNotice: (job) => showHealthyNotice && job?.message ? `${job.message}` : '',
-      failureNotice: (err) => `ʧܣ${err.message || err}`
+      failureNotice: (err) => `操作失败：${err.message || err}`
     });
     await refreshStatus(true);
     await refreshNodes(true);
     if (!result) return null;
     if (result?.ok && result?.action === 'none') {
-      if (showHealthyNotice) setNotice('ڽл');
+      if (showHealthyNotice) setNotice('网络状态良好');
       return result;
     }
     if (result?.action === 'observe') {
-      if (showHealthyNotice) setNotice(`۲У${result.failures || 0}/${result.threshold || 0}`);
+      if (showHealthyNotice) setNotice(`继续观察：${result.failures || 0}/${result.threshold || 0}`);
       return result;
     }
     const recovery = result?.result || {};
     if (result?.ok && result?.profileChanged) {
-      setNotice(`лĲָ${result.profile?.name || '-'} / ${recovery.proxy || '-'}`);
+      setNotice(`已切换订阅：${result.profile?.name || '-'} / ${recovery.proxy || '-'}`);
       return result;
     }
     if (result?.ok) {
-      setNotice(`Զлýڵ㣺${recovery.proxy || '-'} (${recovery.delay || '-'} ms)`);
+      setNotice(`自动切换到节点：${recovery.proxy || '-'} (${recovery.delay || '-'} ms)`);;
       return result;
     }
-    setNotice(`ʧܣ${result?.probe?.reason || 'ûҵýڵ'}`);
+    setNotice(`自愈失败：${result?.probe?.reason || '没有可用节点'}`);
     return result;
   } finally {
     recoveryBusy = false;
@@ -3699,9 +3734,9 @@ async function recoverNetworkJob(showHealthyNotice = true, force = false) {
 
 async function updateProfileJob(id) {
   return runBackgroundJob('updateProfile', { id }, {
-    pendingNotice: 'ں̨¶...',
-    successNotice: 'Ѹ',
-    failureNotice: (err) => `ĸʧܣ${err.message || err}`
+    pendingNotice: '正在更新订阅...',
+    successNotice: '已完成',
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
   });
 }
 
@@ -3715,49 +3750,49 @@ async function renameProfileJob(id, name) {
 
 async function updateAllProfilesJob() {
   return runBackgroundJob('updateAllProfiles', {}, {
-    pendingNotice: 'ں̨ȫ...',
-    successNotice: (result) => `ȫĸɣ${result?.updated?.length || 0} ɹ${result?.failed?.length || 0} ʧ`,
-    failureNotice: (err) => `ȫĸʧܣ${err.message || err}`
+    pendingNotice: '正在更新全部订阅...',
+    successNotice: (result) => `全部订阅更新完成：成功 ${result?.updated?.length || 0}，失败 ${result?.failed?.length || 0}`,
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
   });
 }
 
 async function addProfileUrlJob(url) {
   return runBackgroundJob('addProfileUrl', { url }, {
-    pendingNotice: 'ں̨붩...',
-    successNotice: 'ѵ',
-    failureNotice: (err) => `ĵʧܣ${err.message || err}`
+    pendingNotice: '正在导入订阅...',
+    successNotice: '已添加',
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
   });
 }
 
 async function setActiveProfileJob(id) {
   return runBackgroundJob('setActiveProfile', { id }, {
-    pendingNotice: 'ں̨Ӧö...',
-    successNotice: 'лӦ',
-    failureNotice: (err) => `лʧܣ${err.message || err}`
+    pendingNotice: '正在切换订阅...',
+    successNotice: '订阅已切换',
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
   });
 }
 
 async function removeProfileJob(id) {
   return runBackgroundJob('removeProfile', { id }, {
-    pendingNotice: 'ں̨ɾ...',
-    successNotice: 'ɾ',
-    failureNotice: (err) => `ɾʧܣ${err.message || err}`
+    pendingNotice: '正在删除...',
+    successNotice: '已删除',
+    failureNotice: (err) => `删除失败：${err.message || err}`
   });
 }
 
 async function updateSettingsJob(updates) {
   return runBackgroundJob('updateSettings', { updates }, {
-    pendingNotice: 'ں̨...',
-    successNotice: 'ѱ',
-    failureNotice: (err) => `ʧܣ${err.message || err}`
+    pendingNotice: '正在处理...',
+    successNotice: '已保存',
+    failureNotice: (err) => `操作失败：${err.message || err}`
   });
 }
 
 async function repairSystemProxyJob() {
   const result = await runBackgroundJob('repairSystemProxy', {}, {
-    pendingNotice: 'ں̨޸ϵͳӹ...',
-    successNotice: 'ϵͳָ Aegos',
-    failureNotice: (err) => `޸ϵͳʧܣ${err.message || err}`,
+    pendingNotice: '正在修复系统代理...',
+    successNotice: '系统代理已交给 Aegos',
+    failureNotice: (err) => `系统代理修复失败：${err.message || err}`,
     onSuccess: async () => {
       await refreshStatus(true);
       if (isPageActive('diagnostics')) await runDiagnostics(false).catch(() => {});
@@ -3875,9 +3910,9 @@ function toggleProfileMenu(anchor = $('#quickProfileBtn')) {
 
 async function restartCoreJob() {
   return corePowerJob('restartCore', {
-    pendingNotice: 'ں̨...',
+    pendingNotice: '正在处理...',
     successNotice: '',
-    failureNotice: (err) => `ʧܣ${err.message || err}`
+    failureNotice: (err) => `操作失败：${err.message || err}`
   });
 }
 
@@ -3886,13 +3921,13 @@ async function applyMode(mode) {
   await runOptimisticAction({
     apply: () => applyOptimisticMode(mode),
     commit: () => runBackgroundJob('setMode', { mode }, {
-      pendingNotice: 'ں̨лģʽ...',
-      failureNotice: (err) => `лģʽʧܣ${err.message || err}`
+      pendingNotice: '正在切换模式...',
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
     }),
     refresh: () => refreshStatus(true),
-    pendingNotice: 'ں̨лģʽ...',
-    successNotice: 'ģʽл',
-    failureNotice: (err) => `лģʽʧܣ${err.message || err}`
+      pendingNotice: '正在切换模式...',
+    successNotice: '模式已切换',
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
   });
 }
 
@@ -3901,22 +3936,22 @@ async function selectNode(name, groupOverride = '') {
   const groupName = groupOverride || activeBackendProxyGroupName();
   if (!groupName || !latestStatus?.running) {
     applyOptimisticNode(name);
-    setNotice(`ѡڵ㣺${name}`);
+    setNotice(`已选择节点：${name}`);
     return;
   }
   await runOptimisticAction({
     apply: () => applyOptimisticNode(name),
     commit: () => runBackgroundJob('changeProxy', { group: groupName, proxy: name }, {
-      pendingNotice: 'ں̨лڵ...',
-      failureNotice: (err) => `лڵʧܣ${err.message || err}`
+      pendingNotice: '正在切换模式...',
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
     }),
     refresh: async (result) => {
       await refreshNodes(true, { target: 'nodes' });
       if (result) void refreshOutboundIpAfterNodeChange();
     },
-    pendingNotice: 'ں̨лڵ...',
-    successNotice: (result) => result ? `лڵ㣺${name}` : '',
-    failureNotice: (err) => `лڵʧܣ${err.message || err}`
+      pendingNotice: '正在切换模式...',
+    successNotice: (result) => result ? `已切换节点：${name}` : '',
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
   });
 }
 
@@ -4000,7 +4035,7 @@ async function testSingleNode(name, button) {
     });
   } catch (err) {
     applyOptimisticNodeDelay(name, -1, 'network');
-    setNotice(`\u8282\u70b9\u6d4b\u901f\u5931\u8d25\uff1a${name} / ${err.message || err}`);
+    setNotice(`操作失败：${err.message || err}`);
     void captureNodeDiagnostics(name);
   }
 }
@@ -4109,48 +4144,48 @@ async function lockAutoGroupJob() {
   const group = activeBackendProxyGroupName();
   const proxy = latestGroup?.now || selectedNode || '';
   if (!group || !proxy) {
-    setNotice('޿ĵǰڵ');
+    setNotice('没有可锁定的节点');
     return;
   }
   if (!isAutoStrategyGroup(latestGroup)) {
-    setNotice('ǰֶԶ');
+    setNotice('没有可锁定的节点');
     return;
   }
   await runOptimisticAction({
     apply: () => applyOptimisticNode(proxy),
     commit: () => runBackgroundJob('changeProxy', { group, proxy }, {
-      pendingNotice: 'ǰڵ...',
-      failureNotice: (err) => `ǰڵʧܣ${err.message || err}`
+      pendingNotice: '正在切换节点...',
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
     }),
     refresh: async (result) => {
       await refreshNodes(true);
       if (result) void refreshOutboundIpAfterNodeChange();
     },
-    pendingNotice: 'ǰ...',
-    successNotice: (result) => result ? `ǰڵ㣺${proxy}` : '',
-    failureNotice: (err) => `ǰڵʧܣ${err.message || err}`
+      pendingNotice: '正在锁定节点...',
+    successNotice: (result) => result ? `已锁定节点：${proxy}` : '',
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
   });
 }
 
 async function updateSetting(key, value) {
   if (value && ['tunEnabled', 'killSwitchEnabled'].includes(key) && !latestStatus?.permissions?.isAdmin) {
     await refreshStatus(true);
-    setNotice('TUN ͶҪԱȨޣԹԱ Aegos');
+    setNotice('TUN 或断网保护需要管理员权限，请以管理员身份运行 Aegos');
     return;
   }
   await runOptimisticAction({
     apply: () => applyOptimisticSetting(key, value),
     commit: () => runBackgroundJob('updateSetting', { key, value }, {
-      pendingNotice: 'ں̨ͬ...',
-      failureNotice: (err) => `ͬʧܣ${err.message || err}`
+      pendingNotice: '正在切换模式...',
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
     }),
     refresh: async () => {
       await refreshStatus(true);
       await refreshNodes(true);
     },
-    pendingNotice: 'Ѹ£ں̨ͬ...',
-    successNotice: 'ͬ',
-    failureNotice: (err) => `ʧܣ${err.message || err}`
+      pendingNotice: '正在切换模式...',
+    successNotice: '设置已保存',
+    failureNotice: (err) => `操作失败：${err.message || err}`
   });
 }
 
@@ -4725,10 +4760,10 @@ function routingSystemRuleBuckets(rules = []) {
   const buckets = [
     ['ai', 'AI / ÷', /openai|chatgpt|anthropic|gemini|copilot|ai/i],
     ['media', 'ý', /netflix|disney|youtube|spotify|hulu|prime/i],
-    ['telegram', 'Telegram / ͨѶ', /telegram|whatsapp|signal|discord/i],
-    ['cn', 'ֱ', /CN|china|geosite:cn|geoip:cn/i],
+    ['telegram', 'Telegram / 通讯', /telegram|whatsapp|signal|discord/i],
+    ['cn', '直连', /CN|china|geosite:cn|geoip:cn/i],
     ['ads', '', /ad|ads|reject|block/i],
-    ['fallback', '׹', /MATCH|FINAL/i]
+    ['fallback', '兜底', /MATCH|FINAL/i]
   ];
   return buckets.map(([key, label, pattern]) => ({
     key,
@@ -4741,8 +4776,8 @@ function routingTargetOptionsFull() {
   const groups = Array.isArray(latestRoutingSnapshot?.groups) ? latestRoutingSnapshot.groups : [];
   const targets = new Map([
     ['Proxies', 'Proxies'],
-    ['DIRECT', 'ֱ'],
-    ['REJECT', 'ܾ']
+    ['DIRECT', '直连'],
+    ['REJECT', '拒绝']
   ]);
   groups.forEach((group) => {
     const name = String(group.name || '').trim();
@@ -4771,20 +4806,20 @@ function routingRuleForm(rules = []) {
   const kind = editing?.kind || 'DOMAIN-SUFFIX';
   return el('form', { id: 'routingRuleForm', className: 'routing-edit-form' }, [
     el('div', { className: 'routing-form-title' }, [
-      el('b', { textContent: editing ? '༭û' : 'û' }),
-      el('small', { textContent: 'ûڶĹ򡣾??Ӧȣ。' })
+      el('b', { textContent: editing ? '编辑规则' : '添加规则' }),
+      el('small', { textContent: '填写网站、应用或 IP，并选择要走的策略组。' })
     ]),
     el('input', { id: 'routingRuleOriginalRaw', attrs: { type: 'hidden', value: editing?.raw || '' } }),
     el('label', { className: 'routing-field' }, [
       el('span', { textContent: '' }),
       el('select', { id: 'routingRuleKindSelect' }, [
-        el('option', { textContent: 'վ׺', attrs: { value: 'DOMAIN-SUFFIX' } }),
+        el('option', { textContent: '域名后缀', attrs: { value: 'DOMAIN-SUFFIX' } }),
         el('option', { textContent: '', attrs: { value: 'DOMAIN' } }),
-        el('option', { textContent: 'ؼ', attrs: { value: 'DOMAIN-KEYWORD' } }),
-        el('option', { textContent: 'Ӧý', attrs: { value: 'PROCESS-NAME' } }),
-        el('option', { textContent: 'Ӧ·', attrs: { value: 'PROCESS-PATH' } }),
+        el('option', { textContent: '域名关键字', attrs: { value: 'DOMAIN-KEYWORD' } }),
+        el('option', { textContent: '应用名称', attrs: { value: 'PROCESS-NAME' } }),
+        el('option', { textContent: '应用路径', attrs: { value: 'PROCESS-PATH' } }),
         el('option', { textContent: ' IP', attrs: { value: 'GEOIP' } }),
-        el('option', { textContent: '񼯺', attrs: { value: 'GEOSITE' } }),
+        el('option', { textContent: '网站集合', attrs: { value: 'GEOSITE' } }),
         el('option', { textContent: 'IP ', attrs: { value: 'IP-CIDR' } })
       ])
     ]),
@@ -4797,15 +4832,15 @@ function routingRuleForm(rules = []) {
       el('select', { id: 'routingRuleTargetSelect' }, optionNodes(targetOptions, editing?.target || 'Proxies'))
     ]),
     el('label', { className: 'routing-field' }, [
-      el('span', { textContent: 'ѡ' }),
+      el('span', { textContent: '选项' }),
       el('select', { id: 'routingRuleOptionSelect' }, [
         el('option', { textContent: '', attrs: { value: '' } }),
         el('option', { textContent: 'no-resolve', attrs: { value: 'no-resolve' } })
       ])
     ]),
     el('div', { className: 'routing-edit-actions' }, [
-      el('button', { className: 'primary compact', attrs: { type: 'submit' }, textContent: editing ? '' : 'ӹ' }),
-      el('button', { className: 'ghost compact', dataset: { cancelRoutingRuleEdit: '1' }, attrs: { type: 'button' }, textContent: 'ȡ༭' })
+      el('button', { className: 'primary compact', attrs: { type: 'submit' }, textContent: editing ? '保存' : '添加' }),
+      el('button', { className: 'ghost compact', dataset: { cancelRoutingRuleEdit: '1' }, attrs: { type: 'button' }, textContent: '取消编辑' })
     ])
   ]);
 }
@@ -4823,13 +4858,13 @@ function renderRoutingRuleWorkbench(rules = []) {
       el('small', { textContent: ` ${routingTargetLabel(item.target)}  ${item.raw || '-'}` })
     ]),
     el('div', { className: 'routing-work-actions' }, [
-      el('button', { className: 'ghost compact', dataset: { editRoutingRule: item.raw || '' }, textContent: '༭' }),
+      el('button', { className: 'ghost compact', dataset: { editRoutingRule: item.raw || '' }, textContent: '编辑' }),
       el('button', { className: 'ghost compact danger', dataset: { deleteRoutingRule: item.raw || '' }, textContent: 'ɾ' })
     ])
   ]));
   const body = [];
   if (editing) body.push(routingRuleForm(rules));
-  body.push(el('div', { className: 'routing-work-list' }, rows.length ? rows : [emptyState('û·ɲݸ岢Ӧ')]));
+  body.push(el('div', { className: 'routing-work-list' }, rows.length ? rows : [emptyState('暂无用户规则')]));
   return body;
 }
 
@@ -4838,25 +4873,25 @@ function renderRoutingSystemWorkbench(rules = []) {
   const bucketRows = buckets.map((item) => el('div', { className: 'routing-work-row readonly' }, [
     el('div', {}, [
       el('b', { textContent: item.label }),
-      el('small', { textContent: `${item.count}  ${item.detail || 'Aegos ԶάͨûҪֶ༭'}` })
+      el('small', { textContent: `${item.count}  ${item.detail || 'Aegos 自动维护的内部规则'}` })
     ]),
-    el('span', { className: 'routing-readonly-pill', textContent: 'ֻ' })
+    el('span', { className: 'routing-readonly-pill', textContent: '只读' })
   ]));
   const sampleRows = rules.slice(0, 8).map((item) => el('div', { className: 'routing-work-row readonly compact' }, [
     el('div', {}, [
       el('b', { textContent: `${routingKindLabel(item.kind)}  ${item.condition || '-'}` }),
-      el('small', { textContent: item.explanation || ' / Aegos ɵֻڱ֤Ϊ。' })
+      el('small', { textContent: item.explanation || ' / Aegos 内部规则，避免误删。' })
     ]),
-    el('span', { className: 'routing-readonly-pill', textContent: 'ֻ' })
+    el('span', { className: 'routing-readonly-pill', textContent: '只读' })
   ]));
   return [
-    el('div', { className: 'routing-work-list routing-system-buckets' }, bucketRows.length ? bucketRows : [emptyState('ϵͳ')]),
+    el('div', { className: 'routing-work-list routing-system-buckets' }, bucketRows.length ? bucketRows : [emptyState('暂无系统规则')]),
     el('details', { className: 'routing-inline-details' }, [
       el('summary', {}, [
-        el('b', { textContent: '鿴ֻϸ' }),
-        el('small', { textContent: 'Ų飬ͨû޸。' })
+        el('b', { textContent: '查看明细' }),
+        el('small', { textContent: '这些规则只展示，不允许编辑。' })
       ]),
-      el('div', { className: 'routing-work-list' }, sampleRows.length ? sampleRows : [emptyState('ϸ')])
+      el('div', { className: 'routing-work-list' }, sampleRows.length ? sampleRows : [emptyState('暂无明细')])
     ])
   ];
 }
@@ -4865,24 +4900,24 @@ function renderRoutingGroupSummaryForRules(groups = []) {
   const rows = groups.slice(0, 12).map((item) => el('div', { className: 'routing-work-row readonly' }, [
     el('div', {}, [
       el('b', { textContent: item.name || '-' }),
-      el('small', { textContent: `${routingStrategyTypeLabel(item.type)}  ǰ ${item.now || '-'}  ${item.itemCount ?? 0} Ա` })
+      el('small', { textContent: `${routingStrategyTypeLabel(item.type)}  当前 ${item.now || '-'}  ${item.itemCount ?? 0} 个节点` })
     ]),
     el('button', { className: 'ghost compact', dataset: { pageJump: 'nodes' }, attrs: { type: 'button' }, textContent: '' })
   ]));
   return [
     el('div', { className: 'routing-group-guide' }, [
       el('div', {}, [
-        el('b', { textContent: 'ڽڵҳͳһ' }),
-        el('small', { textContent: 'ҳֻѡ򣬱ͬһҳظ༭。' })
+        el('b', { textContent: '策略组在节点页管理' }),
+        el('small', { textContent: '节点选择、排序和编辑统一放在节点页，避免重复入口。' })
       ]),
-      el('button', { className: 'primary compact', dataset: { pageJump: 'nodes' }, attrs: { type: 'button' }, textContent: 'ȥڵҳ' })
+      el('button', { className: 'primary compact', dataset: { pageJump: 'nodes' }, attrs: { type: 'button' }, textContent: '去节点页' })
     ]),
     el('div', { className: 'routing-explain-grid' }, [
       el('span', { textContent: ` -> ${groups.length} ` }),
-      el('span', { textContent: 'ֻѡ' }),
-      el('span', { textContent: 'ڵҳ/ɾ/' })
+      el('span', { textContent: '只读预览' }),
+      el('span', { textContent: '节点组 / 编辑 / 排序' })
     ]),
-    el('div', { className: 'routing-work-list' }, rows.length ? rows : [emptyState('޲')])
+    el('div', { className: 'routing-work-list' }, rows.length ? rows : [emptyState('暂无策略组')])
   ];
 }
 
@@ -4899,9 +4934,9 @@ function renderRoutingSummaryDetail() {
       title: '\u5f53\u524d\u6a21\u5f0f',
       desc: `${mode}\uff1a\u6309\u89c4\u5219\u51b3\u5b9a\u76f4\u8fde\u3001\u4ee3\u7406\u6216\u62d2\u7edd\u3002\u9884\u89c8\u548c\u9a8c\u8bc1\u4e0d\u4f1a\u6539\u53d8\u5f53\u524d\u8fde\u63a5\u3002`,
       body: [el('div', { className: 'routing-explain-grid' }, [
-        el('span', { textContent: `ǰ${mode}` }),
+        el('span', { textContent: `当前模式：${mode}` }),
         el('span', { textContent: 'û' }),
-        el('span', { textContent: 'վ/Ӧ >  > Ķ' })
+        el('span', { textContent: '网站 / 应用 > 策略组 > 节点' })
       ])]
     },
     groups: {
@@ -4926,7 +4961,7 @@ function renderRoutingSummaryDetail() {
       el('b', { textContent: view.title }),
       el('small', { textContent: view.desc }),
       routingSummaryDetail === 'system'
-        ? el('small', { textContent: `ù ${configRules.length} ·ϸֻչʾ` })
+        ? el('small', { textContent: `还有 ${configRules.length} 条配置规则可在明细中查看` })
         : null
     ]),
     el('div', { className: 'routing-workbench' }, view.body || [])
@@ -5254,22 +5289,22 @@ async function submitRoutingRuleForm() {
   }, { label: action === 'add' ? 'û' : 'û' });
   routingRuleEditRaw = '';
   await refreshRoutingSnapshot();
-  setNotice(action === 'add' ? 'û。' : 'ûѱ');
+  setNotice(action === 'add' ? '规则已添加。' : '规则已保存。');
 }
 
 async function deleteRoutingRule(raw) {
   if (!raw) return;
   const confirmed = await requestAppConfirm({
-    title: 'ɾû',
-    message: 'ɾû򣿶Դϵͳ򲻻ᱻɾ',
-    okText: 'ɾ',
+    title: '删除规则',
+    message: '删除这条用户规则？删除后会重新生成配置。',
+    okText: '删除',
     danger: true
   });
   if (!confirmed) return;
-  await runBackgroundJob('applyRoutingRuleEdit', { action: 'delete', raw }, { label: 'ɾû' });
+  await runBackgroundJob('applyRoutingRuleEdit', { action: 'delete', raw }, { label: '删除规则' });
   if (routingRuleEditRaw === raw) routingRuleEditRaw = '';
   await refreshRoutingSnapshot();
-  setNotice('ûɾ');
+  setNotice('规则已删除');
 }
 
 async function refreshRoutingSnapshot(token = null) {
@@ -5309,7 +5344,7 @@ function normalizeDiagnosticCheck(item = {}) {
 }
 
 function diagnosticSeverityLabel(check) {
-  if (check.ok) return 'ͨ';
+  if (check.ok) return '正常';
   if (check.severity === 'error') return '';
   return '';
 }
@@ -5406,7 +5441,7 @@ async function runDiagnostics(showNotice = true, token = null) {
   pageCacheState.diagnostics.loading = true;
   try {
     const data = await runBackgroundJob('diagnostics', {}, {
-      pendingNotice: showNotice ? 'ѿʼں̨...' : '',
+      pendingNotice: '正在切换模式...',
       progressNotice: () => '',
       pollMs: 300
     });
@@ -5422,7 +5457,7 @@ async function runDiagnostics(showNotice = true, token = null) {
     renderDiagnosticLogPreview();
     const errors = checks.filter((item) => item.severity === 'error').length;
     const warnings = checks.filter((item) => item.severity === 'warning').length;
-    if (showNotice) setNotice(`ɣ${checks.filter((item) => item.ok).length} ͨ${errors} ${warnings} `);
+    if (showNotice) setNotice(`诊断完成：正常 ${checks.filter((item) => item.ok).length}，错误 ${errors}，警告 ${warnings}`);
     markPageCache('diagnostics');
   } catch (err) {
     if (!isCurrentPageTask(token, 'diagnostics')) return;
@@ -5434,7 +5469,7 @@ async function runDiagnostics(showNotice = true, token = null) {
       ])
     ]);
     replaceChildrenSafe($('#diagRows'), [emptyState(`\u8bca\u65ad\u5931\u8d25\uff1a${err.message || err}`)]);
-    if (showNotice) setNotice(`ʧܣ${err.message || err}`);
+    if (showNotice) setNotice(`操作失败：${err.message || err}`);
     markPageCache('diagnostics');
   } finally {
     pageCacheState.diagnostics.loading = false;
@@ -5503,14 +5538,14 @@ $('#quickRestartBtn').onclick = (event) => runButtonAction(event.currentTarget, 
 $('#lockAutoGroupBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '...', lockAutoGroupJob));
 $('#refreshConnectionsBtn').onclick = refreshConnections;
 $('#refreshRoutingBtn')?.addEventListener('click', (event) => runDetachedButtonAction(event.currentTarget, 'ˢ...', () => refreshRoutingSnapshot()));
-$('#closeAllConnectionsBtn').onclick = (event) => runButtonAction(event.currentTarget, 'ر...', () => runOptimisticAction({
+$('#closeAllConnectionsBtn').onclick = (event) => runButtonAction(event.currentTarget, '关闭中...', () => runOptimisticAction({
   apply: () => { replaceChildrenSafe($('#connectionRows'), [emptyState('\u5f53\u524d\u6ca1\u6709\u6d3b\u52a8\u8fde\u63a5\u3002')]); },
   commit: () => invoke('close_connections'),
   refresh: () => refreshConnections(),
   rollback: () => refreshConnections(),
-  pendingNotice: 'бں̨ر...',
-  successNotice: 'ѹر',
-  failureNotice: (err) => `رʧܣ${err.message || err}`
+      pendingNotice: '正在切换模式...',
+  successNotice: '已关闭连接',
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
 }));
 $('#runDiagBtn').onclick = (event) => runDetachedButtonAction(event.currentTarget, '诊断中...', () => runDiagnostics());
 const copyDiagBtn = $('#copyDiagBtn');
@@ -5518,7 +5553,7 @@ if (copyDiagBtn) copyDiagBtn.onclick = (event) => runButtonAction(event.currentT
   if (!latestDiagnostics) await runDiagnostics(false);
   const report = diagnosticReportText(latestDiagnostics);
   await navigator.clipboard?.writeText(report);
-  setNotice('ϱѸ');
+  setNotice('诊断报告已复制');
 });
 const exportLogsBtn = $('#exportLogsBtn');
 if (exportLogsBtn) exportLogsBtn.onclick = (event) => runButtonAction(event.currentTarget, '...', exportLogs);
@@ -5530,9 +5565,9 @@ $('#clearLogsBtn').onclick = () => runOptimisticAction({
   apply: () => applyOptimisticLogsClear(),
   commit: () => invoke('clear_logs'),
   refresh: () => refreshStatus(true),
-  pendingNotice: '־գں̨ͬ...',
-  successNotice: '־',
-  failureNotice: (err) => `־ʧܣ${err.message || err}`
+      pendingNotice: '正在切换模式...',
+  successNotice: '日志已清空',
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
 });
 $('#restartCoreBtn').onclick = (event) => runButtonAction(event.currentTarget, '...', restartCoreJob);
 const batchTestBtn = $('#batchTestBtn');
@@ -5554,19 +5589,19 @@ $('#savePortBtn').onclick = (event) => runButtonAction(event.currentTarget, '...
     });
     await refreshStatus(true);
     await refreshNodes(true);
-    setNotice('˿ں͸߼ѱ');
+    setNotice('端口设置已保存');
   } catch (err) {
     await refreshStatus(true);
-    setNotice(`߼ʧܣ${err.message || err}`);
+    setNotice('端口设置已保存');
   }
 });
 const elevateBtn = $('#elevateBtn');
 if (elevateBtn) elevateBtn.onclick = (event) => runButtonAction(event.currentTarget, '...', async () => {
   try {
-    setNotice('ԱȨ...');
+    setNotice('正在请求管理员权限...');
     await invoke('relaunch_as_admin');
   } catch (err) {
-    setNotice(`Աʧܣ${err.message || err}`);
+    setNotice(`操作失败：${err.message || err}`);
   }
 });
 $('#addProfileBtn').onclick = (event) => runButtonAction(event.currentTarget, '...', async () => {
@@ -5583,9 +5618,9 @@ $('#addProfileBtn').onclick = (event) => runButtonAction(event.currentTarget, '.
       $('#profileUrlInput').value = '';
       await refreshProfileSurfaces({ refreshOutboundIp: true });
     },
-    pendingNotice: 'ں̨붩...',
-    successNotice: 'ѵ',
-    failureNotice: (err) => `ĵʧܣ${err.message || err}`
+    pendingNotice: '正在导入订阅...',
+    successNotice: '已添加',
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
   });
 });
 const copyEndpointBtn = $('#copyEndpointBtn');
@@ -5602,9 +5637,9 @@ if (updateAllProfilesBtn) updateAllProfilesBtn.onclick = (event) => runButtonAct
     refresh: async () => {
       await refreshProfileSurfaces({ refreshOutboundIp: true });
     },
-    pendingNotice: 'ں̨ȫ...',
-    successNotice: (result) => `ȫĸɣ${result?.updated?.length || 0} ɹ${result?.failed?.length || 0} ʧ`,
-    failureNotice: (err) => `ȫĸʧܣ${err.message || err}`
+    pendingNotice: '正在更新全部订阅...',
+    successNotice: (result) => `全部订阅更新完成：成功 ${result?.updated?.length || 0}，失败 ${result?.failed?.length || 0}`,
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
   });
 });
 
@@ -5629,7 +5664,7 @@ $all('[data-region]').forEach((button) => {
     uiStore.set({ homeNodeMode: 'region', homeRegionFilter: nextRegion });
     scheduleRowsRender(latestGroup?.items || [], { force: true, target: 'home', delay: 0 });
     if (isSpeedTestActive()) queueNodeRefresh('home', speedTestPollMs);
-    setNotice(nextRegion ? `ҳɸѡ${button.textContent.trim()}` : 'ȡɸѡ');
+    setNotice(nextRegion ? `已筛选地区：${button.textContent.trim()}` : '已取消地区筛选');
   };
 });
 
@@ -5808,9 +5843,9 @@ document.body.addEventListener('click', async (event) => {
         commit: () => invoke('close_connection', { id: closeId }),
         refresh: () => refreshConnections(),
         rollback: () => refreshConnections(),
-        pendingNotice: 'ѴбƳӣں̨...',
-        successNotice: 'ѹر',
-        failureNotice: (err) => `رʧܣ${err.message || err}`
+      pendingNotice: '正在切换模式...',
+        successNotice: '已关闭连接',
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
       });
       return;
     }
@@ -5826,9 +5861,9 @@ document.body.addEventListener('click', async (event) => {
         refresh: async () => {
           await refreshProfileSurfaces({ refreshOutboundIp: true });
         },
-        pendingNotice: 'ѡģں̨Ӧ...',
-        successNotice: 'лӦ',
-        failureNotice: (err) => `лʧܣ${err.message || err}`
+        pendingNotice: '正在切换模式...',
+        successNotice: '订阅已切换',
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
       });
       return;
     }
@@ -5837,10 +5872,10 @@ document.body.addEventListener('click', async (event) => {
       const profile = (latestStatus?.settings?.profiles || []).find((item) => item.id === profileRename);
       const nextName = await requestAppInput({
         title: '',
-        message: 'ֻ޸ Aegos ʾƣı䶩ӻڵ',
+        message: '重命名 Aegos 策略组',
         label: '',
         value: profile?.name || '',
-        hint: 'û;֣л',
+        hint: '只改显示名称，不改变节点',
         okText: ''
       });
       if (nextName == null) return;
@@ -5878,9 +5913,9 @@ document.body.addEventListener('click', async (event) => {
         refresh: async () => {
           await refreshProfileSurfaces({ refreshOutboundIp: true });
         },
-        pendingNotice: 'ڸ¶...',
-        successNotice: 'Ѹ',
-        failureNotice: (err) => `ĸʧܣ${err.message || err}`
+        pendingNotice: '正在更新...',
+        successNotice: '已完成',
+    failureNotice: (err) => `诊断报告导出失败：${err.message || err}`
       });
       return;
     }
@@ -5892,13 +5927,13 @@ document.body.addEventListener('click', async (event) => {
         refresh: async () => {
           await refreshProfileSurfaces({ refreshOutboundIp: true });
         },
-        pendingNotice: 'ѴбƳں̨ɾ...',
-        successNotice: 'ɾ',
-        failureNotice: (err) => `ɾʧܣ${err.message || err}`
+      pendingNotice: '正在切换模式...',
+        successNotice: '已删除',
+        failureNotice: (err) => `删除失败：${err.message || err}`
       });
     }
   } catch (err) {
-    setNotice(`ʧܣ${err.message || err}`);
+    setNotice(`操作失败：${err.message || err}`);
   }
 });
 
