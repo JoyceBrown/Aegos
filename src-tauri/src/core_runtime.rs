@@ -37,6 +37,8 @@ pub const STALE_CONNECTION_CLEANUP_TIMEOUT_MS: u64 = 1500;
 pub const STATUS_TRAFFIC_TIMEOUT_MS: u64 = 120;
 pub const RESERVED_MIXED_PORTS: &[u16] = &[7890];
 pub const RESERVED_MIXED_PORTS_REASON: &str = "7890 is reserved for FlClash/Codex traffic";
+pub const MIN_RUNTIME_PORT: u64 = 1024;
+pub const MAX_RUNTIME_PORT: u64 = 65535;
 pub const PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS: u64 = 1200;
 pub const CONNECTIONS_SNAPSHOT_TIMEOUT_MS: u64 = 900;
 pub const ROUTING_RECENT_RULES_TIMEOUT_MS: u64 = 550;
@@ -421,6 +423,40 @@ pub fn public_settings_surface_json(
             proxy_snapshot_captured,
         )
     })
+}
+
+pub fn port_from_value(value: &JsonValue, fallback: u16, label: &str) -> Result<u16, String> {
+    let port = value.as_u64().unwrap_or(u64::from(fallback));
+    if !(MIN_RUNTIME_PORT..=MAX_RUNTIME_PORT).contains(&port) {
+        return Err(format!(
+            "{label} must be between {MIN_RUNTIME_PORT} and {MAX_RUNTIME_PORT}"
+        ));
+    }
+    Ok(port as u16)
+}
+
+pub fn mixed_port_from_value(value: &JsonValue, fallback: u16) -> Result<u16, String> {
+    let port = port_from_value(value, fallback, "Mixed proxy port")?;
+    if RESERVED_MIXED_PORTS.contains(&port) {
+        return Err(format!(
+            "{RESERVED_MIXED_PORTS_REASON}; use 7891 or another port for Aegos."
+        ));
+    }
+    Ok(port)
+}
+
+pub fn validate_runtime_ports(mixed_port: u16, controller_port: u16) -> Result<(), String> {
+    if RESERVED_MIXED_PORTS.contains(&mixed_port) {
+        return Err(format!(
+            "Mixed proxy port 7890 is reserved for FlClash/Codex; use 7891 or another free port"
+        ));
+    }
+    if mixed_port == controller_port {
+        return Err(format!(
+            "Mixed proxy port {mixed_port} cannot equal controller port {controller_port}"
+        ));
+    }
+    Ok(())
 }
 
 pub fn normalize_proxy_type(value: &str) -> String {
@@ -3456,6 +3492,31 @@ rules:
                 .and_then(JsonValue::as_bool),
             Some(true)
         );
+    }
+
+    #[test]
+    fn runtime_port_policy_is_owned_by_runtime_boundary() {
+        assert_eq!(
+            port_from_value(&json!(7891), 7000, "Mixed proxy port").unwrap(),
+            7891
+        );
+        assert_eq!(
+            port_from_value(&JsonValue::Null, 7891, "Mixed proxy port").unwrap(),
+            7891
+        );
+        assert!(port_from_value(&json!(1023), 7891, "Mixed proxy port")
+            .unwrap_err()
+            .contains("between 1024 and 65535"));
+        assert!(mixed_port_from_value(&json!(7890), 7891)
+            .unwrap_err()
+            .contains(RESERVED_MIXED_PORTS_REASON));
+        assert!(validate_runtime_ports(7891, 19091).is_ok());
+        assert!(validate_runtime_ports(7890, 19091)
+            .unwrap_err()
+            .contains("reserved"));
+        assert!(validate_runtime_ports(7891, 7891)
+            .unwrap_err()
+            .contains("cannot equal controller port"));
     }
 
     #[test]

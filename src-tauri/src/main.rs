@@ -954,25 +954,6 @@ fn insert_outbound_ip_rules(config: &mut Mapping, settings: &Settings) {
     set_yaml(config, "rules", YamlValue::Sequence(internal_rules));
 }
 
-fn port_from_value(value: &JsonValue, fallback: u16, label: &str) -> Result<u16, String> {
-    let port = value.as_u64().unwrap_or(u64::from(fallback));
-    if !(1024..=65535).contains(&port) {
-        return Err(format!("{label} must be between 1024 and 65535"));
-    }
-    Ok(port as u16)
-}
-
-fn mixed_port_from_value(value: &JsonValue, fallback: u16) -> Result<u16, String> {
-    let port = port_from_value(value, fallback, "Mixed proxy port")?;
-    if core_runtime::RESERVED_MIXED_PORTS.contains(&port) {
-        return Err(format!(
-            "{}; use 7891 or another port for Aegos.",
-            core_runtime::RESERVED_MIXED_PORTS_REASON
-        ));
-    }
-    Ok(port)
-}
-
 fn string_choice_from_value(
     value: &JsonValue,
     fallback: &str,
@@ -5549,19 +5530,7 @@ impl CoreManager {
     }
 
     fn validate_port_settings_snapshot(settings: &Settings) -> Result<(), String> {
-        if core_runtime::RESERVED_MIXED_PORTS.contains(&settings.mixed_port) {
-            return Err(
-                "Mixed proxy port 7890 is reserved for FlClash/Codex; use 7891 or another free port"
-                    .to_string(),
-            );
-        }
-        if settings.mixed_port == settings.controller_port {
-            return Err(format!(
-                "Mixed proxy port {} cannot equal controller port {}",
-                settings.mixed_port, settings.controller_port
-            ));
-        }
-        Ok(())
+        core_runtime::validate_runtime_ports(settings.mixed_port, settings.controller_port)
     }
 
     fn validate_port_settings(&self) -> Result<(), String> {
@@ -5575,11 +5544,15 @@ impl CoreManager {
     ) -> Result<(), String> {
         match key {
             "mixedPort" => {
-                settings.mixed_port = mixed_port_from_value(value, settings.mixed_port)?;
+                settings.mixed_port =
+                    core_runtime::mixed_port_from_value(value, settings.mixed_port)?;
             }
             "controllerPort" => {
-                settings.controller_port =
-                    port_from_value(value, settings.controller_port, "Controller port")?;
+                settings.controller_port = core_runtime::port_from_value(
+                    value,
+                    settings.controller_port,
+                    "Controller port",
+                )?;
             }
             "startWithSystemProxy"
             | "tunEnabled"
@@ -6947,11 +6920,15 @@ impl CoreManager {
                     .clamp(3, 200)
             }
             "mixedPort" => {
-                self.settings.mixed_port = mixed_port_from_value(value, self.settings.mixed_port)?
+                self.settings.mixed_port =
+                    core_runtime::mixed_port_from_value(value, self.settings.mixed_port)?
             }
             "controllerPort" => {
-                self.settings.controller_port =
-                    port_from_value(value, self.settings.controller_port, "Controller port")?
+                self.settings.controller_port = core_runtime::port_from_value(
+                    value,
+                    self.settings.controller_port,
+                    "Controller port",
+                )?
             }
             "killSwitchEnabled" => {
                 self.set_kill_switch(value.as_bool().unwrap_or(false))?;

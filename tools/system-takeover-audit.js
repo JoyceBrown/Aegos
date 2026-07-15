@@ -99,10 +99,10 @@ check(
 check(
   'port conflict prevention and diagnostics are both wired',
   coreRuntimeRs.includes('pub const RESERVED_MIXED_PORTS') &&
+    coreRuntimeRs.includes('pub fn validate_runtime_ports') &&
     mainRs.includes('AEGOS_DEFAULT_MIXED_PORT: u16 = 7891') &&
     mainRs.includes('fn validate_port_settings_snapshot') &&
-    mainRs.includes('core_runtime::RESERVED_MIXED_PORTS.contains(&settings.mixed_port)') &&
-    mainRs.includes('settings.mixed_port == settings.controller_port') &&
+    mainRs.includes('core_runtime::validate_runtime_ports(settings.mixed_port, settings.controller_port)') &&
     diagnosticsBody.includes('"Mixed port availability"') &&
     diagnosticsBody.includes('"Controller port availability"') &&
     diagnosticsBody.includes('port_owner_detail(snapshot.settings.mixed_port)') &&

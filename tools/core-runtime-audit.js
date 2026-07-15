@@ -480,6 +480,19 @@ check(
   'home and diagnostics settings must not rebuild runtime ports, runtime presence, reliability, or proxy takeover fields',
 );
 check(
+  'runtime port parsing and pair validation are owned by the core runtime boundary',
+  coreRuntimeRs.includes('pub fn port_from_value') &&
+    coreRuntimeRs.includes('pub fn mixed_port_from_value') &&
+    coreRuntimeRs.includes('pub fn validate_runtime_ports') &&
+    coreRuntimeRs.includes('runtime_port_policy_is_owned_by_runtime_boundary') &&
+    mainRs.includes('core_runtime::mixed_port_from_value') &&
+    mainRs.includes('core_runtime::port_from_value') &&
+    mainRs.includes('core_runtime::validate_runtime_ports(settings.mixed_port, settings.controller_port)') &&
+    !mainRs.includes('settings.mixed_port == settings.controller_port') &&
+    !mainRs.includes('RESERVED_MIXED_PORTS.contains(&settings.mixed_port)'),
+  'main.rs may apply settings, but runtime port bounds, reserved ports, and pair validation belong to core_runtime',
+);
+check(
   'system proxy takeover plan is owned by the core runtime boundary',
   coreRuntimeRs.includes('pub const WINDOWS_PROXY_BYPASS_LIST') &&
     coreRuntimeRs.includes('pub struct CoreSystemProxyTakeoverPlan') &&

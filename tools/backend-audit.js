@@ -537,9 +537,12 @@ check(
 check(
   'settings port updates validate before save and rollback on failure',
   mainRs.includes('fn validate_port_settings_snapshot') &&
-    mainRs.includes('core_runtime::RESERVED_MIXED_PORTS.contains(&settings.mixed_port)') &&
     coreRuntimeRs.includes('pub const RESERVED_MIXED_PORTS') &&
-    mainRs.includes('settings.mixed_port == settings.controller_port') &&
+    coreRuntimeRs.includes('pub fn validate_runtime_ports') &&
+    coreRuntimeRs.includes('pub fn mixed_port_from_value') &&
+    mainRs.includes('core_runtime::validate_runtime_ports(settings.mixed_port, settings.controller_port)') &&
+    mainRs.includes('core_runtime::mixed_port_from_value') &&
+    mainRs.includes('core_runtime::port_from_value') &&
     mainRs.includes('fn validate_settings_update_candidate') &&
     mainRs.includes('fn rollback_settings_after_failure') &&
     mainRs.indexOf('self.validate_settings_update_candidate(map)?') < mainRs.lastIndexOf('if let Err(err) = self.save_settings()') &&
