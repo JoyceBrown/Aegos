@@ -20,6 +20,11 @@ const maturityGap = read('PRODUCT_MATURITY_GAP_REPORT.md');
 
 const failures = [];
 const pass = [];
+const applyStart = mainRs.indexOf('fn apply_routing_drafts(');
+const applyEnd = mainRs.indexOf('fn undo_last_routing_apply(', applyStart);
+const applyRoutingDraftsBody = applyStart >= 0 && applyEnd > applyStart
+  ? mainRs.slice(applyStart, applyEnd)
+  : '';
 
 function check(name, ok, detail = '') {
   if (ok) pass.push(name);
@@ -66,9 +71,9 @@ check(
 );
 check(
   'routing apply preflights before atomic profile write',
-  mainRs.indexOf('preflight_runtime_config(&patched, &profile, &settings)') > -1 &&
-    mainRs.indexOf('preflight_runtime_config(&patched, &profile, &settings)') <
-      mainRs.indexOf('atomic_write_text_confined(&profile_path, &self.profile_dir, &next_raw)'),
+  applyRoutingDraftsBody.indexOf('config_pipeline::preflight_profile_source(source.clone(), &profile, &settings)') > -1 &&
+    applyRoutingDraftsBody.indexOf('config_pipeline::preflight_profile_source(source.clone(), &profile, &settings)') <
+      applyRoutingDraftsBody.indexOf('atomic_write_text_confined(&profile_path, &self.profile_dir, &next_raw)'),
   'preflight before write'
 );
 check(
@@ -83,7 +88,8 @@ check(
   'routing apply hot reload failure restores previous profile',
   mainRs.includes('let restore_file =') &&
     mainRs.includes('atomic_write_text_confined(&profile_path, &self.profile_dir, &previous_raw)') &&
-    mainRs.includes('分流规则热重载失败，已回滚当前配置'),
+    mainRs.includes('Routing hot reload failed and config was rolled back') &&
+    mainRs.includes('rollback also failed'),
   'hot reload rollback'
 );
 check(
@@ -190,15 +196,16 @@ check(
   'execution record must not pretend old work passed'
 );
 check(
-  'routing assistant is task-focused instead of three cramped parallel cards',
+  'routing assistant is task-focused around website, app, and system rules',
   appJs.includes("className: 'routing-kind-list'") &&
     appJs.includes('data-routing-kind') &&
     appJs.includes('data-routing-panel') &&
     appJs.includes('function setRoutingAssistantKind') &&
-    appJs.includes("kindButton('website'") &&
-    appJs.includes("kindButton('app'") &&
-    appJs.includes("kindButton('region'"),
-  'website/app/scene task selector'
+    appJs.includes("kindButton('website', '\\u7f51\\u7ad9\\u89c4\\u5219'") &&
+    appJs.includes("kindButton('app', '\\u5e94\\u7528\\u89c4\\u5219'") &&
+    appJs.includes("kindButton('system', '\\u7cfb\\u7edf\\u89c4\\u5219'") &&
+    !appJs.includes("kindButton('region'"),
+  'website/app/system task selector'
 );
 check(
   'advanced engineering data is folded by default below the main task',

@@ -4350,7 +4350,7 @@ function normalizeRoutingStaticText() {
   const title = panel.querySelector('.section-head h2');
   const subtitle = panel.querySelector('.section-head p');
   if (title) title.textContent = '\u89c4\u5219';
-  if (subtitle) subtitle.textContent = '\u51b3\u5b9a\u54ea\u4e9b\u7f51\u7ad9\u3001\u5e94\u7528\u548c\u573a\u666f\u8d70\u54ea\u6761\u7ebf\u8def\uff1b\u5148\u9884\u89c8\uff0c\u518d\u5e94\u7528\u3002';
+  if (subtitle) subtitle.textContent = '\u4e0d\u7528\u5199 YAML\uff1a\u6307\u5b9a\u54ea\u4e2a\u7f51\u7ad9\u6216\u5e94\u7528\u8d70\u54ea\u6761\u7ebf\u8def\uff0c\u7cfb\u7edf\u89c4\u5219\u53ea\u8bfb\u4e14\u4f1a\u8bf4\u660e\u7528\u9014\u3002';
   const badge = $('#routingReadonlyBadge');
   if (badge) badge.textContent = '\u5b89\u5168\u9884\u89c8\uff0c\u4e0d\u6539\u914d\u7f6e';
   const refresh = $('#refreshRoutingBtn');
@@ -4422,12 +4422,6 @@ function ensureRoutingAssistantUi() {
     el('span', { textContent: '\u4f7f\u7528\u7ebf\u8def' }),
     el('select', { id, attrs: { 'aria-label': '\u4f7f\u7528\u7ebf\u8def' } }, [])
   ]);
-  const regionOptions = () => [
-    el('option', { textContent: '\u4e2d\u56fd\u5927\u9646\u76f4\u8fde', attrs: { value: 'cn-direct' } }),
-    el('option', { textContent: '\u56fd\u5916\u7f51\u7ad9\u8d70\u4ee3\u7406', attrs: { value: 'global-proxy' } }),
-    el('option', { textContent: 'Telegram \u8d70\u4ee3\u7406', attrs: { value: 'telegram-proxy' } }),
-    el('option', { textContent: 'Netflix \u8d70\u4ee3\u7406', attrs: { value: 'netflix-proxy' } })
-  ];
   const kindButton = (kind, title, detail) => el('button', {
     className: kind === routingAssistantKind ? 'active' : '',
     dataset: { routingKind: kind },
@@ -4440,6 +4434,10 @@ function ensureRoutingAssistantUi() {
     el('b', { textContent: title }),
     el('small', { textContent: detail })
   ]);
+  const systemEntry = (title, detail) => el('div', { className: 'routing-system-entry' }, [
+    el('b', { textContent: title }),
+    el('small', { textContent: detail })
+  ]);
   const assistant = el('div', {
     className: 'routing-assistant',
     dataset: { view: routingAssistantView, kind: routingAssistantKind },
@@ -4447,8 +4445,8 @@ function ensureRoutingAssistantUi() {
   }, [
     el('div', { className: 'routing-assistant-head' }, [
       el('div', {}, [
-        el('h3', { textContent: '\u521b\u5efa\u5206\u6d41\u89c4\u5219' }),
-        el('p', { textContent: '\u5148\u751f\u6210\u672a\u751f\u6548\u8349\u7a3f\uff0c\u518d\u9a8c\u8bc1\uff0c\u6700\u540e\u7531\u4f60\u786e\u8ba4\u5e94\u7528\u3002' })
+        el('h3', { textContent: '\u6dfb\u52a0\u7f51\u7ad9\u6216\u5e94\u7528\u89c4\u5219' }),
+        el('p', { textContent: '\u9009\u4e00\u4e2a\u5165\u53e3\uff0c\u5148\u751f\u6210\u672a\u751f\u6548\u8349\u7a3f\uff0c\u518d\u9a8c\u8bc1\uff0c\u6700\u540e\u7531\u4f60\u786e\u8ba4\u5e94\u7528\u3002' })
       ]),
       el('div', { className: 'routing-safety-strip' }, [
         el('span', { textContent: '\u9884\u89c8\u4e0d\u6539\u914d\u7f6e' }),
@@ -4457,10 +4455,10 @@ function ensureRoutingAssistantUi() {
       ])
     ]),
     el('div', { className: 'routing-builder' }, [
-      el('nav', { className: 'routing-kind-list', attrs: { 'aria-label': '\u9009\u62e9\u5206\u6d41\u573a\u666f' } }, [
-        kindButton('website', '\u7f51\u7ad9', '\u57df\u540d\u8d70\u4ee3\u7406\u6216\u76f4\u8fde'),
-        kindButton('app', '\u5e94\u7528', '\u6309\u8fdb\u7a0b\u540d\u5339\u914d'),
-        kindButton('region', '\u573a\u666f', '\u5e38\u89c1\u5730\u533a\u548c\u670d\u52a1')
+      el('nav', { className: 'routing-kind-list', attrs: { 'aria-label': '\u9009\u62e9\u89c4\u5219\u5165\u53e3' } }, [
+        kindButton('website', '\u7f51\u7ad9\u89c4\u5219', '\u8f93\u5165 youtube.com \u8fd9\u7c7b\u57df\u540d'),
+        kindButton('app', '\u5e94\u7528\u89c4\u5219', '\u9009\u62e9 Telegram.exe \u8fd9\u7c7b\u7a0b\u5e8f'),
+        kindButton('system', '\u7cfb\u7edf\u89c4\u5219', '\u67e5\u770b Aegos \u81ea\u52a8\u7ef4\u62a4\u7684\u89c4\u5219')
       ]),
       el('section', { className: 'routing-builder-panel is-active', id: 'routingPanelWebsite', dataset: { routingPanel: 'website' } }, [
         panelHeader('\u7f51\u7ad9\u5206\u6d41', '\u8f93\u5165\u57df\u540d\uff0cAegos \u4f1a\u751f\u6210\u672a\u751f\u6548\u8349\u7a3f\u3002'),
@@ -4494,20 +4492,15 @@ function ensureRoutingAssistantUi() {
         ]),
         el('p', { id: 'routingAppDraftPreview', className: 'routing-draft-preview', textContent: '\u7b49\u5f85\u8f93\u5165\u5e94\u7528\u3002' })
       ]),
-      el('section', { className: 'routing-builder-panel', id: 'routingPanelRegion', dataset: { routingPanel: 'region' } }, [
-        panelHeader('\u573a\u666f\u5206\u6d41', '\u9009\u62e9\u5e38\u89c1\u573a\u666f\u548c\u76ee\u6807\u7b56\u7565\uff0c\u4e0d\u9700\u8981\u5199 YAML\u3002'),
-        el('div', { className: 'routing-draft-form wide' }, [
-          el('label', { className: 'routing-field' }, [
-            el('span', { textContent: '\u573a\u666f' }),
-            el('select', { id: 'routingRegionSelect', attrs: { 'aria-label': '\u573a\u666f' } }, regionOptions())
-          ]),
-          el('label', { className: 'routing-field' }, [
-            el('span', { textContent: '\u76ee\u6807\u7b56\u7565' }),
-            el('select', { id: 'routingTargetSelect', attrs: { 'aria-label': '\u76ee\u6807\u7b56\u7565' } }, [])
-          ]),
-          el('button', { id: 'previewRegionRuleBtn', className: 'primary compact', attrs: { type: 'button' }, textContent: '\u751f\u6210\u8349\u7a3f' })
+      el('section', { className: 'routing-builder-panel', id: 'routingPanelSystem', dataset: { routingPanel: 'system' } }, [
+        panelHeader('\u7cfb\u7edf\u89c4\u5219', '\u8fd9\u4e9b\u89c4\u5219\u7531 Aegos \u81ea\u52a8\u7ef4\u62a4\uff0c\u7528\u6765\u4fdd\u8bc1\u68c0\u6d4b\u3001\u8bca\u65ad\u548c\u9632\u6cc4\u9732\u884c\u4e3a\u53ef\u63a7\u3002'),
+        el('div', { className: 'routing-system-entry-grid' }, [
+          systemEntry('\u843d\u5730 IP \u67e5\u8be2', '\u8ba9 IP \u68c0\u6d4b\u8d70\u5f53\u524d\u8282\u70b9\uff0c\u4e0d\u6539\u53d8\u4f60\u7684\u8fde\u63a5\u3002'),
+          systemEntry('Aegos \u81ea\u8eab\u670d\u52a1', '\u4fdd\u8bc1\u8ba2\u9605\u3001\u8bca\u65ad\u3001\u72b6\u6001\u67e5\u8be2\u80fd\u88ab\u8bc6\u522b\u548c\u89e3\u91ca\u3002'),
+          systemEntry('\u9632\u6cc4\u9732\u4fdd\u62a4', '\u9632\u6b62\u68c0\u6d4b\u6216\u7cfb\u7edf\u63a5\u7ba1\u65f6\u51fa\u73b0\u4e0d\u53ef\u89c1\u7684\u7ed5\u8fc7\u3002')
         ]),
-        el('p', { id: 'routingRegionDraftPreview', className: 'routing-draft-preview', textContent: '\u7b49\u5f85\u9009\u62e9\u573a\u666f\u3002' })
+        el('p', { id: 'routingSystemEntryHint', className: 'routing-draft-preview ok', textContent: '\u7cfb\u7edf\u89c4\u5219\u53ea\u8bfb\uff0c\u4e0d\u4f1a\u8981\u6c42\u4f60\u624b\u52a8\u7f16\u8f91\uff1b\u5982\u679c\u5f71\u54cd\u7528\u6237\u89c4\u5219\uff0cAegos \u4f1a\u8bf4\u660e\u539f\u56e0\u3002' }),
+        el('button', { id: 'routingShowSystemRulesBtn', className: 'ghost compact', attrs: { type: 'button' }, textContent: '\u67e5\u770b\u7cfb\u7edf\u89c4\u5219\u660e\u7ec6' })
       ])
     ]),
     el('section', { id: 'routingDraftListCard', className: 'routing-draft-card routing-draft-list-card' }, [
@@ -4536,7 +4529,7 @@ function ensureRoutingAssistantUi() {
   summary.after(detail, assistant);
   $('#previewWebsiteRuleBtn')?.addEventListener('click', previewWebsiteRoutingDraft);
   $('#previewAppRuleBtn')?.addEventListener('click', previewAppRoutingDraft);
-  $('#previewRegionRuleBtn')?.addEventListener('click', previewRegionRoutingDraft);
+  $('#routingShowSystemRulesBtn')?.addEventListener('click', () => setRoutingSummaryDetail('system'));
   $('#undoRoutingDraftBtn')?.addEventListener('click', undoLastRoutingDraft);
   $('#verifyAllRoutingDraftsBtn')?.addEventListener('click', verifyAllRoutingDrafts);
   $('#applyRoutingDraftsBtn')?.addEventListener('click', (event) => runDetachedButtonAction(event.currentTarget, '\u5e94\u7528\u4e2d...', applyRoutingDrafts));
@@ -5070,7 +5063,7 @@ function renderRoutingSummaryDetail() {
 }
 
 function setRoutingAssistantKind(kind = 'website') {
-  routingAssistantKind = ['website', 'app', 'region'].includes(kind) ? kind : 'website';
+  routingAssistantKind = ['website', 'app', 'system'].includes(kind) ? kind : 'website';
   const assistant = document.querySelector('.routing-assistant');
   if (assistant) assistant.dataset.kind = routingAssistantKind;
   document.querySelectorAll('[data-routing-kind]').forEach((button) => {
@@ -5082,7 +5075,7 @@ function setRoutingAssistantKind(kind = 'website') {
   const focusTarget = {
     website: '#routingWebsiteInput',
     app: '#routingAppInput',
-    region: '#routingRegionSelect'
+    system: '#routingShowSystemRulesBtn'
   }[routingAssistantKind];
   runWhenIdle(() => $(focusTarget)?.focus?.());
 }

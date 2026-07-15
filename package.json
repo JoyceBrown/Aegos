@@ -1,6 +1,6 @@
 {
   "name": "aegos",
-  "version": "3.5.86",
+  "version": "3.5.87",
   "description": "Aegos is a lightweight Tauri desktop proxy client derived from the Aegis 2.0 reliability line.",
   "type": "module",
   "private": true,
@@ -39,6 +39,7 @@
     "audit:stage2-closure": "node tools/stage2-closure-audit.js",
     "audit:current-mainline": "node tools/current-mainline-audit.js",
     "audit:phase2-pressure": "node tools/phase2-pressure-audit.js",
+    "audit:stage3-rules-page": "node tools/stage3-rules-page-audit.js",
     "audit:copy": "node tools/copy-encoding-audit.js",
     "audit:status-vocabulary": "node tools/status-vocabulary-audit.js",
     "audit:maturity": "node tools/maturity-gate-audit.js",
