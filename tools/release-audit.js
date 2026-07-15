@@ -292,6 +292,27 @@ check(
   'proxy API adapter',
 );
 check(
+  'proxy-group snapshot shaping is owned by core_runtime',
+  coreRuntimeRs.includes('pub const AEGOS_AUTO_SELECT_GROUP_NAME') &&
+    coreRuntimeRs.includes('pub fn normalize_proxy_groups_snapshot_defaults(') &&
+    coreRuntimeRs.includes('pub fn apply_group_resolution_with_selected_map(') &&
+    coreRuntimeRs.includes('pub fn annotate_manual_groups_with_names(') &&
+    coreRuntimeRs.includes('pub fn resolve_group_leaf(') &&
+    coreRuntimeRs.includes('proxy_group_snapshot_defaults_are_shaped_inside_runtime_boundary') &&
+    coreRuntimeRs.includes('proxy_group_resolution_and_manual_flags_are_runtime_shaped') &&
+    mainRs.includes('core_runtime::normalize_proxy_groups_snapshot_defaults(&mut groups)') &&
+    mainRs.includes('core_runtime::apply_group_resolution_with_selected_map(&mut groups, &selected_map)') &&
+    mainRs.includes('core_runtime::annotate_manual_groups_with_names(&mut groups, &manual_names)') &&
+    mainRs.includes('core_runtime::resolve_group_leaf(') &&
+    !mainRs.includes('fn normalize_proxy_groups_snapshot_defaults') &&
+    !mainRs.includes('fn apply_group_resolution_with_selected_map') &&
+    !mainRs.includes('fn annotate_manual_groups_with_names') &&
+    !mainRs.includes('fn snapshot_proxy_item_name') &&
+    !mainRs.includes('fn group_selected_name') &&
+    !mainRs.includes('fn resolve_group_leaf('),
+  'proxy-group default rows, aliases, references, and manual flags must stay out of main.rs',
+);
+check(
   'generic CoreManager controller escape hatch is removed',
   coreRuntimeRs.includes('pub fn version_probe(&self, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn runtime_reuse_ready(&self) -> bool') &&
@@ -353,7 +374,20 @@ check('core lifecycle has failed-start cleanup and proxy-preserving restart', ma
 check('profile config preflight is wired', mainRs.includes('fn preflight_runtime_config') && mainRs.includes('core_runtime::preflight_runtime_config') && coreRuntimeRs.includes('pub struct RuntimeConfigPreflightInput') && coreRuntimeRs.includes('pub fn preflight_runtime_config') && mainRs.includes('fn preflight_profile_file') && mainRs.includes('"Profile preflight"') && mainRs.includes('Config preflight passed') && mainRs.includes('Profile switch preflight failed') && mainRs.includes('Profile switch failed and rolled back') && coreRuntimeRs.includes('Config preflight failed: subscription has no usable proxies') && coreRuntimeRs.includes('Config preflight failed: proxy group references missing target(s)') && coreRuntimeRs.includes('Config preflight failed: mixed-port should be') && coreRuntimeRs.includes('runtime_config_preflight_validates_runtime_contract_inside_boundary') && configPipelineRs.includes('pub(crate) fn preflight_profile_source') && profileCompilerRs.includes('config_pipeline::preflight_profile_source(source, profile, settings)'), 'profile preflight');
 check('profile preflight allows proxy groups to reference other groups', coreRuntimeRs.includes('proxy_group_name_set') && coreRuntimeRs.includes('proxy_group_name_set.contains(name)') && coreRuntimeRs.includes('"PASS" | "COMPATIBLE"'), 'proxy group references');
 check('profile switch hot reloads through Aegos runtime transaction path', mainRs.includes('fn hot_reload_profile') && mainRs.includes('fn patch_profile_file') && mainRs.includes('fn launch_runtime_yaml') && coreRuntimeRs.includes('pub fn write_runtime_profile') && coreRuntimeRs.includes('fn atomic_write_text_confined') && mainRs.includes('core_runtime::write_runtime_profile') && mainRs.includes('aegos-runtime-profile.yaml') && coreRuntimeRs.includes('pub struct CoreRuntimeApplyTransaction') && coreRuntimeRs.includes('pub const CONFIG_FORCE_APPLY_ENDPOINT') && coreRuntimeRs.includes('pub const CONFIG_FORCE_APPLY_TIMEOUT_MS') && coreRuntimeRs.includes('pub const CONFIG_APPLY_VERSION_PROBE_TIMEOUT_MS') && coreRuntimeRs.includes('pub fn apply_runtime_config_path(&self, path: &Path)') && coreRuntimeRs.includes('pub fn config_apply_version_probe(&self)') && coreRuntimeRs.includes('controller.apply_runtime_config_path(&self.runtime_profile_path)') && coreRuntimeRs.includes('controller.config_apply_version_probe()') && !coreRuntimeRs.includes('controller.request("GET", "/version", None, 900)') && mainRs.includes('CoreRuntimeApplyTransaction::new') && mainRs.includes('apply_transaction.apply(&self.core_controller())') && !mainRs.includes('"/configs?force=true"') && mainRs.includes('Profile hot reload failed; falling back to restart'), 'profile hot reload');
-check('proxy state model persists selections and resolves group references', mainRs.includes('selected_proxy_map') && mainRs.includes('fn resolve_group_leaf') && mainRs.includes('fn apply_group_resolution') && mainRs.includes('realProxyName') && mainRs.includes('.selected_proxy_map') && mainRs.includes('insert(group.to_string(), proxy.to_string())'), 'selected proxy map/group resolution');
+check(
+  'proxy state model persists selections and resolves group references',
+  mainRs.includes('selected_proxy_map') &&
+    coreRuntimeRs.includes('pub fn resolve_group_leaf') &&
+    coreRuntimeRs.includes('pub fn apply_group_resolution_with_selected_map') &&
+    mainRs.includes('core_runtime::resolve_group_leaf(') &&
+    mainRs.includes('core_runtime::apply_group_resolution_with_selected_map(&mut groups, &selected_map)') &&
+    !mainRs.includes('fn resolve_group_leaf') &&
+    !mainRs.includes('fn apply_group_resolution') &&
+    mainRs.includes('realProxyName') &&
+    mainRs.includes('.selected_proxy_map') &&
+    mainRs.includes('insert(group.to_string(), proxy.to_string())'),
+  'selected proxy map/group resolution'
+);
 check('digest-based config apply skip is wired through profile compiler', mainRs.includes('mod profile_compiler') && mainRs.includes('mod config_pipeline') && configPipelineRs.includes('pub(crate) fn patch_config') && configPipelineRs.includes('pub(crate) fn patch_direct_profile') && configPipelineRs.includes('pub(crate) fn patch_profile_source') && configPipelineRs.includes('pub(crate) fn patch_speed_test_source') && configPipelineRs.includes('pub(crate) fn speed_test_firewall_ports_from_source') && configPipelineRs.includes('pub(crate) fn preflight_config') && configPipelineRs.includes('pub(crate) fn patch_and_preflight') && configPipelineRs.includes('pub(crate) fn preflight_profile_source') && profileCompilerRs.includes('pub(crate) struct RenderedProfile') && profileCompilerRs.includes('pub(crate) fn compile_profile_file') && profileCompilerRs.includes('pub(crate) fn compile_profile_source') && profileCompilerRs.includes('config_pipeline::preflight_profile_source(source, profile, settings)') && !profileCompilerRs.includes('patch_config_with_settings') && !profileCompilerRs.includes('preflight_runtime_config') && profileCompilerRs.includes('digest: sha256_text(&yaml)') && mainRs.includes('profile_compiler::compile_profile_file(profile, settings)') && mainRs.includes('config_pipeline::preflight_profile_source(source.config, &profile, &settings)') && mainRs.includes('config_pipeline::preflight_profile_source(source.clone(), &profile, &settings)') && mainRs.includes('config_pipeline::patch_profile_source(source, profile, &settings)') && mainRs.includes('config_pipeline::patch_direct_profile(&self.settings)') && mainRs.includes('config_pipeline::speed_test_firewall_ports_from_source(') && !mainRs.includes('config_pipeline::patch_speed_test_source(') && !mainRs.includes('proxy_ports_from_config') && !mainRs.includes('config_pipeline::patch_config(') && !mainRs.includes('config_pipeline::patch_and_preflight(') && !mainRs.includes('config_pipeline::preflight_config(') && !mainRs.includes('let patched = patch_config_with_settings(source, settings, Some(&profile.id))?') && mainRs.includes('runtime_config_digest') && mainRs.includes('Profile apply skipped; unchanged runtime config digest') && mainRs.includes('"skipped": true') && mainRs.includes('runtime_config_digest_is_stable_until_settings_change'), 'digest no-op profile apply');
 check('operation scheduler serializes core-changing actions', mainRs.includes('operations: Arc<Mutex<()>>') && mainRs.includes('fn lock_operation_queue') && mainRs.includes('operation_queue_is_exclusive') && ['startCore', 'stopCore', 'restartCore', 'setActiveProfile', 'updateSettings', 'updateSetting', 'setMode', 'changeProxy'].every((name) => mainRs.includes(`"${name}"`)), 'shared operation queue');
 check('profile switch diagnostics and local integration coverage exist', mainRs.includes('Profile switch requested:') && mainRs.includes('Profile switch completed:') && mainRs.includes('Profile switch preflight failed for') && mainRs.includes('running_switch_preflight_accepts_two_local_profiles'), 'switch diagnostics/integration');

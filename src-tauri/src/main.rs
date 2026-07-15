@@ -811,261 +811,6 @@ fn profile_proxy_groups_for_profile_snapshot(
     json!([{ "name": "GLOBAL", "type": "Selector", "now": now, "items": items }])
 }
 
-fn snapshot_proxy_item_name(item: &JsonValue) -> Option<&str> {
-    item.get("realProxyName")
-        .or_else(|| item.get("name"))
-        .and_then(JsonValue::as_str)
-        .filter(|name| !name.trim().is_empty())
-}
-
-fn snapshot_group_names(groups: &[JsonValue]) -> HashSet<String> {
-    groups
-        .iter()
-        .filter_map(|group| group.get("name").and_then(JsonValue::as_str))
-        .map(str::to_string)
-        .collect()
-}
-
-fn is_builtin_snapshot_proxy_item(item: &JsonValue) -> bool {
-    let name = item
-        .get("name")
-        .and_then(JsonValue::as_str)
-        .unwrap_or("")
-        .to_ascii_uppercase();
-    let item_type = item
-        .get("type")
-        .or_else(|| item.get("protocol"))
-        .and_then(JsonValue::as_str)
-        .unwrap_or("")
-        .to_ascii_uppercase();
-    item.get("builtin")
-        .and_then(JsonValue::as_bool)
-        .unwrap_or(false)
-        || matches!(
-            name.as_str(),
-            "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS" | "COMPATIBLE"
-        )
-        || matches!(
-            item_type.as_str(),
-            "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS" | "COMPATIBLE"
-        )
-}
-
-fn collect_real_snapshot_items(
-    groups: &[JsonValue],
-    group: &JsonValue,
-    group_names: &HashSet<String>,
-    seen_groups: &mut HashSet<String>,
-    seen_nodes: &mut HashSet<String>,
-    out: &mut Vec<JsonValue>,
-) {
-    let group_name = group
-        .get("name")
-        .and_then(JsonValue::as_str)
-        .unwrap_or("")
-        .to_string();
-    if !group_name.is_empty() && !seen_groups.insert(group_name) {
-        return;
-    }
-    let Some(items) = group.get("items").and_then(JsonValue::as_array) else {
-        return;
-    };
-    for item in items {
-        let name = snapshot_proxy_item_name(item).unwrap_or("");
-        if group_names.contains(name) {
-            if let Some(next_group) = groups
-                .iter()
-                .find(|group| group.get("name").and_then(JsonValue::as_str) == Some(name))
-            {
-                collect_real_snapshot_items(
-                    groups,
-                    next_group,
-                    group_names,
-                    seen_groups,
-                    seen_nodes,
-                    out,
-                );
-            }
-            continue;
-        }
-        if name.is_empty() || is_builtin_snapshot_proxy_item(item) {
-            continue;
-        }
-        if seen_nodes.insert(name.to_string()) {
-            out.push(item.clone());
-        }
-    }
-}
-
-fn all_real_snapshot_items(groups: &[JsonValue]) -> Vec<JsonValue> {
-    let group_names = snapshot_group_names(groups);
-    let mut seen_groups = HashSet::new();
-    let mut seen_nodes = HashSet::new();
-    let mut out = Vec::new();
-    for group in groups {
-        collect_real_snapshot_items(
-            groups,
-            group,
-            &group_names,
-            &mut seen_groups,
-            &mut seen_nodes,
-            &mut out,
-        );
-    }
-    out
-}
-
-fn normalize_proxy_groups_snapshot_defaults(groups: &mut JsonValue) {
-    let Some(group_items) = groups.as_array_mut() else {
-        return;
-    };
-    if group_items.is_empty() {
-        return;
-    }
-    let all_items = all_real_snapshot_items(group_items);
-    if all_items.is_empty() {
-        return;
-    }
-    let first_name = all_items
-        .first()
-        .and_then(snapshot_proxy_item_name)
-        .unwrap_or("")
-        .to_string();
-    let has_proxies = group_items.iter().any(|group| {
-        group
-            .get("name")
-            .and_then(JsonValue::as_str)
-            .map(is_proxies_group_name)
-            .unwrap_or(false)
-    });
-    if !has_proxies {
-        group_items.insert(
-            0,
-            json!({
-                "name": "Proxies",
-                "type": "Selector",
-                "now": first_name,
-                "items": all_items.clone()
-            }),
-        );
-    }
-    let has_auto = group_items.iter().any(|group| {
-        group
-            .get("name")
-            .and_then(JsonValue::as_str)
-            .map(is_aegos_auto_select_group_name)
-            .unwrap_or(false)
-    });
-    if !has_auto && all_items.len() >= 2 {
-        let insert_index = group_items
-            .iter()
-            .position(|group| {
-                group
-                    .get("name")
-                    .and_then(JsonValue::as_str)
-                    .map(is_proxies_group_name)
-                    .unwrap_or(false)
-            })
-            .map(|index| index.saturating_add(1))
-            .unwrap_or(0);
-        group_items.insert(
-            insert_index,
-            json!({
-                "name": "鑷姩閫夋嫨",
-                "type": "URLTest",
-                "now": first_name,
-                "items": all_items
-            }),
-        );
-    }
-}
-
-fn annotate_manual_groups_with_names(groups: &mut JsonValue, names: &HashSet<String>) {
-    if names.is_empty() {
-        return;
-    }
-    let Some(groups) = groups.as_array_mut() else {
-        return;
-    };
-    for group in groups {
-        let Some(items) = group
-            .get_mut("items")
-            .and_then(|items| items.as_array_mut())
-        else {
-            continue;
-        };
-        for item in items {
-            let Some(name) = item.get("name").and_then(|value| value.as_str()) else {
-                continue;
-            };
-            if names.contains(name) {
-                if let Some(map) = item.as_object_mut() {
-                    map.insert("manual".to_string(), json!(true));
-                    map.insert("fixed".to_string(), json!(true));
-                    map.insert("static".to_string(), json!(true));
-                    map.insert("source".to_string(), json!("manual"));
-                }
-            }
-        }
-    }
-}
-
-fn apply_group_resolution_with_selected_map(
-    groups: &mut JsonValue,
-    selected_map: &HashMap<String, String>,
-) {
-    let Some(snapshot) = groups.as_array().cloned() else {
-        return;
-    };
-    let group_names = snapshot
-        .iter()
-        .filter_map(|group| group.get("name").and_then(|value| value.as_str()))
-        .map(|name| name.to_string())
-        .collect::<HashSet<_>>();
-    let Some(group_items) = groups.as_array_mut() else {
-        return;
-    };
-    for group in group_items {
-        let group_name = group
-            .get("name")
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .to_string();
-        let selected = selected_map
-            .get(&group_name)
-            .cloned()
-            .unwrap_or_else(|| group_selected_name(group, selected_map));
-        if !selected.is_empty() {
-            if let Some(map) = group.as_object_mut() {
-                map.insert("now".to_string(), json!(selected));
-            }
-        }
-        if let Some(items) = group
-            .get_mut("items")
-            .and_then(|items| items.as_array_mut())
-        {
-            for item in items {
-                let Some(name) = item
-                    .get("name")
-                    .and_then(|value| value.as_str())
-                    .map(|value| value.to_string())
-                else {
-                    continue;
-                };
-                if !group_names.contains(&name) {
-                    continue;
-                }
-                let leaf = resolve_group_leaf(&snapshot, selected_map, &name, 0);
-                if let Some(map) = item.as_object_mut() {
-                    map.insert("group".to_string(), json!(true));
-                    map.insert("type".to_string(), json!("Group"));
-                    map.insert("realProxyName".to_string(), json!(leaf));
-                }
-            }
-        }
-    }
-}
-
 fn apply_speed_test_delays_from_state(groups: &mut JsonValue, speed: &SpeedTestState) {
     if speed.delays.is_empty() && speed.health.is_empty() {
         return;
@@ -1175,10 +920,10 @@ fn assemble_proxy_groups_snapshot(
                 })
                 .unwrap_or_else(|| json!([]))
         });
-    normalize_proxy_groups_snapshot_defaults(&mut groups);
-    apply_group_resolution_with_selected_map(&mut groups, &selected_map);
+    core_runtime::normalize_proxy_groups_snapshot_defaults(&mut groups);
+    core_runtime::apply_group_resolution_with_selected_map(&mut groups, &selected_map);
     apply_speed_test_delays_from_state(&mut groups, &speed);
-    annotate_manual_groups_with_names(&mut groups, &manual_names);
+    core_runtime::annotate_manual_groups_with_names(&mut groups, &manual_names);
     groups
 }
 
@@ -1421,16 +1166,6 @@ fn is_internal_proxy_group_name(name: &str) -> bool {
     name == AEGOS_OUTBOUND_IP_GROUP || name.eq_ignore_ascii_case("GLOBAL")
 }
 
-fn is_proxies_group_name(name: &str) -> bool {
-    name.eq_ignore_ascii_case("Proxies") || name.eq_ignore_ascii_case("Proxy")
-}
-
-fn is_aegos_auto_select_group_name(name: &str) -> bool {
-    name.eq_ignore_ascii_case("Aegos Auto Select")
-        || name.eq_ignore_ascii_case("Auto Select")
-        || name == "鑷姩閫夋嫨"
-}
-
 fn synthesize_default_proxy_groups_if_needed(config: &mut Mapping, proxy_names: &[String]) {
     if proxy_names.is_empty() {
         return;
@@ -1480,7 +1215,7 @@ fn ensure_proxies_group_contains_all_nodes(config: &mut Mapping, proxy_names: &[
     };
     let Some(index) = groups.iter().position(|group| {
         yaml_mapping_name(group)
-            .map(is_proxies_group_name)
+            .map(core_runtime::is_proxies_group_name)
             .unwrap_or(false)
     }) else {
         let insert_index = groups
@@ -1539,14 +1274,14 @@ fn ensure_auto_select_group_contains_all_nodes(config: &mut Mapping, proxy_names
     };
     let Some(index) = groups.iter().position(|group| {
         yaml_mapping_name(group)
-            .map(is_aegos_auto_select_group_name)
+            .map(core_runtime::is_aegos_auto_select_group_name)
             .unwrap_or(false)
     }) else {
         let insert_index = groups
             .iter()
             .position(|group| {
                 yaml_mapping_name(group)
-                    .map(is_proxies_group_name)
+                    .map(core_runtime::is_proxies_group_name)
                     .unwrap_or(false)
             })
             .map(|index| index.saturating_add(1))
@@ -4940,8 +4675,14 @@ rules:
         selected.insert("Final".to_string(), "Auto".to_string());
         selected.insert("Auto".to_string(), "Node A".to_string());
 
-        assert_eq!(resolve_group_leaf(&groups, &selected, "Final", 0), "Node A");
-        assert_eq!(resolve_group_leaf(&groups, &selected, "Auto", 0), "Node A");
+        assert_eq!(
+            core_runtime::resolve_group_leaf(&groups, &selected, "Final", 0),
+            "Node A"
+        );
+        assert_eq!(
+            core_runtime::resolve_group_leaf(&groups, &selected, "Auto", 0),
+            "Node A"
+        );
     }
 
     #[test]
@@ -5017,7 +4758,7 @@ rules:
                 "items": [{ "name": "SG 01", "type": "ss", "server": "sg.example.com" }]
             }
         ]);
-        normalize_proxy_groups_snapshot_defaults(&mut groups);
+        core_runtime::normalize_proxy_groups_snapshot_defaults(&mut groups);
         let names = groups
             .as_array()
             .expect("groups")
@@ -5025,7 +4766,7 @@ rules:
             .filter_map(|group| group.get("name").and_then(JsonValue::as_str))
             .collect::<Vec<_>>();
         assert_eq!(names[0], "Proxies");
-        assert_eq!(names[1], "鑷姩閫夋嫨");
+        assert_eq!(names[1], core_runtime::AEGOS_AUTO_SELECT_GROUP_NAME);
         let proxies_len = groups
             .as_array()
             .expect("groups")
@@ -5790,47 +5531,6 @@ fn yaml_proxy_to_json(proxy: &YamlValue) -> Option<JsonValue> {
         "alive": true,
         "delay": -1
     }))
-}
-
-fn group_selected_name(group: &JsonValue, selected_map: &HashMap<String, String>) -> String {
-    let group_name = group
-        .get("name")
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    selected_map
-        .get(group_name)
-        .filter(|value| !value.trim().is_empty())
-        .cloned()
-        .or_else(|| {
-            group
-                .get("now")
-                .and_then(|value| value.as_str())
-                .filter(|value| !value.trim().is_empty())
-                .map(|value| value.to_string())
-        })
-        .unwrap_or_default()
-}
-
-fn resolve_group_leaf(
-    groups: &[JsonValue],
-    selected_map: &HashMap<String, String>,
-    name: &str,
-    depth: usize,
-) -> String {
-    if depth > 8 {
-        return name.to_string();
-    }
-    let Some(group) = groups
-        .iter()
-        .find(|group| group.get("name").and_then(|value| value.as_str()) == Some(name))
-    else {
-        return name.to_string();
-    };
-    let selected = group_selected_name(group, selected_map);
-    if selected.is_empty() || selected == name {
-        return name.to_string();
-    }
-    resolve_group_leaf(groups, selected_map, &selected, depth + 1)
 }
 
 fn is_proxy_group_reference_item(item: &JsonValue) -> bool {
@@ -8229,7 +7929,12 @@ impl CoreManager {
                     .and_then(|value| value.as_str())
                     .map(str::to_string)
             })?;
-        let leaf = resolve_group_leaf(snapshot, &self.settings.selected_proxy_map, &primary, 0);
+        let leaf = core_runtime::resolve_group_leaf(
+            snapshot,
+            &self.settings.selected_proxy_map,
+            &primary,
+            0,
+        );
         if leaf.trim().is_empty() || leaf == AEGOS_OUTBOUND_IP_GROUP {
             return None;
         }

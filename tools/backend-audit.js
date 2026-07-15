@@ -312,15 +312,24 @@ check(
     mainRs.includes('controller: core_runtime::CoreController') &&
     coreRuntimeRs.includes('pub fn ui_proxy_groups_snapshot_or_none(') &&
     mainRs.includes('fn profile_proxy_groups_for_profile_snapshot') &&
-    mainRs.includes('fn apply_group_resolution_with_selected_map') &&
     mainRs.includes('fn apply_speed_test_delays_from_state') &&
     mainRs.includes('fn proxy_groups(state: State<AppState>)') &&
     mainRs.includes('assemble_proxy_groups_snapshot(') &&
     mainRs.includes('core.core_controller()') &&
+    mainRs.includes('core_runtime::normalize_proxy_groups_snapshot_defaults(&mut groups)') &&
+    mainRs.includes('core_runtime::apply_group_resolution_with_selected_map(&mut groups, &selected_map)') &&
+    mainRs.includes('core_runtime::annotate_manual_groups_with_names(&mut groups, &manual_names)') &&
+    coreRuntimeRs.includes('pub fn normalize_proxy_groups_snapshot_defaults(') &&
+    coreRuntimeRs.includes('pub fn apply_group_resolution_with_selected_map(') &&
+    coreRuntimeRs.includes('pub fn annotate_manual_groups_with_names(') &&
+    coreRuntimeRs.includes('proxy_group_snapshot_defaults_are_shaped_inside_runtime_boundary') &&
     mainRs.includes('fn preview_profile_groups(state: State<AppState>, id: String)') &&
     mainRs.includes('profile_proxy_groups_for_profile_snapshot(') &&
     !mainRs.includes('fn assemble_proxy_groups_snapshot(\n    running: bool,\n    controller_port: u16') &&
     !mainRs.includes('fn assemble_proxy_groups_snapshot(\n    running: bool,\n    controller: core_runtime::CoreController,\n    secret:') &&
+    !mainRs.includes('fn normalize_proxy_groups_snapshot_defaults') &&
+    !mainRs.includes('fn apply_group_resolution_with_selected_map') &&
+    !mainRs.includes('fn annotate_manual_groups_with_names') &&
     !mainRs.includes('state.core.lock().unwrap().proxy_groups()') &&
     !mainRs.includes('state.core.lock().unwrap().preview_profile_groups(&id)'),
   'node list refresh and subscription preview should snapshot core state, then do controller/file parsing outside the core lock'
@@ -533,8 +542,12 @@ check(
 check(
   'proxy state model keeps selected map and resolves group references',
   mainRs.includes('selected_proxy_map') &&
-    mainRs.includes('fn resolve_group_leaf') &&
-    mainRs.includes('fn apply_group_resolution_with_selected_map') &&
+    coreRuntimeRs.includes('pub fn resolve_group_leaf') &&
+    coreRuntimeRs.includes('pub fn apply_group_resolution_with_selected_map') &&
+    mainRs.includes('core_runtime::resolve_group_leaf(') &&
+    mainRs.includes('core_runtime::apply_group_resolution_with_selected_map(&mut groups, &selected_map)') &&
+    !mainRs.includes('fn resolve_group_leaf') &&
+    !mainRs.includes('fn apply_group_resolution_with_selected_map') &&
     mainRs.includes('realProxyName') &&
     mainRs.includes('proxy_items') &&
     mainRs.includes('profile_proxy_groups_for_profile_snapshot') &&

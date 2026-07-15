@@ -3,7 +3,7 @@ use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
@@ -21,6 +21,7 @@ pub const EXPECTED_SHA256: &str =
     "c14bda8dc4cc8910ccd2110fe2be083c51a1b66da59141a0b87aff6fe6126517";
 pub const MANAGED_BY: &str = "Aegos";
 pub const CONTROL_PLANE: &str = "Aegos";
+pub const AEGOS_AUTO_SELECT_GROUP_NAME: &str = "閼奉亜濮╅柅澶嬪";
 pub const CREATE_NO_WINDOW: u32 = 0x08000000;
 pub const READY_CHECK_ATTEMPTS: usize = 24;
 pub const READY_PROBE_TIMEOUT_MS: u64 = 300;
@@ -1115,6 +1116,299 @@ pub fn recent_rule_hits_from_connections(connections: &JsonValue, limit: usize) 
         .collect::<Vec<_>>())
 }
 
+pub fn is_proxies_group_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("Proxies") || name.eq_ignore_ascii_case("Proxy")
+}
+
+pub fn is_aegos_auto_select_group_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("Aegos Auto Select")
+        || name.eq_ignore_ascii_case("Auto Select")
+        || name == AEGOS_AUTO_SELECT_GROUP_NAME
+}
+
+pub fn normalize_proxy_groups_snapshot_defaults(groups: &mut JsonValue) {
+    let Some(group_items) = groups.as_array_mut() else {
+        return;
+    };
+    if group_items.is_empty() {
+        return;
+    }
+    let all_items = all_real_snapshot_items(group_items);
+    if all_items.is_empty() {
+        return;
+    }
+    let first_name = all_items
+        .first()
+        .and_then(snapshot_proxy_item_name)
+        .unwrap_or("")
+        .to_string();
+    let has_proxies = group_items.iter().any(|group| {
+        group
+            .get("name")
+            .and_then(JsonValue::as_str)
+            .map(is_proxies_group_name)
+            .unwrap_or(false)
+    });
+    if !has_proxies {
+        group_items.insert(
+            0,
+            json!({
+                "name": "Proxies",
+                "type": "Selector",
+                "now": first_name,
+                "items": all_items.clone()
+            }),
+        );
+    }
+    let has_auto = group_items.iter().any(|group| {
+        group
+            .get("name")
+            .and_then(JsonValue::as_str)
+            .map(is_aegos_auto_select_group_name)
+            .unwrap_or(false)
+    });
+    if !has_auto && all_items.len() >= 2 {
+        let insert_index = group_items
+            .iter()
+            .position(|group| {
+                group
+                    .get("name")
+                    .and_then(JsonValue::as_str)
+                    .map(is_proxies_group_name)
+                    .unwrap_or(false)
+            })
+            .map(|index| index.saturating_add(1))
+            .unwrap_or(0);
+        group_items.insert(
+            insert_index,
+            json!({
+                "name": AEGOS_AUTO_SELECT_GROUP_NAME,
+                "type": "URLTest",
+                "now": first_name,
+                "items": all_items
+            }),
+        );
+    }
+}
+
+pub fn apply_group_resolution_with_selected_map(
+    groups: &mut JsonValue,
+    selected_map: &HashMap<String, String>,
+) {
+    let Some(snapshot) = groups.as_array().cloned() else {
+        return;
+    };
+    let group_names = snapshot_group_names(&snapshot);
+    let Some(group_items) = groups.as_array_mut() else {
+        return;
+    };
+    for group in group_items {
+        let group_name = group
+            .get("name")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("")
+            .to_string();
+        let selected = selected_map
+            .get(&group_name)
+            .cloned()
+            .unwrap_or_else(|| group_selected_name(group, selected_map));
+        if !selected.is_empty() {
+            if let Some(map) = group.as_object_mut() {
+                map.insert("now".to_string(), json!(selected));
+            }
+        }
+        if let Some(items) = group.get_mut("items").and_then(JsonValue::as_array_mut) {
+            for item in items {
+                let Some(name) = item
+                    .get("name")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_string)
+                else {
+                    continue;
+                };
+                if !group_names.contains(&name) {
+                    continue;
+                }
+                let leaf = resolve_group_leaf(&snapshot, selected_map, &name, 0);
+                if let Some(map) = item.as_object_mut() {
+                    map.insert("group".to_string(), json!(true));
+                    map.insert("type".to_string(), json!("Group"));
+                    map.insert("realProxyName".to_string(), json!(leaf));
+                }
+            }
+        }
+    }
+}
+
+pub fn annotate_manual_groups_with_names(groups: &mut JsonValue, names: &HashSet<String>) {
+    if names.is_empty() {
+        return;
+    }
+    let Some(groups) = groups.as_array_mut() else {
+        return;
+    };
+    for group in groups {
+        let Some(items) = group.get_mut("items").and_then(JsonValue::as_array_mut) else {
+            continue;
+        };
+        for item in items {
+            let Some(name) = item.get("name").and_then(JsonValue::as_str) else {
+                continue;
+            };
+            if names.contains(name) {
+                if let Some(map) = item.as_object_mut() {
+                    map.insert("manual".to_string(), json!(true));
+                    map.insert("fixed".to_string(), json!(true));
+                    map.insert("static".to_string(), json!(true));
+                    map.insert("source".to_string(), json!("manual"));
+                }
+            }
+        }
+    }
+}
+
+fn snapshot_proxy_item_name(item: &JsonValue) -> Option<&str> {
+    item.get("realProxyName")
+        .or_else(|| item.get("name"))
+        .and_then(JsonValue::as_str)
+        .filter(|name| !name.trim().is_empty())
+}
+
+fn snapshot_group_names(groups: &[JsonValue]) -> HashSet<String> {
+    groups
+        .iter()
+        .filter_map(|group| group.get("name").and_then(JsonValue::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
+fn is_builtin_snapshot_proxy_item(item: &JsonValue) -> bool {
+    let name = item
+        .get("name")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    let item_type = item
+        .get("type")
+        .or_else(|| item.get("protocol"))
+        .and_then(JsonValue::as_str)
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    item.get("builtin")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false)
+        || matches!(
+            name.as_str(),
+            "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS" | "COMPATIBLE"
+        )
+        || matches!(
+            item_type.as_str(),
+            "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS" | "COMPATIBLE"
+        )
+}
+
+fn collect_real_snapshot_items(
+    groups: &[JsonValue],
+    group: &JsonValue,
+    group_names: &HashSet<String>,
+    seen_groups: &mut HashSet<String>,
+    seen_nodes: &mut HashSet<String>,
+    out: &mut Vec<JsonValue>,
+) {
+    let group_name = group
+        .get("name")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("")
+        .to_string();
+    if !group_name.is_empty() && !seen_groups.insert(group_name) {
+        return;
+    }
+    let Some(items) = group.get("items").and_then(JsonValue::as_array) else {
+        return;
+    };
+    for item in items {
+        let name = snapshot_proxy_item_name(item).unwrap_or("");
+        if group_names.contains(name) {
+            if let Some(next_group) = groups
+                .iter()
+                .find(|group| group.get("name").and_then(JsonValue::as_str) == Some(name))
+            {
+                collect_real_snapshot_items(
+                    groups,
+                    next_group,
+                    group_names,
+                    seen_groups,
+                    seen_nodes,
+                    out,
+                );
+            }
+            continue;
+        }
+        if name.is_empty() || is_builtin_snapshot_proxy_item(item) {
+            continue;
+        }
+        if seen_nodes.insert(name.to_string()) {
+            out.push(item.clone());
+        }
+    }
+}
+
+fn all_real_snapshot_items(groups: &[JsonValue]) -> Vec<JsonValue> {
+    let group_names = snapshot_group_names(groups);
+    let mut seen_groups = HashSet::new();
+    let mut seen_nodes = HashSet::new();
+    let mut out = Vec::new();
+    for group in groups {
+        collect_real_snapshot_items(
+            groups,
+            group,
+            &group_names,
+            &mut seen_groups,
+            &mut seen_nodes,
+            &mut out,
+        );
+    }
+    out
+}
+
+fn group_selected_name(group: &JsonValue, selected_map: &HashMap<String, String>) -> String {
+    let group_name = group.get("name").and_then(JsonValue::as_str).unwrap_or("");
+    selected_map
+        .get(group_name)
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .or_else(|| {
+            group
+                .get("now")
+                .and_then(JsonValue::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
+pub fn resolve_group_leaf(
+    groups: &[JsonValue],
+    selected_map: &HashMap<String, String>,
+    name: &str,
+    depth: usize,
+) -> String {
+    if depth > 8 {
+        return name.to_string();
+    }
+    let Some(group) = groups
+        .iter()
+        .find(|group| group.get("name").and_then(JsonValue::as_str) == Some(name))
+    else {
+        return name.to_string();
+    };
+    let selected = group_selected_name(group, selected_map);
+    if selected.is_empty() || selected == name {
+        return name.to_string();
+    }
+    resolve_group_leaf(groups, selected_map, &selected, depth + 1)
+}
+
 pub fn canonical_strategy_type(value: &str) -> String {
     match value
         .chars()
@@ -1883,6 +2177,107 @@ rules:
             Some("load-balance")
         );
         assert_eq!(routing_group_counts(&rows), (2, 2));
+    }
+
+    #[test]
+    fn proxy_group_snapshot_defaults_are_shaped_inside_runtime_boundary() {
+        let mut groups = json!([
+            {
+                "name": "Final",
+                "type": "Selector",
+                "now": "Auto",
+                "items": [
+                    { "name": "Auto", "type": "Group", "group": true },
+                    { "name": "DIRECT", "type": "Direct", "builtin": true }
+                ]
+            },
+            {
+                "name": "Auto",
+                "type": "URLTest",
+                "now": "Node A",
+                "items": [
+                    { "name": "Node A", "type": "ss" },
+                    { "name": "Node B", "type": "trojan" }
+                ]
+            }
+        ]);
+        normalize_proxy_groups_snapshot_defaults(&mut groups);
+        let rows = groups.as_array().expect("groups");
+        assert_eq!(
+            rows[0].get("name").and_then(JsonValue::as_str),
+            Some("Proxies")
+        );
+        assert_eq!(
+            rows[1].get("name").and_then(JsonValue::as_str),
+            Some(AEGOS_AUTO_SELECT_GROUP_NAME)
+        );
+        assert_eq!(
+            rows[0]
+                .get("items")
+                .and_then(JsonValue::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn proxy_group_resolution_and_manual_flags_are_runtime_shaped() {
+        let mut groups = json!([
+            {
+                "name": "Final",
+                "type": "Selector",
+                "now": "Auto",
+                "items": [{ "name": "Auto", "type": "Group", "group": true }]
+            },
+            {
+                "name": "Auto",
+                "type": "URLTest",
+                "now": "Node A",
+                "items": [
+                    { "name": "Node A", "type": "ss" },
+                    { "name": "Node B", "type": "trojan" }
+                ]
+            }
+        ]);
+        let mut selected = HashMap::new();
+        selected.insert("Final".to_string(), "Auto".to_string());
+        selected.insert("Auto".to_string(), "Node B".to_string());
+        assert_eq!(
+            resolve_group_leaf(groups.as_array().unwrap(), &selected, "Final", 0),
+            "Node B"
+        );
+
+        apply_group_resolution_with_selected_map(&mut groups, &selected);
+        let final_group_item = groups
+            .as_array()
+            .and_then(|groups| groups.first())
+            .and_then(|group| group.get("items"))
+            .and_then(JsonValue::as_array)
+            .and_then(|items| items.first())
+            .expect("group reference item");
+        assert_eq!(
+            final_group_item
+                .get("realProxyName")
+                .and_then(JsonValue::as_str),
+            Some("Node B")
+        );
+
+        annotate_manual_groups_with_names(&mut groups, &HashSet::from(["Node B".to_string()]));
+        let manual_item = groups
+            .as_array()
+            .and_then(|groups| groups.get(1))
+            .and_then(|group| group.get("items"))
+            .and_then(JsonValue::as_array)
+            .and_then(|items| items.get(1))
+            .expect("manual item");
+        assert_eq!(
+            manual_item.get("manual").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            manual_item.get("source").and_then(JsonValue::as_str),
+            Some("manual")
+        );
     }
 
     #[test]

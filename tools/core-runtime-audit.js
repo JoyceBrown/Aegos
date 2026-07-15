@@ -231,6 +231,34 @@ check(
   'proxy groups, delay probes, and explicit node selection must stay behind core_runtime typed APIs',
 );
 check(
+  'Aegos owns proxy-group snapshot shaping inside the core runtime boundary',
+  coreRuntimeRs.includes('pub const AEGOS_AUTO_SELECT_GROUP_NAME') &&
+    coreRuntimeRs.includes('pub fn is_proxies_group_name(') &&
+    coreRuntimeRs.includes('pub fn is_aegos_auto_select_group_name(') &&
+    coreRuntimeRs.includes('pub fn normalize_proxy_groups_snapshot_defaults(') &&
+    coreRuntimeRs.includes('pub fn apply_group_resolution_with_selected_map(') &&
+    coreRuntimeRs.includes('pub fn annotate_manual_groups_with_names(') &&
+    coreRuntimeRs.includes('pub fn resolve_group_leaf(') &&
+    coreRuntimeRs.includes('proxy_group_snapshot_defaults_are_shaped_inside_runtime_boundary') &&
+    coreRuntimeRs.includes('proxy_group_resolution_and_manual_flags_are_runtime_shaped') &&
+    mainRs.includes('core_runtime::normalize_proxy_groups_snapshot_defaults(&mut groups)') &&
+    mainRs.includes('core_runtime::apply_group_resolution_with_selected_map(&mut groups, &selected_map)') &&
+    mainRs.includes('core_runtime::annotate_manual_groups_with_names(&mut groups, &manual_names)') &&
+    mainRs.includes('core_runtime::resolve_group_leaf(') &&
+    mainRs.includes('core_runtime::is_proxies_group_name') &&
+    mainRs.includes('core_runtime::is_aegos_auto_select_group_name') &&
+    !mainRs.includes('fn normalize_proxy_groups_snapshot_defaults') &&
+    !mainRs.includes('fn apply_group_resolution_with_selected_map') &&
+    !mainRs.includes('fn annotate_manual_groups_with_names') &&
+    !mainRs.includes('fn is_proxies_group_name') &&
+    !mainRs.includes('fn is_aegos_auto_select_group_name') &&
+    !mainRs.includes('fn snapshot_proxy_item_name') &&
+    !mainRs.includes('fn all_real_snapshot_items') &&
+    !mainRs.includes('fn group_selected_name') &&
+    !mainRs.includes('fn resolve_group_leaf('),
+  'proxy-group default rows, group references, manual flags, and group-name aliases must not be rebuilt in main.rs',
+);
+check(
   'Aegos routes readiness and mode control through typed CoreController methods',
   coreRuntimeRs.includes('pub fn version_probe(&self, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn runtime_reuse_ready(&self) -> bool') &&
