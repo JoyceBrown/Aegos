@@ -2647,6 +2647,46 @@ impl CoreFirewallPolicyPlan {
     }
 }
 
+pub fn powershell_single_quote_escape(value: impl AsRef<str>) -> String {
+    value.as_ref().replace('\'', "''")
+}
+
+pub fn powershell_string_array_literal(items: &[String]) -> String {
+    let quoted = items
+        .iter()
+        .map(|item| format!("'{}'", powershell_single_quote_escape(item)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("@({quoted})")
+}
+
+pub fn normalize_windows_program_path_text(path: &str) -> String {
+    let mut text = path.replace('/', "\\");
+    if text.starts_with("\\\\?\\UNC\\") {
+        text = format!("\\\\{}", &text[8..]);
+    } else if text.starts_with("\\\\?\\") {
+        text = text[4..].to_string();
+    }
+    text
+}
+
+pub fn firewall_program_path(path: &Path) -> Option<String> {
+    if !path.exists() {
+        return None;
+    }
+    let normalized = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    Some(normalize_windows_program_path_text(
+        &normalized.to_string_lossy(),
+    ))
+}
+
+pub fn firewall_program_paths(paths: impl IntoIterator<Item = PathBuf>) -> Vec<String> {
+    paths
+        .into_iter()
+        .filter_map(|path| firewall_program_path(&path))
+        .collect()
+}
+
 pub fn speed_test_firewall_enabled(disconnect_protection_enabled: bool) -> bool {
     disconnect_protection_enabled
 }
@@ -3211,6 +3251,25 @@ mod tests {
             vec![443, 8443]
         );
         assert!(speed_test_firewall_ports(false, &[443, 8443]).is_empty());
+        assert_eq!(
+            powershell_single_quote_escape("Aegos' Core"),
+            "Aegos'' Core"
+        );
+        assert_eq!(
+            powershell_string_array_literal(&[
+                "C:\\Program Files\\Aegos\\aegos.exe".to_string(),
+                "C:\\Aegos' Core\\mihomo.exe".to_string(),
+            ]),
+            "@('C:\\Program Files\\Aegos\\aegos.exe', 'C:\\Aegos'' Core\\mihomo.exe')"
+        );
+        assert_eq!(
+            normalize_windows_program_path_text("\\\\?\\C:/Aegos/mihomo.exe"),
+            "C:\\Aegos\\mihomo.exe"
+        );
+        assert_eq!(
+            normalize_windows_program_path_text("\\\\?\\UNC\\server/share/aegos.exe"),
+            "\\\\server\\share\\aegos.exe"
+        );
     }
 
     #[test]

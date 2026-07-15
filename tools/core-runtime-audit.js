@@ -651,17 +651,26 @@ check(
     coreRuntimeRs.includes('pub fn speed_test_firewall_enabled') &&
     coreRuntimeRs.includes('pub fn speed_test_firewall_ports') &&
     coreRuntimeRs.includes('pub fn firewall_remote_port_list') &&
+    coreRuntimeRs.includes('pub fn powershell_single_quote_escape') &&
+    coreRuntimeRs.includes('pub fn powershell_string_array_literal') &&
+    coreRuntimeRs.includes('pub fn normalize_windows_program_path_text') &&
+    coreRuntimeRs.includes('pub fn firewall_program_path') &&
+    coreRuntimeRs.includes('pub fn firewall_program_paths') &&
     coreRuntimeRs.includes('firewall_policy_contract_is_owned_by_runtime_boundary') &&
     mainRs.includes('CoreFirewallPolicyPlan::disconnect_protection') &&
     mainRs.includes('CoreFirewallPolicyPlan::speed_test') &&
     mainRs.includes('core_runtime::speed_test_firewall_enabled') &&
     mainRs.includes('core_runtime::speed_test_firewall_ports') &&
     mainRs.includes('core_runtime::firewall_remote_port_list') &&
+    mainRs.includes('core_runtime::firewall_program_paths') &&
+    mainRs.includes('core_runtime::powershell_string_array_literal') &&
     !mainRs.includes('format!("{APP_NAME} Kill Switch') &&
     !mainRs.includes('kill-switch-firewall-profile.json') &&
     !mainRs.includes('kill-switch-speed-test-rules.marker') &&
+    !mainRs.includes('fn firewall_program_path') &&
+    !mainRs.includes('fn ps_array_literal') &&
     !mainRs.includes('fn ps_port_list'),
-  'main.rs may execute firewall scripts, but group names, state files, and speed-test firewall policy belong to core_runtime',
+  'main.rs may execute firewall scripts, but group names, state files, program path shaping, and speed-test firewall policy belong to core_runtime',
 );
 check(
   'release gate requires core runtime audit',

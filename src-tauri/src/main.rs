@@ -4877,29 +4877,6 @@ fn ps_escape(value: impl AsRef<str>) -> String {
     value.as_ref().replace('\'', "''")
 }
 
-fn firewall_program_path(path: &Path) -> Option<String> {
-    if !path.exists() {
-        return None;
-    }
-    let normalized = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let mut text = normalized.to_string_lossy().replace('/', "\\");
-    if text.starts_with("\\\\?\\UNC\\") {
-        text = format!("\\\\{}", &text[8..]);
-    } else if text.starts_with("\\\\?\\") {
-        text = text[4..].to_string();
-    }
-    Some(text)
-}
-
-fn ps_array_literal(items: &[String]) -> String {
-    let quoted = items
-        .iter()
-        .map(|item| format!("'{}'", ps_escape(item)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("@({quoted})")
-}
-
 fn run_powershell(script: &str) -> Result<String, String> {
     let wrapped_script = format!(
         "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;\n{script}"
@@ -5125,11 +5102,8 @@ fn build_kill_switch_script(enable: bool, user_data: &Path, core_path: &Path) ->
     let group = plan.group_name;
     let snapshot = plan.state_path(user_data);
     let exe = std::env::current_exe().unwrap_or_default();
-    let programs = [exe, core_path.to_path_buf()]
-        .into_iter()
-        .filter_map(|path| firewall_program_path(&path))
-        .collect::<Vec<_>>();
-    let program_array = ps_array_literal(&programs);
+    let programs = core_runtime::firewall_program_paths([exe, core_path.to_path_buf()]);
+    let program_array = core_runtime::powershell_string_array_literal(&programs);
     if enable {
         format!(
             r#"
@@ -5242,11 +5216,8 @@ fn build_speed_test_firewall_script(
     let plan = core_runtime::CoreFirewallPolicyPlan::speed_test();
     let group = plan.group_name;
     let exe = std::env::current_exe().unwrap_or_default();
-    let programs = [exe, core_path.to_path_buf()]
-        .into_iter()
-        .filter_map(|path| firewall_program_path(&path))
-        .collect::<Vec<_>>();
-    let program_array = ps_array_literal(&programs);
+    let programs = core_runtime::firewall_program_paths([exe, core_path.to_path_buf()]);
+    let program_array = core_runtime::powershell_string_array_literal(&programs);
     let port_list = core_runtime::firewall_remote_port_list(ports);
     let marker = plan.state_path(user_data);
     if enable {
