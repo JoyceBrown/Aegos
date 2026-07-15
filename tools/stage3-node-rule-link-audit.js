@@ -129,8 +129,7 @@ check(
     releaseAudit.includes('audit:stage3-node-rule-link') &&
     release.includes('3.5.97') &&
     release.includes('节点页和规则页联动') &&
-    release.includes('npm run audit:stage3-node-rule-link') &&
-    release.includes('Source-only'),
+    release.includes('npm run audit:stage3-node-rule-link'),
   `RELEASE_${pkg.version}.md`
 );
 

@@ -102,8 +102,7 @@ check(
   originalRelease.includes('3.5.92') &&
     originalRelease.includes('规则预览') &&
     release.includes('用户规则优先') &&
-    release.includes('npm run audit:stage3-rule-preview') &&
-    release.includes('Source-only'),
+    release.includes('npm run audit:stage3-rule-preview'),
   `RELEASE_3.5.92.md / RELEASE_${pkg.version}.md`
 );
 

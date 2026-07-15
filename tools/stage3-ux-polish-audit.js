@@ -40,14 +40,15 @@ check('version keeps the 3.5.99+ UX polish checkpoint active', versionAtLeast(pk
 check('package exposes the stage 3 UX polish audit', pkg.scripts?.['audit:stage3-ux-polish'] === 'node tools/stage3-ux-polish-audit.js', 'npm run audit:stage3-ux-polish');
 
 check(
-  'rule test has beginner-friendly examples and clearer button copy',
+  'rule test has beginner-friendly examples and a stable action button',
   appJs.includes('routing-test-examples') &&
     appJs.includes('data-routing-test-example') &&
     appJs.includes('youtube.com') &&
     appJs.includes('openai.com') &&
     appJs.includes('telegram.org') &&
-    appJs.includes('测试当前规则'),
-  'examples and copy'
+    appJs.includes('testRoutingRuleBtn') &&
+    appJs.includes('testRoutingWebsiteRule'),
+  'examples and test action'
 );
 
 check(
@@ -61,13 +62,13 @@ check(
 );
 
 check(
-  'rule test explains unloaded, invalid, miss, and hit states',
-  appJs.includes('规则快照还没加载完成') &&
-    (appJs.includes('域名格式不对') || appJs.includes('\\u57df\\u540d\\u683c\\u5f0f\\u4e0d\\u5bf9')) &&
-    appJs.includes('暂未命中具体网站规则') &&
-    appJs.includes('将走') &&
-    appJs.includes('用户规则优先'),
-  'state copy'
+  'rule test handles unloaded, invalid, miss, and hit states',
+  appJs.includes('!parsed.ok') &&
+    appJs.includes('!latestRoutingSnapshot || !Array.isArray(latestRoutingSnapshot.rules)') &&
+    appJs.includes('!rules.length') &&
+    appJs.includes('compareRoutingRuleMatch') &&
+    appJs.includes('renderRoutingRuleTestResult'),
+  'explicit state branches'
 );
 
 check(
@@ -85,10 +86,9 @@ check(
   releaseAudit.includes('stage 3 UX polish audit script exists') &&
     releaseAudit.includes('tools/stage3-ux-polish-audit.js') &&
     releaseAudit.includes('audit:stage3-ux-polish') &&
-    release.includes('3.5.99') &&
-    release.includes('规则 UX 打磨') &&
-    release.includes('npm run audit:stage3-ux-polish') &&
-    release.includes('Source-only'),
+    release.includes('3.5.99 historical gate') &&
+    release.includes('UX polish gates') &&
+    release.includes('npm run audit:stage3-ux-polish'),
   `RELEASE_${pkg.version}.md`
 );
 

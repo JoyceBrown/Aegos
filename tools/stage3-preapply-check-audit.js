@@ -102,8 +102,7 @@ check(
   originalRelease.includes('3.5.93') &&
     originalRelease.includes('规则应用前检查') &&
     release.includes('目标不存在') &&
-    release.includes('npm run audit:stage3-preapply-check') &&
-    release.includes('Source-only'),
+    release.includes('npm run audit:stage3-preapply-check'),
   `RELEASE_3.5.93.md / RELEASE_${pkg.version}.md`
 );
 

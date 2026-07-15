@@ -88,8 +88,7 @@ check(
     releaseAudit.includes('audit:stage3-system-rules') &&
     release.includes('3.5.96') &&
     release.includes('系统规则解释') &&
-    release.includes('npm run audit:stage3-system-rules') &&
-    release.includes('Source-only'),
+    release.includes('npm run audit:stage3-system-rules'),
   `RELEASE_${pkg.version}.md`
 );
 

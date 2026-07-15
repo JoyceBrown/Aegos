@@ -101,8 +101,7 @@ check(
   'release history records 3.5.89 app wizard and current release keeps verification',
   originalRelease.includes('3.5.89') &&
     originalRelease.includes('应用规则向导') &&
-    release.includes('npm run audit:stage3-app-rules') &&
-    release.includes('Source-only'),
+    release.includes('npm run audit:stage3-app-rules'),
   `RELEASE_3.5.89.md / RELEASE_${pkg.version}.md`
 );
 

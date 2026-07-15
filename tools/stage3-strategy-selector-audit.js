@@ -82,8 +82,7 @@ check(
   'release history records 3.5.90 strategy selector and current release keeps verification',
   originalRelease.includes('3.5.90') &&
     originalRelease.includes('策略选择器') &&
-    release.includes('npm run audit:stage3-strategy-selector') &&
-    release.includes('Source-only'),
+    release.includes('npm run audit:stage3-strategy-selector'),
   `RELEASE_3.5.90.md / RELEASE_${pkg.version}.md`
 );
 

@@ -109,8 +109,7 @@ check(
     releaseAudit.includes('audit:stage3-rule-test') &&
     release.includes('3.5.98') &&
     release.includes('规则测试按钮') &&
-    release.includes('npm run audit:stage3-rule-test') &&
-    release.includes('Source-only'),
+    release.includes('npm run audit:stage3-rule-test'),
   `RELEASE_${pkg.version}.md`
 );
 

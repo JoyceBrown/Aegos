@@ -91,8 +91,7 @@ check(
     release.includes('规则应用后验证') &&
     release.includes('目标不存在') &&
     release.includes('部署验证') &&
-    release.includes('npm run audit:stage3-postapply-verify') &&
-    release.includes('Source-only'),
+    release.includes('npm run audit:stage3-postapply-verify'),
   `RELEASE_${pkg.version}.md`
 );
 

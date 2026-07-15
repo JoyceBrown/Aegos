@@ -98,8 +98,7 @@ check(
   'release history records 3.5.88 website wizard and current release keeps verification',
   originalRelease.includes('3.5.88') &&
     originalRelease.includes('网站规则向导') &&
-    release.includes('npm run audit:stage3-website-rules') &&
-    release.includes('Source-only'),
+    release.includes('npm run audit:stage3-website-rules'),
   `RELEASE_3.5.88.md / RELEASE_${pkg.version}.md`
 );
 

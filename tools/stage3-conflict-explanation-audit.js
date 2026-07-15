@@ -92,8 +92,7 @@ check(
   originalRelease.includes('3.5.91') &&
     originalRelease.includes('规则冲突解释') &&
     release.includes('用户规则优先') &&
-    release.includes('npm run audit:stage3-conflict-explanation') &&
-    release.includes('Source-only'),
+    release.includes('npm run audit:stage3-conflict-explanation'),
   `RELEASE_3.5.91.md / RELEASE_${pkg.version}.md`
 );
 

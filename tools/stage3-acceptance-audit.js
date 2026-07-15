@@ -1,0 +1,136 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const pass = [];
+const fail = [];
+
+function read(rel) {
+  return fs.readFileSync(path.join(root, rel), 'utf8').replace(/\r\n/g, '\n');
+}
+
+function readJson(rel) {
+  return JSON.parse(read(rel));
+}
+
+function exists(rel) {
+  return fs.existsSync(path.join(root, rel));
+}
+
+function sha256(rel) {
+  return crypto.createHash('sha256').update(fs.readFileSync(path.join(root, rel))).digest('hex');
+}
+
+function check(name, ok, detail = '') {
+  (ok ? pass : fail).push({ name, ok: Boolean(ok), detail });
+}
+
+function versionAtLeast(version, minimum) {
+  const parse = (value) => String(value).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const current = parse(version);
+  const target = parse(minimum);
+  for (let index = 0; index < Math.max(current.length, target.length); index += 1) {
+    const left = current[index] || 0;
+    const right = target[index] || 0;
+    if (left !== right) return left > right;
+  }
+  return true;
+}
+
+const pkg = readJson('package.json');
+const appJs = read('src/app.js');
+const mainRs = read('src-tauri/src/main.rs');
+const interactionSmoke = read('tools/interaction-smoke.js');
+const releaseAudit = read('tools/release-audit.js');
+const release = exists(`RELEASE_${pkg.version}.md`) ? read(`RELEASE_${pkg.version}.md`) : '';
+const installer = `src-tauri/target/release/bundle/nsis/Aegos_${pkg.version}_x64-setup.exe`;
+const installerHash = exists(installer) ? sha256(installer) : '';
+const testStart = appJs.indexOf('function testRoutingWebsiteRule');
+const testEnd = appJs.indexOf('function renderRoutingDraftPreview', testStart);
+const testBody = testStart >= 0 && testEnd > testStart ? appJs.slice(testStart, testEnd) : '';
+
+check('version is the 3.6.0 stage-3 acceptance checkpoint', versionAtLeast(pkg.version, '3.6.0'), pkg.version);
+check('package exposes the stage 3 acceptance audit', pkg.scripts?.['audit:stage3-acceptance'] === 'node tools/stage3-acceptance-audit.js', 'npm run audit:stage3-acceptance');
+
+check(
+  'ordinary user can create, verify, apply, edit, delete, and test routing rules',
+  appJs.includes('previewWebsiteRoutingDraft') &&
+    appJs.includes('previewAppRoutingDraft') &&
+    appJs.includes('verifyAllRoutingDrafts') &&
+    appJs.includes('applyRoutingDrafts') &&
+    appJs.includes('submitRoutingRuleForm') &&
+    appJs.includes('deleteRoutingRule') &&
+    appJs.includes('testRoutingWebsiteRule') &&
+    mainRs.includes('fn apply_routing_rule_edit') &&
+    mainRs.includes('commit_profile_routing_config'),
+  'stage 3 rule lifecycle'
+);
+
+check(
+  'stage 3 remains safe: preview/test are read-only and apply uses preflight/rollback',
+  (appJs.includes('precheckRoutingDraftsBeforeApply') &&
+      appJs.includes('routingRuleMatchesWebsite') &&
+      !testBody.includes('runBackgroundJob') &&
+      !testBody.includes('invoke(')) &&
+      mainRs.includes('preflight_profile_source') &&
+      mainRs.includes('rollback'),
+  'read-only preview/test and guarded apply'
+);
+
+check(
+  'interaction smoke covers the real user path',
+  interactionSmoke.includes('routingRuleTestInput') &&
+    interactionSmoke.includes('previewWebsiteRuleBtn') &&
+    interactionSmoke.includes('previewAppRuleBtn') &&
+    interactionSmoke.includes('connection draft action did not navigate to routing page') &&
+    interactionSmoke.includes('node route action did not open the target-site editor') &&
+    appJs.includes('verifyAllRoutingDraftsBtn') &&
+    appJs.includes('applyRoutingDraftsBtn'),
+  'interaction smoke user path'
+);
+
+check(
+  'all stage 3 audit gates are still wired',
+  [
+    'audit:stage3-rules-page',
+    'audit:stage3-website-rules',
+    'audit:stage3-app-rules',
+    'audit:stage3-strategy-selector',
+    'audit:stage3-conflict-explanation',
+    'audit:stage3-rule-preview',
+    'audit:stage3-preapply-check',
+    'audit:stage3-postapply-verify',
+    'audit:stage3-rule-list-management',
+    'audit:stage3-system-rules',
+    'audit:stage3-node-rule-link',
+    'audit:stage3-rule-test',
+    'audit:stage3-ux-polish'
+  ].every((name) => Boolean(pkg.scripts?.[name])),
+  'stage 3 audit scripts'
+);
+
+check(
+  'release audit knows the stage 3 acceptance gate',
+  releaseAudit.includes('stage 3 acceptance audit script exists') &&
+    releaseAudit.includes('tools/stage3-acceptance-audit.js') &&
+    releaseAudit.includes('audit:stage3-acceptance'),
+  'tools/release-audit.js'
+);
+
+check(
+  '3.6.0 installer exists and release note records its hash',
+  exists(installer) &&
+    installerHash.length === 64 &&
+    release.includes('3.6.0') &&
+    release.includes('规则页验收安装包') &&
+    release.includes('npm run audit:stage3-acceptance') &&
+    release.includes(installerHash) &&
+    !release.includes('Source-only'),
+  installer
+);
+
+const result = { ok: fail.length === 0, failed: fail, passed: pass, installer, installerHash, generatedAt: new Date().toISOString() };
+console.log(JSON.stringify(result, null, 2));
+process.exit(result.ok ? 0 : 2);

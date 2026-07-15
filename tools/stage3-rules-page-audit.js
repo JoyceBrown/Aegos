@@ -97,8 +97,7 @@ check(
   originalRelease.includes('3.5.87') &&
     originalRelease.includes('规则页重新定义') &&
     originalRelease.includes('网站规则、应用规则、系统规则') &&
-    release.includes('npm run audit:stage3-rules-page') &&
-    release.includes('Source-only'),
+    release.includes('npm run audit:stage3-rules-page'),
   `RELEASE_3.5.87.md / RELEASE_${pkg.version}.md`
 );
 

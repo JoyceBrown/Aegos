@@ -117,8 +117,7 @@ check(
     releaseAudit.includes('audit:stage3-rule-list-management') &&
     release.includes('3.5.95') &&
     release.includes('规则列表可管理') &&
-    release.includes('npm run audit:stage3-rule-list-management') &&
-    release.includes('Source-only'),
+    release.includes('npm run audit:stage3-rule-list-management'),
   `RELEASE_${pkg.version}.md`
 );
 
