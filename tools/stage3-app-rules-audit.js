@@ -22,11 +22,24 @@ const pkg = JSON.parse(read('package.json'));
 const appJs = read('src/app.js');
 const releaseAudit = read('tools/release-audit.js');
 const release = exists(`RELEASE_${pkg.version}.md`) ? read(`RELEASE_${pkg.version}.md`) : '';
+const originalRelease = exists('RELEASE_3.5.89.md') ? read('RELEASE_3.5.89.md') : '';
 const previewStart = appJs.indexOf('function previewAppRoutingDraft');
 const previewEnd = appJs.indexOf('function previewRegionRoutingDraft', previewStart);
 const previewBody = previewStart >= 0 && previewEnd > previewStart ? appJs.slice(previewStart, previewEnd) : '';
 
-check('version is the 3.5.89 app-rule wizard checkpoint', pkg.version === '3.5.89', pkg.version);
+function versionAtLeast(version, minimum) {
+  const parse = (value) => String(value).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const current = parse(version);
+  const target = parse(minimum);
+  for (let index = 0; index < Math.max(current.length, target.length); index += 1) {
+    const left = current[index] || 0;
+    const right = target[index] || 0;
+    if (left !== right) return left > right;
+  }
+  return true;
+}
+
+check('version keeps the 3.5.89+ app-rule wizard active', versionAtLeast(pkg.version, '3.5.89'), pkg.version);
 check('package exposes the stage 3 app rules audit', pkg.scripts?.['audit:stage3-app-rules'] === 'node tools/stage3-app-rules-audit.js', 'npm run audit:stage3-app-rules');
 
 check(
@@ -80,12 +93,12 @@ check(
 );
 
 check(
-  'release note records plan and verification for 3.5.89',
-  release.includes('3.5.89') &&
-    release.includes('应用规则向导') &&
+  'release history records 3.5.89 app wizard and current release keeps verification',
+  originalRelease.includes('3.5.89') &&
+    originalRelease.includes('应用规则向导') &&
     release.includes('npm run audit:stage3-app-rules') &&
     release.includes('Source-only'),
-  `RELEASE_${pkg.version}.md`
+  `RELEASE_3.5.89.md / RELEASE_${pkg.version}.md`
 );
 
 const result = { ok: fail.length === 0, failed: fail, passed: pass, generatedAt: new Date().toISOString() };

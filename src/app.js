@@ -4568,9 +4568,9 @@ function ensureRoutingAssistantUi() {
 function routingDraftAction(action = 'proxy', targetOverride = '') {
   const proxyTarget = String(targetOverride || '').trim() || routingProxyTargetOptions()[0]?.value || 'Proxies';
   const actionMap = {
-    proxy: { label: `\u8d70 ${routingTargetLabel(proxyTarget)}`, target: proxyTarget },
+    proxy: { label: `\u8d70 ${routingTargetDisplayLabel(proxyTarget)}`, target: proxyTarget },
     direct: { label: '\u76f4\u8fde', target: 'DIRECT' },
-    reject: { label: '\u62d2\u7edd', target: 'REJECT' }
+    reject: { label: '\u963b\u6b62', target: 'REJECT' }
   };
   return actionMap[action] || actionMap.proxy;
 }
@@ -4586,15 +4586,23 @@ function existingRoutingRules() {
 function routingTargetOptions() {
   const groups = Array.isArray(latestRoutingSnapshot?.groups) ? latestRoutingSnapshot.groups : [];
   const nodes = Array.isArray(latestGroup?.items) ? latestGroup.items : [];
+  const groupLabel = (group = {}, fallback = '') => {
+    const name = String(group.name || fallback || 'Proxies').trim();
+    const type = String(group.type || '').replace(/[\s_-]/g, '').toLowerCase();
+    if (type === 'urltest') return `\u81ea\u52a8\u6700\u5feb\uff1a${name}`;
+    if (type === 'fallback') return `\u81ea\u52a8\u5907\u7528\uff1a${name}`;
+    if (type === 'loadbalance') return `\u81ea\u52a8\u5747\u8861\uff1a${name}`;
+    return `\u624b\u52a8\u9009\u62e9\uff1a${name}`;
+  };
   const options = [
-    { label: '\u4e3b\u8981\u4ee3\u7406\u7ec4', value: groups[0]?.name || 'Proxies', kind: 'group' },
+    { label: groupLabel(groups[0], groups[0]?.name || 'Proxies'), value: groups[0]?.name || 'Proxies', kind: 'group' },
     { label: '\u76f4\u8fde', value: 'DIRECT' },
-    { label: '\u62d2\u7edd', value: 'REJECT' }
+    { label: '\u963b\u6b62', value: 'REJECT' }
   ];
   groups.slice(0, 12).forEach((group) => {
     const name = String(group.name || '').trim();
     if (name && !options.some((item) => item.value === name)) {
-      options.push({ label: name, value: name, kind: 'group' });
+      options.push({ label: groupLabel(group, name), value: name, kind: 'group' });
     }
   });
   const current = selectedNode || latestGroup?.now || '';
@@ -4616,6 +4624,12 @@ function routingTargetOptions() {
 
 function routingProxyTargetOptions() {
   return routingTargetOptions().filter((item) => !['DIRECT', 'REJECT'].includes(item.value));
+}
+
+function routingTargetDisplayLabel(target = '') {
+  const value = String(target || '');
+  const option = routingTargetOptions().find((item) => item.value === value);
+  return option?.label || routingTargetLabel(value);
 }
 
 function refreshRoutingTargetOptions() {
