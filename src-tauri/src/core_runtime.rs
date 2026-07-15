@@ -569,6 +569,61 @@ pub fn recovery_candidate_plan(groups: &JsonValue, limit: usize) -> Vec<Recovery
     plan
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryProfileFailoverPlan {
+    pub id: String,
+    pub name: String,
+    pub profile_type: String,
+}
+
+pub fn recovery_profile_failover_plan(
+    profiles: &JsonValue,
+    active_profile_id: &str,
+) -> Vec<RecoveryProfileFailoverPlan> {
+    let Some(profile_items) = profiles.as_array() else {
+        return Vec::new();
+    };
+    let mut seen = HashSet::new();
+    let mut plan = Vec::new();
+    for profile in profile_items {
+        let id = profile
+            .get("id")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("")
+            .trim();
+        if id.is_empty() || id == active_profile_id || id == "direct" {
+            continue;
+        }
+        if !seen.insert(id.to_string()) {
+            continue;
+        }
+        let profile_type = profile
+            .get("type")
+            .or_else(|| profile.get("profile_type"))
+            .and_then(JsonValue::as_str)
+            .unwrap_or("")
+            .trim();
+        if profile_type.eq_ignore_ascii_case("builtin") {
+            continue;
+        }
+        let name = profile
+            .get("name")
+            .and_then(JsonValue::as_str)
+            .unwrap_or(id)
+            .trim();
+        plan.push(RecoveryProfileFailoverPlan {
+            id: id.to_string(),
+            name: if name.is_empty() {
+                id.to_string()
+            } else {
+                name.to_string()
+            },
+            profile_type: profile_type.to_string(),
+        });
+    }
+    plan
+}
+
 pub fn protection_phase(
     core_running: bool,
     traffic_takeover: bool,
@@ -3894,6 +3949,37 @@ rules:
                     group_name: "Proxies".to_string(),
                     proxy_name: "JP 01".to_string(),
                     protocol: "tuic".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn recovery_profile_failover_plan_filters_runtime_candidates() {
+        let profiles = json!([
+            { "id": "active", "name": "Active", "type": "url" },
+            { "id": "direct", "name": "Direct", "type": "builtin" },
+            { "id": "builtin-a", "name": "Builtin", "type": "builtin" },
+            { "id": "", "name": "No id", "type": "url" },
+            { "id": "backup-a", "name": "Backup A", "type": "url" },
+            { "id": "backup-a", "name": "Backup A Duplicate", "type": "url" },
+            { "id": "backup-b", "name": "", "profile_type": "file" }
+        ]);
+
+        let plan = recovery_profile_failover_plan(&profiles, "active");
+
+        assert_eq!(
+            plan,
+            vec![
+                RecoveryProfileFailoverPlan {
+                    id: "backup-a".to_string(),
+                    name: "Backup A".to_string(),
+                    profile_type: "url".to_string(),
+                },
+                RecoveryProfileFailoverPlan {
+                    id: "backup-b".to_string(),
+                    name: "backup-b".to_string(),
+                    profile_type: "file".to_string(),
                 },
             ]
         );

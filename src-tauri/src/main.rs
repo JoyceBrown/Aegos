@@ -7763,19 +7763,11 @@ impl CoreManager {
         }
         if self.settings.reliability_profile_failover {
             let original_profile_id = self.settings.active_profile_id.clone();
-            let profile_ids = self
-                .settings
-                .profiles
-                .iter()
-                .filter(|profile| {
-                    profile.id != original_profile_id
-                        && profile.id != "direct"
-                        && profile.profile_type != "builtin"
-                })
-                .map(|profile| profile.id.clone())
-                .collect::<Vec<_>>();
-            for profile_id in profile_ids {
-                let profile = self.set_active_profile(&profile_id)?;
+            let profiles = json!(self.settings.profiles);
+            let failover_plan =
+                core_runtime::recovery_profile_failover_plan(&profiles, &original_profile_id);
+            for candidate in failover_plan {
+                let profile = self.set_active_profile(&candidate.id)?;
                 self.add_log(format!("Recovery trying profile: {}", profile.name), "info");
                 if let Some(result) = self.try_recover_current_profile()? {
                     self.add_log(

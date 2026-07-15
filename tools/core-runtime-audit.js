@@ -589,6 +589,18 @@ check(
   'main.rs may probe planned recovery candidates, but group rank, filtering, dedupe, and candidate limits belong to core_runtime',
 );
 check(
+  'recovery profile failover planning is owned by the core runtime boundary',
+  coreRuntimeRs.includes('pub struct RecoveryProfileFailoverPlan') &&
+    coreRuntimeRs.includes('pub fn recovery_profile_failover_plan') &&
+    coreRuntimeRs.includes('recovery_profile_failover_plan_filters_runtime_candidates') &&
+    recoverNetworkBody.includes('core_runtime::recovery_profile_failover_plan(') &&
+    recoverNetworkBody.includes('self.set_active_profile(&candidate.id)') &&
+    !recoverNetworkBody.includes('.filter(|profile|') &&
+    !recoverNetworkBody.includes('profile.profile_type != "builtin"') &&
+    !recoverNetworkBody.includes('profile.id != "direct"'),
+  'main.rs may execute profile switching, but failover candidate filtering and ordering belong to core_runtime',
+);
+check(
   'system proxy takeover plan is owned by the core runtime boundary',
   coreRuntimeRs.includes('pub const WINDOWS_PROXY_BYPASS_LIST') &&
     coreRuntimeRs.includes('pub struct CoreSystemProxyTakeoverPlan') &&
