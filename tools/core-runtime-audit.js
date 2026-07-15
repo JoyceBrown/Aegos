@@ -39,7 +39,8 @@ const releaseAudit = read('tools/release-audit.js');
 const activeConnectionCommandBody = mainRs.match(/fn active_connection_count\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 const startWithTakeoverBody = mainRs.match(/fn start_with_takeover\(&mut self, enable_takeover: bool\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn terminate_core_process/)?.[1] || '';
 const stopBody = mainRs.match(/fn stop\(&mut self\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn shutdown_for_exit/)?.[1] || '';
-const probeProxyNetworkBody = mainRs.match(/fn probe_proxy_network\(&self, timeout_ms: u64\) -> JsonValue \{([\s\S]*?)\n    fn recovery_group_rank/)?.[1] || '';
+const probeProxyNetworkBody = mainRs.match(/fn probe_proxy_network\(&self, timeout_ms: u64\) -> JsonValue \{([\s\S]*?)\n    fn recovery_candidates/)?.[1] || '';
+const recoveryCandidatesBody = mainRs.match(/fn recovery_candidates\(&self\) -> Vec<\(String, String, i64\)> \{([\s\S]*?)\n    fn recovery_suggestions_from_groups/)?.[1] || '';
 const tryRecoverCurrentProfileBody = mainRs.match(/fn try_recover_current_profile\(&mut self\) -> Result<Option<JsonValue>, String> \{([\s\S]*?)\n    fn recover_network/)?.[1] || '';
 const recoverNetworkBody = mainRs.match(/fn recover_network\(&mut self, force: bool\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn change_proxy/)?.[1] || '';
 const repairSystemProxyTakeoverBody = mainRs.match(/fn repair_system_proxy_takeover\(&mut self\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn apply_setting_value/)?.[1] || '';
@@ -567,6 +568,25 @@ check(
     !recoverNetworkBody.includes('"action": "failed"') &&
     !recoverNetworkBody.includes('"profileChanged":'),
   'main.rs may execute recovery, but probe/result fields, actions, and profileChanged semantics belong to core_runtime',
+);
+check(
+  'recovery candidate planning is owned by the core runtime boundary',
+  coreRuntimeRs.includes('pub struct RecoveryCandidatePlan') &&
+    coreRuntimeRs.includes('pub fn recovery_candidate_plan') &&
+    coreRuntimeRs.includes('pub fn recovery_group_rank') &&
+    coreRuntimeRs.includes('pub fn is_recovery_candidate_proxy_name') &&
+    coreRuntimeRs.includes('fn is_recovery_group_reference_item') &&
+    coreRuntimeRs.includes('recovery_candidate_plan_filters_and_orders_runtime_candidates') &&
+    recoveryCandidatesBody.includes('core_runtime::recovery_candidate_plan(') &&
+    recoveryCandidatesBody.includes('test_proxy_delay_with_retry(') &&
+    !mainRs.includes('fn recovery_group_rank') &&
+    !mainRs.includes('fn is_recovery_candidate_name') &&
+    !recoveryCandidatesBody.includes('sort_by_key(|group|') &&
+    !recoveryCandidatesBody.includes('"GLOBAL"') &&
+    !recoveryCandidatesBody.includes('"Proxy"') &&
+    !recoveryCandidatesBody.includes('"Proxies"') &&
+    !recoveryCandidatesBody.includes('HashSet::new()'),
+  'main.rs may probe planned recovery candidates, but group rank, filtering, dedupe, and candidate limits belong to core_runtime',
 );
 check(
   'system proxy takeover plan is owned by the core runtime boundary',

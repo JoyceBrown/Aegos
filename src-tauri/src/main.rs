@@ -4873,33 +4873,6 @@ fn validate_proxy_selection_from_groups(
     }))
 }
 
-fn is_recovery_candidate_name(name: &str) -> bool {
-    let text = name.trim();
-    if text.is_empty() {
-        return false;
-    }
-    let upper = text.to_ascii_uppercase();
-    if matches!(
-        upper.as_str(),
-        "DIRECT" | "REJECT" | "REJECT-DROP" | "COMPATIBLE"
-    ) {
-        return false;
-    }
-    let lower = text.to_ascii_lowercase();
-    ![
-        "traffic",
-        "expire",
-        "鍓╀綑",
-        "鍒版湡",
-        "濂楅",
-        "瀹樼綉",
-        "娴侀噺",
-        "杩囨湡",
-    ]
-    .iter()
-    .any(|needle| lower.contains(&needle.to_ascii_lowercase()))
-}
-
 fn ps_escape(value: impl AsRef<str>) -> String {
     value.as_ref().replace('\'', "''")
 }
@@ -7670,28 +7643,12 @@ impl CoreManager {
         core_runtime::recovery_probe_result_json(false, "", 0, last_error)
     }
 
-    fn recovery_group_rank(name: &str) -> usize {
-        match name {
-            "GLOBAL" => 0,
-            "Proxy" => 1,
-            "Proxies" => 2,
-            _ => 10,
-        }
-    }
-
     fn recovery_candidates(&self) -> Vec<(String, String, i64)> {
         let groups = self.proxy_groups();
-        let Some(group_items) = groups.as_array() else {
-            return Vec::new();
-        };
-        let mut group_refs = group_items.iter().collect::<Vec<_>>();
-        group_refs.sort_by_key(|group| {
-            group
-                .get("name")
-                .and_then(|value| value.as_str())
-                .map(Self::recovery_group_rank)
-                .unwrap_or(99)
-        });
+        let plan = core_runtime::recovery_candidate_plan(
+            &groups,
+            self.settings.reliability_candidate_limit as usize,
+        );
         let client = match Client::builder()
             .no_proxy()
             .timeout(Duration::from_millis(
@@ -7705,50 +7662,19 @@ impl CoreManager {
                 return Vec::new();
             }
         };
-        let mut seen = HashSet::new();
-        let mut tested = 0usize;
         let mut results = Vec::new();
-        let limit = self.settings.reliability_candidate_limit as usize;
         let max_delay = self.settings.reliability_max_delay_ms as i64;
         let controller = self.core_controller();
-        for group in group_refs {
-            let group_name = group
-                .get("name")
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-                .to_string();
-            let current = group
-                .get("now")
-                .and_then(|value| value.as_str())
-                .unwrap_or("");
-            let Some(items) = group.get("items").and_then(|value| value.as_array()) else {
-                continue;
-            };
-            for item in items {
-                if tested >= limit {
-                    break;
-                }
-                let Some(name) = item.get("name").and_then(|value| value.as_str()) else {
-                    continue;
-                };
-                let protocol = item
-                    .get("type")
-                    .or_else(|| item.get("protocol"))
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("unknown");
-                if name == current || !is_recovery_candidate_name(name) {
-                    continue;
-                }
-                let key = format!("{group_name}\n{name}");
-                if !seen.insert(key) {
-                    continue;
-                }
-                tested += 1;
-                let result = test_proxy_delay_with_retry(&client, &controller, name, protocol);
-                let delay = result.delay;
-                if delay > 0 && delay <= max_delay {
-                    results.push((group_name.clone(), name.to_string(), delay));
-                }
+        for candidate in plan {
+            let result = test_proxy_delay_with_retry(
+                &client,
+                &controller,
+                &candidate.proxy_name,
+                &candidate.protocol,
+            );
+            let delay = result.delay;
+            if delay > 0 && delay <= max_delay {
+                results.push((candidate.group_name, candidate.proxy_name, delay));
             }
         }
         results.sort_by_key(|(_, _, delay)| *delay);

@@ -441,6 +441,134 @@ pub fn recovery_failed_result_json(
     })
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryCandidatePlan {
+    pub group_name: String,
+    pub proxy_name: String,
+    pub protocol: String,
+}
+
+pub fn recovery_group_rank(name: &str) -> usize {
+    match name {
+        "GLOBAL" => 0,
+        "Proxy" => 1,
+        "Proxies" => 2,
+        _ => 10,
+    }
+}
+
+pub fn is_recovery_candidate_proxy_name(name: &str) -> bool {
+    let text = name.trim();
+    if text.is_empty() {
+        return false;
+    }
+    let upper = text.to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS" | "COMPATIBLE"
+    ) {
+        return false;
+    }
+    let lower = text.to_ascii_lowercase();
+    ![
+        "traffic",
+        "expire",
+        "metadata",
+        "subscription",
+        "remaining",
+        "鍓╀綑",
+        "鍒版湡",
+        "濂楅",
+        "瀹樼綉",
+        "娴侀噺",
+        "杩囨湡",
+        "\u{5269}\u{4f59}",
+        "\u{5230}\u{671f}",
+        "\u{5957}\u{9910}",
+        "\u{5b98}\u{7f51}",
+        "\u{6d41}\u{91cf}",
+        "\u{8fc7}\u{671f}",
+    ]
+    .iter()
+    .any(|needle| lower.contains(&needle.to_ascii_lowercase()))
+}
+
+fn is_recovery_group_reference_item(item: &JsonValue) -> bool {
+    item.get("group")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false)
+        || item
+            .get("isGroup")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false)
+        || item
+            .get("type")
+            .or_else(|| item.get("protocol"))
+            .and_then(JsonValue::as_str)
+            .map(|value| value.eq_ignore_ascii_case("group"))
+            .unwrap_or(false)
+}
+
+pub fn recovery_candidate_plan(groups: &JsonValue, limit: usize) -> Vec<RecoveryCandidatePlan> {
+    let Some(group_items) = groups.as_array() else {
+        return Vec::new();
+    };
+    let mut group_refs = group_items.iter().collect::<Vec<_>>();
+    group_refs.sort_by_key(|group| {
+        group
+            .get("name")
+            .and_then(JsonValue::as_str)
+            .map(recovery_group_rank)
+            .unwrap_or(99)
+    });
+    let mut seen = HashSet::new();
+    let mut plan = Vec::new();
+    for group in group_refs {
+        if plan.len() >= limit {
+            break;
+        }
+        let group_name = group
+            .get("name")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("")
+            .to_string();
+        let current = group.get("now").and_then(JsonValue::as_str).unwrap_or("");
+        let Some(items) = group.get("items").and_then(JsonValue::as_array) else {
+            continue;
+        };
+        for item in items {
+            if plan.len() >= limit {
+                break;
+            }
+            if is_recovery_group_reference_item(item) {
+                continue;
+            }
+            let Some(name) = item.get("name").and_then(JsonValue::as_str) else {
+                continue;
+            };
+            if name == current || !is_recovery_candidate_proxy_name(name) {
+                continue;
+            }
+            let key = format!("{group_name}\n{name}");
+            if !seen.insert(key) {
+                continue;
+            }
+            let protocol = item
+                .get("type")
+                .or_else(|| item.get("protocol"))
+                .and_then(JsonValue::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            plan.push(RecoveryCandidatePlan {
+                group_name: group_name.clone(),
+                proxy_name: name.to_string(),
+                protocol,
+            });
+        }
+    }
+    plan
+}
+
 pub fn protection_phase(
     core_running: bool,
     traffic_takeover: bool,
@@ -3710,6 +3838,65 @@ rules:
             Some("failed")
         );
         assert_eq!(failed.get("failures").and_then(JsonValue::as_u64), Some(4));
+    }
+
+    #[test]
+    fn recovery_candidate_plan_filters_and_orders_runtime_candidates() {
+        let groups = json!([
+            {
+                "name": "Other",
+                "now": "OTHER NOW",
+                "items": [
+                    { "name": "Other 01", "type": "vless" },
+                    { "name": "DIRECT", "type": "direct" }
+                ]
+            },
+            {
+                "name": "Proxies",
+                "now": "HK Current",
+                "items": [
+                    { "name": "HK Current", "type": "ss" },
+                    { "name": "PASS", "type": "direct" },
+                    { "name": "剩余流量 1024G", "type": "ss" },
+                    { "name": "Nested Group", "type": "group" },
+                    { "name": "Group Flag", "group": true },
+                    { "name": "HK 02", "type": "ss" },
+                    { "name": "HK 02", "type": "ss" },
+                    { "name": "JP 01", "protocol": "tuic" }
+                ]
+            },
+            {
+                "name": "GLOBAL",
+                "now": "US Current",
+                "items": [
+                    { "name": "US Current", "type": "trojan" },
+                    { "name": "US 01", "type": "trojan" }
+                ]
+            }
+        ]);
+
+        let plan = recovery_candidate_plan(&groups, 3);
+
+        assert_eq!(
+            plan,
+            vec![
+                RecoveryCandidatePlan {
+                    group_name: "GLOBAL".to_string(),
+                    proxy_name: "US 01".to_string(),
+                    protocol: "trojan".to_string(),
+                },
+                RecoveryCandidatePlan {
+                    group_name: "Proxies".to_string(),
+                    proxy_name: "HK 02".to_string(),
+                    protocol: "ss".to_string(),
+                },
+                RecoveryCandidatePlan {
+                    group_name: "Proxies".to_string(),
+                    proxy_name: "JP 01".to_string(),
+                    protocol: "tuic".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]
