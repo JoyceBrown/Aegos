@@ -301,10 +301,15 @@ check(
 
 check(
   'system proxy takeover snapshots and restores previous Windows proxy',
-  mainRs.includes('struct SystemProxySnapshot') &&
+  coreRuntimeRs.includes('pub struct SystemProxySnapshot') &&
+    coreRuntimeRs.includes('pub fn system_proxy_snapshot_points_to_aegos') &&
+    coreRuntimeRs.includes('pub fn should_capture_system_proxy_snapshot') &&
+    coreRuntimeRs.includes('system_proxy_snapshot_policy_is_owned_by_runtime_boundary') &&
+    !mainRs.includes('struct SystemProxySnapshot') &&
     mainRs.includes('fn read_windows_proxy_snapshot') &&
     mainRs.includes('fn write_windows_proxy_snapshot') &&
     mainRs.includes('fn capture_proxy_snapshot_before_takeover') &&
+    mainRs.includes('core_runtime::should_capture_system_proxy_snapshot') &&
     mainRs.includes('fn shutdown_for_exit') &&
     mainRs.includes('repair_system_proxy_takeover') &&
     mainRs.includes('"Windows System Proxy takeover"'),

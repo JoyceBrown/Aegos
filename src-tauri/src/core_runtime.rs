@@ -1,4 +1,5 @@
 use reqwest::blocking::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
 use sha2::{Digest, Sha256};
@@ -1819,6 +1820,14 @@ pub struct CoreTrafficTakeoverPlan {
     pub should_apply_system_proxy: bool,
 }
 
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+pub struct SystemProxySnapshot {
+    pub proxy_enable: bool,
+    pub proxy_server: String,
+    pub proxy_override: String,
+    pub captured_at: String,
+}
+
 impl CoreLaunchPlan {
     pub fn new(paths: CoreRuntimePaths, profile_name: impl Into<String>, standby: bool) -> Self {
         Self {
@@ -1930,6 +1939,25 @@ impl CoreTrafficTakeoverPlan {
     pub fn final_traffic_takeover(&self, system_proxy_applied: bool) -> bool {
         self.requested_takeover && (self.tun_enabled || system_proxy_applied)
     }
+}
+
+pub fn system_proxy_snapshot_points_to_aegos(
+    snapshot: &SystemProxySnapshot,
+    mixed_port: u16,
+) -> bool {
+    snapshot.proxy_enable
+        && snapshot.proxy_server.split(';').any(|item| {
+            item.trim()
+                .eq_ignore_ascii_case(&format!("127.0.0.1:{mixed_port}"))
+        })
+}
+
+pub fn should_capture_system_proxy_snapshot(
+    snapshot_file_exists: bool,
+    snapshot: &SystemProxySnapshot,
+    mixed_port: u16,
+) -> bool {
+    !snapshot_file_exists && !system_proxy_snapshot_points_to_aegos(snapshot, mixed_port)
 }
 
 impl CoreStartFailureContext {
@@ -2391,6 +2419,37 @@ mod tests {
         assert!(tun_off_requires_system_proxy.should_apply_system_proxy);
         assert!(tun_off_requires_system_proxy.optimistic_takeover_before_system_proxy());
         assert!(!tun_off_requires_system_proxy.final_traffic_takeover(false));
+    }
+
+    #[test]
+    fn system_proxy_snapshot_policy_is_owned_by_runtime_boundary() {
+        let external = SystemProxySnapshot {
+            proxy_enable: true,
+            proxy_server: "127.0.0.1:7890;https=proxy.example:443".to_string(),
+            proxy_override: "<local>".to_string(),
+            captured_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        assert!(!system_proxy_snapshot_points_to_aegos(&external, 7891));
+        assert!(should_capture_system_proxy_snapshot(false, &external, 7891));
+        assert!(!should_capture_system_proxy_snapshot(true, &external, 7891));
+
+        let aegos = SystemProxySnapshot {
+            proxy_enable: true,
+            proxy_server: "http=127.0.0.1:7890;127.0.0.1:7891".to_string(),
+            proxy_override: "<local>".to_string(),
+            captured_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        assert!(system_proxy_snapshot_points_to_aegos(&aegos, 7891));
+        assert!(!should_capture_system_proxy_snapshot(false, &aegos, 7891));
+
+        let disabled = SystemProxySnapshot {
+            proxy_enable: false,
+            proxy_server: "127.0.0.1:7891".to_string(),
+            proxy_override: String::new(),
+            captured_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        assert!(!system_proxy_snapshot_points_to_aegos(&disabled, 7891));
+        assert!(should_capture_system_proxy_snapshot(false, &disabled, 7891));
     }
 
     fn test_preflight_input<'a>() -> RuntimeConfigPreflightInput<'a> {

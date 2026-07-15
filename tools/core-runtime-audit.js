@@ -412,6 +412,19 @@ check(
   'main.rs may execute set_system_proxy, but takeover policy belongs to core_runtime',
 );
 check(
+  'system proxy snapshot policy is owned by the core runtime boundary',
+  coreRuntimeRs.includes('pub struct SystemProxySnapshot') &&
+    coreRuntimeRs.includes('pub fn system_proxy_snapshot_points_to_aegos') &&
+    coreRuntimeRs.includes('pub fn should_capture_system_proxy_snapshot') &&
+    coreRuntimeRs.includes('system_proxy_snapshot_policy_is_owned_by_runtime_boundary') &&
+    mainRs.includes('core_runtime::SystemProxySnapshot') &&
+    mainRs.includes('core_runtime::system_proxy_snapshot_points_to_aegos') &&
+    mainRs.includes('core_runtime::should_capture_system_proxy_snapshot') &&
+    !mainRs.includes('struct SystemProxySnapshot') &&
+    !mainRs.includes('fn proxy_points_to_aegos'),
+  'main.rs may read/write Windows proxy state, but snapshot shape and matching policy belong to core_runtime',
+);
+check(
   'release gate requires core runtime audit',
   packageJson.scripts?.['audit:core-runtime'] === 'node tools/core-runtime-audit.js' &&
     releaseAudit.includes('core runtime audit script exists'),

@@ -159,14 +159,6 @@ struct Settings {
     profiles: Vec<Profile>,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
-struct SystemProxySnapshot {
-    proxy_enable: bool,
-    proxy_server: String,
-    proxy_override: String,
-    captured_at: String,
-}
-
 #[derive(Clone)]
 struct SpeedTestTarget {
     name: String,
@@ -5109,7 +5101,7 @@ fn primary_lan_ip() -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
-fn read_windows_proxy_snapshot() -> Result<SystemProxySnapshot, String> {
+fn read_windows_proxy_snapshot() -> Result<core_runtime::SystemProxySnapshot, String> {
     let output = run_powershell(
         r#"
 $path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
@@ -5126,7 +5118,9 @@ $item = Get-ItemProperty -Path $path
         .map_err(|err| format!("Windows proxy snapshot parse failed: {err}"))
 }
 
-fn write_windows_proxy_snapshot(snapshot: &SystemProxySnapshot) -> Result<(), String> {
+fn write_windows_proxy_snapshot(
+    snapshot: &core_runtime::SystemProxySnapshot,
+) -> Result<(), String> {
     let enable = if snapshot.proxy_enable { 1 } else { 0 };
     let server = ps_escape(&snapshot.proxy_server);
     let override_value = ps_escape(&snapshot.proxy_override);
@@ -5149,14 +5143,6 @@ public static class WinInet {{
 "#
     ))?;
     Ok(())
-}
-
-fn proxy_points_to_aegos(snapshot: &SystemProxySnapshot, mixed_port: u16) -> bool {
-    snapshot.proxy_enable
-        && snapshot.proxy_server.split(';').any(|item| {
-            item.trim()
-                .eq_ignore_ascii_case(&format!("127.0.0.1:{mixed_port}"))
-        })
 }
 
 fn build_proxy_script(enable: bool, mixed_port: u16) -> String {
@@ -5447,11 +5433,14 @@ impl CoreManager {
         save_json(&self.settings_path, &self.app_data, &self.settings)
     }
 
-    fn save_system_proxy_snapshot(&self, snapshot: &SystemProxySnapshot) -> Result<(), String> {
+    fn save_system_proxy_snapshot(
+        &self,
+        snapshot: &core_runtime::SystemProxySnapshot,
+    ) -> Result<(), String> {
         save_json(&self.proxy_snapshot_path, &self.app_data, snapshot)
     }
 
-    fn load_system_proxy_snapshot(&self) -> Option<SystemProxySnapshot> {
+    fn load_system_proxy_snapshot(&self) -> Option<core_runtime::SystemProxySnapshot> {
         fs::read_to_string(&self.proxy_snapshot_path)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
@@ -5482,11 +5471,16 @@ impl CoreManager {
     }
 
     fn capture_proxy_snapshot_before_takeover(&self) -> Result<(), String> {
-        if self.proxy_snapshot_path.exists() {
+        let snapshot_file_exists = self.proxy_snapshot_path.exists();
+        if snapshot_file_exists {
             return Ok(());
         }
         let snapshot = read_windows_proxy_snapshot()?;
-        if !proxy_points_to_aegos(&snapshot, self.settings.mixed_port) {
+        if core_runtime::should_capture_system_proxy_snapshot(
+            snapshot_file_exists,
+            &snapshot,
+            self.settings.mixed_port,
+        ) {
             self.save_system_proxy_snapshot(&snapshot)?;
         }
         Ok(())
@@ -5494,7 +5488,8 @@ impl CoreManager {
 
     fn verify_system_proxy_points_to_aegos(&self, expected: bool) -> Result<(), String> {
         let current = read_windows_proxy_snapshot()?;
-        let points_to_aegos = proxy_points_to_aegos(&current, self.settings.mixed_port);
+        let points_to_aegos =
+            core_runtime::system_proxy_snapshot_points_to_aegos(&current, self.settings.mixed_port);
         if expected && !points_to_aegos {
             return Err(format!(
                 "Windows system proxy verification failed: current '{}', expected 127.0.0.1:{}",
@@ -6945,7 +6940,8 @@ impl CoreManager {
         }
         self.set_system_proxy(true)?;
         let current = read_windows_proxy_snapshot()?;
-        let ok = proxy_points_to_aegos(&current, self.settings.mixed_port);
+        let ok =
+            core_runtime::system_proxy_snapshot_points_to_aegos(&current, self.settings.mixed_port);
         if !ok {
             return Err(format!(
                 "Windows system proxy still points to '{}', expected 127.0.0.1:{}",
@@ -8656,7 +8652,10 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
         .as_ref()
         .map(|proxy| {
             !snapshot.settings.system_proxy
-                || proxy_points_to_aegos(proxy, snapshot.settings.mixed_port)
+                || core_runtime::system_proxy_snapshot_points_to_aegos(
+                    proxy,
+                    snapshot.settings.mixed_port,
+                )
         })
         .unwrap_or(false);
     let current_proxy_detail = current_proxy

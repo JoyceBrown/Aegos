@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
+const coreRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'core_runtime.rs'), 'utf8');
 const appJs = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
 const interactionSmoke = fs.readFileSync(path.join(root, 'tools', 'interaction-smoke.js'), 'utf8');
 const backendAudit = fs.readFileSync(path.join(root, 'tools', 'backend-audit.js'), 'utf8');
@@ -34,7 +35,11 @@ const diagnosticsBody = sliceBetween(mainRs, 'fn diagnostics_from_snapshot', 'fn
 
 check(
   'Windows proxy takeover snapshots and restores previous state',
-  mainRs.includes('struct SystemProxySnapshot') &&
+  coreRuntimeRs.includes('pub struct SystemProxySnapshot') &&
+    coreRuntimeRs.includes('pub fn system_proxy_snapshot_points_to_aegos') &&
+    coreRuntimeRs.includes('pub fn should_capture_system_proxy_snapshot') &&
+    coreRuntimeRs.includes('system_proxy_snapshot_policy_is_owned_by_runtime_boundary') &&
+    !mainRs.includes('struct SystemProxySnapshot') &&
     mainRs.includes('fn read_windows_proxy_snapshot') &&
     mainRs.includes('fn write_windows_proxy_snapshot') &&
     mainRs.includes('fn capture_proxy_snapshot_before_takeover') &&
@@ -43,7 +48,7 @@ check(
     mainRs.includes('fn clear_system_proxy_snapshot') &&
     mainRs.includes('fn shutdown_for_exit') &&
     proxyScriptBody.includes('InternetSetOption') &&
-    lifecycleBody.includes('self.restore_system_proxy_preference(restore_system_proxy)') &&
+    lifecycleBody.includes('self.restore_system_proxy_preference(restart_plan.restore_system_proxy)') &&
     setSystemProxyBody.includes('verify_system_proxy_points_to_aegos(true)') &&
     setSystemProxyBody.includes('verify_system_proxy_points_to_aegos(false)'),
   'Aegos must be able to leave Windows proxy as it found it'
