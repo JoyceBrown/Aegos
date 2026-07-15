@@ -37,6 +37,8 @@ const coreRuntimeRs = read('src-tauri/src/core_runtime.rs');
 const configPipelineRs = read('src-tauri/src/config_pipeline.rs');
 const releaseAudit = read('tools/release-audit.js');
 const activeConnectionCommandBody = mainRs.match(/fn active_connection_count\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
+const startWithTakeoverBody = mainRs.match(/fn start_with_takeover\(&mut self, enable_takeover: bool\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn terminate_core_process/)?.[1] || '';
+const stopBody = mainRs.match(/fn stop\(&mut self\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn shutdown_for_exit/)?.[1] || '';
 
 function hasControllerCall(method, timeout) {
   return new RegExp(`controller\\s*\\.\\s*${method}\\(\\s*${timeout}\\s*\\)`).test(mainRs);
@@ -504,6 +506,19 @@ check(
     !mainRs.includes('let next_actions = checks') &&
     !mainRs.includes('閺傤厾缍夋穱婵囧Б'),
   'main.rs may collect diagnostic facts, but check row shape, summary counts, next actions, and permission labels belong to core_runtime',
+);
+check(
+  'core power command result shaping is owned by the core runtime boundary',
+  coreRuntimeRs.includes('pub fn core_start_result_json') &&
+    coreRuntimeRs.includes('pub fn core_stop_result_json') &&
+    coreRuntimeRs.includes('core_power_results_are_runtime_shaped') &&
+    (startWithTakeoverBody.match(/core_runtime::core_start_result_json\(/g) || []).length === 2 &&
+    stopBody.includes('core_runtime::core_stop_result_json()') &&
+    !startWithTakeoverBody.includes('"message": "Core already running"') &&
+    !startWithTakeoverBody.includes('"standby": !enable_takeover') &&
+    !startWithTakeoverBody.includes('"connection": self.connection_closure()') &&
+    !stopBody.includes('Ok(json!({ "ok": true }))'),
+  'main.rs may execute start/stop, but the public core power result contract belongs to core_runtime',
 );
 check(
   'system proxy takeover plan is owned by the core runtime boundary',

@@ -785,7 +785,8 @@ check(
     !connectionStatusSummaryBody.includes('"systemProxyApplied"') &&
     !connectionClosureBody.includes('"currentNode".to_string()') &&
     !connectionClosureBody.includes('"outboundIpKnown".to_string()') &&
-    mainRs.includes('"connection": self.connection_closure()') &&
+    mainRs.includes('core_runtime::core_start_result_json(') &&
+    coreRuntimeRs.includes('"connection": connection') &&
     mainRs.includes('let connection = core.connection_closure();') &&
     mainRs.includes('json!({ "group": group, "proxy": proxy, "connection": connection })'),
   'core running, takeover, system proxy, node, and outbound IP closure'

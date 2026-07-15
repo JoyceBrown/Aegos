@@ -299,6 +299,30 @@ pub fn connection_closure_json(
     summary
 }
 
+pub fn core_start_result_json(
+    message: Option<&str>,
+    standby: bool,
+    traffic_takeover: bool,
+    connection: JsonValue,
+) -> JsonValue {
+    let mut result = json!({
+        "ok": true,
+        "standby": standby,
+        "trafficTakeover": traffic_takeover,
+        "connection": connection
+    });
+    if let Some(message) = message {
+        if let Some(map) = result.as_object_mut() {
+            map.insert("message".to_string(), json!(message));
+        }
+    }
+    result
+}
+
+pub fn core_stop_result_json() -> JsonValue {
+    json!({ "ok": true })
+}
+
 pub fn protection_phase(
     core_running: bool,
     traffic_takeover: bool,
@@ -3413,6 +3437,52 @@ rules:
                 .and_then(JsonValue::as_bool),
             Some(false)
         );
+    }
+
+    #[test]
+    fn core_power_results_are_runtime_shaped() {
+        let connection = connection_closure_json(
+            true,
+            true,
+            true,
+            false,
+            "rule",
+            "profile-a",
+            "HK 01",
+            "203.0.113.1",
+            42,
+        );
+        let started = core_start_result_json(None, false, true, connection.clone());
+        assert_eq!(started.get("ok").and_then(JsonValue::as_bool), Some(true));
+        assert_eq!(
+            started.get("standby").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            started.get("trafficTakeover").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(started.get("connection"), Some(&connection));
+        assert!(started.get("message").is_none());
+
+        let reused = core_start_result_json(
+            Some("Core already running"),
+            true,
+            false,
+            connection.clone(),
+        );
+        assert_eq!(
+            reused.get("message").and_then(JsonValue::as_str),
+            Some("Core already running")
+        );
+        assert_eq!(
+            reused.get("standby").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+
+        let stopped = core_stop_result_json();
+        assert_eq!(stopped.get("ok").and_then(JsonValue::as_bool), Some(true));
+        assert_eq!(stopped.as_object().map(|map| map.len()), Some(1));
     }
 
     #[test]

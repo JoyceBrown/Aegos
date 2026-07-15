@@ -6505,13 +6505,12 @@ impl CoreManager {
             core_runtime::CoreRuntimeStartAction::LaunchFresh => {}
             core_runtime::CoreRuntimeStartAction::ReuseRunning => {
                 self.apply_takeover_after_core_ready(enable_takeover);
-                return Ok(json!({
-                    "ok": true,
-                    "message": "Core already running",
-                    "standby": !enable_takeover,
-                    "trafficTakeover": self.traffic_takeover,
-                    "connection": self.connection_closure()
-                }));
+                return Ok(core_runtime::core_start_result_json(
+                    Some("Core already running"),
+                    !enable_takeover,
+                    self.traffic_takeover,
+                    self.connection_closure(),
+                ));
             }
             core_runtime::CoreRuntimeStartAction::RestartForDrift => {
                 let restart_plan = core_runtime::CoreRuntimeRestartPlan::for_runtime_drift(
@@ -6588,12 +6587,12 @@ impl CoreManager {
         self.runtime_profile_id = Some(profile.id.clone());
         self.runtime_config_digest = Some(config_digest);
         self.apply_takeover_after_core_ready(enable_takeover);
-        Ok(json!({
-            "ok": true,
-            "standby": !enable_takeover,
-            "trafficTakeover": self.traffic_takeover,
-            "connection": self.connection_closure()
-        }))
+        Ok(core_runtime::core_start_result_json(
+            None,
+            !enable_takeover,
+            self.traffic_takeover,
+            self.connection_closure(),
+        ))
     }
 
     fn terminate_core_process(&mut self, message: &str) {
@@ -6644,7 +6643,7 @@ impl CoreManager {
                 "Core stopped, but Windows system proxy restore failed: {err}"
             ));
         }
-        Ok(json!({ "ok": true }))
+        Ok(core_runtime::core_stop_result_json())
     }
 
     fn shutdown_for_exit(&mut self) {
