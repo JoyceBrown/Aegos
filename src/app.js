@@ -4546,7 +4546,13 @@ function ensureRoutingAssistantUi() {
           el('span', { textContent: '测试网站' }),
           el('input', { id: 'routingRuleTestInput', attrs: { placeholder: '例如 youtube.com', autocomplete: 'off', spellcheck: 'false' } })
         ]),
-        el('button', { id: 'testRoutingRuleBtn', className: 'primary compact', attrs: { type: 'button' }, textContent: '测试' })
+        el('button', { id: 'testRoutingRuleBtn', className: 'primary compact', attrs: { type: 'button' }, textContent: '测试当前规则' })
+      ]),
+      el('div', { className: 'routing-test-examples', attrs: { 'aria-label': '规则测试示例' } }, [
+        el('span', { textContent: '示例' }),
+        el('button', { className: 'ghost compact', dataset: { routingTestExample: 'youtube.com' }, attrs: { type: 'button' }, textContent: 'youtube.com' }),
+        el('button', { className: 'ghost compact', dataset: { routingTestExample: 'openai.com' }, attrs: { type: 'button' }, textContent: 'openai.com' }),
+        el('button', { className: 'ghost compact', dataset: { routingTestExample: 'telegram.org' }, attrs: { type: 'button' }, textContent: 'telegram.org' })
       ]),
       el('p', { id: 'routingRuleTestResult', className: 'routing-draft-preview', textContent: '输入网站后，Aegos 会告诉你当前会命中哪条规则。' })
     ]),
@@ -4566,6 +4572,15 @@ function ensureRoutingAssistantUi() {
   $('#applyRoutingDraftsBtn')?.addEventListener('click', (event) => runDetachedButtonAction(event.currentTarget, '\u5e94\u7528\u4e2d...', applyRoutingDrafts));
   $('#undoRoutingApplyBtn')?.addEventListener('click', (event) => runDetachedButtonAction(event.currentTarget, '\u64a4\u9500\u4e2d...', undoLastRoutingApply));
   $('#testRoutingRuleBtn')?.addEventListener('click', testRoutingWebsiteRule);
+  document.querySelectorAll('[data-routing-test-example]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const input = $('#routingRuleTestInput');
+      if (!input) return;
+      input.value = button.dataset.routingTestExample || '';
+      input.focus();
+      testRoutingWebsiteRule();
+    });
+  });
   $('#routingWebsiteAction')?.addEventListener('change', syncRoutingProxyTargetFields);
   $('#routingAppAction')?.addEventListener('change', syncRoutingProxyTargetFields);
   document.querySelectorAll('[data-routing-summary]').forEach((card) => {
@@ -5390,9 +5405,26 @@ function renderRoutingRuleTestResult(result, state = 'ok') {
 }
 
 function testRoutingWebsiteRule() {
+  const button = $('#testRoutingRuleBtn');
+  if (button) {
+    button.classList.add('is-pending');
+    button.setAttribute('aria-busy', 'true');
+    window.setTimeout(() => {
+      button.classList.remove('is-pending');
+      button.removeAttribute('aria-busy');
+    }, 160);
+  }
   const parsed = normalizeWebsiteRuleInput($('#routingRuleTestInput')?.value || '');
   if (!parsed.ok) {
     renderRoutingRuleTestResult(parsed.error, 'warn');
+    return;
+  }
+  if (!latestRoutingSnapshot || !Array.isArray(latestRoutingSnapshot.rules)) {
+    renderRoutingRuleTestResult({
+      title: '规则快照还没加载完成',
+      detail: '请稍等一秒再测试；这不会影响你继续切页或编辑草稿。',
+      next: '如果一直没有加载，请到诊断页检查订阅配置。'
+    }, 'warn');
     return;
   }
   const rules = existingRoutingRules().filter((rule) => routingRuleMatchesWebsite(rule, parsed.domain));

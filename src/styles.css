@@ -2136,6 +2136,35 @@ h1 {
   grid-template-columns: minmax(180px, 1fr) auto;
 }
 
+.routing-test-card {
+  transition: box-shadow .16s ease, background .16s ease;
+}
+
+.routing-test-card:hover,
+.routing-test-card:focus-within {
+  background: rgba(255, 255, 255, .72);
+  box-shadow: inset 0 0 0 1px rgba(83, 110, 151, .14), 0 10px 26px rgba(31, 45, 71, .06);
+}
+
+.routing-test-examples {
+  min-width: 0;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.routing-test-examples span {
+  color: #7d8aa0;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.routing-test-examples button {
+  height: 28px;
+  padding: 0 10px;
+}
+
 .routing-draft-form input,
 .routing-draft-form select {
   width: 100%;

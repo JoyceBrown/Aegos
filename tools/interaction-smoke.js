@@ -635,6 +635,8 @@ try {
     document.querySelector('#routingRuleTestInput').value = 'www.example.com';
     await click('#testRoutingRuleBtn');
     if (!document.querySelector('#routingRuleTestResult')?.textContent.includes('GLOBAL')) throw new Error('routing rule test did not explain the matched target');
+    await click('[data-routing-test-example="openai.com"]');
+    if (document.querySelector('#routingRuleTestInput')?.value !== 'openai.com') throw new Error('routing rule test example did not fill the input');
     document.querySelector('#routingWebsiteInput').value = 'https://openai.com/docs';
     document.querySelector('#previewWebsiteRuleBtn').click();
     await new Promise((resolve) => setTimeout(resolve, 40));
