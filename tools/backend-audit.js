@@ -13,6 +13,7 @@ const profileCompilerRs = readSource('src-tauri', 'src', 'profile_compiler.rs');
 const configPipelineRs = readSource('src-tauri', 'src', 'config_pipeline.rs');
 const taskRuntimeRs = readSource('src-tauri', 'src', 'task_runtime.rs');
 const speedRuntimeRs = readSource('src-tauri', 'src', 'speed_runtime.rs');
+const diagnosticsRuntimeRs = readSource('src-tauri', 'src', 'diagnostics_runtime.rs');
 
 const fail = [];
 const pass = [];
@@ -350,9 +351,11 @@ check(
 check(
   'volatile status commands avoid the CoreManager mutex during slow work',
   mainRs.includes('speed_test: SpeedTestStore') &&
-    mainRs.includes('logs: Arc<Mutex<Vec<LogEntry>>>') &&
+    mainRs.includes('logs: LogStore') &&
     mainRs.includes('app_data: PathBuf') &&
     speedRuntimeRs.includes('pub fn speed_test_snapshot(') &&
+    diagnosticsRuntimeRs.includes('pub type LogStore') &&
+    diagnosticsRuntimeRs.includes('pub fn logs_export_document(') &&
     mainRs.includes('fn export_logs_from_state') &&
     mainRs.includes('fn speed_test_status(state: State<AppState>)') &&
     mainRs.includes('speed_test_runtime_snapshot(&state.speed_test, now_secs())') &&

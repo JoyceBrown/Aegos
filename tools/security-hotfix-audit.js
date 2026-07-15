@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
+const diagnosticsRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'diagnostics_runtime.rs'), 'utf8');
 const appJs = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
 const tauri = JSON.parse(fs.readFileSync(path.join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'));
 const capabilities = fs.readFileSync(path.join(root, 'src-tauri', 'capabilities', 'default.json'), 'utf8');
@@ -56,7 +57,8 @@ check(
     addLogBody.includes('sanitize_sensitive_text(line.as_ref())') &&
     startBody.includes('sanitize_sensitive_text(&line)') &&
     publicProfileBody.includes('sanitize_sensitive_text(value)') &&
-    (exportLogsBody.includes('entry.line.replace') || exportLogsBody.includes('sanitize_sensitive_text(&entry.line)')) &&
+    exportLogsBody.includes('logs_export_document(&items, &now_iso(), sanitize_sensitive_text)') &&
+    diagnosticsRuntimeRs.includes('let line = sanitizer(&entry.line)') &&
     mainRs.includes('export_logs_from_state(&state.logs, &state.app_data)') &&
     !publicProfileBody.includes('"source_url": &profile.source_url'),
   'subscription token/password/uuid/bearer/userinfo must not leak through logs or public profile JSON'

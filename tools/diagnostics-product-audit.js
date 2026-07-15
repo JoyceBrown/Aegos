@@ -5,6 +5,7 @@ const root = process.cwd();
 const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
 const pkg = JSON.parse(read('package.json'));
 const mainRs = read('src-tauri/src/main.rs');
+const diagnosticsRuntimeRs = read('src-tauri/src/diagnostics_runtime.rs');
 const appJs = read('src/app.js');
 const indexHtml = read('src/index.html');
 const releaseAudit = read('tools/release-audit.js');
@@ -17,7 +18,11 @@ function check(name, ok, detail = '') {
   else failures.push(`${name}${detail ? ` (${detail})` : ''}`);
 }
 
-check('version is at least 3.4.17 diagnostics productization checkpoint', /^3\.4\.(1[7-9]|20)$/.test(pkg.version), pkg.version);
+check(
+  'version is at least 3.4.17 diagnostics productization checkpoint',
+  /^(?:3\.4\.(1[7-9]|20)|3\.[5-9]\.\d+)$/.test(pkg.version),
+  pkg.version
+);
 check(
   'diagnostic report export is exposed through backend command',
   mainRs.includes('fn export_diagnostics_report(') &&
@@ -48,12 +53,15 @@ check(
 );
 check(
   'log export has redaction notice and category summary',
-  mainRs.includes('Aegos Logs Export') &&
-    mainRs.includes('Redaction: subscription URLs') &&
-    mainRs.includes('Categories:') &&
-    mainRs.includes('sanitize_sensitive_text(&entry.line)') &&
+  mainRs.includes('logs_export_document(&items, &now_iso(), sanitize_sensitive_text)') &&
+    diagnosticsRuntimeRs.includes('Aegos Logs Export') &&
+    diagnosticsRuntimeRs.includes('Redaction: subscription URLs') &&
+    diagnosticsRuntimeRs.includes('Categories:') &&
+    diagnosticsRuntimeRs.includes('let line = sanitizer(&entry.line)') &&
     mainRs.includes('"redacted": true') &&
-    appJs.includes('日志已脱敏导出'),
+    appJs.includes('async function exportLogs') &&
+    appJs.includes('result?.path') &&
+    appJs.includes('exportLogsBtn'),
   'log export redaction summary'
 );
 check(
@@ -66,7 +74,7 @@ check(
 );
 check(
   'release audit includes diagnostics product gate',
-  releaseAudit.includes("audit:diagnostics-product") &&
+  releaseAudit.includes('audit:diagnostics-product') &&
     releaseAudit.includes('diagnostics productization gate'),
   'release gate'
 );

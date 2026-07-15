@@ -2,11 +2,13 @@
 
 mod config_pipeline;
 mod core_runtime;
+mod diagnostics_runtime;
 mod profile_compiler;
 mod speed_runtime;
 mod task_runtime;
 
 use base64::{engine::general_purpose, Engine as _};
+use diagnostics_runtime::{logs_export_document, LogEntry, LogStore};
 use rand::random;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -314,14 +316,6 @@ struct Settings {
     profiles: Vec<Profile>,
 }
 
-#[derive(Clone, Serialize)]
-struct LogEntry {
-    at: String,
-    level: String,
-    category: String,
-    line: String,
-}
-
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct SystemProxySnapshot {
     proxy_enable: bool,
@@ -361,54 +355,17 @@ impl DelayTestResult {
     }
 }
 
-fn export_logs_from_state(
-    logs: &Arc<Mutex<Vec<LogEntry>>>,
-    app_data: &Path,
-) -> Result<JsonValue, String> {
+fn export_logs_from_state(logs: &LogStore, app_data: &Path) -> Result<JsonValue, String> {
     let items = logs.lock().unwrap().clone();
     let export_dir = app_data.join("diagnostics");
     ensure_dir(&export_dir)?;
     let path = export_dir.join(format!("aegos-logs-{}.txt", now_secs()));
-    let mut categories: HashMap<String, usize> = HashMap::new();
-    for entry in &items {
-        *categories.entry(entry.category.clone()).or_insert(0) += 1;
-    }
-    let mut category_lines = categories
-        .iter()
-        .map(|(category, count)| format!("- {category}: {count}"))
-        .collect::<Vec<_>>();
-    category_lines.sort();
-    let header = format!(
-        "Aegos Logs Export\nGenerated: {}\nEntries: {}\nRedaction: subscription URLs, tokens, UUIDs, passwords, local paths, and sensitive IPs are masked before export.\nCategories:\n{}\n\n",
-        now_iso(),
-        items.len(),
-        if category_lines.is_empty() {
-            "- none".to_string()
-        } else {
-            category_lines.join("\n")
-        }
-    );
-    let content = if items.is_empty() {
-        format!("{header}No Aegos logs captured yet.\n")
-    } else {
-        header
-            + &items
-                .iter()
-                .map(|entry| {
-                    let line = sanitize_sensitive_text(&entry.line)
-                        .replace('\r', " ")
-                        .replace('\n', " ");
-                    format!("{} [{}:{}] {}", entry.at, entry.level, entry.category, line)
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-            + "\n"
-    };
-    atomic_write_text_confined(&path, &export_dir, &content)?;
+    let document = logs_export_document(&items, &now_iso(), sanitize_sensitive_text);
+    atomic_write_text_confined(&path, &export_dir, &document.content)?;
     Ok(json!({
         "path": path.to_string_lossy(),
         "count": items.len(),
-        "categories": categories,
+        "categories": document.categories,
         "redacted": true
     }))
 }
@@ -807,7 +764,7 @@ struct CoreManager {
     runtime_profile_id: Option<String>,
     runtime_config_digest: Option<String>,
     traffic_takeover: bool,
-    logs: Arc<Mutex<Vec<LogEntry>>>,
+    logs: LogStore,
     last_traffic: JsonValue,
     speed_test: SpeedTestStore,
     lan_ip_cache: String,
@@ -820,7 +777,7 @@ struct CoreManager {
 struct AppState {
     core: Arc<Mutex<CoreManager>>,
     speed_test: SpeedTestStore,
-    logs: Arc<Mutex<Vec<LogEntry>>>,
+    logs: LogStore,
     app_data: PathBuf,
     jobs: JobStore,
     operations: Arc<Mutex<()>>,
@@ -8517,11 +8474,7 @@ impl CoreManager {
     }
 }
 
-fn recent_node_logs_from_snapshot(
-    logs: &Arc<Mutex<Vec<LogEntry>>>,
-    node: &str,
-    limit: usize,
-) -> Vec<LogEntry> {
+fn recent_node_logs_from_snapshot(logs: &LogStore, node: &str, limit: usize) -> Vec<LogEntry> {
     let logs = logs.lock().unwrap();
     let mut items = logs
         .iter()
@@ -8611,7 +8564,7 @@ fn node_diagnostics_from_snapshot(
     name: String,
     groups: &JsonValue,
     speed: &SpeedTestState,
-    logs: &Arc<Mutex<Vec<LogEntry>>>,
+    logs: &LogStore,
     max_delay_ms: u64,
 ) -> Result<JsonValue, String> {
     let targets = CoreManager::collect_proxy_targets(groups);

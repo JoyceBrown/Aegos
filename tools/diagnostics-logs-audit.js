@@ -6,6 +6,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const appJs = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
+const diagnosticsRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'diagnostics_runtime.rs'), 'utf8');
 const interactionSmoke = fs.readFileSync(path.join(root, 'tools', 'interaction-smoke.js'), 'utf8');
 const releaseAudit = fs.readFileSync(path.join(root, 'tools', 'release-audit.js'), 'utf8');
 const backendAudit = fs.readFileSync(path.join(root, 'tools', 'backend-audit.js'), 'utf8');
@@ -32,7 +33,7 @@ const schedulePageLoadBody = bodyOf('schedulePageLoad');
 const runDiagnosticsBody = bodyOf('runDiagnostics');
 const exportLogsBody = bodyOf('exportLogs');
 const diagnosticsBackendBody = sliceBetween(mainRs, 'fn diagnostics_from_snapshot', 'fn diagnostics_detached');
-const exportLogsBackendBody = sliceBetween(mainRs, 'fn export_logs_from_state', 'fn controller_request');
+const exportLogsBackendBody = sliceBetween(mainRs, 'fn export_logs_from_state', 'fn diagnostics_report_text');
 const diagnosticsJobBody = sliceBetween(mainRs, '"diagnostics" => {', '"recoverNetwork" => {');
 
 check(
@@ -98,7 +99,11 @@ check(
     exportLogsBody.includes('result?.path') &&
     exportLogsBackendBody.includes('aegos-logs-') &&
     exportLogsBackendBody.includes('items.len()') &&
-    exportLogsBackendBody.includes('atomic_write_text_confined(&path, &export_dir, &content)') &&
+    exportLogsBackendBody.includes('logs_export_document(&items, &now_iso(), sanitize_sensitive_text)') &&
+    exportLogsBackendBody.includes('atomic_write_text_confined(&path, &export_dir, &document.content)') &&
+    diagnosticsRuntimeRs.includes('pub fn logs_export_document(') &&
+    diagnosticsRuntimeRs.includes('Aegos Logs Export') &&
+    diagnosticsRuntimeRs.includes('Redaction: subscription URLs') &&
     mainRs.includes('export_logs_from_state(&state.logs, &state.app_data)') &&
     interactionSmoke.includes('log export button did not call export_logs'),
   'support export for user support and diagnostics'
@@ -119,10 +124,10 @@ check(
 
 check(
   'diagnostics does expensive work outside the CoreManager lock',
-  mainRs.includes('struct DiagnosticsSnapshot') &&
+    mainRs.includes('struct DiagnosticsSnapshot') &&
     mainRs.includes('fn take_diagnostics_snapshot(core: Arc<Mutex<CoreManager>>) -> DiagnosticsSnapshot') &&
     mainRs.includes('fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue') &&
-    mainRs.includes('patch_config_with_settings(source, &snapshot.settings') &&
+    mainRs.includes('config_pipeline::patch_profile_source(source, profile, &snapshot.settings)?') &&
     mainRs.includes('read_windows_proxy_snapshot()') &&
     mainRs.includes('port_owner_detail(snapshot.settings.mixed_port)') &&
     diagnosticsJobBody.includes('diagnostics_detached(core.clone())') &&
