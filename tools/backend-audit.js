@@ -3,10 +3,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
-const coreRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'core_runtime.rs'), 'utf8');
-const profileCompilerRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'profile_compiler.rs'), 'utf8');
-const configPipelineRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'config_pipeline.rs'), 'utf8');
+function readSource(...segments) {
+  return fs.readFileSync(path.join(root, ...segments), 'utf8').replace(/\r\n/g, '\n');
+}
+
+const mainRs = readSource('src-tauri', 'src', 'main.rs');
+const coreRuntimeRs = readSource('src-tauri', 'src', 'core_runtime.rs');
+const profileCompilerRs = readSource('src-tauri', 'src', 'profile_compiler.rs');
+const configPipelineRs = readSource('src-tauri', 'src', 'config_pipeline.rs');
 
 const fail = [];
 const pass = [];
@@ -157,6 +161,23 @@ check(
     mainRs.includes('is_subscription_metadata_node_name(name)') &&
     mainRs.includes('is_fake_ip_address(server)'),
   'Traffic/Expire plan rows must not become selectable or speed-tested nodes'
+);
+check(
+  'runtime proxy-group config shaping is owned by config_pipeline',
+  configPipelineRs.includes('pub(crate) fn normalize_runtime_proxy_groups_for_display') &&
+    configPipelineRs.includes('fn synthesize_default_proxy_groups_if_needed') &&
+    configPipelineRs.includes('fn ensure_proxies_group_contains_all_nodes') &&
+    configPipelineRs.includes('fn ensure_auto_select_group_contains_all_nodes') &&
+    coreRuntimeRs.includes('pub const LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME') &&
+    coreRuntimeRs.includes('name == LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME') &&
+    configPipelineRs.includes('core_runtime::LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME') &&
+    mainRs.includes('config_pipeline::normalize_runtime_proxy_groups_for_display') &&
+    mainRs.includes('config_pipeline::is_internal_proxy_group_name') &&
+    !mainRs.includes('fn synthesize_default_proxy_groups_if_needed') &&
+    !mainRs.includes('fn ensure_proxies_group_contains_all_nodes') &&
+    !mainRs.includes('fn ensure_auto_select_group_contains_all_nodes') &&
+    !mainRs.includes('fn normalize_profile_groups_for_display'),
+  'default Proxies/auto-select group generation must stay out of main.rs'
 );
 check(
   'long operations expose background job API',
@@ -358,7 +379,8 @@ check(
     coreRuntimeRs.includes('pub fn proxy_delay_with_client(') &&
     coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
     coreRuntimeRs.includes('pub fn classify_delay_http_failure(') &&
-    coreRuntimeRs.includes('#[derive(Clone, Debug)]\npub struct CoreController') &&
+    coreRuntimeRs.includes('#[derive(Clone, Debug)]') &&
+    coreRuntimeRs.includes('pub struct CoreController') &&
     mainRs.includes('controller.ui_proxy_groups_snapshot_or_else(') &&
     mainRs.includes('&[AEGOS_OUTBOUND_IP_GROUP]') &&
     !mainRs.includes('.ui_proxy_groups_snapshot_or_none(running, &[AEGOS_OUTBOUND_IP_GROUP])') &&

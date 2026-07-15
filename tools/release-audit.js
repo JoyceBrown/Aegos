@@ -24,7 +24,7 @@ function sha256(rel) {
 }
 
 function readText(rel) {
-  return fs.readFileSync(path.join(root, rel), 'utf8');
+  return fs.readFileSync(path.join(root, rel), 'utf8').replace(/\r\n/g, '\n');
 }
 
 const pkg = readJson('package.json');
@@ -148,6 +148,7 @@ check('Aegos defaults avoid FlClash/Codex port 7890', mainRs.includes('AEGOS_DEF
 check('settings save rejects proxy port conflicts', mainRs.includes('fn validate_port_settings_snapshot') && mainRs.includes('RESERVED_MIXED_PORTS.contains(&settings.mixed_port)') && mainRs.includes('settings.mixed_port == settings.controller_port') && mainRs.includes('fn rollback_settings_after_failure'), 'settings port transaction');
 check('runtime DNS avoids local fake-ip resolver contamination', configPipelineRs.includes('pub(crate) const AEGOS_DNS_LISTEN: &str = "127.0.0.1:1054"') && configPipelineRs.includes('pub(crate) fn harden_runtime_dns') && configPipelineRs.includes('pub(crate) fn runtime_dns_safety_report') && mainRs.includes('"Speed test DNS isolation"') && configPipelineRs.includes('proxy-server-nameserver') && configPipelineRs.includes('https://223.5.5.5/dns-query') && configPipelineRs.includes('https://1.1.1.1/dns-query') && mainRs.includes('runtime_dns_is_isolated_from_local_fake_ip_resolvers'), 'proxy-server-nameserver direct upstream');
 check('subscription metadata pseudo nodes are filtered before runtime/speed', mainRs.includes('fn is_subscription_metadata_node_name') && mainRs.includes('fn sanitize_subscription_metadata_nodes') && mainRs.includes('subscription_metadata_nodes_are_removed_before_runtime_and_speed') && speedAudit.includes('speed-test targets exclude airport metadata and fake-ip nodes'), 'Traffic/Expire rows filtered');
+check('runtime proxy-group config shaping is owned by config pipeline', configPipelineRs.includes('pub(crate) fn normalize_runtime_proxy_groups_for_display') && configPipelineRs.includes('fn synthesize_default_proxy_groups_if_needed') && configPipelineRs.includes('fn ensure_proxies_group_contains_all_nodes') && configPipelineRs.includes('fn ensure_auto_select_group_contains_all_nodes') && coreRuntimeRs.includes('pub const LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME') && coreRuntimeRs.includes('name == LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME') && configPipelineRs.includes('core_runtime::LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME') && mainRs.includes('config_pipeline::normalize_runtime_proxy_groups_for_display') && mainRs.includes('config_pipeline::is_internal_proxy_group_name') && !mainRs.includes('fn synthesize_default_proxy_groups_if_needed') && !mainRs.includes('fn ensure_proxies_group_contains_all_nodes') && !mainRs.includes('fn ensure_auto_select_group_contains_all_nodes') && !mainRs.includes('fn normalize_profile_groups_for_display'), 'default Proxies/auto-select group generation out of main.rs');
 check('settings page is grouped with runtime summary', indexHtml.includes('class="settings-layout"') && indexHtml.includes('class="settings-summary-grid"') && indexHtml.includes('id="settingsRuntimeSummary"') && indexHtml.includes('id="settingsReliabilitySummary"') && indexHtml.includes('高级运行时') && appJs.includes('settingsRuntimeSummary') && appJs.includes('settingsReliabilitySummary') && stylesCss.includes('.settings-section') && stylesCss.includes('.settings-summary-grid'), 'settings grouped layout');
 check('navigation pages are present', ['home', 'nodes', 'connections', 'routing', 'profiles', 'diagnostics', 'logs', 'settings'].every((page) => indexHtml.includes(`data-page="${page}"`) && indexHtml.includes(`data-page-panel="${page}"`)), 'all primary pages');
 check('TUN switch exists in settings UI', indexHtml.includes('id="tunToggle"') && appJs.includes("['tunToggle', 'tunEnabled']"), 'tunToggle');
@@ -256,7 +257,8 @@ check(
     coreRuntimeRs.includes('pub fn proxy_delay_with_client(') &&
     coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
     coreRuntimeRs.includes('pub fn classify_delay_http_failure(') &&
-    coreRuntimeRs.includes('#[derive(Clone, Debug)]\npub struct CoreController') &&
+    coreRuntimeRs.includes('#[derive(Clone, Debug)]') &&
+    coreRuntimeRs.includes('pub struct CoreController') &&
     mainRs.includes('controller.ui_proxy_groups_snapshot_or_else(') &&
     mainRs.includes('&[AEGOS_OUTBOUND_IP_GROUP]') &&
     !mainRs.includes('.ui_proxy_groups_snapshot_or_none(running, &[AEGOS_OUTBOUND_IP_GROUP])') &&

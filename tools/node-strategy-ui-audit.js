@@ -8,6 +8,8 @@ const pkg = JSON.parse(read('package.json'));
 const appJs = read('src/app.js');
 const stylesCss = read('src/styles.css');
 const releaseAudit = read('tools/release-audit.js');
+const mainRs = read('src-tauri/src/main.rs');
+const configPipelineRs = read('src-tauri/src/config_pipeline.rs');
 
 const results = [];
 function check(name, ok, detail) {
@@ -72,10 +74,12 @@ check(
 
 check(
   'backend keeps Proxies as the user-facing all-node group without synthetic region groups',
-  read('src-tauri/src/main.rs').includes('fn ensure_proxies_group_contains_all_nodes') &&
-    read('src-tauri/src/main.rs').includes('ensure_proxies_group_contains_all_nodes(config, &proxy_names)') &&
-    read('src-tauri/src/main.rs').includes('fn is_internal_proxy_group_name') &&
-    !read('src-tauri/src/main.rs').includes('for region in ["HK", "JP", "SG", "TW", "US"'),
+  configPipelineRs.includes('fn ensure_proxies_group_contains_all_nodes') &&
+    configPipelineRs.includes('ensure_proxies_group_contains_all_nodes(config, &proxy_names)') &&
+    configPipelineRs.includes('pub(crate) fn is_internal_proxy_group_name') &&
+    mainRs.includes('config_pipeline::normalize_runtime_proxy_groups_for_display') &&
+    !mainRs.includes('fn ensure_proxies_group_contains_all_nodes') &&
+    !mainRs.includes('for region in ["HK", "JP", "SG", "TW", "US"'),
   'Proxies contains all nodes; generated HK/JP/SG/TW/US groups stay removed'
 );
 
@@ -158,9 +162,9 @@ check(
 
 check(
   'deleting a strategy group safely migrates rules to Proxies instead of leaving broken targets',
-  read('src-tauri/src/main.rs').includes('and Proxies is not available as fallback') &&
-    read('src-tauri/src/main.rs').includes('routing_rule_replace_target(raw, &validated_name, "Proxies")') &&
-    read('src-tauri/src/main.rs').includes('groups.remove(index)'),
+  mainRs.includes('and Proxies is not available as fallback') &&
+    mainRs.includes('routing_rule_replace_target(raw, &validated_name, "Proxies")') &&
+    mainRs.includes('groups.remove(index)'),
   'delete preserves valid routing targets through the transactional backend path'
 );
 

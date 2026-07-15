@@ -15,7 +15,7 @@ const coreRel = path.join('resources', 'core', 'mihomo.exe');
 const corePath = path.join(root, coreRel);
 
 function read(rel) {
-  return fs.readFileSync(path.join(root, rel), 'utf8');
+  return fs.readFileSync(path.join(root, rel), 'utf8').replace(/\r\n/g, '\n');
 }
 
 function readJson(rel) {
@@ -34,6 +34,7 @@ const packageJson = readJson('package.json');
 const tauri = readJson('src-tauri/tauri.conf.json');
 const mainRs = read('src-tauri/src/main.rs');
 const coreRuntimeRs = read('src-tauri/src/core_runtime.rs');
+const configPipelineRs = read('src-tauri/src/config_pipeline.rs');
 const releaseAudit = read('tools/release-audit.js');
 const activeConnectionCommandBody = mainRs.match(/fn active_connection_count\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 
@@ -115,7 +116,8 @@ check(
 check(
   'Aegos routes controller access through the CoreController adapter',
   coreRuntimeRs.includes('pub struct CoreController') &&
-    coreRuntimeRs.includes('#[derive(Clone, Debug)]\npub struct CoreController') &&
+    coreRuntimeRs.includes('#[derive(Clone, Debug)]') &&
+    coreRuntimeRs.includes('pub struct CoreController') &&
     coreRuntimeRs.includes('pub fn controller_request') &&
     coreRuntimeRs.includes('pub fn traffic_snapshot(&self, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn connections_snapshot(&self, timeout_ms: u64)') &&
@@ -245,8 +247,9 @@ check(
     mainRs.includes('core_runtime::apply_group_resolution_with_selected_map(&mut groups, &selected_map)') &&
     mainRs.includes('core_runtime::annotate_manual_groups_with_names(&mut groups, &manual_names)') &&
     mainRs.includes('core_runtime::resolve_group_leaf(') &&
-    mainRs.includes('core_runtime::is_proxies_group_name') &&
-    mainRs.includes('core_runtime::is_aegos_auto_select_group_name') &&
+    configPipelineRs.includes('core_runtime::is_proxies_group_name') &&
+    configPipelineRs.includes('core_runtime::is_aegos_auto_select_group_name') &&
+    configPipelineRs.includes('core_runtime::LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME') &&
     !mainRs.includes('fn normalize_proxy_groups_snapshot_defaults') &&
     !mainRs.includes('fn apply_group_resolution_with_selected_map') &&
     !mainRs.includes('fn annotate_manual_groups_with_names') &&

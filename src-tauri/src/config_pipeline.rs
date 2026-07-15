@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use serde_json::Value as JsonValue;
 use serde_yaml::{Mapping, Value as YamlValue};
 
-use crate::{patch_config_with_settings, preflight_runtime_config, Profile, Settings};
+use crate::{
+    core_runtime, patch_config_with_settings, preflight_runtime_config, Profile, Settings,
+};
 
 pub(crate) struct RuntimePreflight {
     pub(crate) config: YamlValue,
@@ -66,6 +68,10 @@ fn yaml_string_sequence(values: &[&str]) -> YamlValue {
     )
 }
 
+fn yaml_string_values(values: &[String]) -> YamlValue {
+    YamlValue::Sequence(values.iter().map(|value| yaml_str(value)).collect())
+}
+
 fn set_yaml(config: &mut Mapping, key: &str, value: YamlValue) {
     config.insert(yaml_key(key), value);
 }
@@ -81,6 +87,224 @@ fn yaml_sequence<'a>(config: &'a YamlValue, key: &str) -> Option<&'a Vec<YamlVal
     config
         .get(yaml_key(key))
         .and_then(|value| value.as_sequence())
+}
+
+fn yaml_mapping_name(value: &YamlValue) -> Option<&str> {
+    value
+        .as_mapping()
+        .and_then(|map| map.get(yaml_key("name")))
+        .and_then(YamlValue::as_str)
+}
+
+fn select_proxy_group(name: &str, values: &[String]) -> YamlValue {
+    let mut group = Mapping::new();
+    set_yaml(&mut group, "name", yaml_str(name));
+    set_yaml(&mut group, "type", yaml_str("select"));
+    set_yaml(&mut group, "proxies", yaml_string_values(values));
+    YamlValue::Mapping(group)
+}
+
+fn url_test_proxy_group(name: &str, values: &[String]) -> YamlValue {
+    let mut group = Mapping::new();
+    set_yaml(&mut group, "name", yaml_str(name));
+    set_yaml(&mut group, "type", yaml_str("url-test"));
+    set_yaml(
+        &mut group,
+        "url",
+        yaml_str("https://www.gstatic.com/generate_204"),
+    );
+    set_yaml(&mut group, "interval", YamlValue::Number(300.into()));
+    set_yaml(&mut group, "proxies", yaml_string_values(values));
+    YamlValue::Mapping(group)
+}
+
+fn proxy_node_names(config: &Mapping) -> Vec<String> {
+    config
+        .get(yaml_key("proxies"))
+        .and_then(YamlValue::as_sequence)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.get(yaml_key("name"))
+                        .and_then(YamlValue::as_str)
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub(crate) fn is_internal_proxy_group_name(name: &str) -> bool {
+    name == crate::AEGOS_OUTBOUND_IP_GROUP || name.eq_ignore_ascii_case("GLOBAL")
+}
+
+fn synthesize_default_proxy_groups_if_needed(config: &mut Mapping, proxy_names: &[String]) {
+    if proxy_names.is_empty() {
+        return;
+    }
+    let existing_groups = config
+        .get(yaml_key("proxy-groups"))
+        .and_then(YamlValue::as_sequence)
+        .cloned()
+        .unwrap_or_default();
+    let visible_count = existing_groups
+        .iter()
+        .filter(|group| {
+            yaml_mapping_name(group)
+                .map(|name| !is_internal_proxy_group_name(name))
+                .unwrap_or(false)
+        })
+        .count();
+    if visible_count > 1 {
+        return;
+    }
+    let mut all_with_direct = proxy_names.to_vec();
+    all_with_direct.push("DIRECT".to_string());
+    set_yaml(
+        config,
+        "proxy-groups",
+        YamlValue::Sequence(vec![
+            select_proxy_group("GLOBAL", &all_with_direct),
+            select_proxy_group("Proxies", &all_with_direct),
+        ]),
+    );
+}
+
+fn ensure_proxies_group_contains_all_nodes(config: &mut Mapping, proxy_names: &[String]) {
+    if proxy_names.is_empty() {
+        return;
+    }
+    let mut all_with_direct = proxy_names.to_vec();
+    all_with_direct.push("DIRECT".to_string());
+    let groups = config
+        .entry(yaml_key("proxy-groups"))
+        .or_insert_with(|| YamlValue::Sequence(Vec::new()));
+    if !matches!(groups, YamlValue::Sequence(_)) {
+        *groups = YamlValue::Sequence(Vec::new());
+    }
+    let Some(groups) = groups.as_sequence_mut() else {
+        return;
+    };
+    let Some(index) = groups.iter().position(|group| {
+        yaml_mapping_name(group)
+            .map(core_runtime::is_proxies_group_name)
+            .unwrap_or(false)
+    }) else {
+        let insert_index = groups
+            .iter()
+            .position(|group| {
+                yaml_mapping_name(group)
+                    .map(is_internal_proxy_group_name)
+                    .unwrap_or(false)
+            })
+            .map(|index| index.saturating_add(1))
+            .unwrap_or(0);
+        groups.insert(
+            insert_index,
+            select_proxy_group("Proxies", &all_with_direct),
+        );
+        return;
+    };
+    let Some(map) = groups[index].as_mapping_mut() else {
+        groups[index] = select_proxy_group("Proxies", &all_with_direct);
+        return;
+    };
+    set_yaml(map, "type", yaml_str("select"));
+    let list = map
+        .entry(yaml_key("proxies"))
+        .or_insert_with(|| YamlValue::Sequence(Vec::new()));
+    if !matches!(list, YamlValue::Sequence(_)) {
+        *list = YamlValue::Sequence(Vec::new());
+    }
+    let Some(items) = list.as_sequence_mut() else {
+        return;
+    };
+    let mut seen = items
+        .iter()
+        .filter_map(YamlValue::as_str)
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    for name in all_with_direct {
+        if seen.insert(name.clone()) {
+            items.push(yaml_str(name));
+        }
+    }
+}
+
+fn ensure_auto_select_group_contains_all_nodes(config: &mut Mapping, proxy_names: &[String]) {
+    if proxy_names.len() < 2 {
+        return;
+    }
+    let groups = config
+        .entry(yaml_key("proxy-groups"))
+        .or_insert_with(|| YamlValue::Sequence(Vec::new()));
+    if !matches!(groups, YamlValue::Sequence(_)) {
+        *groups = YamlValue::Sequence(Vec::new());
+    }
+    let Some(groups) = groups.as_sequence_mut() else {
+        return;
+    };
+    let Some(index) = groups.iter().position(|group| {
+        yaml_mapping_name(group)
+            .map(core_runtime::is_aegos_auto_select_group_name)
+            .unwrap_or(false)
+    }) else {
+        let insert_index = groups
+            .iter()
+            .position(|group| {
+                yaml_mapping_name(group)
+                    .map(core_runtime::is_proxies_group_name)
+                    .unwrap_or(false)
+            })
+            .map(|index| index.saturating_add(1))
+            .unwrap_or(0);
+        groups.insert(
+            insert_index,
+            url_test_proxy_group(
+                core_runtime::LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME,
+                proxy_names,
+            ),
+        );
+        return;
+    };
+    let Some(map) = groups[index].as_mapping_mut() else {
+        groups[index] = url_test_proxy_group(
+            core_runtime::LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME,
+            proxy_names,
+        );
+        return;
+    };
+    set_yaml(map, "type", yaml_str("url-test"));
+    set_yaml(map, "url", yaml_str("https://www.gstatic.com/generate_204"));
+    set_yaml(map, "interval", YamlValue::Number(300.into()));
+    set_yaml(map, "proxies", yaml_string_values(proxy_names));
+}
+
+pub(crate) fn normalize_runtime_proxy_groups_for_display(config: &mut Mapping) {
+    let proxy_names = proxy_node_names(config);
+    let proxy_values = proxy_names
+        .iter()
+        .map(|name| yaml_str(name))
+        .collect::<Vec<_>>();
+    let has_proxy_group = matches!(
+        config.get(yaml_key("proxy-groups")),
+        Some(YamlValue::Sequence(items)) if !items.is_empty()
+    );
+    if !proxy_values.is_empty() && !has_proxy_group {
+        let mut group = Mapping::new();
+        set_yaml(&mut group, "name", yaml_str("GLOBAL"));
+        set_yaml(&mut group, "type", yaml_str("select"));
+        set_yaml(&mut group, "proxies", YamlValue::Sequence(proxy_values));
+        set_yaml(
+            config,
+            "proxy-groups",
+            YamlValue::Sequence(vec![YamlValue::Mapping(group)]),
+        );
+    }
+    synthesize_default_proxy_groups_if_needed(config, &proxy_names);
+    ensure_proxies_group_contains_all_nodes(config, &proxy_names);
+    ensure_auto_select_group_contains_all_nodes(config, &proxy_names);
 }
 
 fn yaml_value_strings(value: Option<&YamlValue>) -> Vec<String> {

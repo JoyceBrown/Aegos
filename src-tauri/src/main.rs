@@ -697,7 +697,7 @@ fn profile_proxy_groups_for_profile_snapshot(
         YamlValue::Mapping(map) => map,
         _ => Mapping::new(),
     };
-    normalize_profile_groups_for_display(&mut config);
+    config_pipeline::normalize_runtime_proxy_groups_for_display(&mut config);
     let proxies = config
         .get(yaml_key("proxies"))
         .and_then(|value| value.as_sequence())
@@ -1138,176 +1138,6 @@ fn yaml_str(value: impl Into<String>) -> YamlValue {
 
 fn yaml_string_values(values: &[String]) -> YamlValue {
     YamlValue::Sequence(values.iter().map(|value| yaml_str(value)).collect())
-}
-
-fn select_proxy_group(name: &str, values: &[String]) -> YamlValue {
-    let mut group = Mapping::new();
-    set_yaml(&mut group, "name", yaml_str(name));
-    set_yaml(&mut group, "type", yaml_str("select"));
-    set_yaml(&mut group, "proxies", yaml_string_values(values));
-    YamlValue::Mapping(group)
-}
-
-fn url_test_proxy_group(name: &str, values: &[String]) -> YamlValue {
-    let mut group = Mapping::new();
-    set_yaml(&mut group, "name", yaml_str(name));
-    set_yaml(&mut group, "type", yaml_str("url-test"));
-    set_yaml(
-        &mut group,
-        "url",
-        yaml_str("https://www.gstatic.com/generate_204"),
-    );
-    set_yaml(&mut group, "interval", yaml_num(300));
-    set_yaml(&mut group, "proxies", yaml_string_values(values));
-    YamlValue::Mapping(group)
-}
-
-fn is_internal_proxy_group_name(name: &str) -> bool {
-    name == AEGOS_OUTBOUND_IP_GROUP || name.eq_ignore_ascii_case("GLOBAL")
-}
-
-fn synthesize_default_proxy_groups_if_needed(config: &mut Mapping, proxy_names: &[String]) {
-    if proxy_names.is_empty() {
-        return;
-    }
-    let existing_groups = config
-        .get(yaml_key("proxy-groups"))
-        .and_then(|value| value.as_sequence())
-        .cloned()
-        .unwrap_or_default();
-    let visible_count = existing_groups
-        .iter()
-        .filter(|group| {
-            yaml_mapping_name(group)
-                .map(|name| !is_internal_proxy_group_name(name))
-                .unwrap_or(false)
-        })
-        .count();
-    if visible_count > 1 {
-        return;
-    }
-    let mut all_with_direct = proxy_names.to_vec();
-    all_with_direct.push("DIRECT".to_string());
-    set_yaml(
-        config,
-        "proxy-groups",
-        YamlValue::Sequence(vec![
-            select_proxy_group("GLOBAL", &all_with_direct),
-            select_proxy_group("Proxies", &all_with_direct),
-        ]),
-    );
-}
-
-fn ensure_proxies_group_contains_all_nodes(config: &mut Mapping, proxy_names: &[String]) {
-    if proxy_names.is_empty() {
-        return;
-    }
-    let mut all_with_direct = proxy_names.to_vec();
-    all_with_direct.push("DIRECT".to_string());
-    let groups = config
-        .entry(yaml_key("proxy-groups"))
-        .or_insert_with(|| YamlValue::Sequence(Vec::new()));
-    if !matches!(groups, YamlValue::Sequence(_)) {
-        *groups = YamlValue::Sequence(Vec::new());
-    }
-    let Some(groups) = groups.as_sequence_mut() else {
-        return;
-    };
-    let Some(index) = groups.iter().position(|group| {
-        yaml_mapping_name(group)
-            .map(core_runtime::is_proxies_group_name)
-            .unwrap_or(false)
-    }) else {
-        let insert_index = groups
-            .iter()
-            .position(|group| {
-                yaml_mapping_name(group)
-                    .map(is_internal_proxy_group_name)
-                    .unwrap_or(false)
-            })
-            .map(|index| index.saturating_add(1))
-            .unwrap_or(0);
-        groups.insert(
-            insert_index,
-            select_proxy_group("Proxies", &all_with_direct),
-        );
-        return;
-    };
-    let Some(map) = groups[index].as_mapping_mut() else {
-        groups[index] = select_proxy_group("Proxies", &all_with_direct);
-        return;
-    };
-    set_yaml(map, "type", yaml_str("select"));
-    let list = map
-        .entry(yaml_key("proxies"))
-        .or_insert_with(|| YamlValue::Sequence(Vec::new()));
-    if !matches!(list, YamlValue::Sequence(_)) {
-        *list = YamlValue::Sequence(Vec::new());
-    }
-    let Some(items) = list.as_sequence_mut() else {
-        return;
-    };
-    let mut seen = items
-        .iter()
-        .filter_map(YamlValue::as_str)
-        .map(str::to_string)
-        .collect::<HashSet<_>>();
-    for name in all_with_direct {
-        if seen.insert(name.clone()) {
-            items.push(yaml_str(name));
-        }
-    }
-}
-
-fn ensure_auto_select_group_contains_all_nodes(config: &mut Mapping, proxy_names: &[String]) {
-    if proxy_names.len() < 2 {
-        return;
-    }
-    let groups = config
-        .entry(yaml_key("proxy-groups"))
-        .or_insert_with(|| YamlValue::Sequence(Vec::new()));
-    if !matches!(groups, YamlValue::Sequence(_)) {
-        *groups = YamlValue::Sequence(Vec::new());
-    }
-    let Some(groups) = groups.as_sequence_mut() else {
-        return;
-    };
-    let Some(index) = groups.iter().position(|group| {
-        yaml_mapping_name(group)
-            .map(core_runtime::is_aegos_auto_select_group_name)
-            .unwrap_or(false)
-    }) else {
-        let insert_index = groups
-            .iter()
-            .position(|group| {
-                yaml_mapping_name(group)
-                    .map(core_runtime::is_proxies_group_name)
-                    .unwrap_or(false)
-            })
-            .map(|index| index.saturating_add(1))
-            .unwrap_or(0);
-        groups.insert(
-            insert_index,
-            url_test_proxy_group("鑷姩閫夋嫨", proxy_names),
-        );
-        return;
-    };
-    let Some(map) = groups[index].as_mapping_mut() else {
-        groups[index] = url_test_proxy_group("鑷姩閫夋嫨", proxy_names);
-        return;
-    };
-    set_yaml(map, "type", yaml_str("url-test"));
-    set_yaml(map, "url", yaml_str("https://www.gstatic.com/generate_204"));
-    set_yaml(map, "interval", yaml_num(300));
-    set_yaml(map, "proxies", yaml_string_values(proxy_names));
-}
-
-fn normalize_profile_groups_for_display(config: &mut Mapping) {
-    sanitize_subscription_metadata_nodes(config);
-    let proxy_names = proxy_node_names(config);
-    synthesize_default_proxy_groups_if_needed(config, &proxy_names);
-    ensure_proxies_group_contains_all_nodes(config, &proxy_names);
-    ensure_auto_select_group_contains_all_nodes(config, &proxy_names);
 }
 
 fn yaml_num(value: u64) -> YamlValue {
@@ -3140,25 +2970,7 @@ fn patch_config_with_settings(
         .iter()
         .map(|name| yaml_str(name))
         .collect();
-    let has_proxy_group = matches!(config.get(yaml_key("proxy-groups")), Some(YamlValue::Sequence(items)) if !items.is_empty());
-    if !proxy_names.is_empty() && !has_proxy_group {
-        let mut group = Mapping::new();
-        set_yaml(&mut group, "name", yaml_str("GLOBAL"));
-        set_yaml(&mut group, "type", yaml_str("select"));
-        set_yaml(
-            &mut group,
-            "proxies",
-            YamlValue::Sequence(proxy_names.clone()),
-        );
-        set_yaml(
-            &mut config,
-            "proxy-groups",
-            YamlValue::Sequence(vec![YamlValue::Mapping(group)]),
-        );
-    }
-    synthesize_default_proxy_groups_if_needed(&mut config, &proxy_name_strings);
-    ensure_proxies_group_contains_all_nodes(&mut config, &proxy_name_strings);
-    ensure_auto_select_group_contains_all_nodes(&mut config, &proxy_name_strings);
+    config_pipeline::normalize_runtime_proxy_groups_for_display(&mut config);
 
     if !matches!(config.get(yaml_key("rules")), Some(YamlValue::Sequence(items)) if !items.is_empty())
     {
@@ -6677,7 +6489,7 @@ impl CoreManager {
                     "Routing group edit failed: profile root is not a YAML object".to_string(),
                 );
             };
-            normalize_profile_groups_for_display(config);
+            config_pipeline::normalize_runtime_proxy_groups_for_display(config);
         }
         let targets_before = routing_rule_target_catalog(&source);
         let name = edit.name.unwrap_or_default();
@@ -6688,8 +6500,8 @@ impl CoreManager {
             validate_routing_rule_part("strategy group name", &name, 80)?
         };
         let validated_new_name = validate_routing_rule_part("strategy group name", &new_name, 80)?;
-        if is_internal_proxy_group_name(&validated_name)
-            || is_internal_proxy_group_name(&validated_new_name)
+        if config_pipeline::is_internal_proxy_group_name(&validated_name)
+            || config_pipeline::is_internal_proxy_group_name(&validated_new_name)
         {
             return Err("Routing group edit failed: internal groups cannot be edited".to_string());
         }

@@ -22,6 +22,7 @@ pub const EXPECTED_SHA256: &str =
 pub const MANAGED_BY: &str = "Aegos";
 pub const CONTROL_PLANE: &str = "Aegos";
 pub const AEGOS_AUTO_SELECT_GROUP_NAME: &str = "閼奉亜濮╅柅澶嬪";
+pub const LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME: &str = "鑷姩閫夋嫨";
 pub const CREATE_NO_WINDOW: u32 = 0x08000000;
 pub const READY_CHECK_ATTEMPTS: usize = 24;
 pub const READY_PROBE_TIMEOUT_MS: u64 = 300;
@@ -1124,6 +1125,7 @@ pub fn is_aegos_auto_select_group_name(name: &str) -> bool {
     name.eq_ignore_ascii_case("Aegos Auto Select")
         || name.eq_ignore_ascii_case("Auto Select")
         || name == AEGOS_AUTO_SELECT_GROUP_NAME
+        || name == LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME
 }
 
 pub fn normalize_proxy_groups_snapshot_defaults(groups: &mut JsonValue) {

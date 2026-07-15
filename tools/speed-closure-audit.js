@@ -3,14 +3,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
-const coreRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'core_runtime.rs'), 'utf8');
-const configPipelineRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'config_pipeline.rs'), 'utf8');
-const appJs = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
-const indexHtml = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
-const backendAudit = fs.readFileSync(path.join(root, 'tools', 'backend-audit.js'), 'utf8');
-const interactionSmoke = fs.readFileSync(path.join(root, 'tools', 'interaction-smoke.js'), 'utf8');
-const releaseAudit = fs.readFileSync(path.join(root, 'tools', 'release-audit.js'), 'utf8');
+function readText(...segments) {
+  return fs.readFileSync(path.join(root, ...segments), 'utf8').replace(/\r\n/g, '\n');
+}
+
+const mainRs = readText('src-tauri', 'src', 'main.rs');
+const coreRuntimeRs = readText('src-tauri', 'src', 'core_runtime.rs');
+const configPipelineRs = readText('src-tauri', 'src', 'config_pipeline.rs');
+const appJs = readText('src', 'app.js');
+const indexHtml = readText('src', 'index.html');
+const backendAudit = readText('tools', 'backend-audit.js');
+const interactionSmoke = readText('tools', 'interaction-smoke.js');
+const releaseAudit = readText('tools', 'release-audit.js');
 
 const fail = [];
 const pass = [];
@@ -143,7 +147,8 @@ check(
     coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
     coreRuntimeRs.includes('pub fn classify_delay_http_failure') &&
     coreRuntimeRs.includes('controller-delay-error') &&
-    coreRuntimeRs.includes('#[derive(Clone, Debug)]\npub struct CoreController') &&
+    coreRuntimeRs.includes('#[derive(Clone, Debug)]') &&
+    coreRuntimeRs.includes('pub struct CoreController') &&
     mainRs.includes('fn test_proxy_delay_request(\n    client: &Client,\n    controller: &core_runtime::CoreController,') &&
     mainRs.includes('fn test_proxy_delay_plan(\n    client: &Client,\n    controller: &core_runtime::CoreController,') &&
     mainRs.includes('fn test_proxy_delay_with_retry(\n    client: &Client,\n    controller: &core_runtime::CoreController,') &&
