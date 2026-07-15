@@ -144,6 +144,10 @@ const STATUS_TEXT = Object.freeze({
   ok: '\u6b63\u5e38',
   warn: '\u8b66\u544a',
   error: '\u9519\u8bef',
+  available: '\u53ef\u7528',
+  unavailable: '\u4e0d\u53ef\u7528',
+  stale: '\u9700\u5237\u65b0',
+  checking: '\u68c0\u6d4b\u4e2d',
   unknownError: '\u672a\u77e5\u9519\u8bef'
 });
 
@@ -185,6 +189,31 @@ function runtimeSummaryLabel(status = {}, settings = {}) {
     return STATUS_TEXT.takeoverActive;
   }
   return status.coreReady ? STATUS_TEXT.coreStandby : STATUS_TEXT.coreStopped;
+}
+
+function networkAvailabilityInfo(status = {}) {
+  const availability = status.network?.availability || {};
+  const state = availability.state || 'unverified';
+  const labelMap = {
+    available: STATUS_TEXT.available,
+    unavailable: STATUS_TEXT.unavailable,
+    stale: STATUS_TEXT.stale,
+    checking: STATUS_TEXT.checking,
+    unverified: STATUS_TEXT.unchecked
+  };
+  const classMap = {
+    available: 'ok',
+    stale: 'warn',
+    checking: 'warn',
+    unavailable: 'bad',
+    unverified: ''
+  };
+  return {
+    state,
+    label: availability.label || labelMap[state] || STATUS_TEXT.unchecked,
+    detail: availability.detail || '',
+    className: classMap[state] || ''
+  };
 }
 
 function formatProxyPort(endpoint = '') {
@@ -3175,6 +3204,7 @@ function renderStatus(status) {
   const connection = status.connection || {};
   const systemProxyApplied = Boolean(connection.systemProxyApplied ?? (trafficTakeover && Boolean(settings.systemProxy)));
   const systemProxyWanted = Boolean(connection.systemProxyWanted ?? settings.systemProxy);
+  const availability = networkAvailabilityInfo(status);
   if (trafficTakeover && !wasTakeover) startedAt = Date.now();
   if (!trafficTakeover) startedAt = Date.now();
   const modeText = modeLabel(status.mode);
@@ -3189,6 +3219,11 @@ function renderStatus(status) {
   $('#modeLabel').textContent = modeText;
   setNotice(`${protection.label || STATUS_TEXT.disabled}：${trafficTakeover ? '正在按当前策略接管流量。' : coreReady ? '可操作，但未接管系统流量。' : '核心未运行，当前没有流量接管。'}`);
 
+  $('#softwareState').textContent = runtimeSummaryLabel(status, settings);
+  $('#softwareState').className = coreReady ? 'ok' : '';
+  $('#networkAvailabilityState').textContent = availability.label;
+  $('#networkAvailabilityState').className = availability.className;
+  $('#networkAvailabilityState').setAttribute('title', availability.detail || availability.label);
   $('#protectMode').textContent = protection.label || STATUS_TEXT.disabled;
   $('#dnsState').textContent = settings.dnsHijackEnabled === false ? STATUS_TEXT.disabled : STATUS_TEXT.enabled;
   $('#tunState').textContent = enabledLabel(settings.tunEnabled);
@@ -3460,7 +3495,16 @@ async function refreshStatus(force = false) {
       mode: 'rule',
       traffic: { up: 0, down: 0 },
       logs: [],
-      network: { lanIp: '-', proxyEndpoint: `127.0.0.1:${defaultMixedPort}`, outboundIp: '-' },
+      network: {
+        lanIp: '-',
+        proxyEndpoint: `127.0.0.1:${defaultMixedPort}`,
+        outboundIp: '-',
+        availability: {
+          state: 'unverified',
+          label: STATUS_TEXT.unchecked,
+          detail: '无法读取运行状态，网络可用性未验证。'
+        }
+      },
       permissions: { isAdmin: false, requiresAdminFor: ['TUN', '\u65ad\u7f51\u4fdd\u62a4'] },
       settings: {
         activeProfileId: 'direct',

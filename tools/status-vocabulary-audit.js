@@ -31,6 +31,8 @@ function suspiciousLines(rel) {
 const appJs = read('src/app.js');
 const indexHtml = read('src/index.html');
 const releaseAudit = read('tools/release-audit.js');
+const coreRuntimeRs = read('src-tauri/src/core_runtime.rs');
+const mainRs = read('src-tauri/src/main.rs');
 const doc = exists('STATUS_VOCABULARY_3.5.71.md') ? read('STATUS_VOCABULARY_3.5.71.md') : '';
 const frontendSuspicious = [
   ...suspiciousLines('src/app.js'),
@@ -54,6 +56,25 @@ check(
     appJs.includes("$('#settingsRuntimeSummary').textContent = runtimeSummaryLabel") &&
     appJs.includes("$('#systemProxyMetric').textContent = systemProxyUiLabel"),
   'renderStatus/renderSettings'
+);
+check(
+  'software state and network availability are separate user-visible fields',
+  indexHtml.includes('id="softwareState"') &&
+    indexHtml.includes('id="networkAvailabilityState"') &&
+    appJs.includes("$('#softwareState').textContent = runtimeSummaryLabel") &&
+    appJs.includes("$('#networkAvailabilityState').textContent = availability.label"),
+  'softwareState/networkAvailabilityState'
+);
+check(
+  'backend exposes non-blocking network availability in status surface',
+  coreRuntimeRs.includes('pub fn network_availability_json(') &&
+    coreRuntimeRs.includes('"networkUsable"') &&
+    coreRuntimeRs.includes('"softwareReady"') &&
+    coreRuntimeRs.includes('"availability": network_availability') &&
+    mainRs.includes('fn network_availability(&self) -> JsonValue') &&
+    mainRs.includes('self.network_availability()') &&
+    mainRs.includes('diagnostics_status_from_snapshot'),
+  'network.availability'
 );
 check('frontend visible text has no abnormal Unicode fragments', frontendSuspicious.length === 0, JSON.stringify(frontendSuspicious.slice(0, 12)));
 check('release audit wires status vocabulary gate', releaseAudit.includes('audit:status-vocabulary'), 'tools/release-audit.js');

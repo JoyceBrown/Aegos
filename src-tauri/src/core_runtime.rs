@@ -175,6 +175,7 @@ pub fn status_surface_json(
     settings: JsonValue,
     connection: JsonValue,
     protection: JsonValue,
+    network_availability: JsonValue,
     logs: JsonValue,
 ) -> JsonValue {
     let mut status = json!({
@@ -188,7 +189,8 @@ pub fn status_surface_json(
         "network": {
             "lanIp": lan_ip,
             "proxyEndpoint": windows_proxy_server(mixed_port),
-            "outboundIp": outbound_ip
+            "outboundIp": outbound_ip,
+            "availability": network_availability
         },
         "permissions": {
             "isAdmin": is_admin,
@@ -209,6 +211,74 @@ pub fn status_surface_json(
         }
     }
     status
+}
+
+pub fn network_availability_json(
+    core_running: bool,
+    traffic_takeover: bool,
+    outbound_ip: &str,
+    outbound_checked_at: u64,
+    now_secs: u64,
+) -> JsonValue {
+    let has_outbound_ip = !outbound_ip.trim().is_empty() && outbound_ip != "-";
+    let checked = outbound_checked_at > 0;
+    let checking = core_running && traffic_takeover && !checked;
+    let fresh = checked && now_secs.saturating_sub(outbound_checked_at) <= 600;
+    let (state, label, detail, network_usable) = if !core_running {
+        (
+            "unverified",
+            "未验证",
+            "软件未运行，只能确认本机状态，不能代表代理网络可用。",
+            false,
+        )
+    } else if !traffic_takeover {
+        (
+            "unverified",
+            "未验证",
+            "核心待命中，尚未接管系统流量。",
+            false,
+        )
+    } else if has_outbound_ip && fresh {
+        (
+            "available",
+            "可用",
+            "已获取当前节点落地 IP，网络可用性已验证。",
+            true,
+        )
+    } else if has_outbound_ip {
+        (
+            "stale",
+            "需刷新",
+            "落地 IP 是旧结果，建议刷新确认当前网络。",
+            true,
+        )
+    } else if checking {
+        (
+            "checking",
+            "检测中",
+            "已接管流量，正在等待落地 IP 结果。",
+            false,
+        )
+    } else if checked {
+        (
+            "unavailable",
+            "不可用",
+            "最近一次落地 IP 查询失败，网络可能不可用。",
+            false,
+        )
+    } else {
+        ("unverified", "未验证", "尚未进行网络可用性验证。", false)
+    };
+    json!({
+        "state": state,
+        "label": label,
+        "detail": detail,
+        "networkUsable": network_usable,
+        "softwareReady": core_running,
+        "trafficTakeover": traffic_takeover,
+        "outboundIpKnown": has_outbound_ip,
+        "checkedAt": outbound_checked_at
+    })
 }
 
 pub fn idle_traffic_snapshot() -> JsonValue {
@@ -3774,6 +3844,7 @@ rules:
             json!({ "mixedPort": 7891 }),
             connection_status_json(true, true, true, false),
             protection_status_json(true, true, true, false, true),
+            network_availability_json(true, true, "203.0.113.9", 100, 120),
             json!([]),
         );
         assert_eq!(
@@ -3803,6 +3874,55 @@ rules:
                 .pointer("/protection/level")
                 .and_then(JsonValue::as_str),
             Some("guarded")
+        );
+        assert_eq!(
+            status
+                .pointer("/network/availability/state")
+                .and_then(JsonValue::as_str),
+            Some("available")
+        );
+    }
+
+    #[test]
+    fn network_availability_separates_runtime_from_usable_network() {
+        let stopped = network_availability_json(false, false, "-", 0, 10);
+        assert_eq!(
+            stopped.get("state").and_then(JsonValue::as_str),
+            Some("unverified")
+        );
+        assert_eq!(
+            stopped.get("softwareReady").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+
+        let standby = network_availability_json(true, false, "-", 0, 10);
+        assert_eq!(
+            standby.get("state").and_then(JsonValue::as_str),
+            Some("unverified")
+        );
+        assert_eq!(
+            standby.get("softwareReady").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            standby.get("networkUsable").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+
+        let available = network_availability_json(true, true, "203.0.113.9", 100, 120);
+        assert_eq!(
+            available.get("state").and_then(JsonValue::as_str),
+            Some("available")
+        );
+        assert_eq!(
+            available.get("networkUsable").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+
+        let failed = network_availability_json(true, true, "-", 100, 120);
+        assert_eq!(
+            failed.get("state").and_then(JsonValue::as_str),
+            Some("unavailable")
         );
     }
 

@@ -629,6 +629,7 @@ struct DiagnosticsSnapshot {
     speed_test: SpeedTestState,
     lan_ip_cache: String,
     outbound_ip_cache: String,
+    outbound_ip_checked_at: u64,
     reliability_failures: u64,
     recent_logs: Vec<LogEntry>,
     status_logs: Vec<LogEntry>,
@@ -6640,7 +6641,18 @@ impl CoreManager {
             self.public_settings(),
             self.connection_status_summary(),
             self.protection_status(),
+            self.network_availability(),
             json!(self.recent_logs(120)),
+        )
+    }
+
+    fn network_availability(&self) -> JsonValue {
+        core_runtime::network_availability_json(
+            self.process.is_some(),
+            self.traffic_takeover,
+            &self.cached_outbound_ip(),
+            self.outbound_ip_checked_at,
+            now_secs(),
         )
     }
 
@@ -8181,6 +8193,7 @@ fn take_diagnostics_snapshot(core: Arc<Mutex<CoreManager>>) -> DiagnosticsSnapsh
         speed_test,
         lan_ip_cache: core.lan_ip_cache.clone(),
         outbound_ip_cache: core.cached_outbound_ip(),
+        outbound_ip_checked_at: core.outbound_ip_checked_at,
         reliability_failures: core.reliability_failures,
         recent_logs: core.recent_logs(8),
         status_logs: core.recent_logs(120),
@@ -8281,6 +8294,13 @@ fn diagnostics_status_from_snapshot(snapshot: &DiagnosticsSnapshot, is_admin: bo
             snapshot.settings.tun_enabled,
         ),
         diagnostics_protection_status(snapshot),
+        core_runtime::network_availability_json(
+            snapshot.running,
+            snapshot.traffic_takeover,
+            &snapshot.outbound_ip_cache,
+            snapshot.outbound_ip_checked_at,
+            now_secs(),
+        ),
         json!(snapshot.status_logs),
     )
 }
