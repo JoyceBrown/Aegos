@@ -4414,13 +4414,13 @@ function ensureRoutingAssistantUi() {
   if (autoCount) autoCount.id = 'routingSystemRuleCount';
   normalizeRoutingStaticText();
   const actionOptions = () => [
-    el('option', { textContent: '\u8d70\u4ee3\u7406', attrs: { value: 'proxy' } }),
-    el('option', { textContent: '\u76f4\u8fde', attrs: { value: 'direct' } }),
-    el('option', { textContent: '\u62d2\u7edd', attrs: { value: 'reject' } })
+    el('option', { textContent: '\u9009\u62e9\u7ebf\u8def\u6216\u8282\u70b9', attrs: { value: 'proxy' } }),
+    el('option', { textContent: '\u76f4\u8fde\uff08\u4e0d\u8d70\u4ee3\u7406\uff09', attrs: { value: 'direct' } }),
+    el('option', { textContent: '\u963b\u6b62\u8bbf\u95ee', attrs: { value: 'reject' } })
   ];
   const targetField = (id) => el('label', { className: 'routing-field routing-proxy-target-field' }, [
-    el('span', { textContent: '\u4f7f\u7528\u7ebf\u8def' }),
-    el('select', { id, attrs: { 'aria-label': '\u4f7f\u7528\u7ebf\u8def' } }, [])
+    el('span', { textContent: '\u7ebf\u8def\u6216\u8282\u70b9' }),
+    el('select', { id, attrs: { 'aria-label': '\u7ebf\u8def\u6216\u8282\u70b9' } }, [])
   ]);
   const kindButton = (kind, title, detail) => el('button', {
     className: kind === routingAssistantKind ? 'active' : '',
@@ -4461,20 +4461,21 @@ function ensureRoutingAssistantUi() {
         kindButton('system', '\u7cfb\u7edf\u89c4\u5219', '\u67e5\u770b Aegos \u81ea\u52a8\u7ef4\u62a4\u7684\u89c4\u5219')
       ]),
       el('section', { className: 'routing-builder-panel is-active', id: 'routingPanelWebsite', dataset: { routingPanel: 'website' } }, [
-        panelHeader('\u7f51\u7ad9\u5206\u6d41', '\u8f93\u5165\u57df\u540d\uff0cAegos \u4f1a\u751f\u6210\u672a\u751f\u6548\u8349\u7a3f\u3002'),
+        panelHeader('\u7f51\u7ad9\u89c4\u5219\u5411\u5bfc', '\u7c98\u8d34\u57df\u540d\u6216\u5b8c\u6574\u7f51\u5740\uff0c\u9009\u62e9\u5b83\u8981\u8d70\u7684\u7ebf\u8def\uff0cAegos \u53ea\u751f\u6210\u672a\u751f\u6548\u8349\u7a3f\u3002'),
         el('label', { className: 'routing-field' }, [
           el('span', { textContent: '\u76ee\u6807\u7f51\u7ad9' }),
-          el('input', { id: 'routingWebsiteInput', attrs: { placeholder: 'example.com', autocomplete: 'off', spellcheck: 'false' } })
+          el('input', { id: 'routingWebsiteInput', attrs: { placeholder: 'youtube.com 或 https://www.youtube.com/watch?v=...', autocomplete: 'off', spellcheck: 'false' } }),
+          el('small', { textContent: '\u53ef\u4ee5\u7c98\u8d34\u5b8c\u6574\u94fe\u63a5\uff0cAegos \u4f1a\u81ea\u52a8\u63d0\u53d6\u57df\u540d\u3002' })
         ]),
         el('div', { className: 'routing-draft-form' }, [
           el('label', { className: 'routing-field' }, [
-            el('span', { textContent: '\u8d70\u5411' }),
+            el('span', { textContent: '\u8fd9\u4e2a\u7f51\u7ad9' }),
             el('select', { id: 'routingWebsiteAction', attrs: { 'aria-label': '\u8d70\u5411' } }, actionOptions())
           ]),
           targetField('routingWebsiteTargetSelect'),
-          el('button', { id: 'previewWebsiteRuleBtn', className: 'primary compact', attrs: { type: 'button' }, textContent: '\u751f\u6210\u8349\u7a3f' })
+          el('button', { id: 'previewWebsiteRuleBtn', className: 'primary compact', attrs: { type: 'button' }, textContent: '\u9884\u89c8\u89c4\u5219' })
         ]),
-        el('p', { id: 'routingDraftPreview', className: 'routing-draft-preview', textContent: '\u7b49\u5f85\u8f93\u5165\u7f51\u7ad9\u3002' })
+        el('p', { id: 'routingDraftPreview', className: 'routing-draft-preview', textContent: '\u8f93\u5165\u7f51\u7ad9\u540e\uff0c\u8fd9\u91cc\u4f1a\u544a\u8bc9\u4f60\u5b83\u5c06\u8d70\u54ea\u6761\u7ebf\u8def\u3002' })
       ]),
       el('section', { className: 'routing-builder-panel', id: 'routingPanelApp', dataset: { routingPanel: 'app' } }, [
         panelHeader('\u5e94\u7528\u5206\u6d41', '\u7528\u8fdb\u7a0b\u540d\u5339\u914d\uff0c\u540d\u79f0\u4e0d\u5bf9\u65f6\u53ef\u80fd\u4e0d\u751f\u6548\u3002'),
@@ -5169,7 +5170,7 @@ function previewWebsiteRoutingDraft() {
     label: `${parsed.domain} \u2192 ${next.label}`,
     source: 'website'
   });
-  preview.textContent = `\u8349\u7a3f\uff1a${draft.label}\u3002${draft.classification.text}`;
+  preview.textContent = `\u9884\u89c8\uff1a${parsed.domain} \u5c06 ${next.label}\u3002\u5df2\u751f\u6210\u672a\u751f\u6548\u8349\u7a3f\uff0c\u5e94\u7528\u524d\u8fd8\u53ef\u4ee5\u5148\u9a8c\u8bc1\u6216\u64a4\u9500\u3002${draft.classification.text}`;
   preview.dataset.rule = draft.rule;
   preview.className = 'routing-draft-preview ok';
 }

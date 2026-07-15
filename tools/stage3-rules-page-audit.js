@@ -23,8 +23,21 @@ const appJs = read('src/app.js');
 const stylesCss = read('src/styles.css');
 const releaseAudit = read('tools/release-audit.js');
 const release = exists(`RELEASE_${pkg.version}.md`) ? read(`RELEASE_${pkg.version}.md`) : '';
+const originalRelease = exists('RELEASE_3.5.87.md') ? read('RELEASE_3.5.87.md') : '';
 
-check('version is the 3.5.87 rules-page redefinition checkpoint', pkg.version === '3.5.87', pkg.version);
+function versionAtLeast(version, minimum) {
+  const parse = (value) => String(value).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const current = parse(version);
+  const target = parse(minimum);
+  for (let index = 0; index < Math.max(current.length, target.length); index += 1) {
+    const left = current[index] || 0;
+    const right = target[index] || 0;
+    if (left !== right) return left > right;
+  }
+  return true;
+}
+
+check('version keeps the 3.5.87+ rules-page redefinition active', versionAtLeast(pkg.version, '3.5.87'), pkg.version);
 check('package exposes the stage 3 rules page audit', pkg.scripts?.['audit:stage3-rules-page'] === 'node tools/stage3-rules-page-audit.js', 'npm run audit:stage3-rules-page');
 
 check(
@@ -80,13 +93,13 @@ check(
 );
 
 check(
-  'release note records plan, deviation, and verification for 3.5.87',
-  release.includes('3.5.87') &&
-    release.includes('规则页重新定义') &&
-    release.includes('网站规则、应用规则、系统规则') &&
+  'release history records the 3.5.87 rules-page redefinition and current release keeps stage 3 verification',
+  originalRelease.includes('3.5.87') &&
+    originalRelease.includes('规则页重新定义') &&
+    originalRelease.includes('网站规则、应用规则、系统规则') &&
     release.includes('npm run audit:stage3-rules-page') &&
     release.includes('Source-only'),
-  `RELEASE_${pkg.version}.md`
+  `RELEASE_3.5.87.md / RELEASE_${pkg.version}.md`
 );
 
 const result = { ok: fail.length === 0, failed: fail, passed: pass, generatedAt: new Date().toISOString() };
