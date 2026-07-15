@@ -192,11 +192,19 @@ check(
     mainRs.includes('fn active_connection_count(state: State<AppState>)') &&
     !mainRs.includes('fn active_connection_count(&self) -> JsonValue') &&
     mainRs.includes('active_connection_count,') &&
-    mainRs.includes('controller.active_connection_count_snapshot_or_idle(running, 350)') &&
-    mainRs.includes('controller.connections_snapshot_or_empty(running, 900)') &&
+    mainRs.includes('controller.home_active_connection_count_snapshot_or_idle(running)') &&
+    mainRs.includes('controller.ui_connections_snapshot_or_empty(running)') &&
+    coreRuntimeRs.includes('pub fn home_active_connection_count_snapshot_or_idle(&self, running: bool)') &&
+    coreRuntimeRs.includes('pub fn ui_connections_snapshot_or_empty(&self, running: bool)') &&
+    coreRuntimeRs.includes('pub const ACTIVE_CONNECTION_COUNT_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const CONNECTIONS_SNAPSHOT_TIMEOUT_MS') &&
     !activeConnectionCommandBody.includes('now_secs') &&
-    hasControllerCallWithArg('close_connection', '&id', 2000) &&
-    hasControllerCall('close_connections', 3000) &&
+    mainRs.includes('controller.close_connection_for_ui(&id)') &&
+    mainRs.includes('controller.close_all_connections_for_ui()') &&
+    coreRuntimeRs.includes('pub fn close_connection_for_ui(&self, id: &str)') &&
+    coreRuntimeRs.includes('pub fn close_all_connections_for_ui(&self)') &&
+    coreRuntimeRs.includes('pub const CLOSE_CONNECTION_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const CLOSE_ALL_CONNECTIONS_TIMEOUT_MS') &&
     appJs.includes('function refreshActiveConnectionCount') &&
     appJs.includes("invoke('active_connection_count'") &&
     appJs.includes('setInterval(() => refreshActiveConnectionCount(false), 5000)'),
@@ -214,10 +222,13 @@ check(
     coreRuntimeRs.includes('pub const PROXY_SELECT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const AUXILIARY_PROXY_SELECT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const STALE_CONNECTION_CLEANUP_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub fn ui_proxy_groups_snapshot(') &&
+    coreRuntimeRs.includes('pub const PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub fn proxy_delay_with_client(') &&
     coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
     coreRuntimeRs.includes('pub fn classify_delay_http_failure(') &&
-    mainRs.includes('.proxy_groups_snapshot(1200, &[AEGOS_OUTBOUND_IP_GROUP])') &&
+    mainRs.includes('.ui_proxy_groups_snapshot(&[AEGOS_OUTBOUND_IP_GROUP])') &&
+    !mainRs.includes('.proxy_groups_snapshot(1200, &[AEGOS_OUTBOUND_IP_GROUP])') &&
     !mainRs.includes('.proxies_snapshot(1200)') &&
     !mainRs.includes('fn normalize_proxy_item') &&
     mainRs.includes('.proxy_delay_result_with_client(client, name, test_url, timeout_ms)') &&
@@ -328,8 +339,8 @@ check('delay UI uses 100 ms low-latency threshold', appJs.includes('Number(delay
 check('subscription URI parser is available', mainRs.includes('parse_uri_subscription') && mainRs.includes('base64'), 'URI/base64 subscriptions');
 check('TUIC URI subscriptions are supported', mainRs.includes('parse_tuic_uri') && mainRs.includes('line.starts_with("tuic://")'), 'tuic:// parser');
 check('modern URI airport protocols are supported', mainRs.includes('fn parse_vless_uri') && mainRs.includes('fn parse_hysteria2_uri') && mainRs.includes('fn parse_anytls_uri') && mainRs.includes('line.starts_with("vless://")') && mainRs.includes('line.starts_with("hysteria2://")') && mainRs.includes('line.starts_with("hy2://")') && mainRs.includes('line.starts_with("anytls://")') && mainRs.includes('parses_modern_uri_subscription_protocols') && appJs.includes("text.includes('anytls')") && indexHtml.includes('value="anytls"'), 'vless/hysteria2/anytls URI parser');
-check('traffic stream uses CoreController snapshot reader', mainRs.includes('fn traffic_snapshot') && mainRs.includes('self.core_controller().traffic_snapshot(timeout_ms)') && coreRuntimeRs.includes('pub fn traffic_snapshot(&self, timeout_ms: u64)') && !mainRs.includes('controller("GET", "/traffic"'), '/traffic snapshot');
-check('status heartbeat is lightweight', statusBody.includes('traffic_snapshot(120)') && statusBody.includes('core_runtime::runtime_status_json') && coreRuntimeRs.includes('pub fn runtime_status_json(') && coreRuntimeRs.includes('"version": JsonValue::Null') && !statusBody.includes('"version": JsonValue::Null') && statusBody.includes('recent_logs(120)') && !statusBody.includes('"/version"'), 'app_status snapshot');
+check('traffic stream uses CoreController snapshot reader', mainRs.includes('fn traffic_snapshot') && mainRs.includes('self.core_controller().status_traffic_snapshot()') && coreRuntimeRs.includes('pub fn traffic_snapshot(&self, timeout_ms: u64)') && coreRuntimeRs.includes('pub fn status_traffic_snapshot(&self)') && coreRuntimeRs.includes('pub const STATUS_TRAFFIC_TIMEOUT_MS') && !mainRs.includes('controller("GET", "/traffic"'), '/traffic snapshot');
+check('status heartbeat is lightweight', statusBody.includes('traffic_snapshot()') && statusBody.includes('core_runtime::runtime_status_json') && coreRuntimeRs.includes('pub fn runtime_status_json(') && coreRuntimeRs.includes('"version": JsonValue::Null') && !statusBody.includes('"version": JsonValue::Null') && statusBody.includes('recent_logs(120)') && !statusBody.includes('"/version"') && !statusBody.includes('traffic_snapshot(120)'), 'app_status snapshot');
 check('release notes exist for package version', exists(releaseDoc), releaseDoc);
 if (exists(releaseDoc)) {
   const notes = releaseNotes;

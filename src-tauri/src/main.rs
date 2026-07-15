@@ -694,7 +694,7 @@ fn controller_proxy_groups_snapshot(
         return None;
     }
     core_runtime::CoreController::new(controller_port, secret)
-        .proxy_groups_snapshot(1200, &[AEGOS_OUTBOUND_IP_GROUP])
+        .ui_proxy_groups_snapshot(&[AEGOS_OUTBOUND_IP_GROUP])
         .ok()
 }
 
@@ -7771,8 +7771,8 @@ impl CoreManager {
         })
     }
 
-    fn traffic_snapshot(&self, timeout_ms: u64) -> Result<JsonValue, String> {
-        self.core_controller().traffic_snapshot(timeout_ms)
+    fn traffic_snapshot(&self) -> Result<JsonValue, String> {
+        self.core_controller().status_traffic_snapshot()
     }
 
     fn status(&mut self) -> JsonValue {
@@ -7781,7 +7781,7 @@ impl CoreManager {
         }
         let running = self.process.is_some();
         let traffic = if running {
-            self.traffic_snapshot(120)
+            self.traffic_snapshot()
                 .unwrap_or_else(|_| self.last_traffic.clone())
         } else {
             json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 })
@@ -11302,7 +11302,7 @@ fn connections(state: State<AppState>) -> Result<JsonValue, String> {
         let core = state.core.lock().unwrap();
         (core.process.is_some(), core.core_controller())
     };
-    Ok(controller.connections_snapshot_or_empty(running, 900))
+    Ok(controller.ui_connections_snapshot_or_empty(running))
 }
 
 fn canonical_strategy_type(value: &str) -> String {
@@ -12302,7 +12302,7 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
         .collect::<Vec<_>>();
     let recent_connections = if running {
         core_runtime::CoreController::new(controller_port, secret.clone())
-            .connections_snapshot(550)
+            .diagnostic_connections_snapshot()
             .ok()
             .and_then(|value| value.as_array().cloned())
             .unwrap_or_default()
@@ -12424,7 +12424,7 @@ fn active_connection_count(state: State<AppState>) -> Result<JsonValue, String> 
         let core = state.core.lock().unwrap();
         (core.process.is_some(), core.core_controller())
     };
-    Ok(controller.active_connection_count_snapshot_or_idle(running, 350))
+    Ok(controller.home_active_connection_count_snapshot_or_idle(running))
 }
 
 #[tauri::command]
@@ -12436,7 +12436,7 @@ fn close_connection(state: State<AppState>, id: String) -> Result<bool, String> 
     if !running {
         return Ok(true);
     }
-    controller.close_connection(&id, 2000)?;
+    controller.close_connection_for_ui(&id)?;
     Ok(true)
 }
 
@@ -12449,7 +12449,7 @@ fn close_connections(state: State<AppState>) -> Result<bool, String> {
     if !running {
         return Ok(true);
     }
-    controller.close_connections(3000)?;
+    controller.close_all_connections_for_ui()?;
     Ok(true)
 }
 

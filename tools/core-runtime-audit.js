@@ -114,18 +114,28 @@ check(
     coreRuntimeRs.includes('pub fn active_connection_count_snapshot_or_idle(') &&
     coreRuntimeRs.includes('pub fn close_connection(&self, id: &str, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn close_connections(&self, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn status_traffic_snapshot(&self)') &&
+    coreRuntimeRs.includes('pub fn ui_connections_snapshot_or_empty(&self, running: bool)') &&
+    coreRuntimeRs.includes('pub fn home_active_connection_count_snapshot_or_idle(&self, running: bool)') &&
+    coreRuntimeRs.includes('pub const STATUS_TRAFFIC_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const CONNECTIONS_SNAPSHOT_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const ACTIVE_CONNECTION_COUNT_TIMEOUT_MS') &&
     mainRs.includes('fn core_controller(&self) -> core_runtime::CoreController') &&
     mainRs.includes('self.core_controller()') &&
     !mainRs.includes('.request(method, endpoint, body, timeout_ms)') &&
     !mainRs.includes('fn controller(') &&
     !mainRs.includes('fn controller_request(') &&
     !mainRs.includes('self.controller(') &&
-    mainRs.includes('self.core_controller().traffic_snapshot(timeout_ms)') &&
-    mainRs.includes('controller.connections_snapshot_or_empty(running, 900)') &&
-    mainRs.includes('controller.active_connection_count_snapshot_or_idle(running, 350)') &&
+    mainRs.includes('self.core_controller().status_traffic_snapshot()') &&
+    mainRs.includes('controller.ui_connections_snapshot_or_empty(running)') &&
+    mainRs.includes('controller.home_active_connection_count_snapshot_or_idle(running)') &&
     !activeConnectionCommandBody.includes('now_secs') &&
-    hasControllerCallWithArg('close_connection', '&id', 2000) &&
-    hasControllerCall('close_connections', 3000) &&
+    mainRs.includes('controller.close_connection_for_ui(&id)') &&
+    mainRs.includes('controller.close_all_connections_for_ui()') &&
+    coreRuntimeRs.includes('pub fn close_connection_for_ui(&self, id: &str)') &&
+    coreRuntimeRs.includes('pub fn close_all_connections_for_ui(&self)') &&
+    coreRuntimeRs.includes('pub const CLOSE_CONNECTION_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const CLOSE_ALL_CONNECTIONS_TIMEOUT_MS') &&
     !mainRs.includes('Client::builder()\n        .no_proxy()\n        .timeout(Duration::from_millis(timeout_ms))\n        .build()'),
   'controller calls must go through core_runtime instead of rebuilding ad-hoc clients',
 );
@@ -141,10 +151,13 @@ check(
     coreRuntimeRs.includes('pub const PROXY_SELECT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const AUXILIARY_PROXY_SELECT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const STALE_CONNECTION_CLEANUP_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub fn ui_proxy_groups_snapshot(') &&
+    coreRuntimeRs.includes('pub const PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub fn proxy_delay_with_client(') &&
     coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
     coreRuntimeRs.includes('pub fn classify_delay_http_failure(') &&
-    mainRs.includes('.proxy_groups_snapshot(1200, &[AEGOS_OUTBOUND_IP_GROUP])') &&
+    mainRs.includes('.ui_proxy_groups_snapshot(&[AEGOS_OUTBOUND_IP_GROUP])') &&
+    !mainRs.includes('.proxy_groups_snapshot(1200, &[AEGOS_OUTBOUND_IP_GROUP])') &&
     !mainRs.includes('.proxies_snapshot(1200)') &&
     !mainRs.includes('fn normalize_proxy_item') &&
     mainRs.includes('.proxy_delay_result_with_client(client, name, test_url, timeout_ms)') &&

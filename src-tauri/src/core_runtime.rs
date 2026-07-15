@@ -31,6 +31,13 @@ pub const MODE_APPLY_TIMEOUT_MS: u64 = 3000;
 pub const PROXY_SELECT_TIMEOUT_MS: u64 = 5000;
 pub const AUXILIARY_PROXY_SELECT_TIMEOUT_MS: u64 = 1500;
 pub const STALE_CONNECTION_CLEANUP_TIMEOUT_MS: u64 = 1500;
+pub const STATUS_TRAFFIC_TIMEOUT_MS: u64 = 120;
+pub const PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS: u64 = 1200;
+pub const CONNECTIONS_SNAPSHOT_TIMEOUT_MS: u64 = 900;
+pub const DIAGNOSTIC_CONNECTIONS_TIMEOUT_MS: u64 = 550;
+pub const ACTIVE_CONNECTION_COUNT_TIMEOUT_MS: u64 = 350;
+pub const CLOSE_CONNECTION_TIMEOUT_MS: u64 = 2000;
+pub const CLOSE_ALL_CONNECTIONS_TIMEOUT_MS: u64 = 3000;
 pub const RESOURCE_SUBDIR: &str = "core";
 pub const BINARY_NAME: &str = "mihomo.exe";
 pub const MISSING_RESOURCE_HINT: &str =
@@ -510,6 +517,10 @@ impl CoreController {
         serde_json::from_str(line.trim()).map_err(|err| err.to_string())
     }
 
+    pub fn status_traffic_snapshot(&self) -> Result<JsonValue, String> {
+        self.traffic_snapshot(STATUS_TRAFFIC_TIMEOUT_MS)
+    }
+
     pub fn proxies_snapshot(&self, timeout_ms: u64) -> Result<JsonValue, String> {
         self.request("GET", "/proxies", None, timeout_ms)
     }
@@ -569,6 +580,13 @@ impl CoreController {
             })
             .collect::<Vec<_>>();
         Ok(json!(groups))
+    }
+
+    pub fn ui_proxy_groups_snapshot(
+        &self,
+        hidden_group_names: &[&str],
+    ) -> Result<JsonValue, String> {
+        self.proxy_groups_snapshot(PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS, hidden_group_names)
     }
 
     pub fn version_probe(&self, timeout_ms: u64) -> Result<JsonValue, String> {
@@ -709,6 +727,14 @@ impl CoreController {
             .unwrap_or_else(|_| json!([]))
     }
 
+    pub fn ui_connections_snapshot_or_empty(&self, running: bool) -> JsonValue {
+        self.connections_snapshot_or_empty(running, CONNECTIONS_SNAPSHOT_TIMEOUT_MS)
+    }
+
+    pub fn diagnostic_connections_snapshot(&self) -> Result<JsonValue, String> {
+        self.connections_snapshot(DIAGNOSTIC_CONNECTIONS_TIMEOUT_MS)
+    }
+
     pub fn active_connection_count(&self, timeout_ms: u64) -> Result<usize, String> {
         self.connections_snapshot(timeout_ms).map(|items| {
             items
@@ -734,14 +760,26 @@ impl CoreController {
         })
     }
 
+    pub fn home_active_connection_count_snapshot_or_idle(&self, running: bool) -> JsonValue {
+        self.active_connection_count_snapshot_or_idle(running, ACTIVE_CONNECTION_COUNT_TIMEOUT_MS)
+    }
+
     pub fn close_connection(&self, id: &str, timeout_ms: u64) -> Result<(), String> {
         self.request("DELETE", &format!("/connections/{id}"), None, timeout_ms)?;
         Ok(())
     }
 
+    pub fn close_connection_for_ui(&self, id: &str) -> Result<(), String> {
+        self.close_connection(id, CLOSE_CONNECTION_TIMEOUT_MS)
+    }
+
     pub fn close_connections(&self, timeout_ms: u64) -> Result<(), String> {
         self.request("DELETE", "/connections", None, timeout_ms)?;
         Ok(())
+    }
+
+    pub fn close_all_connections_for_ui(&self) -> Result<(), String> {
+        self.close_connections(CLOSE_ALL_CONNECTIONS_TIMEOUT_MS)
     }
 }
 
@@ -1293,6 +1331,13 @@ mod tests {
         assert_eq!(PROXY_SELECT_TIMEOUT_MS, 5000);
         assert_eq!(AUXILIARY_PROXY_SELECT_TIMEOUT_MS, 1500);
         assert_eq!(STALE_CONNECTION_CLEANUP_TIMEOUT_MS, 1500);
+        assert_eq!(STATUS_TRAFFIC_TIMEOUT_MS, 120);
+        assert_eq!(PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS, 1200);
+        assert_eq!(CONNECTIONS_SNAPSHOT_TIMEOUT_MS, 900);
+        assert_eq!(DIAGNOSTIC_CONNECTIONS_TIMEOUT_MS, 550);
+        assert_eq!(ACTIVE_CONNECTION_COUNT_TIMEOUT_MS, 350);
+        assert_eq!(CLOSE_CONNECTION_TIMEOUT_MS, 2000);
+        assert_eq!(CLOSE_ALL_CONNECTIONS_TIMEOUT_MS, 3000);
     }
 
     fn test_preflight_input<'a>() -> RuntimeConfigPreflightInput<'a> {

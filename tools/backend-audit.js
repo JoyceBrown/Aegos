@@ -43,7 +43,11 @@ check(
 );
 check(
   'status traffic timeout stays short',
-  statusBody.includes('traffic_snapshot(120)') && !statusBody.includes('traffic_snapshot(450)'),
+  statusBody.includes('traffic_snapshot()') &&
+    coreRuntimeRs.includes('pub fn status_traffic_snapshot(&self)') &&
+    coreRuntimeRs.includes('pub const STATUS_TRAFFIC_TIMEOUT_MS') &&
+    !statusBody.includes('traffic_snapshot(120)') &&
+    !statusBody.includes('traffic_snapshot(450)'),
   'traffic snapshot timeout'
 );
 check(
@@ -256,8 +260,12 @@ check(
     coreRuntimeRs.includes('pub fn connections_snapshot_or_empty(&self, running: bool, timeout_ms: u64)') &&
     mainRs.includes('fn active_connection_count(state: State<AppState>)') &&
     mainRs.includes('active_connection_count,') &&
-    mainRs.includes('controller.active_connection_count_snapshot_or_idle(running, 350)') &&
-    mainRs.includes('controller.connections_snapshot_or_empty(running, 900)') &&
+    mainRs.includes('controller.home_active_connection_count_snapshot_or_idle(running)') &&
+    mainRs.includes('controller.ui_connections_snapshot_or_empty(running)') &&
+    coreRuntimeRs.includes('pub fn home_active_connection_count_snapshot_or_idle(&self, running: bool)') &&
+    coreRuntimeRs.includes('pub fn ui_connections_snapshot_or_empty(&self, running: bool)') &&
+    coreRuntimeRs.includes('pub const ACTIVE_CONNECTION_COUNT_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const CONNECTIONS_SNAPSHOT_TIMEOUT_MS') &&
     !activeConnectionCommandBody.includes('now_secs') &&
     !mainRs.includes('fn active_connection_count(&self) -> JsonValue'),
   'home active connection metric should stay lightweight and avoid holding the core lock during HTTP'
@@ -274,9 +282,13 @@ check(
     mainRs.includes('speed_test_snapshot_from_state(&state.speed_test)') &&
     mainRs.includes('export_logs_from_state(&state.logs, &state.app_data)') &&
     mainRs.includes('state.logs.lock().unwrap().clear()') &&
-    mainRs.includes('controller.connections_snapshot_or_empty(running, 900)') &&
-    hasControllerCallWithArg('close_connection', '&id', 2000) &&
-    hasControllerCall('close_connections', 3000) &&
+    mainRs.includes('controller.ui_connections_snapshot_or_empty(running)') &&
+    mainRs.includes('controller.close_connection_for_ui(&id)') &&
+    mainRs.includes('controller.close_all_connections_for_ui()') &&
+    coreRuntimeRs.includes('pub fn close_connection_for_ui(&self, id: &str)') &&
+    coreRuntimeRs.includes('pub fn close_all_connections_for_ui(&self)') &&
+    coreRuntimeRs.includes('pub const CLOSE_CONNECTION_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const CLOSE_ALL_CONNECTIONS_TIMEOUT_MS') &&
     !mainRs.includes('fn export_logs(&self) -> Result<JsonValue, String>') &&
     !mainRs.includes('fn connections(&self) -> JsonValue') &&
     !mainRs.includes('fn close_connections(&self) -> Result<bool, String>'),
@@ -311,10 +323,13 @@ check(
     coreRuntimeRs.includes('pub const PROXY_SELECT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const AUXILIARY_PROXY_SELECT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const STALE_CONNECTION_CLEANUP_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub fn ui_proxy_groups_snapshot(') &&
+    coreRuntimeRs.includes('pub const PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub fn proxy_delay_with_client(') &&
     coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
     coreRuntimeRs.includes('pub fn classify_delay_http_failure(') &&
-    mainRs.includes('.proxy_groups_snapshot(1200, &[AEGOS_OUTBOUND_IP_GROUP])') &&
+    mainRs.includes('.ui_proxy_groups_snapshot(&[AEGOS_OUTBOUND_IP_GROUP])') &&
+    !mainRs.includes('.proxy_groups_snapshot(1200, &[AEGOS_OUTBOUND_IP_GROUP])') &&
     !mainRs.includes('.proxies_snapshot(1200)') &&
     !mainRs.includes('fn normalize_proxy_item') &&
     mainRs.includes('.proxy_delay_result_with_client(client, name, test_url, timeout_ms)') &&
