@@ -22,11 +22,24 @@ const pkg = JSON.parse(read('package.json'));
 const appJs = read('src/app.js');
 const releaseAudit = read('tools/release-audit.js');
 const release = exists(`RELEASE_${pkg.version}.md`) ? read(`RELEASE_${pkg.version}.md`) : '';
+const originalRelease = exists('RELEASE_3.5.90.md') ? read('RELEASE_3.5.90.md') : '';
 const targetStart = appJs.indexOf('function routingTargetOptions');
 const targetEnd = appJs.indexOf('function refreshRoutingTargetOptions', targetStart);
 const targetBody = targetStart >= 0 && targetEnd > targetStart ? appJs.slice(targetStart, targetEnd) : '';
 
-check('version is the 3.5.90 strategy selector checkpoint', pkg.version === '3.5.90', pkg.version);
+function versionAtLeast(version, minimum) {
+  const parse = (value) => String(value).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const current = parse(version);
+  const target = parse(minimum);
+  for (let index = 0; index < Math.max(current.length, target.length); index += 1) {
+    const left = current[index] || 0;
+    const right = target[index] || 0;
+    if (left !== right) return left > right;
+  }
+  return true;
+}
+
+check('version keeps the 3.5.90+ strategy selector active', versionAtLeast(pkg.version, '3.5.90'), pkg.version);
 check('package exposes the stage 3 strategy selector audit', pkg.scripts?.['audit:stage3-strategy-selector'] === 'node tools/stage3-strategy-selector-audit.js', 'npm run audit:stage3-strategy-selector');
 
 check(
@@ -66,12 +79,12 @@ check(
 );
 
 check(
-  'release note records plan and verification for 3.5.90',
-  release.includes('3.5.90') &&
-    release.includes('策略选择器') &&
+  'release history records 3.5.90 strategy selector and current release keeps verification',
+  originalRelease.includes('3.5.90') &&
+    originalRelease.includes('策略选择器') &&
     release.includes('npm run audit:stage3-strategy-selector') &&
     release.includes('Source-only'),
-  `RELEASE_${pkg.version}.md`
+  `RELEASE_3.5.90.md / RELEASE_${pkg.version}.md`
 );
 
 const result = { ok: fail.length === 0, failed: fail, passed: pass, generatedAt: new Date().toISOString() };

@@ -919,7 +919,7 @@ function ensureNodeGroupTargetEditor() {
       ]),
       el('div', { id: 'nodeTargetList', className: 'node-target-list' }),
       el('footer', { className: 'node-member-actions' }, [
-        el('small', { id: 'nodeTargetFootnote', textContent: '提示：具体网站 > 场景规则；用户规则优先于订阅规则。' }),
+        el('small', { id: 'nodeTargetFootnote', textContent: '提示：用户规则优先；越具体的网站/应用规则越先判断。' }),
         el('button', { className: 'ghost compact', dataset: { closeNodeTargetEditor: '1' }, attrs: { type: 'button' }, textContent: '完成' })
       ])
     ])
@@ -1190,7 +1190,7 @@ function renderNodeTargetEditor() {
   const userRules = rules.filter((rule) => routingRuleCategory(rule) === 'user');
   const readonlyRules = rules.filter((rule) => routingRuleCategory(rule) !== 'user');
   $('#nodeTargetTitle').textContent = `目标网站：${groupName}`;
-  $('#nodeTargetHint').textContent = `这些网站会走 ${groupName}，用户规则优先于场景规则。`;
+  $('#nodeTargetHint').textContent = `这些网站会走 ${groupName}，用户规则优先于订阅规则。`;
   replaceChildrenSafe($('#nodeTargetSummary'), [
     el('div', { className: 'node-target-summary-card' }, [
       el('b', { textContent: String(userRules.length) }),
@@ -1202,7 +1202,7 @@ function renderNodeTargetEditor() {
     ]),
     el('div', { className: 'node-target-summary-note' }, [
       el('b', { textContent: '优先级' }),
-      el('span', { textContent: '具体网站 > 场景规则；用户规则 > 订阅规则。' })
+      el('span', { textContent: '用户规则优先；越具体的网站/应用规则越先判断。' })
     ])
   ]);
   const rows = rules.map((rule) => {
@@ -1266,17 +1266,21 @@ function nodeTargetRuleConflict(groupName = '', kind = '', condition = '') {
   const matches = rules.filter((rule) => sameTargetRule(rule, kind, condition));
   const exactUser = matches.find((rule) => routingRuleCategory(rule) === 'user' && String(rule.target || '') === groupName);
   const otherUser = matches.find((rule) => routingRuleCategory(rule) === 'user' && String(rule.target || '') !== groupName);
-  const readonly = matches.find((rule) => routingRuleCategory(rule) !== 'user');
+  const systemRule = matches.find((rule) => routingRuleCategory(rule) === 'system');
+  const readonly = matches.find((rule) => routingRuleCategory(rule) === 'config');
   if (exactUser) {
     return { level: 'bad', message: `已存在相同用户规则：${condition} -> ${groupName}` };
   }
   if (otherUser) {
-    return { level: 'bad', message: `这个网站已被用户规则指定到 ${routingTargetLabel(otherUser.target)}，请先删除原规则。` };
+    return { level: 'bad', message: `这个网站已被用户规则指定到 ${routingTargetDisplayLabel(otherUser.target)}。用户规则优先，同一目标只保留一条，请先编辑或删除原规则。` };
+  }
+  if (systemRule) {
+    return { level: 'bad', message: '这是系统保护规则，用于落地 IP 查询、Aegos 自身服务或防泄漏保护，不能用普通用户规则覆盖。' };
   }
   if (readonly) {
-    return { level: 'warn', message: `订阅内已有相同规则，添加后用户规则会优先生效到 ${groupName}。` };
+    return { level: 'warn', message: `订阅内已有相同规则，添加后用户规则优先，会改为走 ${routingTargetDisplayLabel(groupName)}。` };
   }
-  return { level: 'ok', message: `可以添加：${condition} -> ${groupName}` };
+  return { level: 'ok', message: `可以添加：${condition} -> ${routingTargetDisplayLabel(groupName)}。用户规则会优先判断。` };
 }
 
 function updateNodeTargetInputHint() {
@@ -4662,16 +4666,51 @@ function syncRoutingProxyTargetFields() {
   });
 }
 
+function routingConflictTargetText(rule = {}) {
+  return routingTargetDisplayLabel(rule.target || rule.group || '');
+}
+
+function routingConflictExplanation(existing = {}, draft = {}) {
+  const category = routingRuleCategory(existing);
+  const oldTarget = routingConflictTargetText(existing);
+  const newTarget = routingTargetDisplayLabel(draft.target || '');
+  if (category === 'system') {
+    return {
+      level: 'warn',
+      text: `系统保护规则已占用这个目标，当前走 ${oldTarget || 'Aegos 内部链路'}。这类规则用于落地 IP 查询、Aegos 自身服务或防泄漏保护，普通用户规则不能覆盖；请在系统规则里查看原因。`
+    };
+  }
+  if (category === 'user') {
+    if (String(existing.target || '') === String(draft.target || '')) {
+      return {
+        level: 'ok',
+        text: '已存在相同用户规则，结果一致，不需要重复应用。'
+      };
+    }
+    return {
+      level: 'warn',
+      text: `已有用户规则把它指定到 ${oldTarget}，新目标是 ${newTarget}。用户规则优先，但同一个网站/应用只应保留一条明确规则；请先编辑或删除旧规则，避免误判。`
+    };
+  }
+  if (String(existing.target || '') === String(draft.target || '')) {
+    return {
+      level: 'ok',
+      text: '订阅内已有相同规则，结果一致，不需要重复应用。'
+    };
+  }
+  return {
+    level: 'warn',
+    text: `订阅规则当前会走 ${oldTarget}，新目标是 ${newTarget}。应用后用户规则优先，会覆盖订阅里的判断。`
+  };
+}
+
 function classifyRoutingDraft(draft = {}) {
   const key = routingRuleKey(draft);
   const existing = existingRoutingRules().find((item) => routingRuleKey({ kind: item.kind, condition: item.condition }) === key);
   const duplicateDraft = routingAssistantDrafts.find((item) => item.id !== draft.id && routingRuleKey(item) === key);
-  if (existing && String(existing.target || '') !== String(draft.target || '')) {
-    return { level: 'warn', text: `\u5df2\u6709\u76f8\u540c\u6761\u4ef6\u6307\u5411 ${routingTargetLabel(existing.target)}\uff0c\u65b0\u76ee\u6807\u662f ${routingTargetLabel(draft.target)}\u3002\u7528\u6237\u89c4\u5219\u4f1a\u4f18\u5148\uff0c\u5efa\u8bae\u786e\u8ba4\u540e\u518d\u5e94\u7528\u3002` };
-  }
-  if (existing) return { level: 'ok', text: '\u5df2\u6709\u76f8\u540c\u751f\u6548\u89c4\u5219\uff0c\u4e0d\u9700\u8981\u91cd\u590d\u5e94\u7528\u3002' };
+  if (existing) return routingConflictExplanation(existing, draft);
   if (duplicateDraft) return { level: 'warn', text: '\u8349\u7a3f\u4e2d\u5df2\u6709\u76f8\u540c\u6761\u4ef6\uff0c\u5efa\u8bae\u5148\u64a4\u9500\u91cd\u590d\u9879\u3002' };
-  return { level: 'ok', text: '\u672a\u53d1\u73b0\u76f4\u63a5\u51b2\u7a81\uff0c\u7528\u6237\u89c4\u5219\u4f1a\u4f18\u5148\u4e8e\u573a\u666f\u548c\u8ba2\u9605\u515c\u5e95\u89c4\u5219\u3002' };
+  return { level: 'ok', text: '未发现直接冲突。应用后用户规则优先，会先于订阅兜底规则判断。' };
 }
 
 function addRoutingDraft(draft) {
@@ -5109,8 +5148,8 @@ function renderRoutingDraftList() {
       connection: '\u8fde\u63a5\u8bb0\u5f55'
     }[item.source] || '\u8349\u7a3f';
     const priorityText = ['website', 'app', 'connection'].includes(item.source)
-      ? '\u4f18\u5148\u7ea7\uff1a\u7528\u6237\u89c4\u5219\u4f18\u5148\uff0c\u5177\u4f53\u7f51\u7ad9/\u5e94\u7528\u9ad8\u4e8e\u573a\u666f\u89c4\u5219'
-      : '\u4f18\u5148\u7ea7\uff1a\u573a\u666f\u89c4\u5219\u4f18\u5148\u4e8e\u8ba2\u9605\u515c\u5e95\uff0c\u4f46\u4f4e\u4e8e\u5177\u4f53\u7f51\u7ad9/\u5e94\u7528';
+      ? '优先级：用户规则优先，越具体的网站/应用规则越先判断'
+      : '优先级：用户规则优先于订阅兜底规则';
     const nextStep = classification.level === 'warn'
       ? '\u4e0b\u4e00\u6b65\uff1a\u5904\u7406\u98ce\u9669\u540e\u518d\u5e94\u7528'
       : item.verified
