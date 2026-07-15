@@ -4846,6 +4846,7 @@ function renderRoutingApplyStatus() {
     el('div', { className: 'routing-apply-facts' }, [
       el('span', { textContent: `\u8ba2\u9605\uff1a${routingApplyStatus.profileName || '-'}` }),
       el('span', { textContent: `\u89c4\u5219\uff1a${routingApplyStatus.appliedCount ?? 0} \u6761` }),
+      el('span', { textContent: `部署验证：${routingApplyStatus.deploymentValidation?.controllerReady === false ? '未通过' : routingApplyStatus.deploymentValidation ? '已通过' : '未验证'}` }),
       el('span', { textContent: routingApplyStatus.rollbackAvailable ? '\u53ef\u64a4\u9500' : '\u5df2\u65e0\u64a4\u9500\u9879' })
     ])
   ]);
@@ -4880,6 +4881,7 @@ async function applyRoutingDrafts() {
     profileName: result.profileName || '',
     appliedCount: result.appliedCount || 0,
     rollbackAvailable: Boolean(result.rollbackAvailable),
+    deploymentValidation: result.deploymentValidation || null,
     detail: `\u5df2\u5b89\u5168\u5199\u5165\u5e76\u5b8c\u6210\u9884\u68c0\uff1a${result.appliedCount || 0} \u6761\u89c4\u5219\u3002\u5982\u679c\u7f51\u7edc\u8868\u73b0\u4e0d\u5bf9\uff0c\u53ef\u4ee5\u70b9\u51fb\u201c\u64a4\u9500\u6700\u8fd1\u5e94\u7528\u201d\u6062\u590d\u3002`
   };
   routingAssistantDrafts = [];

@@ -5777,21 +5777,44 @@ impl CoreManager {
         } else {
             Ok(json!({ "ok": true, "skipped": true, "reason": "core is not running" }))
         };
-        if let Err(err) = reload_result {
+        let reload_report = match reload_result {
+            Ok(value) => value,
+            Err(err) => {
+                let restore_file =
+                    atomic_write_text_confined(&profile_path, &self.profile_dir, &previous_raw);
+                let restore_runtime = if was_running && restore_file.is_ok() {
+                    self.hot_reload_profile(&profile).map(|_| ())
+                } else {
+                    restore_file.map(|_| ())
+                };
+                return Err(match restore_runtime {
+                    Ok(_) => format!("Routing hot reload failed and config was rolled back: {err}"),
+                    Err(rollback_err) => {
+                        format!(
+                            "Routing hot reload failed: {err}; rollback also failed: {rollback_err}"
+                        )
+                    }
+                });
+            }
+        };
+        let controller_verified = if was_running {
+            self.core_controller().runtime_reuse_ready()
+        } else {
+            true
+        };
+        if !controller_verified {
             let restore_file =
                 atomic_write_text_confined(&profile_path, &self.profile_dir, &previous_raw);
-            let restore_runtime = if was_running && restore_file.is_ok() {
+            let restore_runtime = if restore_file.is_ok() {
                 self.hot_reload_profile(&profile).map(|_| ())
             } else {
                 restore_file.map(|_| ())
             };
             return Err(match restore_runtime {
-                Ok(_) => format!("Routing hot reload failed and config was rolled back: {err}"),
-                Err(rollback_err) => {
-                    format!(
-                        "Routing hot reload failed: {err}; rollback also failed: {rollback_err}"
-                    )
-                }
+                Ok(_) => "Routing verification failed after hot reload; config was rolled back: controller did not confirm runtime readiness".to_string(),
+                Err(rollback_err) => format!(
+                    "Routing verification failed after hot reload; rollback also failed: {rollback_err}"
+                ),
             });
         }
         self.add_log(
@@ -5811,6 +5834,14 @@ impl CoreManager {
             "appliedCount": applied_details.len(),
             "rules": applied_details,
             "runtimePreflight": runtime_preflight,
+            "deploymentValidation": {
+                "runtimePreflightOk": true,
+                "hotReloadRan": was_running,
+                "hotReload": reload_report,
+                "controllerReady": controller_verified,
+                "rollbackReady": true,
+                "verifiedAt": now_iso()
+            },
             "rollbackAvailable": true,
             "nextStep": "Applied. You can undo the latest routing apply from the routing page."
         }))
