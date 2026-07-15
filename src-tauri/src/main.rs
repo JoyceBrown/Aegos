@@ -5239,21 +5239,32 @@ function Invoke-AegosNetsh {{
   return ($output | Out-String).Trim()
 }}
 New-Item -ItemType Directory -Path (Split-Path -Parent $markerPath) -Force | Out-Null
-Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-$index = 1
-foreach ($program in $programs) {{
-  if (Test-Path -LiteralPath $program) {{
+try {{
+  Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+  if ($programs.Count -lt 1) {{ throw 'No Aegos executable paths are available for speed-test firewall allow rules' }}
+  $index = 1
+  foreach ($program in $programs) {{
+    if (-not (Test-Path -LiteralPath $program)) {{ throw "Speed-test firewall allow target missing: $program" }}
     Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix Program $index" dir=out action=allow "program=$program" enable=yes profile=any | Out-Null
     $index += 1
   }}
+  Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix DNS UDP" dir=out action=allow protocol=UDP remoteport=53 enable=yes profile=any | Out-Null
+  Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix DNS TCP" dir=out action=allow protocol=TCP remoteport=53 enable=yes profile=any | Out-Null
+  if ($portList) {{
+    Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix Node TCP" dir=out action=allow protocol=TCP remoteport=$portList enable=yes profile=any | Out-Null
+    Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix Node UDP" dir=out action=allow protocol=UDP remoteport=$portList enable=yes profile=any | Out-Null
+  }}
+  $rules = @(Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Where-Object {{ $_.Direction -eq 'Outbound' -and $_.Action -eq 'Allow' -and $_.Enabled -eq 'True' }})
+  if ($rules.Count -lt 3) {{ throw 'Speed-test firewall did not create the required temporary allow rules' }}
+  Set-Content -LiteralPath $markerPath -Value (Get-Date).ToString('o') -Encoding UTF8
+}} catch {{
+  $failure = $_.Exception.Message
+  try {{
+    Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    if (Test-Path -LiteralPath $markerPath) {{ Remove-Item -LiteralPath $markerPath -Force }}
+  }} catch {{}}
+  throw "Speed test firewall enable failed: $failure"
 }}
-Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix DNS UDP" dir=out action=allow protocol=UDP remoteport=53 enable=yes profile=any | Out-Null
-Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix DNS TCP" dir=out action=allow protocol=TCP remoteport=53 enable=yes profile=any | Out-Null
-if ($portList) {{
-  Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix Node TCP" dir=out action=allow protocol=TCP remoteport=$portList enable=yes profile=any | Out-Null
-  Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix Node UDP" dir=out action=allow protocol=UDP remoteport=$portList enable=yes profile=any | Out-Null
-}}
-Set-Content -LiteralPath $markerPath -Value (Get-Date).ToString('o') -Encoding UTF8
 "#,
             core_runtime::powershell_single_quote_escape(marker.to_string_lossy()),
             core_runtime::powershell_single_quote_escape(&group),
@@ -5269,6 +5280,9 @@ $rulePrefix = "$group Allow"
 $markerPath = '{}'
 Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 if (Test-Path -LiteralPath $markerPath) {{ Remove-Item -LiteralPath $markerPath -Force }}
+$rules = @(Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue)
+if ($rules.Count -gt 0) {{ throw 'Speed test firewall rules were not fully removed' }}
+if (Test-Path -LiteralPath $markerPath) {{ throw 'Speed test firewall marker was not removed' }}
 "#,
             core_runtime::powershell_single_quote_escape(&group),
             core_runtime::powershell_single_quote_escape(marker.to_string_lossy())
@@ -7202,7 +7216,7 @@ impl CoreManager {
         expected_run_id: Option<u64>,
     ) -> Result<JsonValue, String> {
         if let Err(err) = self.ensure_core_for_delay_test() {
-            let message = format!("娴嬮€熷噯澶囧け璐ワ細{err}");
+            let message = format!("speed-test-prepare-failed: {err}");
             if let Some(run_id) = expected_run_id {
                 fail_speed_test_if_current(&self.speed_test, run_id, message.clone(), now_secs());
             } else {
@@ -7291,7 +7305,7 @@ impl CoreManager {
                     &speed_firewall_core_path,
                     &speed_firewall_ports,
                 )) {
-                    let message = format!("鏂綉淇濇姢娴嬮€熸斁琛屽け璐ワ細{err}");
+                    let message = format!("protection-blocked: {err}");
                     let mut speed = speed_test.lock().unwrap();
                     if speed.run_id == run_id {
                         speed.running = false;

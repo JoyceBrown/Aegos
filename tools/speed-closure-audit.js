@@ -113,6 +113,10 @@ check(
     singleBody.includes('false,') &&
     singleBody.includes('fail_single(format!("protection-blocked: {err}"))') &&
     singleBody.includes('cleanup_speed_firewall();') &&
+    speedBody.includes('protection-blocked: {err}') &&
+    mainRs.includes('Speed test firewall enable failed') &&
+    mainRs.includes('Speed test firewall rules were not fully removed') &&
+    mainRs.includes('Speed test firewall marker was not removed') &&
     mainRs.includes('remoteport=$portList'),
   'temporary firewall window is scoped to active batch and single-node speed workers'
 );

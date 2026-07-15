@@ -107,6 +107,10 @@ check(
     coreRuntimeRs.includes('FIREWALL_SPEED_TEST_MARKER_FILE') &&
     mainRs.includes('CoreFirewallPolicyPlan::speed_test') &&
     speedFirewallBody.includes('remoteport=$portList') &&
+    speedFirewallBody.includes('Speed test firewall enable failed') &&
+    speedFirewallBody.includes('Speed test firewall rules were not fully removed') &&
+    speedFirewallBody.includes('Speed-test firewall did not create the required temporary allow rules') &&
+    speedFirewallBody.includes('Speed test firewall marker was not removed') &&
     mainRs.includes('cleanup_speed_firewall') &&
     speedAudit.includes('disconnect protection speed-test allow rules open and clean up inside worker') &&
     backendAudit.includes('disconnect protection allows speed tests without disabling protection'),
