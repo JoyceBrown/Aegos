@@ -600,7 +600,9 @@ check(
     mainRs.includes('let previous_raw = fs::read_to_string(&profile_path).ok()') &&
     mainRs.includes('atomic_write_text_confined(&profile_path, &profile_root, raw)') &&
     mainRs.includes('Profile was removed before update completed') &&
-    mainRs.includes('core.restore_system_proxy_preference(previous_system_proxy)'),
+    mainRs.includes('let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(') &&
+    mainRs.includes('core.start_from_restart_plan(rollback_plan).map(|_| ())') &&
+    !mainRs.includes('core.restore_system_proxy_preference(previous_system_proxy)'),
   'subscription file/runtime transaction'
 );
 

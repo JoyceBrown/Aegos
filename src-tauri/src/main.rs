@@ -6595,6 +6595,13 @@ impl CoreManager {
             delay_ms,
         );
         self.stop()?;
+        self.start_from_restart_plan(restart_plan)
+    }
+
+    fn start_from_restart_plan(
+        &mut self,
+        restart_plan: core_runtime::CoreRuntimeRestartPlan,
+    ) -> Result<JsonValue, String> {
         if restart_plan.should_restore_proxy_preference() {
             self.restore_system_proxy_preference(restart_plan.restore_system_proxy);
         }
@@ -7895,8 +7902,11 @@ impl CoreManager {
         self.settings.active_profile_id = id.to_string();
         self.save_settings()?;
         if was_running {
-            let restore_system_proxy = self.settings.system_proxy;
-            let restore_takeover = self.traffic_takeover;
+            let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(
+                self.settings.system_proxy,
+                self.traffic_takeover,
+                core_runtime::RUNTIME_RESTART_SETTLE_MS,
+            );
             let apply_result = self.hot_reload_profile(&profile).or_else(|hot_err| {
                 self.add_log(
                     format!("Profile hot reload failed; falling back to restart: {hot_err}"),
@@ -7906,17 +7916,10 @@ impl CoreManager {
             });
             if let Err(start_err) = apply_result {
                 let _ = self.stop();
-                if restore_takeover {
-                    self.restore_system_proxy_preference(restore_system_proxy);
-                }
                 self.settings.active_profile_id = previous_profile_id.clone();
                 let save_result = self.save_settings();
                 let rollback_result = if save_result.is_ok() {
-                    if restore_takeover {
-                        self.start().map(|_| ())
-                    } else {
-                        self.start_standby().map(|_| ())
-                    }
+                    self.start_from_restart_plan(rollback_plan).map(|_| ())
                 } else {
                     save_result.map(|_| ())
                 };
@@ -7972,7 +7975,11 @@ impl CoreManager {
         }
         let was_running = self.process.is_some();
         let was_active = self.settings.active_profile_id == id;
-        let restore_takeover = self.traffic_takeover;
+        let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(
+            self.settings.system_proxy,
+            self.traffic_takeover,
+            core_runtime::RUNTIME_RESTART_SETTLE_MS,
+        );
         let remove_path = self
             .settings
             .profiles
@@ -7980,14 +7987,7 @@ impl CoreManager {
             .find(|p| p.id == id)
             .map(|profile| profile.path.clone());
         if was_running && was_active {
-            let restore_system_proxy = self.settings.system_proxy;
             self.stop()?;
-            if restore_takeover {
-                self.restore_system_proxy_preference(restore_system_proxy);
-            }
-            thread::sleep(Duration::from_millis(
-                core_runtime::RUNTIME_RESTART_SETTLE_MS,
-            ));
         }
         if let Some(path) = remove_path {
             let _ = remove_file_confined(Path::new(&path), &self.profile_dir);
@@ -7998,11 +7998,7 @@ impl CoreManager {
         }
         self.save_settings()?;
         if was_running && was_active {
-            if restore_takeover {
-                self.start()?;
-            } else {
-                self.start_standby()?;
-            }
+            self.start_from_restart_plan(rollback_plan)?;
         }
         Ok(true)
     }
@@ -8622,7 +8618,11 @@ fn add_profile_url_detached(
         let mut core = core.lock().unwrap();
         let was_running = core.process.is_some();
         let previous_profile_id = core.settings.active_profile_id.clone();
-        let previous_system_proxy = core.settings.system_proxy;
+        let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(
+            core.settings.system_proxy,
+            core.traffic_takeover,
+            core_runtime::RUNTIME_RESTART_SETTLE_MS,
+        );
         core.settings.profiles.push(profile.clone());
         core.settings.active_profile_id = id;
         if let Err(err) = core.save_settings() {
@@ -8646,13 +8646,12 @@ fn add_profile_url_detached(
         if was_running {
             if let Err(start_err) = core.restart_core_preserving_proxy(250) {
                 let _ = core.stop();
-                core.restore_system_proxy_preference(previous_system_proxy);
                 core.settings.profiles.retain(|item| item.id != profile.id);
                 core.settings.active_profile_id = previous_profile_id.clone();
                 let _ = remove_file_confined(&path, &profile_dir);
                 let save_result = core.save_settings();
                 let rollback_result = if save_result.is_ok() {
-                    core.start().map(|_| ())
+                    core.start_from_restart_plan(rollback_plan).map(|_| ())
                 } else {
                     save_result.map(|_| ())
                 };
@@ -8721,7 +8720,11 @@ fn update_profile_detached(
         let mut core = core.lock().unwrap();
         let was_running = core.process.is_some();
         let was_active = core.settings.active_profile_id == id;
-        let previous_system_proxy = core.settings.system_proxy;
+        let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(
+            core.settings.system_proxy,
+            core.traffic_takeover,
+            core_runtime::RUNTIME_RESTART_SETTLE_MS,
+        );
         let Some(stored) = core.settings.profiles.iter_mut().find(|p| p.id == id) else {
             if let Some(raw) = previous_raw.as_ref() {
                 let _ = atomic_write_text_confined(&profile_path, &profile_root, raw);
@@ -8755,7 +8758,6 @@ fn update_profile_detached(
         if was_running && was_active {
             if let Err(start_err) = core.restart_core_preserving_proxy(250) {
                 let _ = core.stop();
-                core.restore_system_proxy_preference(previous_system_proxy);
                 if let Some(raw) = previous_raw.as_ref() {
                     let _ = atomic_write_text_confined(&profile_path, &profile_root, raw);
                 }
@@ -8764,7 +8766,7 @@ fn update_profile_detached(
                 }
                 let save_result = core.save_settings();
                 let rollback_result = if save_result.is_ok() {
-                    core.start().map(|_| ())
+                    core.start_from_restart_plan(rollback_plan).map(|_| ())
                 } else {
                     save_result.map(|_| ())
                 };

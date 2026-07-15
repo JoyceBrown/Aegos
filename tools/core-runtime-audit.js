@@ -45,6 +45,12 @@ const tryRecoverCurrentProfileBody = mainRs.match(/fn try_recover_current_profil
 const recoverNetworkBody = mainRs.match(/fn recover_network\(&mut self, force: bool\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn change_proxy/)?.[1] || '';
 const repairSystemProxyTakeoverBody = mainRs.match(/fn repair_system_proxy_takeover\(&mut self\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn apply_setting_value/)?.[1] || '';
 const hotReloadProfileBody = mainRs.match(/fn hot_reload_profile\(&mut self, profile: &Profile\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn ensure_runtime_ports/)?.[1] || '';
+const restartCorePreservingProxyBody = mainRs.match(/fn restart_core_preserving_proxy\(&mut self, delay_ms: u64\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn start_from_restart_plan/)?.[1] || '';
+const startFromRestartPlanBody = mainRs.match(/fn start_from_restart_plan\(\n\s*&mut self,\n\s*restart_plan: core_runtime::CoreRuntimeRestartPlan,\n\s*\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn stop/)?.[1] || '';
+const setActiveProfileBody = mainRs.match(/fn set_active_profile\(&mut self, id: &str\) -> Result<Profile, String> \{([\s\S]*?)\n    fn rename_profile/)?.[1] || '';
+const removeProfileBody = mainRs.match(/fn remove_profile\(&mut self, id: &str\) -> Result<bool, String> \{([\s\S]*?)\n    fn save_manual_node/)?.[1] || '';
+const addProfileUrlDetachedBody = mainRs.match(/fn add_profile_url_detached\([\s\S]*?\) -> Result<Profile, String> \{([\s\S]*?)\nfn update_profile_detached/)?.[1] || '';
+const updateProfileDetachedBody = mainRs.match(/fn update_profile_detached\([\s\S]*?\) -> Result<Profile, String> \{([\s\S]*?)\nfn refresh_outbound_ip_detached/)?.[1] || '';
 
 function hasControllerCall(method, timeout) {
   return new RegExp(`controller\\s*\\.\\s*${method}\\(\\s*${timeout}\\s*\\)`).test(mainRs);
@@ -411,11 +417,27 @@ check(
     coreRuntimeRs.includes('pub fn preserving_proxy') &&
     coreRuntimeRs.includes('pub fn next_action(&self) -> CoreRuntimeRestartAction') &&
     coreRuntimeRs.includes('runtime_restart_plan_preserves_takeover_intent_inside_runtime_boundary') &&
+    coreRuntimeRs.includes('standby_mutation.next_action()') &&
     mainRs.includes('CoreRuntimeRestartPlan::for_runtime_drift') &&
     mainRs.includes('CoreRuntimeRestartPlan::preserving_proxy') &&
     mainRs.includes('restart_plan.next_action()') &&
-    mainRs.includes('CoreRuntimeRestartAction::StartWithTakeover'),
-  'main.rs may execute stop/start, but restore-takeover restart intent belongs to core_runtime',
+    mainRs.includes('CoreRuntimeRestartAction::StartWithTakeover') &&
+    restartCorePreservingProxyBody.includes('self.start_from_restart_plan(restart_plan)') &&
+    startFromRestartPlanBody.includes('restart_plan.should_restore_proxy_preference()') &&
+    startFromRestartPlanBody.includes('restart_plan.next_action()') &&
+    setActiveProfileBody.includes('let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(') &&
+    setActiveProfileBody.includes('self.start_from_restart_plan(rollback_plan)') &&
+    removeProfileBody.includes('let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(') &&
+    removeProfileBody.includes('self.start_from_restart_plan(rollback_plan)?') &&
+    addProfileUrlDetachedBody.includes('let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(') &&
+    addProfileUrlDetachedBody.includes('core.start_from_restart_plan(rollback_plan)') &&
+    updateProfileDetachedBody.includes('let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(') &&
+    updateProfileDetachedBody.includes('core.start_from_restart_plan(rollback_plan)') &&
+    !setActiveProfileBody.includes('let restore_takeover =') &&
+    !removeProfileBody.includes('let restore_takeover =') &&
+    !addProfileUrlDetachedBody.includes('previous_system_proxy') &&
+    !updateProfileDetachedBody.includes('previous_system_proxy'),
+  'main.rs may execute stop/start, but restore-takeover restart intent and profile-mutation rollback planning belong to core_runtime',
 );
 check(
   'traffic takeover after core readiness is planned inside the core runtime boundary',

@@ -3119,6 +3119,13 @@ mod tests {
             manual_restart.next_action(),
             CoreRuntimeRestartAction::StartWithTakeover
         );
+
+        let standby_mutation = CoreRuntimeRestartPlan::preserving_proxy(true, false, 250);
+        assert_eq!(
+            standby_mutation.next_action(),
+            CoreRuntimeRestartAction::StartStandby
+        );
+        assert!(!standby_mutation.should_restore_proxy_preference());
     }
 
     #[test]
