@@ -4952,18 +4952,58 @@ function splitRoutingRules(rawRules = []) {
 
 function routingSystemRuleBuckets(rules = []) {
   const buckets = [
-    ['ai', 'AI / ÷', /openai|chatgpt|anthropic|gemini|copilot|ai/i],
-    ['media', 'ý', /netflix|disney|youtube|spotify|hulu|prime/i],
-    ['telegram', 'Telegram / 通讯', /telegram|whatsapp|signal|discord/i],
-    ['cn', '直连', /CN|china|geosite:cn|geoip:cn/i],
-    ['ads', '', /ad|ads|reject|block/i],
-    ['fallback', '兜底', /MATCH|FINAL/i]
+    {
+      key: 'outbound-ip',
+      label: '落地 IP 查询',
+      detail: '用于让 Aegos 查询当前节点的出口 IP，不会切换节点，也不会改变智能分流规则。',
+      empty: '当前没有额外落地 IP 系统规则；运行时仍会按需要生成隐藏检测链路。',
+      pattern: /outbound-ip|Aegos Landing IP|api6?\.ipify\.org|checkip\.amazonaws\.com|ident\.me|ifconfig\.me|icanhazip\.com/i
+    },
+    {
+      key: 'self-service',
+      label: 'Aegos 自身服务',
+      detail: '用于本机控制、状态检测、诊断和必要的内部请求，避免被用户规则误伤。',
+      empty: '当前没有独立展示的自身服务规则。',
+      pattern: /aegos|controller|127\.0\.0\.1|localhost|status|diagnostic/i
+    },
+    {
+      key: 'leak-protection',
+      label: '防泄漏保护',
+      detail: '用于避免 DNS、IPv6 或检测请求绕过当前代理策略；普通用户规则不能覆盖这类保护。',
+      empty: '当前没有独立展示的防泄漏系统规则。',
+      pattern: /dns|ipv6|leak|api6\.ipify\.org|REJECT-DROP|block/i
+    }
   ];
-  return buckets.map(([key, label, pattern]) => ({
+  return buckets.map(({ key, label, detail, empty, pattern }) => ({
     key,
     label,
+    detail,
+    empty,
     count: rules.filter((item) => pattern.test(`${item.kind || ''} ${item.condition || ''} ${item.target || ''}`)).length
-  })).filter((item) => item.count > 0);
+  }));
+}
+
+function routingSystemRuleExplanation(item = {}) {
+  const raw = `${item.systemRuleKind || ''} ${item.kind || ''} ${item.condition || ''} ${item.target || ''}`;
+  if (/outbound-ip|Aegos Landing IP|api6?\.ipify\.org|checkip\.amazonaws\.com|ident\.me|ifconfig\.me|icanhazip\.com/i.test(raw)) {
+    return {
+      title: '落地 IP 查询',
+      detail: item.explanation || 'Aegos 用它查询当前节点出口 IP，不切节点、不改模式。',
+      impact: item.userImpact || '只影响 Aegos 自己的落地 IP 检测，不影响普通网站或应用规则。'
+    };
+  }
+  if (/dns|ipv6|leak|REJECT-DROP|block/i.test(raw)) {
+    return {
+      title: '防泄漏保护',
+      detail: item.explanation || '用于减少 DNS、IPv6 或检测请求绕过代理的风险。',
+      impact: item.userImpact || '保护规则优先于普通规则；如果不可覆盖，Aegos 会说明原因。'
+    };
+  }
+  return {
+    title: 'Aegos 自身服务',
+    detail: item.explanation || '用于 Aegos 的状态检测、诊断和本机服务。',
+    impact: item.userImpact || '普通用户规则仍然优先；系统规则只保护 Aegos 必要链路。'
+  };
 }
 
 function routingTargetOptionsFull() {
@@ -5078,23 +5118,26 @@ function renderRoutingSystemWorkbench(rules = []) {
   const bucketRows = buckets.map((item) => el('div', { className: 'routing-work-row readonly' }, [
     el('div', {}, [
       el('b', { textContent: item.label }),
-      el('small', { textContent: `${item.count}  ${item.detail || 'Aegos 自动维护的内部规则'}` })
+      el('small', { textContent: item.count ? `${item.count} 条 · ${item.detail}` : item.empty })
     ]),
     el('span', { className: 'routing-readonly-pill', textContent: '只读' })
   ]));
-  const sampleRows = rules.slice(0, 8).map((item) => el('div', { className: 'routing-work-row readonly compact' }, [
-    el('div', {}, [
-      el('b', { textContent: `${routingKindLabel(item.kind)}  ${item.condition || '-'}` }),
-      el('small', { textContent: item.explanation || ' / Aegos 内部规则，避免误删。' })
-    ]),
-    el('span', { className: 'routing-readonly-pill', textContent: '只读' })
-  ]));
+  const sampleRows = rules.slice(0, 8).map((item) => {
+    const explanation = routingSystemRuleExplanation(item);
+    return el('div', { className: 'routing-work-row readonly compact' }, [
+      el('div', {}, [
+        el('b', { textContent: `${explanation.title} · ${routingKindLabel(item.kind)} ${item.condition || '-'}` }),
+        el('small', { textContent: `${explanation.detail} ${explanation.impact}` })
+      ]),
+      el('span', { className: 'routing-readonly-pill', textContent: '只读' })
+    ]);
+  });
   return [
     el('div', { className: 'routing-work-list routing-system-buckets' }, bucketRows.length ? bucketRows : [emptyState('暂无系统规则')]),
     el('details', { className: 'routing-inline-details' }, [
       el('summary', {}, [
         el('b', { textContent: '查看明细' }),
-        el('small', { textContent: '这些规则只展示，不允许编辑。' })
+        el('small', { textContent: '系统规则只解释和展示，不允许编辑；用户规则仍然优先。' })
       ]),
       el('div', { className: 'routing-work-list' }, sampleRows.length ? sampleRows : [emptyState('暂无明细')])
     ])

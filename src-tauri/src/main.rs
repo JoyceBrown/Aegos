@@ -10602,22 +10602,31 @@ fn mark_system_routing_rules(rules: &mut [JsonValue]) {
             .get("condition")
             .and_then(|value| value.as_str())
             .unwrap_or("");
-        let system_rule = target == AEGOS_OUTBOUND_IP_GROUP
+        let outbound_ip_rule = target == AEGOS_OUTBOUND_IP_GROUP
             || condition.contains("api.ipify.org")
             || condition.contains("api6.ipify.org")
             || condition.contains("checkip.amazonaws.com")
             || condition.contains("ifconfig.me")
             || condition.contains("icanhazip.com")
             || condition.contains("ident.me");
-        if !system_rule {
+        if !outbound_ip_rule {
             continue;
         }
         if let Some(map) = item.as_object_mut() {
             map.insert("source".to_string(), json!("system"));
             map.insert("editable".to_string(), json!(false));
+            map.insert("systemRuleKind".to_string(), json!("outbound-ip"));
             map.insert(
                 "explanation".to_string(),
-                json!("Aegos internal rule used to query the current node outbound IP; it is hidden from normal routing decisions and cannot be edited."),
+                json!("Aegos uses this hidden rule to query the current node outbound IP. It does not switch nodes, does not change the user mode, and cannot be edited."),
+            );
+            map.insert(
+                "userImpact".to_string(),
+                json!("Only Aegos outbound IP checks use this rule; normal website and app routing is still decided by user rules first."),
+            );
+            map.insert(
+                "lockedReason".to_string(),
+                json!("System protection rule: editing it could make outbound IP display inaccurate or leak through the wrong route."),
             );
         }
     }
@@ -11191,8 +11200,11 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
             "options": [],
             "status": "readonly",
             "source": "system",
+            "systemRuleKind": "outbound-ip",
             "editable": false,
-            "explanation": "Aegos internal rule used to query the current node outbound IP; it is generated at runtime and cannot be edited."
+            "explanation": "Aegos uses this hidden rule to query the current node outbound IP. It is generated at runtime, does not switch nodes, and cannot be edited.",
+            "userImpact": "Only Aegos outbound IP checks use this rule; normal website and app routing is still decided by user rules first.",
+            "lockedReason": "System protection rule: editing it could make outbound IP display inaccurate or leak through the wrong route."
         }));
     }
     let (group_count, auto_group_count) = core_runtime::routing_group_counts(&group_rows);
