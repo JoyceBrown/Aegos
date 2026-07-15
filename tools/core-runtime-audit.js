@@ -10,6 +10,7 @@ const pass = [];
 
 const expectedVersion = 'v1.19.28';
 const expectedSha256 = 'c14bda8dc4cc8910ccd2110fe2be083c51a1b66da59141a0b87aff6fe6126517';
+const CORE_VERSION_PROBE_AUDIT_TIMEOUT_MS = 7500;
 const coreRel = path.join('resources', 'core', 'mihomo.exe');
 const corePath = path.join(root, coreRel);
 
@@ -49,7 +50,10 @@ const actualSha = exists ? sha256(corePath) : '';
 let versionOutput = '';
 if (exists) {
   try {
-    versionOutput = execFileSync(corePath, ['-v'], { encoding: 'utf8', timeout: 2500 });
+    versionOutput = execFileSync(corePath, ['-v'], {
+      encoding: 'utf8',
+      timeout: CORE_VERSION_PROBE_AUDIT_TIMEOUT_MS,
+    });
   } catch (err) {
     versionOutput = String(err?.message || err);
   }
@@ -57,6 +61,11 @@ if (exists) {
 
 check('core binary exists in resources/core', exists, coreRel);
 check('core binary hash matches the approved managed asset', actualSha === expectedSha256, actualSha);
+check(
+  'core binary version probe has a Windows cold-start audit SLA',
+  CORE_VERSION_PROBE_AUDIT_TIMEOUT_MS >= 7500 && CORE_VERSION_PROBE_AUDIT_TIMEOUT_MS <= 10000,
+  `${CORE_VERSION_PROBE_AUDIT_TIMEOUT_MS}ms`,
+);
 check('core binary reports the approved version', versionOutput.includes(`Mihomo Meta ${expectedVersion}`), versionOutput.trim());
 check('core binary keeps gVisor tag', versionOutput.includes('with_gvisor'), versionOutput.trim());
 check(

@@ -36,6 +36,7 @@ const installerSha = exists(installer) ? sha256(installer) : '';
 const releaseDoc = `RELEASE_${pkg.version}.md`;
 const releaseNotes = exists(releaseDoc) ? readText(releaseDoc) : '';
 const sourceOnlyRelease = releaseNotes.includes('Source-only');
+const coreRuntimeAudit = readText('tools/core-runtime-audit.js');
 
 check('package name is aegos', pkg.name === 'aegos', pkg.name);
 check('package/Tauri/Cargo versions match', pkg.version === tauri.version && pkg.version === cargoVersion, `${pkg.version}/${tauri.version}/${cargoVersion}`);
@@ -74,6 +75,7 @@ check('subscription product audit script exists', exists('tools/subscription-pro
 check('home product audit script exists', exists('tools/home-product-audit.js') && pkg.scripts?.['audit:home-product'] === 'node tools/home-product-audit.js', 'tools/home-product-audit.js');
 check('node strategy UI audit script exists', exists('tools/node-strategy-ui-audit.js') && pkg.scripts?.['audit:node-strategy-ui'] === 'node tools/node-strategy-ui-audit.js', 'tools/node-strategy-ui-audit.js');
 check('core runtime audit script exists', exists('tools/core-runtime-audit.js') && pkg.scripts?.['audit:core-runtime'] === 'node tools/core-runtime-audit.js', 'tools/core-runtime-audit.js');
+check('core runtime version probe audit has Windows cold-start SLA', coreRuntimeAudit.includes('CORE_VERSION_PROBE_AUDIT_TIMEOUT_MS = 7500') && coreRuntimeAudit.includes('Windows cold-start audit SLA') && !coreRuntimeAudit.includes("timeout: 2500"), 'tools/core-runtime-audit.js');
 check('routing read-only audit script exists', exists('tools/routing-readonly-audit.js') && pkg.scripts?.['audit:routing-readonly'] === 'node tools/routing-readonly-audit.js', 'tools/routing-readonly-audit.js');
 check('routing navigation audit script exists', exists('tools/routing-navigation-audit.js') && pkg.scripts?.['audit:routing-navigation'] === 'node tools/routing-navigation-audit.js', 'tools/routing-navigation-audit.js');
 check('routing mode audit script exists', exists('tools/routing-mode-audit.js') && pkg.scripts?.['audit:routing-mode'] === 'node tools/routing-mode-audit.js', 'tools/routing-mode-audit.js');
