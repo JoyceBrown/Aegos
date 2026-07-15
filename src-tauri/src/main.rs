@@ -604,6 +604,7 @@ struct CoreManager {
     lan_ip_checked_at: u64,
     outbound_ip_cache: String,
     outbound_ip_checked_at: u64,
+    outbound_ip_query_generation: u64,
     reliability_failures: u64,
 }
 
@@ -2861,12 +2862,11 @@ fn query_outbound_ip(mixed_port: u16) -> Result<String, String> {
         }
     }
     if last_error.is_empty() {
-        Err("鏃犳硶鑾峰彇钀藉湴 IP".to_string())
+        Err("Unable to query outbound IP".to_string())
     } else {
-        Err(format!("鏃犳硶鑾峰彇钀藉湴 IP: {last_error}"))
+        Err(format!("Unable to query outbound IP: {last_error}"))
     }
 }
-
 fn query_outbound_ip_family(mixed_port: u16, family: &str) -> Result<String, String> {
     let proxy_url = format!("http://127.0.0.1:{mixed_port}");
     let proxy = reqwest::Proxy::all(&proxy_url).map_err(|err| err.to_string())?;
@@ -5330,6 +5330,7 @@ impl CoreManager {
             lan_ip_checked_at: 0,
             outbound_ip_cache: "-".to_string(),
             outbound_ip_checked_at: 0,
+            outbound_ip_query_generation: 0,
             reliability_failures: 0,
         };
         manager.core_sha256 = if manager.core_path.exists() {
@@ -8797,18 +8798,42 @@ fn update_profile_detached(
 }
 
 fn refresh_outbound_ip_detached(core: Arc<Mutex<CoreManager>>) -> Result<String, String> {
-    let mixed_port = {
+    let (mixed_port, query_generation, selected_proxy) = {
         let mut core = core.lock().unwrap();
         if core.process.is_none() {
             core.outbound_ip_cache = "-".to_string();
             core.outbound_ip_checked_at = now_secs();
-            return Err("璇峰厛杩炴帴鏍稿績鍚庡啀鍒锋柊钀藉湴 IP".to_string());
+            core.outbound_ip_query_generation = core.outbound_ip_query_generation.saturating_add(1);
+            return Err("Core is not running; outbound IP cannot be queried.".to_string());
         }
-        let _ = core.sync_outbound_ip_group_selection();
-        core.settings.mixed_port
+        let selected_proxy = core.sync_outbound_ip_group_selection();
+        core.outbound_ip_query_generation = core.outbound_ip_query_generation.saturating_add(1);
+        (
+            core.settings.mixed_port,
+            core.outbound_ip_query_generation,
+            selected_proxy,
+        )
     };
     let ip = query_outbound_ip(mixed_port);
     let mut core = core.lock().unwrap();
+    let current_proxy = {
+        let groups = core.proxy_groups();
+        core.current_outbound_ip_proxy_name(&groups)
+    };
+    if core.outbound_ip_query_generation != query_generation || current_proxy != selected_proxy {
+        core.add_log(
+            "Outbound IP refresh result ignored because the selected node changed.",
+            "info",
+        );
+        let fallback = core.cached_outbound_ip();
+        if fallback != "-" {
+            return Ok(fallback);
+        }
+        return Err(
+            "Outbound IP query expired after node changed; retrying will use the current node."
+                .to_string(),
+        );
+    }
     core.outbound_ip_checked_at = now_secs();
     match ip {
         Ok(ip) => {

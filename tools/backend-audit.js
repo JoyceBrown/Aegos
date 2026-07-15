@@ -33,6 +33,7 @@ const singleSpeedCommandBody = mainRs.match(/fn test_single_proxy_delay\(state: 
 const activeConnectionCommandBody = mainRs.match(/fn active_connection_count\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 const connectionStatusSummaryBody = mainRs.match(/fn connection_status_summary\(&self\) -> JsonValue \{([\s\S]*?)\n    \}/)?.[1] || '';
 const connectionClosureBody = mainRs.match(/fn connection_closure\(&self\) -> JsonValue \{([\s\S]*?)\n    \}/)?.[1] || '';
+const outboundIpRefreshBody = mainRs.match(/fn refresh_outbound_ip_detached\(core: Arc<Mutex<CoreManager>>\) -> Result<String, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 
 function hasControllerCall(method, timeout) {
   return new RegExp(`controller\\s*\\.\\s*${method}\\(\\s*${timeout}\\s*\\)`).test(mainRs);
@@ -63,6 +64,18 @@ check(
     !statusBody.includes('traffic_snapshot(120)') &&
     !statusBody.includes('traffic_snapshot(450)'),
   'traffic snapshot timeout'
+);
+check(
+  'outbound IP refresh ignores stale node results',
+  mainRs.includes('outbound_ip_query_generation: u64') &&
+    outboundIpRefreshBody.includes('outbound_ip_query_generation = core.outbound_ip_query_generation.saturating_add(1)') &&
+    outboundIpRefreshBody.includes('current_outbound_ip_proxy_name(&groups)') &&
+    outboundIpRefreshBody.includes('current_proxy != selected_proxy') &&
+    outboundIpRefreshBody.includes('Outbound IP refresh result ignored because the selected node changed.') &&
+    mainRs.includes('Unable to query outbound IP') &&
+    !outboundIpRefreshBody.includes('鐠囧嘲') &&
+    !mainRs.includes('閺冪姵纭堕懢宄板絿'),
+  'old outbound IP lookups must not overwrite cache after node/profile changes'
 );
 check(
   'speed tests run in background thread',
