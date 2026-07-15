@@ -25,17 +25,30 @@ function check(name, ok, detail = '') {
 const pkg = readJson('package.json');
 const packageJson = read('package.json');
 const mainRs = read('src-tauri/src/main.rs');
+const coreRuntimeRs = read('src-tauri/src/core_runtime.rs');
 const appJs = read('src/app.js');
 const stylesCss = read('src/styles.css');
 const releaseAudit = read('tools/release-audit.js');
 const report = exists('PRODUCT_MATURITY_GAP_REPORT.md') ? read('PRODUCT_MATURITY_GAP_REPORT.md') : '';
 
+function semverAtLeast(version, baseline) {
+  const parse = (value) => String(value).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const current = parse(version);
+  const min = parse(baseline);
+  for (let index = 0; index < Math.max(current.length, min.length); index += 1) {
+    const left = current[index] || 0;
+    const right = min[index] || 0;
+    if (left !== right) return left > right;
+  }
+  return true;
+}
+
 check('connection closure audit is exposed as package script', packageJson.includes('"audit:connection-closure": "node tools/connection-closure-audit.js"'), 'package.json');
-check('package version is at least 3.4.12 for connection closure lane', /^3\.4\.(?:1[2-9]|20)$/.test(pkg.version), pkg.version);
+check('package version keeps connection closure lane after 3.4.12', semverAtLeast(pkg.version, '3.4.12'), pkg.version);
 check('release audit knows connection closure audit', releaseAudit.includes('connection closure audit script exists'), 'tools/release-audit.js');
-check('backend exposes user-facing connection phase and next action', mainRs.includes('fn connection_phase(&self)') && mainRs.includes('"phase"') && mainRs.includes('"label"') && mainRs.includes('"nextAction"'), 'connection_phase/summary');
+check('backend exposes user-facing connection phase and next action', coreRuntimeRs.includes('pub fn connection_phase(') && coreRuntimeRs.includes('pub fn connection_status_json(') && coreRuntimeRs.includes('"phase"') && coreRuntimeRs.includes('"label"') && coreRuntimeRs.includes('"nextAction"') && mainRs.includes('core_runtime::connection_status_json(') && !mainRs.includes('fn connection_phase(&self)'), 'connection_phase/summary');
 check('app status includes lightweight connection summary', mainRs.includes('"connection": self.connection_status_summary()'), 'status connection summary');
-check('connection closure still returns current node and outbound IP for jobs', mainRs.includes('fn connection_closure(&self)') && mainRs.includes('"currentNode"') && mainRs.includes('"outboundIp"') && mainRs.includes('"outboundIpKnown"'), 'job connection closure');
+check('connection closure still returns current node and outbound IP for jobs', mainRs.includes('fn connection_closure(&self)') && mainRs.includes('core_runtime::connection_closure_json(') && coreRuntimeRs.includes('"currentNode"') && coreRuntimeRs.includes('"outboundIp"') && coreRuntimeRs.includes('"outboundIpKnown"'), 'job connection closure');
 check('manual system proxy preference still does not auto-connect', mainRs.includes('System proxy preference enabled; connect before applying Windows proxy takeover') && mainRs.includes('if enable && !self.traffic_takeover'), 'manual proxy preference path');
 check('frontend reads backend connection applied/wanted state', appJs.includes('const connection = status.connection || {}') && appJs.includes('connection.systemProxyApplied') && appJs.includes('connection.systemProxyWanted'), 'renderStatus connection source');
 check('system proxy status row is never hidden from ordinary users', appJs.includes("$('#proxyStateRow').classList.remove('hidden')") && !appJs.includes("$('#proxyStateRow').classList.toggle('hidden', !settings.systemProxy)"), 'proxy state row visible');

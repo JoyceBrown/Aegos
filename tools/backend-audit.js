@@ -23,6 +23,8 @@ const speedTestBody = speedStart >= 0 && speedEnd > speedStart ? mainRs.slice(sp
 const speedCommandBody = mainRs.match(/fn start_proxy_delay_test\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 const singleSpeedCommandBody = mainRs.match(/fn test_single_proxy_delay\(state: State<AppState>, name: String\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 const activeConnectionCommandBody = mainRs.match(/fn active_connection_count\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
+const connectionStatusSummaryBody = mainRs.match(/fn connection_status_summary\(&self\) -> JsonValue \{([\s\S]*?)\n    \}/)?.[1] || '';
+const connectionClosureBody = mainRs.match(/fn connection_closure\(&self\) -> JsonValue \{([\s\S]*?)\n    \}/)?.[1] || '';
 
 function hasControllerCall(method, timeout) {
   return new RegExp(`controller\\s*\\.\\s*${method}\\(\\s*${timeout}\\s*\\)`).test(mainRs);
@@ -629,10 +631,22 @@ check(
 check(
   'connection closure is returned by connect and node switch jobs',
   mainRs.includes('fn connection_closure(&self) -> JsonValue') &&
-    mainRs.includes('"coreRunning"') &&
-    mainRs.includes('"systemProxyApplied"') &&
-    mainRs.includes('"currentNode"') &&
-    mainRs.includes('"outboundIpKnown"') &&
+    coreRuntimeRs.includes('pub fn connection_status_json(') &&
+    coreRuntimeRs.includes('pub fn connection_closure_json(') &&
+    coreRuntimeRs.includes('"coreRunning"') &&
+    coreRuntimeRs.includes('"systemProxyApplied"') &&
+    coreRuntimeRs.includes('"currentNode"') &&
+    coreRuntimeRs.includes('"outboundIpKnown"') &&
+    coreRuntimeRs.includes('connection_status_and_closure_are_runtime_shaped') &&
+    mainRs.includes('core_runtime::connection_status_json(') &&
+    mainRs.includes('core_runtime::connection_closure_json(') &&
+    !mainRs.includes('fn connection_phase(&self)') &&
+    connectionStatusSummaryBody.includes('core_runtime::connection_status_json(') &&
+    connectionClosureBody.includes('core_runtime::connection_closure_json(') &&
+    !connectionStatusSummaryBody.includes('"coreRunning"') &&
+    !connectionStatusSummaryBody.includes('"systemProxyApplied"') &&
+    !connectionClosureBody.includes('"currentNode".to_string()') &&
+    !connectionClosureBody.includes('"outboundIpKnown".to_string()') &&
     mainRs.includes('"connection": self.connection_closure()') &&
     mainRs.includes('let connection = core.connection_closure();') &&
     mainRs.includes('json!({ "group": group, "proxy": proxy, "connection": connection })'),

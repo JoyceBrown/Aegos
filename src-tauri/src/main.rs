@@ -7832,44 +7832,13 @@ impl CoreManager {
         }
     }
 
-    fn connection_phase(&self) -> (&'static str, &'static str, &'static str) {
-        if self.process.is_none() {
-            return ("disconnected", "Disconnected", "Connect");
-        }
-        if !self.traffic_takeover {
-            return ("standby", "Core standby", "Connect");
-        }
-        if self.settings.tun_enabled {
-            return ("connected-tun", "Connected by TUN", "Disconnect");
-        }
-        if self.settings.system_proxy {
-            return (
-                "connected-system-proxy",
-                "Connected by system proxy",
-                "Disconnect",
-            );
-        }
-        (
-            "connected-core",
-            "Core running without system takeover",
-            "Enable system proxy or TUN",
-        )
-    }
-
     fn connection_status_summary(&self) -> JsonValue {
-        let (phase, label, next_action) = self.connection_phase();
-        let system_proxy_applied = self.traffic_takeover && self.settings.system_proxy;
-        json!({
-            "phase": phase,
-            "label": label,
-            "nextAction": next_action,
-            "coreRunning": self.process.is_some(),
-            "trafficTakeover": self.traffic_takeover,
-            "systemProxyWanted": self.settings.system_proxy,
-            "systemProxyApplied": system_proxy_applied,
-            "tunEnabled": self.settings.tun_enabled,
-            "takeoverComplete": self.traffic_takeover && (self.settings.tun_enabled || system_proxy_applied || !self.settings.system_proxy)
-        })
+        core_runtime::connection_status_json(
+            self.process.is_some(),
+            self.traffic_takeover,
+            self.settings.system_proxy,
+            self.settings.tun_enabled,
+        )
     }
 
     fn connection_closure(&self) -> JsonValue {
@@ -7878,26 +7847,17 @@ impl CoreManager {
             .current_outbound_ip_proxy_name(&groups)
             .unwrap_or_else(|| "-".to_string());
         let outbound_ip = self.cached_outbound_ip();
-        let mut summary = self.connection_status_summary();
-        if let Some(map) = summary.as_object_mut() {
-            map.insert("mode".to_string(), json!(self.settings.mode));
-            map.insert(
-                "activeProfileId".to_string(),
-                json!(self.settings.active_profile_id),
-            );
-            map.insert("currentNode".to_string(), json!(current_node));
-            map.insert("outboundIp".to_string(), json!(outbound_ip));
-            map.insert(
-                "outboundIpKnown".to_string(),
-                json!(map
-                    .get("outboundIp")
-                    .and_then(|value| value.as_str())
-                    .map(|value| value != "-")
-                    .unwrap_or(false)),
-            );
-            map.insert("checkedAt".to_string(), json!(now_secs()));
-        }
-        summary
+        core_runtime::connection_closure_json(
+            self.process.is_some(),
+            self.traffic_takeover,
+            self.settings.system_proxy,
+            self.settings.tun_enabled,
+            &self.settings.mode,
+            &self.settings.active_profile_id,
+            &current_node,
+            &outbound_ip,
+            now_secs(),
+        )
     }
 
     fn public_settings(&self) -> JsonValue {

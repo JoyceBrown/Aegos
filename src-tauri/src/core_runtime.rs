@@ -144,6 +144,90 @@ pub fn runtime_status_json(
     })
 }
 
+pub fn connection_phase(
+    core_running: bool,
+    traffic_takeover: bool,
+    system_proxy_wanted: bool,
+    tun_enabled: bool,
+) -> (&'static str, &'static str, &'static str) {
+    if !core_running {
+        return ("disconnected", "Disconnected", "Connect");
+    }
+    if !traffic_takeover {
+        return ("standby", "Core standby", "Connect");
+    }
+    if tun_enabled {
+        return ("connected-tun", "Connected by TUN", "Disconnect");
+    }
+    if system_proxy_wanted {
+        return (
+            "connected-system-proxy",
+            "Connected by system proxy",
+            "Disconnect",
+        );
+    }
+    (
+        "connected-core",
+        "Core running without system takeover",
+        "Enable system proxy or TUN",
+    )
+}
+
+pub fn connection_status_json(
+    core_running: bool,
+    traffic_takeover: bool,
+    system_proxy_wanted: bool,
+    tun_enabled: bool,
+) -> JsonValue {
+    let (phase, label, next_action) = connection_phase(
+        core_running,
+        traffic_takeover,
+        system_proxy_wanted,
+        tun_enabled,
+    );
+    let system_proxy_applied = traffic_takeover && system_proxy_wanted;
+    json!({
+        "phase": phase,
+        "label": label,
+        "nextAction": next_action,
+        "coreRunning": core_running,
+        "trafficTakeover": traffic_takeover,
+        "systemProxyWanted": system_proxy_wanted,
+        "systemProxyApplied": system_proxy_applied,
+        "tunEnabled": tun_enabled,
+        "takeoverComplete": traffic_takeover && (tun_enabled || system_proxy_applied || !system_proxy_wanted)
+    })
+}
+
+pub fn connection_closure_json(
+    core_running: bool,
+    traffic_takeover: bool,
+    system_proxy_wanted: bool,
+    tun_enabled: bool,
+    mode: &str,
+    active_profile_id: &str,
+    current_node: &str,
+    outbound_ip: &str,
+    checked_at: u64,
+) -> JsonValue {
+    let outbound_ip_known = !outbound_ip.trim().is_empty() && outbound_ip != "-";
+    let mut summary = connection_status_json(
+        core_running,
+        traffic_takeover,
+        system_proxy_wanted,
+        tun_enabled,
+    );
+    if let Some(map) = summary.as_object_mut() {
+        map.insert("mode".to_string(), json!(mode));
+        map.insert("activeProfileId".to_string(), json!(active_profile_id));
+        map.insert("currentNode".to_string(), json!(current_node));
+        map.insert("outboundIp".to_string(), json!(outbound_ip));
+        map.insert("outboundIpKnown".to_string(), json!(outbound_ip_known));
+        map.insert("checkedAt".to_string(), json!(checked_at));
+    }
+    summary
+}
+
 pub fn normalize_proxy_type(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
         "hy2" => "hysteria2".to_string(),
@@ -1705,6 +1789,103 @@ rules:
                 .and_then(|value| value.get("engine"))
                 .and_then(JsonValue::as_str),
             Some(ENGINE)
+        );
+    }
+
+    #[test]
+    fn connection_status_and_closure_are_runtime_shaped() {
+        let disconnected = connection_status_json(false, false, true, false);
+        assert_eq!(
+            disconnected.get("phase").and_then(JsonValue::as_str),
+            Some("disconnected")
+        );
+        assert_eq!(
+            disconnected.get("nextAction").and_then(JsonValue::as_str),
+            Some("Connect")
+        );
+
+        let standby = connection_status_json(true, false, true, false);
+        assert_eq!(
+            standby.get("phase").and_then(JsonValue::as_str),
+            Some("standby")
+        );
+        assert_eq!(
+            standby.get("takeoverComplete").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+
+        let system_proxy = connection_status_json(true, true, true, false);
+        assert_eq!(
+            system_proxy.get("phase").and_then(JsonValue::as_str),
+            Some("connected-system-proxy")
+        );
+        assert_eq!(
+            system_proxy
+                .get("systemProxyApplied")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            system_proxy
+                .get("takeoverComplete")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
+
+        let tun = connection_status_json(true, true, false, true);
+        assert_eq!(
+            tun.get("phase").and_then(JsonValue::as_str),
+            Some("connected-tun")
+        );
+
+        let core_only = connection_status_json(true, true, false, false);
+        assert_eq!(
+            core_only.get("phase").and_then(JsonValue::as_str),
+            Some("connected-core")
+        );
+        assert_eq!(
+            core_only.get("nextAction").and_then(JsonValue::as_str),
+            Some("Enable system proxy or TUN")
+        );
+
+        let closure = connection_closure_json(
+            true,
+            true,
+            true,
+            false,
+            "rule",
+            "profile-a",
+            "HK 01",
+            "203.0.113.1",
+            42,
+        );
+        assert_eq!(
+            closure.get("mode").and_then(JsonValue::as_str),
+            Some("rule")
+        );
+        assert_eq!(
+            closure.get("activeProfileId").and_then(JsonValue::as_str),
+            Some("profile-a")
+        );
+        assert_eq!(
+            closure.get("currentNode").and_then(JsonValue::as_str),
+            Some("HK 01")
+        );
+        assert_eq!(
+            closure.get("outboundIpKnown").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            closure.get("checkedAt").and_then(JsonValue::as_u64),
+            Some(42)
+        );
+
+        let unknown_ip = connection_closure_json(true, true, true, false, "rule", "", "-", "-", 43);
+        assert_eq!(
+            unknown_ip
+                .get("outboundIpKnown")
+                .and_then(JsonValue::as_bool),
+            Some(false)
         );
     }
 
