@@ -347,6 +347,17 @@ check(
   'runtime config apply must be owned by core_runtime instead of ad-hoc controller calls in main.rs',
 );
 check(
+  'Aegos owns core-facing failure classification inside the core runtime boundary',
+  coreRuntimeRs.includes('pub fn classify_failure_reason') &&
+    coreRuntimeRs.includes('pub fn classified_error') &&
+    coreRuntimeRs.includes('runtime_failure_reason_classifier_covers_common_connection_failures') &&
+    mainRs.includes('core_runtime::classified_error("Node switch", err)') &&
+    mainRs.includes('core_runtime::classify_failure_reason(&entry.line)') &&
+    !mainRs.includes('fn classify_failure_reason') &&
+    !mainRs.includes('fn classified_error'),
+  'core/controller/node failure classes must not be rebuilt in main.rs',
+);
+check(
   'release gate requires core runtime audit',
   packageJson.scripts?.['audit:core-runtime'] === 'node tools/core-runtime-audit.js' &&
     releaseAudit.includes('core runtime audit script exists'),

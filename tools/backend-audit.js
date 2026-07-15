@@ -772,11 +772,13 @@ check(
 
 check(
   'connection failures are classified for user-facing actions',
-  mainRs.includes('fn classify_failure_reason') &&
-    ['timeout', 'dns', 'tls', 'auth', 'unsupported-protocol', 'port-conflict', 'controller-unavailable', 'config', 'network'].every((item) => mainRs.includes(`"${item}"`)) &&
-    mainRs.includes('fn classified_error') &&
-    mainRs.includes('failure_reason_classifier_covers_common_connection_failures') &&
-    mainRs.includes('return Err(classified_error("Node switch", err));'),
+  coreRuntimeRs.includes('pub fn classify_failure_reason') &&
+    ['timeout', 'dns', 'tls', 'auth', 'unsupported-protocol', 'port-conflict', 'controller-unavailable', 'config', 'network'].every((item) => coreRuntimeRs.includes(`"${item}"`)) &&
+    coreRuntimeRs.includes('pub fn classified_error') &&
+    coreRuntimeRs.includes('runtime_failure_reason_classifier_covers_common_connection_failures') &&
+    mainRs.includes('return Err(core_runtime::classified_error("Node switch", err));') &&
+    !mainRs.includes('fn classify_failure_reason') &&
+    !mainRs.includes('fn classified_error'),
   'timeout/DNS/TLS/auth/controller/config/network classifications'
 );
 
@@ -831,7 +833,7 @@ check(
     mainRs.includes('fn recent_node_logs_from_snapshot') &&
     mainRs.includes('fn log_matches_node') &&
     mainRs.includes('"lastFailure"') &&
-    mainRs.includes('classify_failure_reason(&entry.line)') &&
+    mainRs.includes('core_runtime::classify_failure_reason(&entry.line)') &&
     mainRs.includes('fn recovery_suggestions_from_snapshot') &&
     mainRs.includes('recovery_suggestions_from_snapshot(groups, speed, max_delay_ms, 8)') &&
     mainRs.includes('node_diagnostics_from_snapshot(name, &groups, &speed, &logs, max_delay_ms)') &&

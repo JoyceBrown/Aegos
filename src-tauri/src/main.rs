@@ -110,105 +110,6 @@ fn subscription_diagnostic(stage: &str, reason: impl AsRef<str>, suggestion: &st
     subscription_runtime::diagnostic(stage, reason, suggestion)
 }
 
-fn classify_failure_reason(reason: &str) -> &'static str {
-    let text = reason.to_ascii_lowercase();
-    if text.contains("198.18.")
-        || text.contains("198.19.")
-        || text.contains("fake-ip")
-        || text.contains("fake ip")
-    {
-        "dns-fake-ip"
-    } else if text.contains("firewall")
-        || text.contains("blocked by protection")
-        || text.contains("disconnect protection")
-        || text.contains("kill switch")
-    {
-        "protection-blocked"
-    } else if text.contains("blocked") || text.contains("reject") || text.contains("denied by rule")
-    {
-        "blocked"
-    } else if (text.contains("connect") || text.contains("dial"))
-        && (text.contains("no route to host")
-            || text.contains("network unreachable")
-            || text.contains("host unreachable"))
-    {
-        "node-connect"
-    } else if text.contains("no route to host")
-        || text.contains("network unreachable")
-        || text.contains("host unreachable")
-    {
-        "unreachable"
-    } else if text.contains("timeout") || text.contains("timed out") || text.contains("i/o timeout")
-    {
-        "timeout"
-    } else if text.contains("dns")
-        || text.contains("lookup")
-        || text.contains("no such host")
-        || text.contains("failed to lookup")
-    {
-        "dns"
-    } else if text.contains("tls")
-        || text.contains("certificate")
-        || text.contains("handshake")
-        || text.contains("x509")
-    {
-        "tls"
-    } else if text.contains("unauthorized")
-        || text.contains("forbidden")
-        || text.contains("authentication")
-        || text.contains("permission denied")
-        || text.contains("401")
-        || text.contains("403")
-    {
-        "auth"
-    } else if text.contains("unsupported proxy type")
-        || text.contains("unsupported protocol")
-        || text.contains("not supported")
-    {
-        "unsupported-protocol"
-    } else if text.contains("port")
-        && (text.contains("in use") || text.contains("conflict") || text.contains("鍗犵敤"))
-    {
-        "port-conflict"
-    } else if text.contains("node not found") || text.contains("not found") || text.contains("404")
-    {
-        "node-not-found"
-    } else if text.contains("503") || text.contains("504") {
-        "controller-delay-error"
-    } else if text.contains("controller")
-        || text.contains("/proxies")
-        || text.contains("/configs")
-        || text.contains("127.0.0.1")
-        || text.contains("connection refused")
-    {
-        "controller-unavailable"
-    } else if text.contains("yaml")
-        || text.contains("config")
-        || text.contains("preflight")
-        || text.contains("閰嶇疆")
-    {
-        "config"
-    } else if text.contains("delay test")
-        || text.contains("test url")
-        || text.contains("generate delay")
-        || text.contains("an error occurred")
-    {
-        "probe-failed"
-    } else if text.contains("network") || text.contains("connect") || text.contains("proxy") {
-        "network"
-    } else {
-        "unknown"
-    }
-}
-
-fn classified_error(context: &str, reason: impl AsRef<str>) -> String {
-    let reason = reason.as_ref();
-    format!(
-        "{context} failed [{}]: {reason}",
-        classify_failure_reason(reason)
-    )
-}
-
 fn is_ignorable_subscription_line(line: &str) -> bool {
     subscription_runtime::is_ignorable_line(line)
 }
@@ -4266,36 +4167,6 @@ rules:
     }
 
     #[test]
-    fn failure_reason_classifier_covers_common_connection_failures() {
-        assert_eq!(classify_failure_reason("dial tcp: i/o timeout"), "timeout");
-        assert_eq!(classify_failure_reason("dns lookup failed"), "dns");
-        assert_eq!(
-            classify_failure_reason("server resolved to 198.18.0.1 fake-ip"),
-            "dns-fake-ip"
-        );
-        assert_eq!(classify_failure_reason("tls handshake failed"), "tls");
-        assert_eq!(classify_failure_reason("HTTP 401 unauthorized"), "auth");
-        assert_eq!(
-            classify_failure_reason("blocked by disconnect protection firewall"),
-            "protection-blocked"
-        );
-        assert_eq!(
-            classify_failure_reason("connect: network unreachable"),
-            "node-connect"
-        );
-        assert_eq!(
-            classify_failure_reason("Config preflight failed: unsupported proxy type"),
-            "unsupported-protocol"
-        );
-        assert_eq!(
-            classify_failure_reason("controller connection refused"),
-            "controller-unavailable"
-        );
-        assert!(classified_error("Node switch", "connection refused")
-            .contains("Node switch failed [controller-unavailable]"));
-    }
-
-    #[test]
     fn speed_test_preflight_blocks_fake_ip_targets() {
         let targets = vec![SpeedTestTarget {
             name: "HK 01".to_string(),
@@ -8177,7 +8048,7 @@ impl CoreManager {
                     }
                 }
                 let _ = self.save_settings();
-                return Err(classified_error("Node switch", err));
+                return Err(core_runtime::classified_error("Node switch", err));
             }
             let _ = self.sync_outbound_ip_group_selection();
         }
@@ -8508,7 +8379,7 @@ fn node_diagnostics_from_snapshot(
                 "level": entry.level,
                 "category": entry.category,
                 "line": entry.line,
-                "classification": classify_failure_reason(&entry.line)
+                "classification": core_runtime::classify_failure_reason(&entry.line)
             })
         });
     let region = infer_node_region(&target.name);
