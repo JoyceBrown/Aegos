@@ -1792,6 +1792,13 @@ pub struct CoreStartFailureContext {
     pub recent_logs: String,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CoreRuntimeStartAction {
+    LaunchFresh,
+    ReuseRunning,
+    RestartForDrift,
+}
+
 impl CoreLaunchPlan {
     pub fn new(paths: CoreRuntimePaths, profile_name: impl Into<String>, standby: bool) -> Self {
         Self {
@@ -1815,6 +1822,31 @@ impl CoreLaunchPlan {
             &self.paths.home_dir,
             &self.paths.runtime_profile_path,
         )
+    }
+}
+
+pub fn runtime_identity_matches(
+    runtime_profile_id: Option<&str>,
+    requested_profile_id: &str,
+    runtime_config_digest: Option<&str>,
+    requested_config_digest: &str,
+) -> bool {
+    runtime_profile_id == Some(requested_profile_id)
+        && runtime_config_digest == Some(requested_config_digest)
+}
+
+pub fn decide_runtime_start(
+    process_running: bool,
+    identity_matches: bool,
+    controller_ready: bool,
+) -> CoreRuntimeStartAction {
+    if !process_running {
+        return CoreRuntimeStartAction::LaunchFresh;
+    }
+    if identity_matches && controller_ready {
+        CoreRuntimeStartAction::ReuseRunning
+    } else {
+        CoreRuntimeStartAction::RestartForDrift
     }
 }
 
@@ -2183,6 +2215,44 @@ mod tests {
         assert_eq!(CONFIG_FORCE_APPLY_ENDPOINT, "/configs?force=true");
         assert_eq!(CONFIG_FORCE_APPLY_TIMEOUT_MS, 8000);
         assert_eq!(CONFIG_APPLY_VERSION_PROBE_TIMEOUT_MS, 900);
+    }
+
+    #[test]
+    fn runtime_start_reuse_decision_is_owned_by_runtime_boundary() {
+        assert!(runtime_identity_matches(
+            Some("profile-a"),
+            "profile-a",
+            Some("digest-a"),
+            "digest-a"
+        ));
+        assert!(!runtime_identity_matches(
+            Some("profile-a"),
+            "profile-b",
+            Some("digest-a"),
+            "digest-a"
+        ));
+        assert!(!runtime_identity_matches(
+            Some("profile-a"),
+            "profile-a",
+            Some("digest-a"),
+            "digest-b"
+        ));
+        assert_eq!(
+            decide_runtime_start(false, false, false),
+            CoreRuntimeStartAction::LaunchFresh
+        );
+        assert_eq!(
+            decide_runtime_start(true, true, true),
+            CoreRuntimeStartAction::ReuseRunning
+        );
+        assert_eq!(
+            decide_runtime_start(true, true, false),
+            CoreRuntimeStartAction::RestartForDrift
+        );
+        assert_eq!(
+            decide_runtime_start(true, false, false),
+            CoreRuntimeStartAction::RestartForDrift
+        );
     }
 
     fn test_preflight_input<'a>() -> RuntimeConfigPreflightInput<'a> {

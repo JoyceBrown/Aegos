@@ -371,6 +371,20 @@ check(
   'main.rs may collect runtime facts, but startup failure wording belongs to core_runtime',
 );
 check(
+  'core runtime reuse and drift decisions are owned by the core runtime boundary',
+  coreRuntimeRs.includes('pub enum CoreRuntimeStartAction') &&
+    coreRuntimeRs.includes('pub fn runtime_identity_matches') &&
+    coreRuntimeRs.includes('pub fn decide_runtime_start') &&
+    coreRuntimeRs.includes('runtime_start_reuse_decision_is_owned_by_runtime_boundary') &&
+    mainRs.includes('core_runtime::runtime_identity_matches') &&
+    mainRs.includes('core_runtime::decide_runtime_start') &&
+    mainRs.includes('CoreRuntimeStartAction::ReuseRunning') &&
+    mainRs.includes('CoreRuntimeStartAction::RestartForDrift') &&
+    !mainRs.includes('let same_profile =') &&
+    !mainRs.includes('let same_config ='),
+  'main.rs must not rebuild runtime identity/reuse/drift decisions',
+);
+check(
   'release gate requires core runtime audit',
   packageJson.scripts?.['audit:core-runtime'] === 'node tools/core-runtime-audit.js' &&
     releaseAudit.includes('core runtime audit script exists'),

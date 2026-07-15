@@ -6540,10 +6540,22 @@ impl CoreManager {
                     &format!("Config generation failed: {err}"),
                 )
             })?;
-        if self.process.is_some() {
-            let same_profile = self.runtime_profile_id.as_deref() == Some(profile.id.as_str());
-            let same_config = self.runtime_config_digest.as_deref() == Some(config_digest.as_str());
-            if same_profile && same_config && self.core_controller().runtime_reuse_ready() {
+        let identity_matches = core_runtime::runtime_identity_matches(
+            self.runtime_profile_id.as_deref(),
+            profile.id.as_str(),
+            self.runtime_config_digest.as_deref(),
+            config_digest.as_str(),
+        );
+        let process_running = self.process.is_some();
+        let controller_ready =
+            process_running && identity_matches && self.core_controller().runtime_reuse_ready();
+        match core_runtime::decide_runtime_start(
+            process_running,
+            identity_matches,
+            controller_ready,
+        ) {
+            core_runtime::CoreRuntimeStartAction::LaunchFresh => {}
+            core_runtime::CoreRuntimeStartAction::ReuseRunning => {
                 self.apply_takeover_after_core_ready(enable_takeover);
                 return Ok(json!({
                     "ok": true,
@@ -6553,16 +6565,18 @@ impl CoreManager {
                     "connection": self.connection_closure()
                 }));
             }
-            let restore_system_proxy = self.settings.system_proxy;
-            let restore_takeover = self.traffic_takeover && enable_takeover;
-            self.add_log(core_runtime::RUNTIME_DRIFT_RESTART_MESSAGE, "warn");
-            self.stop()?;
-            if restore_takeover {
-                self.restore_system_proxy_preference(restore_system_proxy);
+            core_runtime::CoreRuntimeStartAction::RestartForDrift => {
+                let restore_system_proxy = self.settings.system_proxy;
+                let restore_takeover = self.traffic_takeover && enable_takeover;
+                self.add_log(core_runtime::RUNTIME_DRIFT_RESTART_MESSAGE, "warn");
+                self.stop()?;
+                if restore_takeover {
+                    self.restore_system_proxy_preference(restore_system_proxy);
+                }
+                thread::sleep(Duration::from_millis(
+                    core_runtime::RUNTIME_RESTART_SETTLE_MS,
+                ));
             }
-            thread::sleep(Duration::from_millis(
-                core_runtime::RUNTIME_RESTART_SETTLE_MS,
-            ));
         }
         ensure_dir(&self.home_dir).map_err(|err| {
             self.start_failure_message(
