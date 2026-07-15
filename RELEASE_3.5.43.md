@@ -1,6 +1,6 @@
 # Aegos 3.5.43
 
-Source-only architecture checkpoint. No installer was produced for this patch.
+Installer candidate for the diagnostics-runtime architecture checkpoint.
 
 ## Diagnostics Runtime
 
@@ -18,6 +18,7 @@ Source-only architecture checkpoint. No installer was produced for this patch.
 
 ## Verification
 
+- `npm run build`
 - `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`
 - `npm run check`
 - `cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture` (78 tests passed)
@@ -31,10 +32,11 @@ Source-only architecture checkpoint. No installer was produced for this patch.
 - `npm run audit:stability`
 - `npm run audit:diagnostics`
 - `npm run audit:diagnostics-product`
+- `npm run audit:installer`
 - `npm run smoke:interactions`
 - `git diff --check`
 
 ## Artifact
 
-- Source-only: no installer hash.
-- SHA-256: source-only/no-installer.
+- Installer: `src-tauri/target/release/bundle/nsis/Aegos_3.5.43_x64-setup.exe`
+- SHA-256: `0feefe04cf1e0fa2888efc7b81b10701169f18ace09b6072ba7d6adaaeb94d71`
