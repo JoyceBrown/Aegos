@@ -188,7 +188,8 @@ check(
     mainRs.includes('Core startup failed: {reason}') &&
     mainRs.includes('Config generation failed: {err}') &&
     mainRs.includes('Core process spawn failed: {err}') &&
-    mainRs.includes('core_runtime::CONTROLLER_READY_TIMEOUT_MESSAGE') &&
+    mainRs.includes('self.wait_for_controller()?') &&
+    coreRuntimeRs.includes('pub fn wait_until_ready') &&
     mainRs.includes('core_runtime::TERMINATE_FAILED_STARTUP_MESSAGE') &&
     coreRuntimeRs.includes('pub const CONTROLLER_READY_TIMEOUT_MESSAGE') &&
     coreRuntimeRs.includes('pub const TERMINATE_FAILED_STARTUP_MESSAGE') &&
@@ -324,15 +325,26 @@ check(
 check(
   'generic CoreManager controller escape hatch is removed',
   coreRuntimeRs.includes('pub fn version_probe(&self, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn wait_until_ready') &&
+    coreRuntimeRs.includes('pub fn process_exit_message') &&
+    coreRuntimeRs.includes('pub const READY_REUSE_PROBE_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const READY_PROBE_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const READY_CHECK_ATTEMPTS') &&
+    coreRuntimeRs.includes('pub const READY_RETRY_INTERVAL_MS') &&
+    coreRuntimeRs.includes('pub const RUNTIME_RESTART_SETTLE_MS') &&
     coreRuntimeRs.includes('pub fn set_mode(&self, mode: &str, timeout_ms: u64)') &&
-    mainRs.includes('self.core_controller().version_probe(900)') &&
-    mainRs.includes('self.core_controller().version_probe(300)') &&
+    mainRs.includes('.wait_until_ready(||') &&
+    mainRs.includes('core_runtime::READY_REUSE_PROBE_TIMEOUT_MS') &&
+    mainRs.includes('core_runtime::RUNTIME_RESTART_SETTLE_MS') &&
     mainRs.includes('self.core_controller().set_mode(mode, 3000)') &&
     mainRs.includes('self.core_controller().close_connections(1500)') &&
+    !mainRs.includes('version_probe(900)') &&
+    !mainRs.includes('version_probe(300)') &&
+    !mainRs.includes('for _ in 0..24') &&
     !mainRs.includes('fn controller(') &&
     !mainRs.includes('fn controller_request(') &&
     !mainRs.includes('self.controller('),
-  'readiness, mode, and connection cleanup should use typed CoreController methods'
+  'readiness, mode, and connection cleanup should use typed CoreController methods without lifecycle magic numbers in main.rs'
 );
 
 check(

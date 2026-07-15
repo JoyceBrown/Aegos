@@ -6709,7 +6709,9 @@ impl CoreManager {
         );
         if restart_previous_runtime && self.process.is_some() {
             let _ = self.stop();
-            thread::sleep(Duration::from_millis(250));
+            thread::sleep(Duration::from_millis(
+                core_runtime::RUNTIME_RESTART_SETTLE_MS,
+            ));
         }
         self.settings = previous_settings;
         let mut rollback_errors = Vec::new();
@@ -7394,7 +7396,12 @@ impl CoreManager {
         let config_digest = self.patch_profile_file(profile)?;
         let same_runtime = self.runtime_profile_id.as_deref() == Some(profile.id.as_str())
             && self.runtime_config_digest.as_deref() == Some(config_digest.as_str());
-        if same_runtime && self.core_controller().version_probe(900).is_ok() {
+        if same_runtime
+            && self
+                .core_controller()
+                .version_probe(core_runtime::READY_REUSE_PROBE_TIMEOUT_MS)
+                .is_ok()
+        {
             self.add_log(
                 format!(
                     "Profile apply skipped; unchanged runtime config digest: {}",
@@ -7461,23 +7468,14 @@ impl CoreManager {
 
     fn reap_exited_core(&mut self) -> Option<String> {
         let child = self.process.as_mut()?;
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                self.process = None;
-                self.runtime_profile_id = None;
-                self.runtime_config_digest = None;
-                self.traffic_takeover = false;
-                Some(core_runtime::exited_before_ready_message(&status))
-            }
-            Ok(None) => None,
-            Err(err) => {
-                self.process = None;
-                self.runtime_profile_id = None;
-                self.runtime_config_digest = None;
-                self.traffic_takeover = false;
-                Some(core_runtime::status_check_failed_message(&err))
-            }
+        let reason = core_runtime::process_exit_message(child.try_wait());
+        if reason.is_some() {
+            self.process = None;
+            self.runtime_profile_id = None;
+            self.runtime_config_digest = None;
+            self.traffic_takeover = false;
         }
+        reason
     }
 
     fn recent_logs(&self, limit: usize) -> Vec<LogEntry> {
@@ -7605,7 +7603,13 @@ impl CoreManager {
         if self.process.is_some() {
             let same_profile = self.runtime_profile_id.as_deref() == Some(profile.id.as_str());
             let same_config = self.runtime_config_digest.as_deref() == Some(config_digest.as_str());
-            if same_profile && same_config && self.core_controller().version_probe(900).is_ok() {
+            if same_profile
+                && same_config
+                && self
+                    .core_controller()
+                    .version_probe(core_runtime::READY_REUSE_PROBE_TIMEOUT_MS)
+                    .is_ok()
+            {
                 self.apply_takeover_after_core_ready(enable_takeover);
                 return Ok(json!({
                     "ok": true,
@@ -7622,7 +7626,9 @@ impl CoreManager {
             if restore_takeover {
                 self.restore_system_proxy_preference(restore_system_proxy);
             }
-            thread::sleep(Duration::from_millis(250));
+            thread::sleep(Duration::from_millis(
+                core_runtime::RUNTIME_RESTART_SETTLE_MS,
+            ));
         }
         ensure_dir(&self.home_dir).map_err(|err| {
             self.start_failure_message(
@@ -7755,17 +7761,14 @@ impl CoreManager {
     }
 
     fn wait_for_controller(&mut self) -> Result<(), String> {
-        for _ in 0..24 {
-            if let Some(reason) = self.reap_exited_core() {
+        let controller = self.core_controller();
+        controller.wait_until_ready(|| {
+            let reason = self.reap_exited_core();
+            if let Some(reason) = &reason {
                 self.add_log(&reason, "error");
-                return Err(reason);
             }
-            if self.core_controller().version_probe(300).is_ok() {
-                return Ok(());
-            }
-            thread::sleep(Duration::from_millis(250));
-        }
-        Err(core_runtime::CONTROLLER_READY_TIMEOUT_MESSAGE.to_string())
+            reason
+        })
     }
 
     fn traffic_snapshot(&self, timeout_ms: u64) -> Result<JsonValue, String> {
@@ -8408,7 +8411,12 @@ impl CoreManager {
     }
 
     fn ensure_core_for_delay_test(&mut self) -> Result<(), String> {
-        if self.process.is_some() && self.core_controller().version_probe(900).is_ok() {
+        if self.process.is_some()
+            && self
+                .core_controller()
+                .version_probe(core_runtime::READY_REUSE_PROBE_TIMEOUT_MS)
+                .is_ok()
+        {
             return Ok(());
         }
         if self.traffic_takeover {
@@ -9304,7 +9312,9 @@ impl CoreManager {
             if restore_takeover {
                 self.restore_system_proxy_preference(restore_system_proxy);
             }
-            thread::sleep(Duration::from_millis(250));
+            thread::sleep(Duration::from_millis(
+                core_runtime::RUNTIME_RESTART_SETTLE_MS,
+            ));
         }
         if let Some(path) = remove_path {
             let _ = remove_file_confined(Path::new(&path), &self.profile_dir);

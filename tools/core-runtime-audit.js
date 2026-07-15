@@ -78,7 +78,13 @@ check(
     'pub const CONTROLLER_READY_TIMEOUT_MESSAGE',
     'pub const STANDBY_SPEED_START_MESSAGE',
     'pub const RUNTIME_DRIFT_RESTART_MESSAGE',
+    'pub const READY_CHECK_ATTEMPTS',
+    'pub const READY_PROBE_TIMEOUT_MS',
+    'pub const READY_RETRY_INTERVAL_MS',
+    'pub const READY_REUSE_PROBE_TIMEOUT_MS',
+    'pub const RUNTIME_RESTART_SETTLE_MS',
     'pub fn core_missing_message',
+    'pub fn process_exit_message',
     'pub fn hot_reload_success_message',
     'runtime_lifecycle_messages_are_owned_by_runtime_boundary',
     expectedSha256,
@@ -147,11 +153,22 @@ check(
 check(
   'Aegos routes readiness and mode control through typed CoreController methods',
   coreRuntimeRs.includes('pub fn version_probe(&self, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn wait_until_ready') &&
+    coreRuntimeRs.includes('pub fn process_exit_message') &&
+    coreRuntimeRs.includes('pub const READY_REUSE_PROBE_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const READY_PROBE_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const READY_CHECK_ATTEMPTS') &&
+    coreRuntimeRs.includes('pub const READY_RETRY_INTERVAL_MS') &&
+    coreRuntimeRs.includes('pub const RUNTIME_RESTART_SETTLE_MS') &&
     coreRuntimeRs.includes('pub fn set_mode(&self, mode: &str, timeout_ms: u64)') &&
-    mainRs.includes('self.core_controller().version_probe(900)') &&
-    mainRs.includes('self.core_controller().version_probe(300)') &&
+    mainRs.includes('.wait_until_ready(||') &&
+    mainRs.includes('core_runtime::READY_REUSE_PROBE_TIMEOUT_MS') &&
+    mainRs.includes('core_runtime::RUNTIME_RESTART_SETTLE_MS') &&
     mainRs.includes('self.core_controller().set_mode(mode, 3000)') &&
     mainRs.includes('self.core_controller().close_connections(1500)') &&
+    !mainRs.includes('version_probe(900)') &&
+    !mainRs.includes('version_probe(300)') &&
+    !mainRs.includes('for _ in 0..24') &&
     !mainRs.includes('fn controller(') &&
     !mainRs.includes('self.controller('),
   'main.rs must not keep a generic controller escape hatch for /version, /configs, or /connections',

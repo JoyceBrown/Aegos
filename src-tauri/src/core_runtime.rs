@@ -22,6 +22,11 @@ pub const EXPECTED_SHA256: &str =
 pub const MANAGED_BY: &str = "Aegos";
 pub const CONTROL_PLANE: &str = "Aegos";
 pub const CREATE_NO_WINDOW: u32 = 0x08000000;
+pub const READY_CHECK_ATTEMPTS: usize = 24;
+pub const READY_PROBE_TIMEOUT_MS: u64 = 300;
+pub const READY_RETRY_INTERVAL_MS: u64 = 250;
+pub const READY_REUSE_PROBE_TIMEOUT_MS: u64 = 900;
+pub const RUNTIME_RESTART_SETTLE_MS: u64 = 250;
 pub const RESOURCE_SUBDIR: &str = "core";
 pub const BINARY_NAME: &str = "mihomo.exe";
 pub const MISSING_RESOURCE_HINT: &str =
@@ -190,6 +195,16 @@ pub fn exited_before_ready_message(status: &std::process::ExitStatus) -> String 
 
 pub fn status_check_failed_message(err: &impl std::fmt::Display) -> String {
     format!("mihomo status check failed: {err}")
+}
+
+pub fn process_exit_message(
+    result: std::io::Result<Option<std::process::ExitStatus>>,
+) -> Option<String> {
+    match result {
+        Ok(Some(status)) => Some(exited_before_ready_message(&status)),
+        Ok(None) => None,
+        Err(err) => Some(status_check_failed_message(&err)),
+    }
 }
 
 pub fn hot_reload_success_message(
@@ -554,6 +569,22 @@ impl CoreController {
 
     pub fn version_probe(&self, timeout_ms: u64) -> Result<JsonValue, String> {
         self.request("GET", "/version", None, timeout_ms)
+    }
+
+    pub fn wait_until_ready<F>(&self, mut process_exit_message: F) -> Result<(), String>
+    where
+        F: FnMut() -> Option<String>,
+    {
+        for _ in 0..READY_CHECK_ATTEMPTS {
+            if let Some(reason) = process_exit_message() {
+                return Err(reason);
+            }
+            if self.version_probe(READY_PROBE_TIMEOUT_MS).is_ok() {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(READY_RETRY_INTERVAL_MS));
+        }
+        Err(CONTROLLER_READY_TIMEOUT_MESSAGE.to_string())
     }
 
     pub fn set_mode(&self, mode: &str, timeout_ms: u64) -> Result<JsonValue, String> {
@@ -1222,6 +1253,22 @@ mod tests {
         assert!(CONTROLLER_READY_TIMEOUT_MESSAGE.contains("did not become ready"));
         assert!(STANDBY_SPEED_START_MESSAGE.contains("standby without traffic takeover"));
         assert!(RUNTIME_DRIFT_RESTART_MESSAGE.contains("drift detected"));
+    }
+
+    #[test]
+    fn runtime_lifecycle_process_exit_classification_is_owned_by_runtime_boundary() {
+        assert_eq!(process_exit_message(Ok(None)), None);
+        let reason = process_exit_message(Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "status probe failed",
+        )))
+        .unwrap();
+        assert_eq!(reason, "mihomo status check failed: status probe failed");
+        assert_eq!(READY_CHECK_ATTEMPTS, 24);
+        assert_eq!(READY_PROBE_TIMEOUT_MS, 300);
+        assert_eq!(READY_RETRY_INTERVAL_MS, 250);
+        assert_eq!(READY_REUSE_PROBE_TIMEOUT_MS, 900);
+        assert_eq!(RUNTIME_RESTART_SETTLE_MS, 250);
     }
 
     fn test_preflight_input<'a>() -> RuntimeConfigPreflightInput<'a> {
