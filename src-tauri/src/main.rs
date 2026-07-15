@@ -4873,10 +4873,6 @@ fn validate_proxy_selection_from_groups(
     }))
 }
 
-fn ps_escape(value: impl AsRef<str>) -> String {
-    value.as_ref().replace('\'', "''")
-}
-
 fn run_powershell(script: &str) -> Result<String, String> {
     let wrapped_script = format!(
         "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;\n{script}"
@@ -5166,8 +5162,8 @@ try {{
   throw "Disconnect protection enable failed: $failure"
 }}
 "#,
-            ps_escape(snapshot.to_string_lossy()),
-            ps_escape(&group),
+            core_runtime::powershell_single_quote_escape(snapshot.to_string_lossy()),
+            core_runtime::powershell_single_quote_escape(&group),
             program_array
         )
     } else {
@@ -5202,8 +5198,8 @@ Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue |
 $rules = @(Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue)
 if ($rules.Count -gt 0) {{ throw 'Disconnect protection rules were not fully removed' }}
 "#,
-            ps_escape(snapshot.to_string_lossy()),
-            ps_escape(&group)
+            core_runtime::powershell_single_quote_escape(snapshot.to_string_lossy()),
+            core_runtime::powershell_single_quote_escape(&group)
         )
     }
 }
@@ -5258,10 +5254,10 @@ if ($portList) {{
 }}
 Set-Content -LiteralPath $markerPath -Value (Get-Date).ToString('o') -Encoding UTF8
 "#,
-            ps_escape(marker.to_string_lossy()),
-            ps_escape(&group),
+            core_runtime::powershell_single_quote_escape(marker.to_string_lossy()),
+            core_runtime::powershell_single_quote_escape(&group),
             program_array,
-            ps_escape(port_list)
+            core_runtime::powershell_single_quote_escape(port_list)
         )
     } else {
         format!(
@@ -5273,8 +5269,8 @@ $markerPath = '{}'
 Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 if (Test-Path -LiteralPath $markerPath) {{ Remove-Item -LiteralPath $markerPath -Force }}
 "#,
-            ps_escape(&group),
-            ps_escape(marker.to_string_lossy())
+            core_runtime::powershell_single_quote_escape(&group),
+            core_runtime::powershell_single_quote_escape(marker.to_string_lossy())
         )
     }
 }
@@ -9215,8 +9211,8 @@ fn relaunch_as_admin(app: AppHandle) -> Result<bool, String> {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
     run_powershell(&format!(
         "Start-Process -FilePath '{}' -WorkingDirectory '{}' -Verb RunAs",
-        ps_escape(exe.to_string_lossy()),
-        ps_escape(cwd.to_string_lossy())
+        core_runtime::powershell_single_quote_escape(exe.to_string_lossy()),
+        core_runtime::powershell_single_quote_escape(cwd.to_string_lossy())
     ))?;
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(250));

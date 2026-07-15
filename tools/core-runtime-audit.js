@@ -675,6 +675,7 @@ check(
     !mainRs.includes('format!("{APP_NAME} Kill Switch') &&
     !mainRs.includes('kill-switch-firewall-profile.json') &&
     !mainRs.includes('kill-switch-speed-test-rules.marker') &&
+    !mainRs.includes('fn ps_escape') &&
     !mainRs.includes('fn firewall_program_path') &&
     !mainRs.includes('fn ps_array_literal') &&
     !mainRs.includes('fn ps_port_list'),
