@@ -1168,8 +1168,7 @@ fn assemble_proxy_groups_snapshot(
     speed: SpeedTestState,
 ) -> JsonValue {
     let mut groups = core_runtime::CoreController::new(controller_port, secret)
-        .ui_proxy_groups_snapshot_or_none(running, &[AEGOS_OUTBOUND_IP_GROUP])
-        .unwrap_or_else(|| {
+        .ui_proxy_groups_snapshot_or_else(running, &[AEGOS_OUTBOUND_IP_GROUP], || {
             active_profile
                 .as_ref()
                 .map(|profile| {

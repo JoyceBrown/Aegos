@@ -704,6 +704,19 @@ impl CoreController {
         self.ui_proxy_groups_snapshot(hidden_group_names).ok()
     }
 
+    pub fn ui_proxy_groups_snapshot_or_else<F>(
+        &self,
+        running: bool,
+        hidden_group_names: &[&str],
+        fallback: F,
+    ) -> JsonValue
+    where
+        F: FnOnce() -> JsonValue,
+    {
+        self.ui_proxy_groups_snapshot_or_none(running, hidden_group_names)
+            .unwrap_or_else(fallback)
+    }
+
     pub fn version_probe(&self, timeout_ms: u64) -> Result<JsonValue, String> {
         self.request("GET", "/version", None, timeout_ms)
     }
@@ -2010,6 +2023,20 @@ rules:
         assert!(controller
             .apply_auxiliary_proxy_selection_if_running(true, "Aegos Landing IP", "HK 01")
             .is_some_and(|result| result.is_err()));
+    }
+
+    #[test]
+    fn controller_proxy_groups_snapshot_fallback_is_owned_by_runtime_boundary() {
+        let controller = CoreController::new(0, "");
+        let fallback = json!([{ "name": "Proxies", "items": [{ "name": "HK 01" }] }]);
+        assert_eq!(
+            controller.ui_proxy_groups_snapshot_or_else(false, &[], || fallback.clone()),
+            fallback
+        );
+        assert_eq!(
+            controller.ui_proxy_groups_snapshot_or_else(true, &[], || fallback.clone()),
+            fallback
+        );
     }
 
     #[test]
