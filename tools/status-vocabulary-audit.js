@@ -61,8 +61,10 @@ check(
   'software state and network availability are separate user-visible fields',
   indexHtml.includes('id="softwareState"') &&
     indexHtml.includes('id="networkAvailabilityState"') &&
+    indexHtml.includes('id="networkAvailabilityMetric"') &&
     appJs.includes("$('#softwareState').textContent = runtimeSummaryLabel") &&
-    appJs.includes("$('#networkAvailabilityState').textContent = availability.label"),
+    appJs.includes("$('#networkAvailabilityState').textContent = availability.label") &&
+    appJs.includes("$('#networkAvailabilityMetric').textContent = availability.label"),
   'softwareState/networkAvailabilityState'
 );
 check(

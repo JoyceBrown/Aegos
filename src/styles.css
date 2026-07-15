@@ -798,6 +798,18 @@ h1 {
   color: #6d7d96;
 }
 
+.metric-grid strong.metric-status-ok {
+  color: #1a9f62;
+}
+
+.metric-grid strong.metric-status-warn {
+  color: #b77912;
+}
+
+.metric-grid strong.metric-status-bad {
+  color: #d94343;
+}
+
 .metric-icon {
   grid-row: 1 / span 2;
   width: 22px;

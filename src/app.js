@@ -3224,6 +3224,9 @@ function renderStatus(status) {
   $('#networkAvailabilityState').textContent = availability.label;
   $('#networkAvailabilityState').className = availability.className;
   $('#networkAvailabilityState').setAttribute('title', availability.detail || availability.label);
+  $('#networkAvailabilityMetric').textContent = availability.label;
+  $('#networkAvailabilityMetric').className = availability.className ? `metric-status-${availability.className}` : '';
+  $('#networkAvailabilityMetric').setAttribute('title', availability.detail || availability.label);
   $('#protectMode').textContent = protection.label || STATUS_TEXT.disabled;
   $('#dnsState').textContent = settings.dnsHijackEnabled === false ? STATUS_TEXT.disabled : STATUS_TEXT.enabled;
   $('#tunState').textContent = enabledLabel(settings.tunEnabled);
