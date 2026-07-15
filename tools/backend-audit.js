@@ -12,6 +12,7 @@ const coreRuntimeRs = readSource('src-tauri', 'src', 'core_runtime.rs');
 const profileCompilerRs = readSource('src-tauri', 'src', 'profile_compiler.rs');
 const configPipelineRs = readSource('src-tauri', 'src', 'config_pipeline.rs');
 const taskRuntimeRs = readSource('src-tauri', 'src', 'task_runtime.rs');
+const speedRuntimeRs = readSource('src-tauri', 'src', 'speed_runtime.rs');
 
 const fail = [];
 const pass = [];
@@ -67,7 +68,7 @@ check(
 );
 check(
   'batch speed-test command returns before slow core preparation',
-  speedCommandBody.includes('mark_speed_test_preparing(&state.speed_test)') &&
+  speedCommandBody.includes('mark_speed_test_preparing(&state.speed_test, now_secs())') &&
     speedCommandBody.includes('thread::spawn(move ||') &&
     speedCommandBody.includes('start_proxy_delay_test_for_run(Some(run_id))') &&
     !speedCommandBody.includes('state.core.lock().unwrap().start_proxy_delay_test()'),
@@ -75,7 +76,7 @@ check(
 );
 check(
   'single-node speed-test command returns before slow core preparation',
-  singleSpeedCommandBody.includes('mark_single_speed_test_preparing(&state.speed_test, &name)') &&
+  singleSpeedCommandBody.includes('mark_single_speed_test_preparing(&state.speed_test, &name, now_secs())') &&
     singleSpeedCommandBody.includes('thread::spawn(move ||') &&
     singleSpeedCommandBody.includes('test_single_proxy_delay_for_run(name, Some(run_id))') &&
     !singleSpeedCommandBody.includes('state.core.lock().unwrap().test_single_proxy_delay(name)'),
@@ -208,6 +209,28 @@ check(
 );
 
 check(
+  'speed-test state model is owned by speed_runtime',
+  mainRs.includes('mod speed_runtime') &&
+    mainRs.includes('speed_test: SpeedTestStore') &&
+    mainRs.includes('speed_test_runtime_snapshot(&state.speed_test, now_secs())') &&
+    mainRs.includes('reset_speed_test_runtime_state(&state.speed_test, "cancelled", false, now_secs())') &&
+    speedRuntimeRs.includes('pub type SpeedTestStore') &&
+    speedRuntimeRs.includes('pub struct SpeedTestState') &&
+    speedRuntimeRs.includes('pub struct NodeHealth') &&
+    speedRuntimeRs.includes('pub fn mark_speed_test_preparing(') &&
+    speedRuntimeRs.includes('pub fn mark_single_speed_test_preparing(') &&
+    speedRuntimeRs.includes('pub fn speed_test_run_is_current(') &&
+    speedRuntimeRs.includes('pub fn fail_speed_test_if_current(') &&
+    speedRuntimeRs.includes('pub fn reset_speed_test_state(') &&
+    speedRuntimeRs.includes('speed_store_preserves_health_when_preparing_new_run') &&
+    !mainRs.includes('struct SpeedTestState') &&
+    !mainRs.includes('struct NodeHealth') &&
+    !mainRs.includes('fn speed_test_snapshot_from_state') &&
+    !mainRs.includes('fn reset_speed_test_state_from_state'),
+  'speed-test run state, health records, snapshots, cancel, and failure transitions should not be duplicated in main.rs'
+);
+
+check(
   'subscription and outbound IP jobs reduce core lock scope',
     mainRs.includes('add_profile_url_detached') &&
     mainRs.includes('update_profile_detached') &&
@@ -326,13 +349,13 @@ check(
 
 check(
   'volatile status commands avoid the CoreManager mutex during slow work',
-  mainRs.includes('speed_test: Arc<Mutex<SpeedTestState>>') &&
+  mainRs.includes('speed_test: SpeedTestStore') &&
     mainRs.includes('logs: Arc<Mutex<Vec<LogEntry>>>') &&
     mainRs.includes('app_data: PathBuf') &&
-    mainRs.includes('fn speed_test_snapshot_from_state') &&
+    speedRuntimeRs.includes('pub fn speed_test_snapshot(') &&
     mainRs.includes('fn export_logs_from_state') &&
     mainRs.includes('fn speed_test_status(state: State<AppState>)') &&
-    mainRs.includes('speed_test_snapshot_from_state(&state.speed_test)') &&
+    mainRs.includes('speed_test_runtime_snapshot(&state.speed_test, now_secs())') &&
     mainRs.includes('export_logs_from_state(&state.logs, &state.app_data)') &&
     mainRs.includes('state.logs.lock().unwrap().clear()') &&
     mainRs.includes('controller.ui_connections_snapshot_or_empty(running)') &&
@@ -751,10 +774,10 @@ check(
 
 check(
   'speed engine tracks node health and low-latency recommendations',
-  mainRs.includes('struct NodeHealth') &&
+  speedRuntimeRs.includes('pub struct NodeHealth') &&
     mainRs.includes('fn update_node_health') &&
-    mainRs.includes('failure_streak') &&
-    mainRs.includes('cooldown_until') &&
+    speedRuntimeRs.includes('failure_streak') &&
+    speedRuntimeRs.includes('cooldown_until') &&
     mainRs.includes('lowLatency') &&
     mainRs.includes('recommended') &&
     mainRs.includes('recommendation_requires_sub_100ms_available_node'),
@@ -763,13 +786,13 @@ check(
 
 check(
   'speed results expose confidence and freshness',
-  mainRs.includes('SPEED_RESULT_HIGH_CONFIDENCE_SECS') &&
-    mainRs.includes('fn speed_result_confidence') &&
-    mainRs.includes('fn speed_confidence_summary') &&
+  speedRuntimeRs.includes('SPEED_RESULT_HIGH_CONFIDENCE_SECS') &&
+    speedRuntimeRs.includes('pub fn speed_result_confidence') &&
+    speedRuntimeRs.includes('pub fn speed_confidence_summary') &&
     mainRs.includes('"healthConfidence"') &&
     mainRs.includes('"resultAgeSecs"') &&
-    mainRs.includes('"recommendedFresh"') &&
-    mainRs.includes('speed_result_confidence_tracks_fresh_stale_and_failed_results'),
+    speedRuntimeRs.includes('"recommendedFresh"') &&
+    speedRuntimeRs.includes('confidence_tracks_fresh_stale_and_failed_results'),
   'fresh/stale/failed confidence metadata'
 );
 

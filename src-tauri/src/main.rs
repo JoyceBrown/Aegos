@@ -3,6 +3,7 @@
 mod config_pipeline;
 mod core_runtime;
 mod profile_compiler;
+mod speed_runtime;
 mod task_runtime;
 
 use base64::{engine::general_purpose, Engine as _};
@@ -12,6 +13,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use serde_yaml::{Mapping, Value as YamlValue};
 use sha2::{Digest, Sha256};
+use speed_runtime::{
+    fail_speed_test_if_current, mark_single_speed_test_preparing, mark_speed_test_preparing,
+    reset_speed_test_state as reset_speed_test_runtime_state, speed_result_confidence,
+    speed_test_run_is_current, speed_test_snapshot as speed_test_runtime_snapshot, NodeHealth,
+    SpeedTestState, SpeedTestStore,
+};
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -39,8 +46,6 @@ const RESERVED_MIXED_PORTS: &[u16] = &[7890];
 const AEGOS_OUTBOUND_IP_GROUP: &str = "Aegos Landing IP";
 const FLCLASH_STYLE_TEST_URL: &str = "https://www.gstatic.com/generate_204";
 const FLCLASH_STYLE_SPEED_BATCH_SIZE: usize = 100;
-const SPEED_RESULT_HIGH_CONFIDENCE_SECS: u64 = 600;
-const SPEED_RESULT_MEDIUM_CONFIDENCE_SECS: u64 = 1800;
 const OUTBOUND_IP_RULE_DOMAINS: &[&str] = &[
     "api.ipify.org",
     "api64.ipify.org",
@@ -317,42 +322,6 @@ struct LogEntry {
     line: String,
 }
 
-#[derive(Clone, Default)]
-struct SpeedTestState {
-    run_id: u64,
-    running: bool,
-    started_at: u64,
-    updated_at: u64,
-    total: usize,
-    completed: usize,
-    ok: usize,
-    failed: usize,
-    delays: HashMap<String, i64>,
-    health: HashMap<String, NodeHealth>,
-    low_latency: Vec<String>,
-    recommended: Option<JsonValue>,
-    error: Option<String>,
-}
-
-#[derive(Clone, Default, Serialize)]
-struct NodeHealth {
-    name: String,
-    protocol: String,
-    last_delay: i64,
-    median_delay: i64,
-    jitter: i64,
-    success_count: u64,
-    failure_count: u64,
-    failure_streak: u64,
-    last_success_at: u64,
-    last_tested_at: u64,
-    cooldown_until: u64,
-    status: String,
-    confidence: String,
-    last_failure_reason: String,
-    score: i64,
-}
-
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct SystemProxySnapshot {
     proxy_enable: bool,
@@ -390,125 +359,6 @@ impl DelayTestResult {
             failure_reason: reason.to_string(),
         }
     }
-}
-
-fn speed_test_snapshot_from_state(speed_test: &Arc<Mutex<SpeedTestState>>) -> JsonValue {
-    let speed = speed_test.lock().unwrap().clone();
-    let now = now_secs();
-    json!({
-        "runId": speed.run_id,
-        "running": speed.running,
-        "startedAt": speed.started_at,
-        "updatedAt": speed.updated_at,
-        "total": speed.total,
-        "completed": speed.completed,
-        "ok": speed.ok,
-        "failed": speed.failed,
-        "error": speed.error,
-        "delays": speed.delays,
-        "health": speed.health,
-        "resultSignature": speed_result_signature(&speed),
-        "confidence": speed_confidence_summary(&speed, now),
-        "lowLatency": speed.low_latency,
-        "recommended": speed.recommended
-    })
-}
-
-fn mark_speed_test_preparing(speed_test: &Arc<Mutex<SpeedTestState>>) -> JsonValue {
-    {
-        let mut speed = speed_test.lock().unwrap();
-        if !speed.running {
-            let now = now_secs();
-            let previous_health = speed.health.clone();
-            let run_id = speed.run_id.saturating_add(1);
-            *speed = SpeedTestState {
-                run_id,
-                running: true,
-                started_at: now,
-                updated_at: now,
-                total: 0,
-                completed: 0,
-                ok: 0,
-                failed: 0,
-                delays: HashMap::new(),
-                health: previous_health,
-                low_latency: Vec::new(),
-                recommended: None,
-                error: None,
-            };
-        }
-    }
-    speed_test_snapshot_from_state(speed_test)
-}
-
-fn mark_single_speed_test_preparing(
-    speed_test: &Arc<Mutex<SpeedTestState>>,
-    name: &str,
-) -> JsonValue {
-    {
-        let mut speed = speed_test.lock().unwrap();
-        let now = now_secs();
-        let previous_health = speed.health.clone();
-        let run_id = speed.run_id.saturating_add(1);
-        let mut delays = HashMap::new();
-        delays.insert(name.to_string(), 0);
-        *speed = SpeedTestState {
-            run_id,
-            running: true,
-            started_at: now,
-            updated_at: now,
-            total: 1,
-            completed: 0,
-            ok: 0,
-            failed: 0,
-            delays,
-            health: previous_health,
-            low_latency: Vec::new(),
-            recommended: None,
-            error: None,
-        };
-    }
-    speed_test_snapshot_from_state(speed_test)
-}
-
-fn speed_test_run_is_current(speed_test: &Arc<Mutex<SpeedTestState>>, run_id: u64) -> bool {
-    let speed = speed_test.lock().unwrap();
-    speed.running && speed.run_id == run_id
-}
-
-fn fail_speed_test_if_current(
-    speed_test: &Arc<Mutex<SpeedTestState>>,
-    run_id: u64,
-    message: String,
-) {
-    let mut speed = speed_test.lock().unwrap();
-    if speed.run_id == run_id {
-        speed.running = false;
-        speed.error = Some(message);
-        speed.updated_at = now_secs();
-    }
-}
-
-fn reset_speed_test_state_from_state(
-    speed_test: &Arc<Mutex<SpeedTestState>>,
-    reason: &str,
-    clear_health: bool,
-) {
-    let mut speed = speed_test.lock().unwrap();
-    let run_id = speed.run_id.saturating_add(1);
-    let health = if clear_health {
-        HashMap::new()
-    } else {
-        speed.health.clone()
-    };
-    *speed = SpeedTestState {
-        run_id,
-        running: false,
-        updated_at: now_secs(),
-        health,
-        error: Some(reason.to_string()),
-        ..SpeedTestState::default()
-    };
 }
 
 fn export_logs_from_state(
@@ -959,7 +809,7 @@ struct CoreManager {
     traffic_takeover: bool,
     logs: Arc<Mutex<Vec<LogEntry>>>,
     last_traffic: JsonValue,
-    speed_test: Arc<Mutex<SpeedTestState>>,
+    speed_test: SpeedTestStore,
     lan_ip_cache: String,
     lan_ip_checked_at: u64,
     outbound_ip_cache: String,
@@ -969,7 +819,7 @@ struct CoreManager {
 
 struct AppState {
     core: Arc<Mutex<CoreManager>>,
-    speed_test: Arc<Mutex<SpeedTestState>>,
+    speed_test: SpeedTestStore,
     logs: Arc<Mutex<Vec<LogEntry>>>,
     app_data: PathBuf,
     jobs: JobStore,
@@ -1648,38 +1498,6 @@ fn health_status(delay: i64, failure_streak: u64, cooldown_until: u64, now: u64)
     }
 }
 
-fn speed_result_confidence(
-    delay: i64,
-    failure_streak: u64,
-    last_success_at: u64,
-    last_tested_at: u64,
-    cooldown_until: u64,
-    now: u64,
-) -> String {
-    if cooldown_until > now {
-        return "cooldown".to_string();
-    }
-    if delay == 0 {
-        return "testing".to_string();
-    }
-    if delay > 0 && failure_streak == 0 && last_success_at > 0 {
-        let age = now.saturating_sub(last_success_at);
-        if age <= SPEED_RESULT_HIGH_CONFIDENCE_SECS {
-            "high".to_string()
-        } else if age <= SPEED_RESULT_MEDIUM_CONFIDENCE_SECS {
-            "medium".to_string()
-        } else {
-            "stale".to_string()
-        }
-    } else if failure_streak > 0 && last_success_at > 0 {
-        "low".to_string()
-    } else if failure_streak > 0 || last_tested_at > 0 {
-        "failed".to_string()
-    } else {
-        "unknown".to_string()
-    }
-}
-
 fn health_score(delay: i64, jitter: i64, failure_streak: u64, protocol: &str) -> i64 {
     if delay <= 0 {
         return i64::MAX / 4;
@@ -1869,55 +1687,6 @@ fn low_latency_names(health: &HashMap<String, NodeHealth>, now: u64) -> Vec<Stri
         .collect::<Vec<_>>();
     items.sort_by_key(|item| (item.score, item.last_delay));
     items.into_iter().map(|item| item.name).collect()
-}
-
-fn speed_confidence_summary(speed: &SpeedTestState, now: u64) -> JsonValue {
-    let mut high = 0usize;
-    let mut medium = 0usize;
-    let mut stale = 0usize;
-    let mut low = 0usize;
-    let mut failed = 0usize;
-    let mut cooldown = 0usize;
-    let mut testing = 0usize;
-    let mut unknown = 0usize;
-    let mut newest_success_at = 0u64;
-
-    for item in speed.health.values() {
-        let confidence = speed_result_confidence(
-            item.last_delay,
-            item.failure_streak,
-            item.last_success_at,
-            item.last_tested_at,
-            item.cooldown_until,
-            now,
-        );
-        match confidence.as_str() {
-            "high" => high += 1,
-            "medium" => medium += 1,
-            "stale" => stale += 1,
-            "low" => low += 1,
-            "failed" => failed += 1,
-            "cooldown" => cooldown += 1,
-            "testing" => testing += 1,
-            _ => unknown += 1,
-        }
-        newest_success_at = newest_success_at.max(item.last_success_at);
-    }
-
-    let fresh = high + medium;
-    json!({
-        "fresh": fresh,
-        "high": high,
-        "medium": medium,
-        "stale": stale,
-        "low": low,
-        "failed": failed,
-        "cooldown": cooldown,
-        "testing": testing,
-        "unknown": unknown,
-        "newestSuccessAgeSecs": if newest_success_at > 0 { json!(now.saturating_sub(newest_success_at)) } else { JsonValue::Null },
-        "recommendedFresh": speed.recommended.as_ref().and_then(|value| value.get("confidence")).and_then(|value| value.as_str()).map(|value| value == "high" || value == "medium").unwrap_or(false)
-    })
 }
 
 fn infer_node_region(name: &str) -> &'static str {
@@ -3341,37 +3110,6 @@ fn query_outbound_ip(mixed_port: u16) -> Result<String, String> {
     } else {
         Err(format!("鏃犳硶鑾峰彇钀藉湴 IP: {last_error}"))
     }
-}
-
-fn speed_result_signature(speed: &SpeedTestState) -> String {
-    let mut parts = speed
-        .health
-        .iter()
-        .map(|(name, item)| {
-            format!(
-                "{}:{}:{}:{}:{}:{}",
-                name,
-                item.last_delay,
-                item.last_failure_reason,
-                item.last_tested_at,
-                item.failure_streak,
-                item.confidence
-            )
-        })
-        .collect::<Vec<_>>();
-    for (name, delay) in &speed.delays {
-        parts.push(format!("{name}:{delay}"));
-    }
-    parts.sort();
-    format!(
-        "{}:{}:{}:{}:{}:{}",
-        speed.run_id,
-        speed.running,
-        speed.completed,
-        speed.ok,
-        speed.failed,
-        parts.join("|")
-    )
 }
 
 fn query_outbound_ip_family(mixed_port: u16, family: &str) -> Result<String, String> {
@@ -7763,11 +7501,11 @@ impl CoreManager {
     }
 
     fn speed_test_snapshot(&self) -> JsonValue {
-        speed_test_snapshot_from_state(&self.speed_test)
+        speed_test_runtime_snapshot(&self.speed_test, now_secs())
     }
 
     fn reset_speed_test_state(&self, reason: &str, clear_health: bool) {
-        reset_speed_test_state_from_state(&self.speed_test, reason, clear_health);
+        reset_speed_test_runtime_state(&self.speed_test, reason, clear_health, now_secs());
     }
 
     fn best_proxy_candidate(&self) -> Option<JsonValue> {
@@ -7838,7 +7576,7 @@ impl CoreManager {
         if let Err(err) = self.ensure_core_for_delay_test() {
             let message = format!("娴嬮€熷噯澶囧け璐ワ細{err}");
             if let Some(run_id) = expected_run_id {
-                fail_speed_test_if_current(&self.speed_test, run_id, message.clone());
+                fail_speed_test_if_current(&self.speed_test, run_id, message.clone(), now_secs());
             } else {
                 let mut speed = self.speed_test.lock().unwrap();
                 speed.running = false;
@@ -7856,7 +7594,7 @@ impl CoreManager {
         let targets = Self::collect_proxy_targets(&groups);
         if let Err(err) = speed_test_preflight(&targets) {
             if let Some(run_id) = expected_run_id {
-                fail_speed_test_if_current(&self.speed_test, run_id, err.clone());
+                fail_speed_test_if_current(&self.speed_test, run_id, err.clone(), now_secs());
             } else {
                 let mut speed = self.speed_test.lock().unwrap();
                 speed.running = false;
@@ -8038,7 +7776,7 @@ impl CoreManager {
     ) -> Result<JsonValue, String> {
         if let Err(err) = self.ensure_core_for_delay_test() {
             if let Some(run_id) = expected_run_id {
-                fail_speed_test_if_current(&self.speed_test, run_id, err.clone());
+                fail_speed_test_if_current(&self.speed_test, run_id, err.clone(), now_secs());
             }
             return Err(err);
         }
@@ -8051,7 +7789,7 @@ impl CoreManager {
         let targets = Self::collect_proxy_targets(&groups);
         if let Err(err) = speed_test_preflight(&targets) {
             if let Some(run_id) = expected_run_id {
-                fail_speed_test_if_current(&self.speed_test, run_id, err.clone());
+                fail_speed_test_if_current(&self.speed_test, run_id, err.clone(), now_secs());
             }
             return Err(err);
         }
@@ -8064,7 +7802,12 @@ impl CoreManager {
             None => {
                 let message = format!("Node not found: {name}");
                 if let Some(run_id) = expected_run_id {
-                    fail_speed_test_if_current(&self.speed_test, run_id, message.clone());
+                    fail_speed_test_if_current(
+                        &self.speed_test,
+                        run_id,
+                        message.clone(),
+                        now_secs(),
+                    );
                 }
                 return Err(message);
             }
@@ -10287,7 +10030,7 @@ fn undo_last_routing_apply(state: State<AppState>) -> Result<JsonValue, String> 
 #[tauri::command]
 fn start_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
     let already_running = state.speed_test.lock().unwrap().running;
-    let snapshot = mark_speed_test_preparing(&state.speed_test);
+    let snapshot = mark_speed_test_preparing(&state.speed_test, now_secs());
     let run_id = snapshot
         .get("runId")
         .and_then(|value| value.as_u64())
@@ -10303,7 +10046,7 @@ fn start_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
             .unwrap()
             .start_proxy_delay_test_for_run(Some(run_id));
         if let Err(err) = result {
-            fail_speed_test_if_current(&speed_test, run_id, err);
+            fail_speed_test_if_current(&speed_test, run_id, err, now_secs());
         }
     });
     Ok(snapshot)
@@ -10311,7 +10054,7 @@ fn start_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
 
 #[tauri::command]
 fn test_single_proxy_delay(state: State<AppState>, name: String) -> Result<JsonValue, String> {
-    let snapshot = mark_single_speed_test_preparing(&state.speed_test, &name);
+    let snapshot = mark_single_speed_test_preparing(&state.speed_test, &name, now_secs());
     let run_id = snapshot
         .get("runId")
         .and_then(|value| value.as_u64())
@@ -10328,7 +10071,7 @@ fn test_single_proxy_delay(state: State<AppState>, name: String) -> Result<JsonV
             .unwrap()
             .test_single_proxy_delay_for_run(name, Some(run_id));
         if let Err(err) = result {
-            fail_speed_test_if_current(&speed_test, run_id, err);
+            fail_speed_test_if_current(&speed_test, run_id, err, now_secs());
         }
     });
     Ok(json!({
@@ -10378,12 +10121,12 @@ fn node_diagnostics(state: State<AppState>, name: String) -> Result<JsonValue, S
 
 #[tauri::command]
 fn speed_test_status(state: State<AppState>) -> Result<JsonValue, String> {
-    Ok(speed_test_snapshot_from_state(&state.speed_test))
+    Ok(speed_test_runtime_snapshot(&state.speed_test, now_secs()))
 }
 
 #[tauri::command]
 fn cancel_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
-    reset_speed_test_state_from_state(&state.speed_test, "cancelled", false);
+    reset_speed_test_runtime_state(&state.speed_test, "cancelled", false, now_secs());
     Ok(json!({ "ok": true }))
 }
 

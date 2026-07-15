@@ -14,6 +14,7 @@ function bodyBetween(source, startNeedle, endNeedle) {
 const pkg = JSON.parse(read('package.json'));
 const appJs = read('src/app.js');
 const mainRs = read('src-tauri/src/main.rs');
+const speedRuntimeRs = read('src-tauri/src/speed_runtime.rs');
 const interactionSmoke = read('tools/interaction-smoke.js');
 const perfSmoke = read('tools/perf-smoke.js');
 const releaseAudit = read('tools/release-audit.js');
@@ -54,7 +55,7 @@ check(
 
 check(
   'batch speed command returns a snapshot and moves core work into a worker',
-    startSpeedCommand.includes('mark_speed_test_preparing(&state.speed_test)') &&
+    startSpeedCommand.includes('mark_speed_test_preparing(&state.speed_test, now_secs())') &&
     startSpeedCommand.includes('thread::spawn(move ||') &&
     startSpeedCommand.includes('start_proxy_delay_test_for_run(Some(run_id))') &&
     startSpeedCommand.includes('Ok(snapshot)') &&
@@ -64,7 +65,7 @@ check(
 
 check(
   'single-node speed command is also queued without blocking the clicked row',
-  singleSpeedCommand.includes('mark_single_speed_test_preparing(&state.speed_test, &name)') &&
+  singleSpeedCommand.includes('mark_single_speed_test_preparing(&state.speed_test, &name, now_secs())') &&
     singleSpeedCommand.includes('thread::spawn(move ||') &&
     singleSpeedCommand.includes('test_single_proxy_delay_for_run(name, Some(run_id))') &&
     singleSpeedCommand.includes('"healthStatus": "testing"') &&
@@ -85,8 +86,10 @@ check(
 
 check(
   'speed polling and cancellation avoid the CoreManager mutex',
-  speedStatusCommand.includes('speed_test_snapshot_from_state(&state.speed_test)') &&
-    cancelSpeedCommand.includes('reset_speed_test_state_from_state(&state.speed_test') &&
+  speedStatusCommand.includes('speed_test_runtime_snapshot(&state.speed_test, now_secs())') &&
+    cancelSpeedCommand.includes('reset_speed_test_runtime_state(&state.speed_test') &&
+    speedRuntimeRs.includes('pub fn speed_test_snapshot(') &&
+    speedRuntimeRs.includes('pub fn reset_speed_test_state(') &&
     !speedStatusCommand.includes('core.lock') &&
     !cancelSpeedCommand.includes('core.lock'),
   'status/cancel are volatile UI operations and must stay lock-light'

@@ -10,6 +10,7 @@ function readText(...segments) {
 const mainRs = readText('src-tauri', 'src', 'main.rs');
 const coreRuntimeRs = readText('src-tauri', 'src', 'core_runtime.rs');
 const configPipelineRs = readText('src-tauri', 'src', 'config_pipeline.rs');
+const speedRuntimeRs = readText('src-tauri', 'src', 'speed_runtime.rs');
 const appJs = readText('src', 'app.js');
 const indexHtml = readText('src', 'index.html');
 const backendAudit = readText('tools', 'backend-audit.js');
@@ -78,8 +79,8 @@ check(
 
 check(
   'profile switching cancels stale speed tests and clears visible speed state',
-  mainRs.includes('run_id: u64') &&
-    mainRs.includes('"runId": speed.run_id') &&
+  speedRuntimeRs.includes('run_id: u64') &&
+    speedRuntimeRs.includes('"runId": speed.run_id') &&
     profileSwitchBody.includes('reset_speed_test_state("profile switched; previous speed test cancelled", true)') &&
     speedBody.includes('speed.run_id != run_id') &&
     appJs.includes('function resetSpeedUiForProfileSwitch') &&
