@@ -3919,6 +3919,16 @@ rules:
             Some(true)
         );
 
+        let stale = network_availability_json(true, true, "203.0.113.9", 100, 900);
+        assert_eq!(
+            stale.get("state").and_then(JsonValue::as_str),
+            Some("stale")
+        );
+        assert_eq!(
+            stale.get("networkUsable").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+
         let failed = network_availability_json(true, true, "-", 100, 120);
         assert_eq!(
             failed.get("state").and_then(JsonValue::as_str),

@@ -34,12 +34,19 @@ const releaseAudit = read('tools/release-audit.js');
 const coreRuntimeRs = read('src-tauri/src/core_runtime.rs');
 const mainRs = read('src-tauri/src/main.rs');
 const doc = exists('STATUS_VOCABULARY_3.5.71.md') ? read('STATUS_VOCABULARY_3.5.71.md') : '';
+const snapshotContract = exists('STATUS_SNAPSHOT_CONTRACT_3.5.75.md') ? read('STATUS_SNAPSHOT_CONTRACT_3.5.75.md') : '';
 const frontendSuspicious = [
   ...suspiciousLines('src/app.js'),
   ...suspiciousLines('src/index.html'),
 ];
 
 check('status vocabulary document exists', exists('STATUS_VOCABULARY_3.5.71.md'), 'STATUS_VOCABULARY_3.5.71.md');
+check(
+  'status snapshot contract exists and separates backend truth from frontend presentation',
+  exists('STATUS_SNAPSHOT_CONTRACT_3.5.75.md') &&
+    ['Backend-Owned Truth', 'Frontend-Owned Presentation', 'connection.phase', 'network.availability.state', 'renderStatus()'].every((needle) => snapshotContract.includes(needle)),
+  'STATUS_SNAPSHOT_CONTRACT_3.5.75.md'
+);
 check(
   'vocabulary covers runtime, proxy, permission, and diagnostic states',
   ['核心待命', '已接管', '待生效', '待连接', '管理员', '未检查', '错误'].every((term) => doc.includes(term)),
@@ -84,6 +91,17 @@ check(
     mainRs.includes('self.network_availability()') &&
     mainRs.includes('diagnostics_status_from_snapshot'),
   'network.availability'
+);
+check(
+  'status snapshot contract is represented in backend and frontend consumers',
+  appJs.includes('const connection = status.connection || {}') &&
+    appJs.includes('const availability = networkAvailabilityInfo(status)') &&
+    appJs.includes('systemProxyApplied') &&
+    coreRuntimeRs.includes('"connection": connection') &&
+    coreRuntimeRs.includes('"availability": network_availability') &&
+    coreRuntimeRs.includes('"networkUsable"') &&
+    coreRuntimeRs.includes('"takeoverComplete"'),
+  'snapshot contract fields'
 );
 check('frontend visible text has no abnormal Unicode fragments', frontendSuspicious.length === 0, JSON.stringify(frontendSuspicious.slice(0, 12)));
 check('release audit wires status vocabulary gate', releaseAudit.includes('audit:status-vocabulary'), 'tools/release-audit.js');
