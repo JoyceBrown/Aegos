@@ -1185,12 +1185,13 @@ function routingRuleKindDetail(rule = {}) {
 
 function renderNodeTargetEditor() {
   if (!nodeGroupTargetEditorState) return;
-  const { groupName } = nodeGroupTargetEditorState;
+  const { groupName, targetType = 'group' } = nodeGroupTargetEditorState;
+  const targetLabel = targetType === 'node' ? '节点' : '策略组';
   const rules = rulesTargetingGroup(groupName);
   const userRules = rules.filter((rule) => routingRuleCategory(rule) === 'user');
   const readonlyRules = rules.filter((rule) => routingRuleCategory(rule) !== 'user');
-  $('#nodeTargetTitle').textContent = `目标网站：${groupName}`;
-  $('#nodeTargetHint').textContent = `这些网站会走 ${groupName}，用户规则优先于订阅规则。`;
+  $('#nodeTargetTitle').textContent = `${targetLabel}规则：${groupName}`;
+  $('#nodeTargetHint').textContent = `添加网站后，这些网站会固定走这个${targetLabel}；不会切换当前连接，用户规则优先于订阅规则。`;
   replaceChildrenSafe($('#nodeTargetSummary'), [
     el('div', { className: 'node-target-summary-card' }, [
       el('b', { textContent: String(userRules.length) }),
@@ -1222,15 +1223,15 @@ function renderNodeTargetEditor() {
     ]);
   });
   replaceChildrenSafe($('#nodeTargetList'), rows.length ? rows : [
-    emptyState(`还没有网站指定到 ${groupName}，可以先添加 bilibili.com 试一下。`)
+    emptyState(`还没有网站指定到这个${targetLabel}，可以先添加 bilibili.com 试一下。`)
   ]);
   updateNodeTargetInputHint();
 }
 
-async function openNodeGroupTargetEditor(name = '') {
+async function openNodeGroupTargetEditor(name = '', targetType = 'group') {
   if (!name) return;
   if (!latestRoutingSnapshot) await refreshRoutingSnapshot();
-  nodeGroupTargetEditorState = { groupName: name };
+  nodeGroupTargetEditorState = { groupName: name, targetType };
   ensureNodeGroupTargetEditor();
   renderNodeTargetEditor();
   $('#nodeGroupTargetEditor')?.classList.remove('hidden');
@@ -1306,6 +1307,7 @@ function updateNodeTargetInputHint() {
 async function addNodeTargetRuleFromEditor() {
   if (!nodeGroupTargetEditorState) return;
   const groupName = nodeGroupTargetEditorState.groupName;
+  const targetType = nodeGroupTargetEditorState.targetType || 'group';
   const kind = $('#nodeTargetKindSelect')?.value || 'DOMAIN-SUFFIX';
   const parsed = normalizeNodeTargetCondition(kind, $('#nodeTargetConditionInput')?.value || '');
   if (!parsed.ok) {
@@ -1328,7 +1330,7 @@ async function addNodeTargetRuleFromEditor() {
   }, { label: '添加目标网站' });
   $('#nodeTargetConditionInput').value = '';
   await refreshRoutingSnapshot();
-  nodeGroupTargetEditorState = { groupName };
+  nodeGroupTargetEditorState = { groupName, targetType };
   renderNodeTargetEditor();
   updateNodeTargetInputHint();
   setNotice(conflict.level === 'warn' ? '目标网站已添加，并优先于订阅规则。' : '目标网站已添加');
@@ -1337,6 +1339,7 @@ async function addNodeTargetRuleFromEditor() {
 async function deleteNodeTargetRuleFromEditor(raw = '') {
   if (!nodeGroupTargetEditorState || !raw) return;
   const groupName = nodeGroupTargetEditorState.groupName;
+  const targetType = nodeGroupTargetEditorState.targetType || 'group';
   const rule = rulesTargetingGroup(groupName).find((item) => item.raw === raw);
   const confirmed = await requestAppConfirm({
     title: '删除目标网站',
@@ -1347,7 +1350,7 @@ async function deleteNodeTargetRuleFromEditor(raw = '') {
   if (!confirmed) return;
   await runBackgroundJob('applyRoutingRuleEdit', { action: 'delete', raw }, { label: '删除目标网站' });
   await refreshRoutingSnapshot();
-  nodeGroupTargetEditorState = { groupName };
+  nodeGroupTargetEditorState = { groupName, targetType };
   renderNodeTargetEditor();
   setNotice('目标网站已删除');
 }
@@ -1383,7 +1386,11 @@ function handleNodeTargetEditorClick(event) {
 }
 
 async function manageNodeGroupTargets(name = '') {
-  await openNodeGroupTargetEditor(name);
+  await openNodeGroupTargetEditor(name, 'group');
+}
+
+async function manageNodeTargets(name = '') {
+  await openNodeGroupTargetEditor(name, 'node');
 }
 
 async function addNodeGroupFromNodesPage(anchorName = '') {
@@ -2013,6 +2020,7 @@ function ensureNodeSortHeader() {
     el('span', { className: 'row-action-labels' }, [
       el('span', { textContent: '测速' }),
       el('span', { textContent: '编辑' }),
+      el('span', { textContent: '规则' }),
       el('span', { textContent: '收藏' })
     ])
   ]);
@@ -2270,6 +2278,7 @@ function renderNodeRow(row) {
   const actions = el('span', { className: 'row-actions' }, [
     el('button', { dataset: { nodeAction: 'test', node: name }, ariaLabel: 'test delay' }, [icon('icon-speed')]),
     el('button', { dataset: { nodeAction: 'edit', node: name }, ariaLabel: 'edit node' }, [icon('icon-edit')]),
+    el('button', { dataset: { nodeAction: 'route', node: name }, ariaLabel: 'route website through node' }, [icon('icon-routing')]),
     el('button', { dataset: { nodeAction: 'favorite', node: name }, ariaLabel: 'favorite node' }, [icon(favorite ? 'icon-star-filled' : 'icon-star')])
   ]);
   return el('div', {
@@ -6030,6 +6039,7 @@ $('#nodeRows').addEventListener('click', (event) => {
     const name = actionButton.dataset.node;
     if (actionButton.dataset.nodeAction === 'test') testSingleNode(name, actionButton);
     if (actionButton.dataset.nodeAction === 'edit') openNodeEditor(name);
+    if (actionButton.dataset.nodeAction === 'route') void manageNodeTargets(name);
     if (actionButton.dataset.nodeAction === 'favorite') toggleFavoriteNode(name);
     return;
   }

@@ -687,13 +687,16 @@ try {
     document.querySelector('#nodeSearch').value = 'HK';
     document.querySelector('#nodeSearch').dispatchEvent(new Event('input', { bubbles: true }));
     const rowActionButtons = [...document.querySelectorAll('#nodeRows [data-node-action]')];
-    if (rowActionButtons.length < 3) throw new Error('node row action buttons did not render');
+    if (rowActionButtons.length < 4) throw new Error('node row action buttons did not render');
     const rowActionBox = document.querySelector('#nodeRows .row-actions')?.getBoundingClientRect();
     const tableBox = document.querySelector('.node-table')?.getBoundingClientRect();
     if (!rowActionBox || !tableBox || rowActionBox.right > tableBox.right - 6) throw new Error('node row actions are too close to the table edge');
-    if (document.querySelectorAll('.row-action-labels span').length !== 3) throw new Error('node action labels did not render');
+    if (document.querySelectorAll('.row-action-labels span').length !== 4) throw new Error('node action labels did not render');
     if (document.querySelector('#nodeRows .row[data-node]')?.children.length !== 7) throw new Error('node table did not render the expected status column');
     if (!document.querySelector('#nodeRows .row[data-node] .node-note')) throw new Error('node speed status note did not render');
+    await click('#nodeRows [data-node-action="route"]');
+    if (document.querySelector('#nodeGroupTargetEditor')?.classList.contains('hidden')) throw new Error('node route action did not open the target-site editor');
+    await click('[data-close-node-target-editor]');
     await click('#nodeRows [data-node-action="edit"]');
     if (document.querySelector('#nodeEditorOverlay')?.classList.contains('hidden')) throw new Error('node edit action did not open the editor');
     const rowTestButton = document.querySelector('#nodeRows [data-node-action="test"]');

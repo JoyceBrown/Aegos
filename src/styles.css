@@ -3441,7 +3441,7 @@ h1 {
 
 .row {
   display: grid;
-  grid-template-columns: 24px 26px minmax(148px, 1.45fr) minmax(112px, .82fr) 72px 72px 116px;
+  grid-template-columns: 24px 26px minmax(148px, 1.45fr) minmax(104px, .76fr) 72px 72px 140px;
   gap: 8px;
   align-items: center;
   min-width: 0;
@@ -3663,14 +3663,14 @@ h1 {
 
 .row-action-labels {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 6px;
   text-align: center;
 }
 
 .row-actions button {
   flex: 0 0 auto;
-  width: 32px;
+  width: 30px;
   height: 28px;
   color: #53627c;
   border-radius: 8px;
