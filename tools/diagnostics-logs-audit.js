@@ -6,6 +6,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const appJs = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
+const coreRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'core_runtime.rs'), 'utf8');
 const diagnosticsRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'diagnostics_runtime.rs'), 'utf8');
 const interactionSmoke = fs.readFileSync(path.join(root, 'tools', 'interaction-smoke.js'), 'utf8');
 const releaseAudit = fs.readFileSync(path.join(root, 'tools', 'release-audit.js'), 'utf8');
@@ -74,8 +75,10 @@ check(
     indexHtml.includes('id="diagRows"') &&
     indexHtml.includes('id="copyDiagBtn"') &&
     diagnosticsBackendBody.includes('"summary"') &&
-    diagnosticsBackendBody.includes('"nextActions"') &&
-    diagnosticsBackendBody.includes('"hint"'),
+    mainRs.includes('.get("nextActions")') &&
+    coreRuntimeRs.includes('"actionMatrix": action_matrix') &&
+    coreRuntimeRs.includes('diagnostic_check_and_summary_are_runtime_shaped') &&
+    mainRs.includes('item.get("hint")'),
   'diagnostics must be actionable, not just red/green status'
 );
 
@@ -100,6 +103,10 @@ check(
     exportLogsBackendBody.includes('aegos-logs-') &&
     exportLogsBackendBody.includes('items.len()') &&
     exportLogsBackendBody.includes('logs_export_document(&items, &now_iso(), sanitize_sensitive_text)') &&
+    mainRs.includes('fn redact_windows_local_paths') &&
+    mainRs.includes('fn redact_sensitive_ip_literals') &&
+    mainRs.includes('path [local-path]') &&
+    mainRs.includes('lan [private-ip]') &&
     exportLogsBackendBody.includes('atomic_write_text_confined(&path, &export_dir, &document.content)') &&
     diagnosticsRuntimeRs.includes('pub fn logs_export_document(') &&
     diagnosticsRuntimeRs.includes('Aegos Logs Export') &&

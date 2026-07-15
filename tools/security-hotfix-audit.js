@@ -54,7 +54,11 @@ check(
   mainRs.includes('fn sanitize_sensitive_text') &&
     mainRs.includes('fn redact_after_key') &&
     mainRs.includes('fn redact_uri_userinfo') &&
+    mainRs.includes('fn redact_windows_local_paths') &&
+    mainRs.includes('fn redact_sensitive_ip_literals') &&
     mainRs.includes('log_sanitizer_redacts_subscription_and_node_secrets') &&
+    mainRs.includes('path [local-path]') &&
+    mainRs.includes('lan [private-ip]') &&
     addLogBody.includes('sanitize_sensitive_text(line.as_ref())') &&
     startBody.includes('sanitize_sensitive_text(&line)') &&
     publicProfileBody.includes('sanitize_sensitive_text(value)') &&

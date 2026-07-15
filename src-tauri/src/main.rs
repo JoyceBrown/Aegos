@@ -26,7 +26,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     io::{BufRead, BufReader, Write},
-    net::{IpAddr, TcpListener, UdpSocket},
+    net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket},
     path::{Path, PathBuf},
     process::{Child, Command},
     sync::{mpsc, Arc, Mutex, OnceLock},
@@ -1205,6 +1205,72 @@ fn redact_uri_userinfo(mut value: String) -> String {
     value
 }
 
+fn redact_windows_local_paths(mut value: String) -> String {
+    let mut index = 0;
+    while index + 2 < value.len() {
+        let bytes = value.as_bytes();
+        let drive = bytes[index] as char;
+        if drive.is_ascii_alphabetic()
+            && bytes[index + 1] == b':'
+            && matches!(bytes[index + 2], b'\\' | b'/')
+            && (index == 0
+                || (bytes[index - 1] as char).is_ascii_whitespace()
+                || matches!(bytes[index - 1] as char, '"' | '\'' | '(' | '[' | '{'))
+        {
+            let mut end = index + 3;
+            while end < value.len() {
+                let ch = value.as_bytes()[end] as char;
+                if ch.is_ascii_whitespace() || matches!(ch, '"' | '\'' | '<' | '>' | '|' | ')') {
+                    break;
+                }
+                end += 1;
+            }
+            value.replace_range(index..end, "[local-path]");
+            index += "[local-path]".len();
+        } else {
+            index += 1;
+        }
+    }
+    value
+}
+
+fn is_sensitive_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, _, _] = ip.octets();
+    ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || a == 0
+        || (a == 100 && (64..=127).contains(&b))
+}
+
+fn redact_sensitive_ip_literals(mut value: String) -> String {
+    let mut ranges = Vec::new();
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if !bytes[index].is_ascii_digit() {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len() && (bytes[index].is_ascii_digit() || bytes[index] == b'.') {
+            index += 1;
+        }
+        let candidate = &value[start..index];
+        if candidate.matches('.').count() == 3 {
+            if let Ok(ip) = candidate.parse::<Ipv4Addr>() {
+                if is_sensitive_ipv4(ip) {
+                    ranges.push((start, index));
+                }
+            }
+        }
+    }
+    for (start, end) in ranges.into_iter().rev() {
+        value.replace_range(start..end, "[private-ip]");
+    }
+    value
+}
+
 fn sanitize_sensitive_text(value: &str) -> String {
     let mut redacted = value.to_string();
     let separators = ['&', ';', ',', '|', '"', '\'', '<', '>', ')', ']', '}'];
@@ -1245,7 +1311,9 @@ fn sanitize_sensitive_text(value: &str) -> String {
             redacted.replace_range(start..end, "[redacted]");
         }
     }
-    redact_uri_userinfo(redacted)
+    redacted = redact_uri_userinfo(redacted);
+    redacted = redact_windows_local_paths(redacted);
+    redact_sensitive_ip_literals(redacted)
 }
 
 fn log_matches_node(entry: &LogEntry, node: &str) -> bool {
@@ -4442,7 +4510,7 @@ rules:
 
     #[test]
     fn log_sanitizer_redacts_subscription_and_node_secrets() {
-        let line = "update failed https://train.example/api/linkon?token=fixture-token-redacted&protocol=vless password: secret uuid=00000000-0000-4000-8000-000000000000 bearer abc.def trojan://pass@example.com:443";
+        let line = "update failed https://train.example/api/linkon?token=fixture-token-redacted&protocol=vless password: secret uuid=00000000-0000-4000-8000-000000000000 bearer abc.def trojan://pass@example.com:443 path C:\\Users\\JIE\\AppData\\Roaming\\com.codex.aegos\\settings.json lan 192.168.31.8 cgnat 100.64.1.2 public 8.8.8.8";
         let sanitized = sanitize_sensitive_text(line);
 
         assert!(sanitized.contains("token=[redacted]"));
@@ -4450,9 +4518,16 @@ rules:
         assert!(sanitized.contains("uuid=[redacted]"));
         assert!(sanitized.contains("bearer [redacted]"));
         assert!(sanitized.contains("trojan://[redacted]@example.com:443"));
+        assert!(sanitized.contains("path [local-path]"));
+        assert!(sanitized.contains("lan [private-ip]"));
+        assert!(sanitized.contains("cgnat [private-ip]"));
+        assert!(sanitized.contains("public 8.8.8.8"));
         assert!(!sanitized.contains("fixture-token-redacted"));
         assert!(!sanitized.contains("00000000-0000-4000-8000-000000000000"));
         assert!(!sanitized.contains("abc.def"));
+        assert!(!sanitized.contains("C:\\Users\\JIE"));
+        assert!(!sanitized.contains("192.168.31.8"));
+        assert!(!sanitized.contains("100.64.1.2"));
     }
 
     #[test]
@@ -8338,10 +8413,15 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
         .ok_or_else(|| "no active profile".to_string())
         .and_then(|profile| {
             let path = PathBuf::from(&profile.path);
-            let raw = fs::read_to_string(&path)
-                .map_err(|err| format!("閰嶇疆璇诲彇澶辫触 {}: {err}", path.display()))?;
-            let source: YamlValue = serde_yaml::from_str(&raw)
-                .map_err(|err| format!("YAML 瑙ｆ瀽澶辫触 {}: {err}", path.display()))?;
+            let raw = fs::read_to_string(&path).map_err(|err| {
+                format!("Profile preflight read failed {}: {err}", path.display())
+            })?;
+            let source: YamlValue = serde_yaml::from_str(&raw).map_err(|err| {
+                format!(
+                    "Profile preflight YAML parse failed {}: {err}",
+                    path.display()
+                )
+            })?;
             let runtime =
                 config_pipeline::preflight_profile_source(source, profile, &snapshot.settings)?;
             Ok(format!(
@@ -9671,8 +9751,9 @@ fn ipv6_dns_safety_snapshot(state: State<AppState>) -> Result<JsonValue, String>
         .ok_or_else(|| "no active profile".to_string())
         .and_then(|profile| {
             let path = PathBuf::from(&profile.path);
-            let raw = fs::read_to_string(&path)
-                .map_err(|err| format!("DNS safety read failed {}: {err}", path.display()))?;
+            let raw = fs::read_to_string(&path).map_err(|err| {
+                format!("Profile preflight read failed {}: {err}", path.display())
+            })?;
             let source: YamlValue = serde_yaml::from_str(&raw)
                 .map_err(|err| format!("DNS safety YAML parse failed {}: {err}", path.display()))?;
             let patched = config_pipeline::patch_profile_source(source, profile, &settings)?;

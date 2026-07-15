@@ -993,12 +993,34 @@ pub fn diagnostic_summary_json(checks: &[JsonValue]) -> JsonValue {
         })
         .take(3)
         .collect::<Vec<_>>();
+    let mut action_matrix = checks
+        .iter()
+        .filter(|item| !item.get("ok").and_then(JsonValue::as_bool).unwrap_or(false))
+        .fold(HashMap::<String, usize>::new(), |mut matrix, item| {
+            let category = item
+                .get("category")
+                .and_then(JsonValue::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("runtime")
+                .to_string();
+            *matrix.entry(category).or_insert(0) += 1;
+            matrix
+        })
+        .into_iter()
+        .map(|(category, count)| json!({ "category": category, "failed": count }))
+        .collect::<Vec<_>>();
+    action_matrix.sort_by(|a, b| {
+        a.get("category")
+            .and_then(JsonValue::as_str)
+            .cmp(&b.get("category").and_then(JsonValue::as_str))
+    });
     json!({
         "total": checks.len(),
         "failed": failed,
         "errors": errors,
         "warnings": warnings,
-        "nextActions": next_actions
+        "nextActions": next_actions,
+        "actionMatrix": action_matrix
     })
 }
 
@@ -4748,6 +4770,16 @@ rules:
                 .map(Vec::len),
             Some(3)
         );
+        let matrix = summary
+            .get("actionMatrix")
+            .and_then(JsonValue::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(matrix.len(), 3);
+        assert!(matrix.iter().any(|item| {
+            item.get("category").and_then(JsonValue::as_str) == Some("logs")
+                && item.get("failed").and_then(JsonValue::as_u64) == Some(2)
+        }));
     }
 
     #[test]
