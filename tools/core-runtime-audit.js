@@ -110,6 +110,9 @@ check(
     coreRuntimeRs.includes('pub fn traffic_snapshot(&self, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn connections_snapshot(&self, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn connections_snapshot_or_empty(&self, running: bool, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn recent_rule_hits_snapshot(') &&
+    coreRuntimeRs.includes('pub fn routing_recent_rule_hits_snapshot_or_empty(&self, running: bool)') &&
+    coreRuntimeRs.includes('pub fn recent_rule_hits_from_connections(') &&
     coreRuntimeRs.includes('pub fn active_connection_count(&self, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn active_connection_count_snapshot_or_idle(') &&
     coreRuntimeRs.includes('pub fn close_connection(&self, id: &str, timeout_ms: u64)') &&
@@ -119,6 +122,8 @@ check(
     coreRuntimeRs.includes('pub fn home_active_connection_count_snapshot_or_idle(&self, running: bool)') &&
     coreRuntimeRs.includes('pub const STATUS_TRAFFIC_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const CONNECTIONS_SNAPSHOT_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const ROUTING_RECENT_RULES_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const ROUTING_RECENT_RULES_LIMIT') &&
     coreRuntimeRs.includes('pub const ACTIVE_CONNECTION_COUNT_TIMEOUT_MS') &&
     mainRs.includes('fn core_controller(&self) -> core_runtime::CoreController') &&
     mainRs.includes('self.core_controller()') &&
@@ -129,6 +134,8 @@ check(
     mainRs.includes('self.core_controller().status_traffic_snapshot()') &&
     mainRs.includes('controller.ui_connections_snapshot_or_empty(running)') &&
     mainRs.includes('controller.home_active_connection_count_snapshot_or_idle(running)') &&
+    mainRs.includes('.routing_recent_rule_hits_snapshot_or_empty(running)') &&
+    !mainRs.includes('diagnostic_connections_snapshot') &&
     !activeConnectionCommandBody.includes('now_secs') &&
     mainRs.includes('controller.close_connection_for_ui(&id)') &&
     mainRs.includes('controller.close_all_connections_for_ui()') &&

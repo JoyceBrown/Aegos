@@ -12300,52 +12300,8 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
             })
         })
         .collect::<Vec<_>>();
-    let recent_connections = if running {
-        core_runtime::CoreController::new(controller_port, secret.clone())
-            .diagnostic_connections_snapshot()
-            .ok()
-            .and_then(|value| value.as_array().cloned())
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let mut rule_counts: HashMap<String, (usize, String)> = HashMap::new();
-    for item in recent_connections {
-        let rule = sanitize_sensitive_text(
-            item.get("rule")
-                .and_then(|value| value.as_str())
-                .filter(|value| !value.is_empty())
-                .unwrap_or("MATCH"),
-        );
-        let chains = sanitize_sensitive_text(
-            &item
-                .get("chains")
-                .and_then(|value| value.as_array())
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(|value| value.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" > ")
-                })
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "-".to_string()),
-        );
-        let entry = rule_counts.entry(rule).or_insert((0, chains));
-        entry.0 += 1;
-    }
-    let recent_rules = rule_counts
-        .into_iter()
-        .take(12)
-        .map(|(rule, (count, chains))| {
-            json!({
-                "rule": rule,
-                "chains": chains,
-                "count": count,
-                "note": "recent connection"
-            })
-        })
-        .collect::<Vec<_>>();
+    let recent_rules = core_runtime::CoreController::new(controller_port, secret.clone())
+        .routing_recent_rule_hits_snapshot_or_empty(running);
     let (mut static_rules, missing_rule_targets, rule_order_issues, rule_error) =
         routing_rules_for_profile(active_profile.as_ref());
     if let Some(profile) = active_profile.as_ref() {
@@ -12381,7 +12337,10 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
                 .unwrap_or(false)
         })
         .count();
-    let recent_rule_hits = recent_rules.len();
+    let recent_rule_hits = recent_rules
+        .as_array()
+        .map(|items| items.len())
+        .unwrap_or(0);
     let rule_count = static_rules.len();
     let user_rule_count = static_rules
         .iter()

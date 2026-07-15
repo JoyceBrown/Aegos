@@ -189,13 +189,19 @@ check(
     coreRuntimeRs.includes('pub fn active_connection_count_snapshot_or_idle(') &&
     coreRuntimeRs.includes('pub fn connections_snapshot(&self, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn connections_snapshot_or_empty(&self, running: bool, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn recent_rule_hits_snapshot(') &&
+    coreRuntimeRs.includes('pub fn routing_recent_rule_hits_snapshot_or_empty(&self, running: bool)') &&
+    coreRuntimeRs.includes('pub fn recent_rule_hits_from_connections(') &&
     mainRs.includes('fn active_connection_count(state: State<AppState>)') &&
     !mainRs.includes('fn active_connection_count(&self) -> JsonValue') &&
     mainRs.includes('active_connection_count,') &&
     mainRs.includes('controller.home_active_connection_count_snapshot_or_idle(running)') &&
     mainRs.includes('controller.ui_connections_snapshot_or_empty(running)') &&
+    mainRs.includes('.routing_recent_rule_hits_snapshot_or_empty(running)') &&
     coreRuntimeRs.includes('pub fn home_active_connection_count_snapshot_or_idle(&self, running: bool)') &&
     coreRuntimeRs.includes('pub fn ui_connections_snapshot_or_empty(&self, running: bool)') &&
+    coreRuntimeRs.includes('pub const ROUTING_RECENT_RULES_TIMEOUT_MS') &&
+    coreRuntimeRs.includes('pub const ROUTING_RECENT_RULES_LIMIT') &&
     coreRuntimeRs.includes('pub const ACTIVE_CONNECTION_COUNT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const CONNECTIONS_SNAPSHOT_TIMEOUT_MS') &&
     !activeConnectionCommandBody.includes('now_secs') &&

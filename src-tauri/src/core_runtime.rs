@@ -34,7 +34,8 @@ pub const STALE_CONNECTION_CLEANUP_TIMEOUT_MS: u64 = 1500;
 pub const STATUS_TRAFFIC_TIMEOUT_MS: u64 = 120;
 pub const PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS: u64 = 1200;
 pub const CONNECTIONS_SNAPSHOT_TIMEOUT_MS: u64 = 900;
-pub const DIAGNOSTIC_CONNECTIONS_TIMEOUT_MS: u64 = 550;
+pub const ROUTING_RECENT_RULES_TIMEOUT_MS: u64 = 550;
+pub const ROUTING_RECENT_RULES_LIMIT: usize = 12;
 pub const ACTIVE_CONNECTION_COUNT_TIMEOUT_MS: u64 = 350;
 pub const CLOSE_CONNECTION_TIMEOUT_MS: u64 = 2000;
 pub const CLOSE_ALL_CONNECTIONS_TIMEOUT_MS: u64 = 3000;
@@ -734,8 +735,21 @@ impl CoreController {
         self.connections_snapshot_or_empty(running, CONNECTIONS_SNAPSHOT_TIMEOUT_MS)
     }
 
-    pub fn diagnostic_connections_snapshot(&self) -> Result<JsonValue, String> {
-        self.connections_snapshot(DIAGNOSTIC_CONNECTIONS_TIMEOUT_MS)
+    pub fn recent_rule_hits_snapshot(
+        &self,
+        timeout_ms: u64,
+        limit: usize,
+    ) -> Result<JsonValue, String> {
+        let connections = self.connections_snapshot(timeout_ms)?;
+        Ok(recent_rule_hits_from_connections(&connections, limit))
+    }
+
+    pub fn routing_recent_rule_hits_snapshot_or_empty(&self, running: bool) -> JsonValue {
+        if !running {
+            return json!([]);
+        }
+        self.recent_rule_hits_snapshot(ROUTING_RECENT_RULES_TIMEOUT_MS, ROUTING_RECENT_RULES_LIMIT)
+            .unwrap_or_else(|_| json!([]))
     }
 
     pub fn active_connection_count(&self, timeout_ms: u64) -> Result<usize, String> {
@@ -890,6 +904,126 @@ fn normalize_delay_probe_response(data: &JsonValue) -> CoreDelayProbeResult {
         .map(classify_delay_failure_message)
         .unwrap_or("timeout");
     CoreDelayProbeResult::failed(reason)
+}
+
+pub fn recent_rule_hits_from_connections(connections: &JsonValue, limit: usize) -> JsonValue {
+    let mut rows: Vec<(String, usize, String)> = Vec::new();
+    let Some(items) = connections.as_array() else {
+        return json!([]);
+    };
+    for item in items {
+        let rule = sanitize_runtime_display_text(
+            item.get("rule")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .unwrap_or("MATCH"),
+        );
+        let chains = sanitize_runtime_display_text(
+            &item
+                .get("chains")
+                .and_then(|value| value.as_array())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" > ")
+                })
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "-".to_string()),
+        );
+        if let Some((_, count, _)) = rows.iter_mut().find(|(existing, _, _)| existing == &rule) {
+            *count += 1;
+            continue;
+        }
+        rows.push((rule, 1, chains));
+    }
+    json!(rows
+        .into_iter()
+        .take(limit)
+        .map(|(rule, count, chains)| {
+            json!({
+                "rule": rule,
+                "chains": chains,
+                "count": count,
+                "note": "recent connection"
+            })
+        })
+        .collect::<Vec<_>>())
+}
+
+fn sanitize_runtime_display_text(value: &str) -> String {
+    let mut redacted = value.to_string();
+    for key in [
+        "token",
+        "access_token",
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "uuid",
+        "api_key",
+        "apikey",
+        "authorization",
+    ] {
+        redacted = redact_runtime_key_value(redacted, key);
+    }
+    let lower = redacted.to_ascii_lowercase();
+    if let Some(index) = lower.find("bearer ") {
+        let start = index + "bearer ".len();
+        let mut end = start;
+        while end < redacted.len() {
+            let ch = redacted.as_bytes()[end] as char;
+            if ch.is_ascii_whitespace() || matches!(ch, '&' | ';' | ',' | '|' | '"' | '\'') {
+                break;
+            }
+            end += 1;
+        }
+        if end > start {
+            redacted.replace_range(start..end, "[redacted]");
+        }
+    }
+    redacted
+}
+
+fn redact_runtime_key_value(mut value: String, key: &str) -> String {
+    let mut search_from = 0;
+    loop {
+        let lower = value[search_from..].to_ascii_lowercase();
+        let Some(offset) = lower.find(key) else {
+            break;
+        };
+        let key_start = search_from + offset;
+        let after_key = key_start + key.len();
+        let tail = &value[after_key..];
+        let delimiter_len = if tail.starts_with('=') || tail.starts_with(':') {
+            1
+        } else {
+            search_from = after_key;
+            continue;
+        };
+        let value_start = after_key + delimiter_len;
+        let mut value_end = value_start;
+        while value_end < value.len() {
+            let ch = value.as_bytes()[value_end] as char;
+            if ch.is_ascii_whitespace()
+                || matches!(
+                    ch,
+                    '&' | ';' | ',' | '|' | '"' | '\'' | '<' | '>' | ')' | ']' | '}'
+                )
+            {
+                break;
+            }
+            value_end += 1;
+        }
+        if value_end > value_start {
+            value.replace_range(value_start..value_end, "[redacted]");
+            search_from = value_start + "[redacted]".len();
+        } else {
+            search_from = value_start;
+        }
+    }
+    value
 }
 
 fn is_controller_proxy_group(item: &JsonValue) -> bool {
@@ -1346,7 +1480,8 @@ mod tests {
         assert_eq!(STATUS_TRAFFIC_TIMEOUT_MS, 120);
         assert_eq!(PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS, 1200);
         assert_eq!(CONNECTIONS_SNAPSHOT_TIMEOUT_MS, 900);
-        assert_eq!(DIAGNOSTIC_CONNECTIONS_TIMEOUT_MS, 550);
+        assert_eq!(ROUTING_RECENT_RULES_TIMEOUT_MS, 550);
+        assert_eq!(ROUTING_RECENT_RULES_LIMIT, 12);
         assert_eq!(ACTIVE_CONNECTION_COUNT_TIMEOUT_MS, 350);
         assert_eq!(CLOSE_CONNECTION_TIMEOUT_MS, 2000);
         assert_eq!(CLOSE_ALL_CONNECTIONS_TIMEOUT_MS, 3000);
@@ -1414,6 +1549,43 @@ rules:
                 .and_then(|value| value.get("version"))
                 .and_then(JsonValue::as_str),
             Some(EXPECTED_VERSION)
+        );
+    }
+
+    #[test]
+    fn routing_recent_rule_hits_are_shaped_inside_runtime_boundary() {
+        let connections = json!([
+            {
+                "rule": "DomainSuffix,example.com,Proxies?token=secret-value",
+                "chains": ["Proxies", "HK password=abc123"]
+            },
+            {
+                "rule": "DomainSuffix,example.com,Proxies?token=secret-value",
+                "chains": ["Different", "Chain"]
+            },
+            {
+                "chains": []
+            }
+        ]);
+        let rows = recent_rule_hits_from_connections(&connections, 2);
+        let items = rows.as_array().expect("recent rows");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].get("count").and_then(JsonValue::as_u64), Some(2));
+        assert_eq!(
+            items[0].get("rule").and_then(JsonValue::as_str),
+            Some("DomainSuffix,example.com,Proxies?token=[redacted]")
+        );
+        assert_eq!(
+            items[0].get("chains").and_then(JsonValue::as_str),
+            Some("Proxies > HK password=[redacted]")
+        );
+        assert_eq!(
+            items[1].get("rule").and_then(JsonValue::as_str),
+            Some("MATCH")
+        );
+        assert_eq!(
+            items[1].get("chains").and_then(JsonValue::as_str),
+            Some("-")
         );
     }
 
