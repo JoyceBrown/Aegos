@@ -632,6 +632,9 @@ try {
     if (!document.querySelector('#routingRuleRows .routing-rule-row')?.textContent.includes('example.com')) throw new Error('routing page did not render ordinary rule rows');
     if (document.querySelector('#routingRuleRows')?.textContent.includes('api.ipify.org')) throw new Error('routing page leaked Aegos internal landing IP rule into ordinary rules');
     if (document.querySelector('#routingSystemRuleCount')?.textContent.trim() !== '1') throw new Error('routing page did not count hidden system rules');
+    document.querySelector('#routingRuleTestInput').value = 'www.example.com';
+    await click('#testRoutingRuleBtn');
+    if (!document.querySelector('#routingRuleTestResult')?.textContent.includes('GLOBAL')) throw new Error('routing rule test did not explain the matched target');
     document.querySelector('#routingWebsiteInput').value = 'https://openai.com/docs';
     document.querySelector('#previewWebsiteRuleBtn').click();
     await new Promise((resolve) => setTimeout(resolve, 40));

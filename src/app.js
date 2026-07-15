@@ -4534,6 +4534,22 @@ function ensureRoutingAssistantUi() {
         el('button', { id: 'undoRoutingApplyBtn', className: 'ghost compact', attrs: { type: 'button' }, textContent: '\u64a4\u9500\u6700\u8fd1\u5e94\u7528' })
       ])
     ]),
+    el('section', { id: 'routingRuleTestCard', className: 'routing-draft-card routing-test-card' }, [
+      el('div', { className: 'routing-draft-head' }, [
+        el('div', {}, [
+          el('b', { textContent: '规则测试' }),
+          el('small', { textContent: '输入网站，立即查看当前规则会让它走哪里；只读测试，不改配置、不切节点。' })
+        ])
+      ]),
+      el('div', { className: 'routing-draft-form wide routing-test-form' }, [
+        el('label', { className: 'routing-field' }, [
+          el('span', { textContent: '测试网站' }),
+          el('input', { id: 'routingRuleTestInput', attrs: { placeholder: '例如 youtube.com', autocomplete: 'off', spellcheck: 'false' } })
+        ]),
+        el('button', { id: 'testRoutingRuleBtn', className: 'primary compact', attrs: { type: 'button' }, textContent: '测试' })
+      ]),
+      el('p', { id: 'routingRuleTestResult', className: 'routing-draft-preview', textContent: '输入网站后，Aegos 会告诉你当前会命中哪条规则。' })
+    ]),
     el('section', { id: 'routingApplyStatus', className: 'routing-apply-status hidden', attrs: { 'aria-live': 'polite' } }, [])
   ]);
   const detail = el('section', {
@@ -4549,6 +4565,7 @@ function ensureRoutingAssistantUi() {
   $('#verifyAllRoutingDraftsBtn')?.addEventListener('click', verifyAllRoutingDrafts);
   $('#applyRoutingDraftsBtn')?.addEventListener('click', (event) => runDetachedButtonAction(event.currentTarget, '\u5e94\u7528\u4e2d...', applyRoutingDrafts));
   $('#undoRoutingApplyBtn')?.addEventListener('click', (event) => runDetachedButtonAction(event.currentTarget, '\u64a4\u9500\u4e2d...', undoLastRoutingApply));
+  $('#testRoutingRuleBtn')?.addEventListener('click', testRoutingWebsiteRule);
   $('#routingWebsiteAction')?.addEventListener('change', syncRoutingProxyTargetFields);
   $('#routingAppAction')?.addEventListener('change', syncRoutingProxyTargetFields);
   document.querySelectorAll('[data-routing-summary]').forEach((card) => {
@@ -4566,6 +4583,9 @@ function ensureRoutingAssistantUi() {
   });
   $('#routingWebsiteInput')?.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') previewWebsiteRoutingDraft();
+  });
+  $('#routingRuleTestInput')?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') testRoutingWebsiteRule();
   });
   $('#routingAppInput')?.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') previewAppRoutingDraft();
@@ -5315,6 +5335,87 @@ function normalizeWebsiteRuleInput(value = '') {
   const ok = /^(?!-)(?:[a-z0-9-]{1,63}\.)+[a-z]{2,63}$/.test(input);
   if (!ok) return { ok: false, error: '\u57df\u540d\u683c\u5f0f\u4e0d\u5bf9\uff0c\u4f8b\u5982 example.com\u3002' };
   return { ok: true, domain: input };
+}
+
+function routingRuleMatchesWebsite(rule = {}, domain = '') {
+  const kind = String(rule.kind || '').toUpperCase();
+  const condition = String(rule.condition || '').trim().toLowerCase();
+  const host = String(domain || '').trim().toLowerCase();
+  if (!condition || !host || rule.enabled === false || rule.status === 'disabled') return false;
+  if (kind === 'DOMAIN') return host === condition;
+  if (kind === 'DOMAIN-SUFFIX') return host === condition || host.endsWith(`.${condition}`);
+  if (kind === 'DOMAIN-KEYWORD') return host.includes(condition);
+  return false;
+}
+
+function routingRuleMatchRank(rule = {}, domain = '') {
+  const categoryRank = { user: 0, config: 1, system: 2 }[routingRuleCategory(rule)] ?? 3;
+  const kind = String(rule.kind || '').toUpperCase();
+  const specificity = kind === 'DOMAIN' ? 0 : kind === 'DOMAIN-SUFFIX' ? 1 : 2;
+  const conditionLength = String(rule.condition || '').length;
+  const index = Number(rule.index || 999999);
+  return [categoryRank, specificity, -conditionLength, index, domain.length];
+}
+
+function compareRoutingRuleMatch(left = {}, right = {}, domain = '') {
+  const a = routingRuleMatchRank(left, domain);
+  const b = routingRuleMatchRank(right, domain);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    if ((a[index] ?? 0) !== (b[index] ?? 0)) return (a[index] ?? 0) - (b[index] ?? 0);
+  }
+  return 0;
+}
+
+function routingRuleTestSourceLabel(rule = {}) {
+  const category = routingRuleCategory(rule);
+  if (category === 'user') return '用户规则';
+  if (category === 'system') return '系统保护规则';
+  return '订阅规则';
+}
+
+function renderRoutingRuleTestResult(result, state = 'ok') {
+  const box = $('#routingRuleTestResult');
+  if (!box) return;
+  box.className = `routing-draft-preview is-rich ${state}`;
+  if (typeof result === 'string') {
+    box.textContent = result;
+    return;
+  }
+  replaceChildrenSafe(box, [
+    el('span', { className: 'routing-preview-result', textContent: result.title || '测试结果' }),
+    el('span', { textContent: result.detail || '' }),
+    result.rule ? el('span', { className: 'muted', textContent: `命中规则：${result.rule}` }) : null,
+    result.next ? el('span', { className: 'muted', textContent: result.next }) : null
+  ].filter(Boolean));
+}
+
+function testRoutingWebsiteRule() {
+  const parsed = normalizeWebsiteRuleInput($('#routingRuleTestInput')?.value || '');
+  if (!parsed.ok) {
+    renderRoutingRuleTestResult(parsed.error, 'warn');
+    return;
+  }
+  const rules = existingRoutingRules().filter((rule) => routingRuleMatchesWebsite(rule, parsed.domain));
+  if (!rules.length) {
+    renderRoutingRuleTestResult({
+      title: `${parsed.domain} 暂未命中具体网站规则`,
+      detail: '当前没有用户规则或订阅网站规则直接匹配它，会继续交给后面的默认规则判断。',
+      next: '下一步：如果你希望它固定走某个节点，可以在网站规则向导里添加规则。'
+    }, 'warn');
+    return;
+  }
+  const match = [...rules].sort((left, right) => compareRoutingRuleMatch(left, right, parsed.domain))[0];
+  const source = routingRuleTestSourceLabel(match);
+  const target = routingTargetDisplayLabel(match.target || '');
+  const state = routingRuleCategory(match) === 'system' ? 'warn' : 'ok';
+  renderRoutingRuleTestResult({
+    title: `${parsed.domain} 将走 ${target}`,
+    detail: `${source}命中：${routingKindLabel(match.kind)} ${match.condition || '-'}。测试只读取当前规则，不会改配置、不切节点。`,
+    rule: match.raw || `${match.kind || '-'},${match.condition || '-'},${match.target || '-'}`,
+    next: routingRuleCategory(match) === 'system'
+      ? '这类规则由 Aegos 保护，用于检测、诊断或防泄漏。'
+      : '如结果不符合预期，可以添加一条更具体的用户规则；用户规则优先。'
+  }, state);
 }
 
 function renderRoutingDraftPreview(preview, draft = {}, next = {}, subject = '') {

@@ -2132,6 +2132,10 @@ h1 {
   grid-template-columns: minmax(170px, .75fr) minmax(170px, .75fr) auto;
 }
 
+.routing-test-form {
+  grid-template-columns: minmax(180px, 1fr) auto;
+}
+
 .routing-draft-form input,
 .routing-draft-form select {
   width: 100%;
