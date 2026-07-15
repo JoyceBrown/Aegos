@@ -284,7 +284,8 @@ const pageCacheTtlMs = {
   routing: 15000,
   diagnostics: 30000,
   profiles: 15000,
-  logs: 5000
+  logs: 5000,
+  settings: 30000
 };
 const navButtons = new Map($all('.nav button').map((button) => [button.dataset.page, button]));
 const pagePanels = new Map($all('.page').map((panel) => [panel.dataset.pagePanel, panel]));
@@ -300,7 +301,8 @@ const pageCacheState = {
   routing: { loaded: false, loading: false, updatedAt: 0 },
   diagnostics: { loaded: false, loading: false, updatedAt: 0 },
   profiles: { loaded: false, loading: false, updatedAt: 0 },
-  logs: { loaded: false, loading: false, updatedAt: 0 }
+  logs: { loaded: false, loading: false, updatedAt: 0 },
+  settings: { loaded: false, loading: false, updatedAt: 0 }
 };
 
 function readLocalJson(key, fallback) {
@@ -2741,9 +2743,15 @@ function schedulePageLoad(page) {
         renderProfiles();
         markPageCache(page);
       }
-      if (page === 'settings') {
-        refreshIpv6DnsSafety();
-        refreshEnvironmentReadiness(false);
+      if (page === 'settings' && shouldRefreshPageCache(page)) {
+        pageCacheState.settings.loading = true;
+        Promise.allSettled([
+          refreshIpv6DnsSafety(),
+          refreshEnvironmentReadiness(false)
+        ]).finally(() => {
+          if (token === pageLoadToken) markPageCache(page);
+          else pageCacheState.settings.loading = false;
+        });
       }
     });
   }, pageNavSettleMs);

@@ -26,6 +26,11 @@ const runWhenIdleBody = bodyOf('runWhenIdle');
 const scheduleRowsRenderBody = bodyOf('scheduleRowsRender');
 const testNodesBody = bodyOf('testNodes');
 const pollSpeedBody = bodyOf('pollSpeedTest');
+const renderStatusStart = appJs.indexOf('function renderStatus(status)');
+const renderStatusEnd = appJs.indexOf('function applyOptimisticMode', renderStatusStart);
+const renderStatusBody = renderStatusStart >= 0 && renderStatusEnd > renderStatusStart
+  ? appJs.slice(renderStatusStart, renderStatusEnd)
+  : '';
 
 check(
   'sidebar navigation updates active page synchronously and defers heavy loads',
@@ -47,6 +52,29 @@ check(
     runWhenIdleBody.includes('setTimeout(task, 0)') &&
     appJs.includes('if (!force && (foregroundBusy > 0 || backgroundJobBusy > 0)) return'),
   'refresh loops should not fight active user operations'
+);
+
+check(
+  'status rendering stays pure and never starts heavy backend work',
+  renderStatusBody.includes('statusSurfaceNotice(status, settings, protection, availability)') &&
+    !renderStatusBody.includes("invoke('") &&
+    !renderStatusBody.includes('runDiagnostics(') &&
+    !renderStatusBody.includes('testNodes(') &&
+    !renderStatusBody.includes('refreshOutboundIp') &&
+    !renderStatusBody.includes('refreshEnvironmentReadiness('),
+  'renderStatus must only paint the latest snapshot'
+);
+
+check(
+  'settings page environment checks are cached and detached from immediate navigation',
+  appJs.includes('settings: 30000') &&
+    appJs.includes('settings: { loaded: false, loading: false, updatedAt: 0 }') &&
+    schedulePageLoadBody.includes("page === 'settings' && shouldRefreshPageCache(page)") &&
+    schedulePageLoadBody.includes('Promise.allSettled') &&
+    schedulePageLoadBody.includes('refreshEnvironmentReadiness(false)') &&
+    !setPageBody.includes('refreshEnvironmentReadiness') &&
+    !setPageBody.includes('refreshIpv6DnsSafety'),
+  'settings checks should not repeat on every quick page switch'
 );
 
 check(
