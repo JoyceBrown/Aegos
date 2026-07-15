@@ -33,7 +33,19 @@ const frontendApplyStart = appJs.indexOf('async function applyRoutingDrafts');
 const frontendApplyEnd = appJs.indexOf('async function undoLastRoutingApply', frontendApplyStart);
 const frontendApplyBody = frontendApplyStart >= 0 && frontendApplyEnd > frontendApplyStart ? appJs.slice(frontendApplyStart, frontendApplyEnd) : '';
 
-check('version is the 3.5.94 post-apply verification checkpoint', pkg.version === '3.5.94', pkg.version);
+function versionAtLeast(version, minimum) {
+  const parse = (value) => String(value).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const current = parse(version);
+  const target = parse(minimum);
+  for (let index = 0; index < Math.max(current.length, target.length); index += 1) {
+    const left = current[index] || 0;
+    const right = target[index] || 0;
+    if (left !== right) return left > right;
+  }
+  return true;
+}
+
+check('version keeps the 3.5.94+ post-apply verification checkpoint active', versionAtLeast(pkg.version, '3.5.94'), pkg.version);
 check('package exposes the stage 3 post-apply verification audit', pkg.scripts?.['audit:stage3-postapply-verify'] === 'node tools/stage3-postapply-verify-audit.js', 'npm run audit:stage3-postapply-verify');
 
 check(

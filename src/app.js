@@ -4998,37 +4998,38 @@ function routingRuleForm(rules = []) {
   const editing = rules.find((rule) => rule.raw === routingRuleEditRaw);
   const targetOptions = routingTargetOptionsFull();
   const kind = editing?.kind || 'DOMAIN-SUFFIX';
+  const enabled = editing?.enabled !== false;
   return el('form', { id: 'routingRuleForm', className: 'routing-edit-form' }, [
     el('div', { className: 'routing-form-title' }, [
       el('b', { textContent: editing ? '编辑规则' : '添加规则' }),
-      el('small', { textContent: '填写网站、应用或 IP，并选择要走的策略组。' })
+      el('small', { textContent: enabled ? '保存后会进入运行配置。' : '这条规则已停用，保存后仍保持停用。' })
     ]),
     el('input', { id: 'routingRuleOriginalRaw', attrs: { type: 'hidden', value: editing?.raw || '' } }),
     el('label', { className: 'routing-field' }, [
-      el('span', { textContent: '' }),
+      el('span', { textContent: '类型' }),
       el('select', { id: 'routingRuleKindSelect' }, [
         el('option', { textContent: '域名后缀', attrs: { value: 'DOMAIN-SUFFIX' } }),
-        el('option', { textContent: '', attrs: { value: 'DOMAIN' } }),
+        el('option', { textContent: '完整域名', attrs: { value: 'DOMAIN' } }),
         el('option', { textContent: '域名关键字', attrs: { value: 'DOMAIN-KEYWORD' } }),
         el('option', { textContent: '应用名称', attrs: { value: 'PROCESS-NAME' } }),
         el('option', { textContent: '应用路径', attrs: { value: 'PROCESS-PATH' } }),
-        el('option', { textContent: ' IP', attrs: { value: 'GEOIP' } }),
+        el('option', { textContent: '国家/地区 IP', attrs: { value: 'GEOIP' } }),
         el('option', { textContent: '网站集合', attrs: { value: 'GEOSITE' } }),
-        el('option', { textContent: 'IP ', attrs: { value: 'IP-CIDR' } })
+        el('option', { textContent: 'IP 段', attrs: { value: 'IP-CIDR' } })
       ])
     ]),
     el('label', { className: 'routing-field' }, [
-      el('span', { textContent: '' }),
+      el('span', { textContent: '对象' }),
       el('input', { id: 'routingRuleConditionInput', attrs: { value: editing?.condition || '', placeholder: 'example.com / Telegram.exe / CN', autocomplete: 'off' } })
     ]),
     el('label', { className: 'routing-field' }, [
-      el('span', { textContent: '' }),
+      el('span', { textContent: '走哪条线路' }),
       el('select', { id: 'routingRuleTargetSelect' }, optionNodes(targetOptions, editing?.target || 'Proxies'))
     ]),
     el('label', { className: 'routing-field' }, [
       el('span', { textContent: '选项' }),
       el('select', { id: 'routingRuleOptionSelect' }, [
-        el('option', { textContent: '', attrs: { value: '' } }),
+        el('option', { textContent: '无', attrs: { value: '' } }),
         el('option', { textContent: 'no-resolve', attrs: { value: 'no-resolve' } })
       ])
     ]),
@@ -5046,16 +5047,26 @@ function setSelectValue(id, value) {
 
 function renderRoutingRuleWorkbench(rules = []) {
   const editing = rules.find((rule) => rule.raw === routingRuleEditRaw);
-  const rows = rules.map((item) => el('div', { className: 'routing-work-row' }, [
-    el('div', {}, [
-      el('b', { textContent: `${routingKindLabel(item.kind)}  ${item.condition || '-'}` }),
-      el('small', { textContent: ` ${routingTargetLabel(item.target)}  ${item.raw || '-'}` })
-    ]),
-    el('div', { className: 'routing-work-actions' }, [
-      el('button', { className: 'ghost compact', dataset: { editRoutingRule: item.raw || '' }, textContent: '编辑' }),
-      el('button', { className: 'ghost compact danger', dataset: { deleteRoutingRule: item.raw || '' }, textContent: 'ɾ' })
-    ])
-  ]));
+  const enabledRules = rules.filter((rule) => rule.enabled !== false);
+  const rows = rules.map((item) => {
+    const enabled = item.enabled !== false;
+    const activeIndex = enabledRules.findIndex((rule) => rule.raw === item.raw);
+    const canMoveUp = enabled && activeIndex > 0;
+    const canMoveDown = enabled && activeIndex >= 0 && activeIndex < enabledRules.length - 1;
+    return el('div', { className: `routing-work-row ${enabled ? '' : 'is-disabled'}` }, [
+      el('div', {}, [
+        el('b', { textContent: `${routingKindLabel(item.kind)}  ${item.condition || '-'}` }),
+        el('small', { textContent: `${enabled ? '已启用' : '已停用'} · ${routingTargetLabel(item.target)} · ${item.raw || '-'}` })
+      ]),
+      el('div', { className: 'routing-work-actions' }, [
+        el('button', { className: 'ghost compact', dataset: { toggleRoutingRule: item.raw || '', toggleRoutingRuleState: enabled ? 'disable' : 'enable' }, attrs: { type: 'button' }, textContent: enabled ? '停用' : '启用' }),
+        el('button', { className: 'ghost compact', dataset: { moveRoutingRule: item.raw || '', moveRoutingRuleDirection: 'up' }, attrs: { type: 'button' }, disabled: !canMoveUp, textContent: '上移' }),
+        el('button', { className: 'ghost compact', dataset: { moveRoutingRule: item.raw || '', moveRoutingRuleDirection: 'down' }, attrs: { type: 'button' }, disabled: !canMoveDown, textContent: '下移' }),
+        el('button', { className: 'ghost compact', dataset: { editRoutingRule: item.raw || '' }, attrs: { type: 'button' }, textContent: '编辑' }),
+        el('button', { className: 'ghost compact danger', dataset: { deleteRoutingRule: item.raw || '' }, attrs: { type: 'button' }, textContent: '删除' })
+      ])
+    ]);
+  });
   const body = [];
   if (editing) body.push(routingRuleForm(rules));
   body.push(el('div', { className: 'routing-work-list' }, rows.length ? rows : [emptyState('暂无用户规则')]));
@@ -5411,6 +5422,7 @@ function routingTargetLabel(target = '') {
 }
 
 function routingStatusLabel(item = {}) {
+  if (item.enabled === false || item.status === 'disabled') return '已停用';
   if (item.missingTarget) return '\u76ee\u6807\u7f3a\u5931';
   if (item.orderIssue) return '\u987a\u5e8f\u98ce\u9669';
   if (item.status === 'invalid') return '\u6709\u95ee\u9898';
@@ -5511,6 +5523,31 @@ async function deleteRoutingRule(raw) {
   if (routingRuleEditRaw === raw) routingRuleEditRaw = '';
   await refreshRoutingSnapshot();
   setNotice('规则已删除');
+}
+
+async function toggleRoutingRule(raw, action) {
+  if (!raw || !['enable', 'disable'].includes(action)) return;
+  const rule = (latestRoutingSnapshot?.rules || []).find((item) => item.raw === raw) || {};
+  await runBackgroundJob('applyRoutingRuleEdit', {
+    action,
+    raw,
+    kind: rule.kind || '',
+    condition: rule.condition || '',
+    target: rule.target || '',
+    option: Array.isArray(rule.options) ? rule.options[0] || '' : ''
+  }, { label: action === 'enable' ? '启用规则' : '停用规则' });
+  await refreshRoutingSnapshot();
+  setNotice(action === 'enable' ? '规则已启用' : '规则已停用');
+}
+
+async function moveRoutingRule(raw, direction) {
+  if (!raw || !['up', 'down'].includes(direction)) return;
+  await runBackgroundJob('applyRoutingRuleEdit', {
+    action: direction,
+    raw
+  }, { label: direction === 'up' ? '上移规则' : '下移规则' });
+  await refreshRoutingSnapshot();
+  setNotice(direction === 'up' ? '规则已上移' : '规则已下移');
 }
 
 async function refreshRoutingSnapshot(token = null) {
@@ -6033,6 +6070,22 @@ document.body.addEventListener('click', async (event) => {
     const deleteRoutingRuleButton = event.target.closest('[data-delete-routing-rule]');
     if (deleteRoutingRuleButton) {
       await deleteRoutingRule(deleteRoutingRuleButton.dataset.deleteRoutingRule || '');
+      return;
+    }
+    const toggleRoutingRuleButton = event.target.closest('[data-toggle-routing-rule]');
+    if (toggleRoutingRuleButton) {
+      await toggleRoutingRule(
+        toggleRoutingRuleButton.dataset.toggleRoutingRule || '',
+        toggleRoutingRuleButton.dataset.toggleRoutingRuleState || ''
+      );
+      return;
+    }
+    const moveRoutingRuleButton = event.target.closest('[data-move-routing-rule]');
+    if (moveRoutingRuleButton) {
+      await moveRoutingRule(
+        moveRoutingRuleButton.dataset.moveRoutingRule || '',
+        moveRoutingRuleButton.dataset.moveRoutingRuleDirection || ''
+      );
       return;
     }
     const cancelRoutingRuleButton = event.target.closest('[data-cancel-routing-rule-edit]');

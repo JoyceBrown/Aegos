@@ -6151,11 +6151,25 @@ impl CoreManager {
             self.active_editable_profile_and_config("Routing rule edit")?;
         let action = edit.action.trim().to_ascii_lowercase();
         let raw = edit.raw.unwrap_or_default();
-        let user_rules = routing_user_rule_set(&self.app_data, &profile.id);
-        if matches!(action.as_str(), "edit" | "delete") && !user_rules.contains(raw.trim()) {
+        let (active_user_rules, disabled_user_rules) =
+            routing_user_rule_lists(&self.app_data, &profile.id);
+        let active_user_rule_set = active_user_rules
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let disabled_user_rule_set = disabled_user_rules
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let known_user_rule = active_user_rule_set.contains(raw.trim())
+            || disabled_user_rule_set.contains(raw.trim());
+        if matches!(
+            action.as_str(),
+            "edit" | "delete" | "enable" | "disable" | "up" | "down"
+        ) && !known_user_rule
+        {
             return Err(
-                "Routing rule edit failed: only Aegos user rules can be edited or deleted"
-                    .to_string(),
+                "Routing rule edit failed: only Aegos user rules can be managed".to_string(),
             );
         }
         let targets = routing_rule_target_catalog(&source);
@@ -6171,6 +6185,7 @@ impl CoreManager {
                 .position(|rule| rule.as_str().map(str::trim) == Some(raw.trim()))
         };
         let mut next_user_rule = None;
+        let mut commit_needed = true;
         match action.as_str() {
             "add" | "edit" => {
                 let draft = RoutingDraftInput {
@@ -6205,27 +6220,159 @@ impl CoreManager {
                         .unwrap_or(rules.len());
                     rules.insert(insert_at, yaml_str(next_rule.clone()));
                 } else {
-                    let Some(index) = index else {
+                    if let Some(index) = index {
+                        rules[index] = yaml_str(next_rule.clone());
+                    } else if disabled_user_rule_set.contains(raw.trim()) {
+                        commit_needed = false;
+                    } else {
                         return Err("Routing rule edit failed: rule not found".to_string());
-                    };
-                    rules[index] = yaml_str(next_rule.clone());
+                    }
                 }
                 next_user_rule = Some(next_rule);
             }
             "delete" => {
+                if let Some(index) = index {
+                    rules.remove(index);
+                } else {
+                    commit_needed = false;
+                }
+            }
+            "disable" => {
                 let Some(index) = index else {
-                    return Err("Routing rule edit failed: rule not found".to_string());
+                    return Err("Routing rule edit failed: enabled rule not found".to_string());
                 };
                 rules.remove(index);
             }
+            "enable" => {
+                if index.is_some() {
+                    commit_needed = false;
+                } else {
+                    let (next_rule, _) = normalize_routing_draft_rule(
+                        &RoutingDraftInput {
+                            kind: edit.kind.unwrap_or_default(),
+                            condition: edit.condition.unwrap_or_default(),
+                            target: edit.target.unwrap_or_default(),
+                            option: edit.option,
+                            label: edit.label,
+                            source: Some("user".to_string()),
+                        },
+                        &targets,
+                    )
+                    .or_else(|_| {
+                        let parsed = parse_routing_rule_text(1, raw.trim());
+                        let draft = RoutingDraftInput {
+                            kind: parsed
+                                .get("kind")
+                                .and_then(JsonValue::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                            condition: parsed
+                                .get("condition")
+                                .and_then(JsonValue::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                            target: parsed
+                                .get("target")
+                                .and_then(JsonValue::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                            option: parsed
+                                .get("options")
+                                .and_then(JsonValue::as_array)
+                                .and_then(|items| items.first())
+                                .and_then(JsonValue::as_str)
+                                .map(str::to_string),
+                            label: None,
+                            source: Some("user".to_string()),
+                        };
+                        normalize_routing_draft_rule(&draft, &targets)
+                    })?;
+                    if rules
+                        .iter()
+                        .any(|rule| rule.as_str().map(str::trim) == Some(next_rule.as_str()))
+                    {
+                        commit_needed = false;
+                    } else {
+                        let insert_at = rules
+                            .iter()
+                            .position(|value| {
+                                value
+                                    .as_str()
+                                    .map(|rule| {
+                                        rule.trim_start().to_ascii_uppercase().starts_with("MATCH,")
+                                    })
+                                    .unwrap_or(false)
+                            })
+                            .unwrap_or(rules.len());
+                        rules.insert(insert_at, yaml_str(next_rule.clone()));
+                    }
+                    next_user_rule = Some(next_rule);
+                }
+            }
+            "up" | "down" => {
+                let Some(index) = index else {
+                    return Err("Routing rule edit failed: enabled rule not found".to_string());
+                };
+                let mut user_indexes = rules
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, rule)| {
+                        let raw_rule = rule.as_str()?.trim();
+                        if active_user_rule_set.contains(raw_rule) {
+                            Some(idx)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                user_indexes.sort_unstable();
+                let Some(position) = user_indexes.iter().position(|idx| *idx == index) else {
+                    return Err("Routing rule edit failed: rule order target not found".to_string());
+                };
+                let target_position = if action == "up" {
+                    position.checked_sub(1)
+                } else if position + 1 < user_indexes.len() {
+                    Some(position + 1)
+                } else {
+                    None
+                };
+                if let Some(target_position) = target_position {
+                    rules.swap(index, user_indexes[target_position]);
+                } else {
+                    commit_needed = false;
+                }
+            }
             _ => return Err("Routing rule edit failed: unsupported action".to_string()),
         }
-        let result = self.commit_profile_routing_config(
-            &profile,
-            &source,
-            &previous_raw,
-            "Routing rule edit",
-        )?;
+        let active_order_after = rules
+            .iter()
+            .filter_map(YamlValue::as_str)
+            .map(str::trim)
+            .filter(|rule| active_user_rule_set.contains(*rule))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let result = if commit_needed {
+            self.commit_profile_routing_config(
+                &profile,
+                &source,
+                &previous_raw,
+                "Routing rule edit",
+            )?
+        } else {
+            json!({
+                "profileId": profile.id.clone(),
+                "profileName": profile.name.clone(),
+                "action": action.clone(),
+                "changed": false,
+                "deploymentValidation": {
+                    "runtimePreflightOk": true,
+                    "hotReloadRan": false,
+                    "controllerReady": true,
+                    "rollbackReady": true,
+                    "verifiedAt": now_iso()
+                }
+            })
+        };
         match action.as_str() {
             "add" => replace_routing_user_rule(
                 &self.app_data,
@@ -6233,15 +6380,40 @@ impl CoreManager {
                 None,
                 next_user_rule.as_deref(),
             )?,
-            "edit" => replace_routing_user_rule(
-                &self.app_data,
-                &profile.id,
-                Some(raw.trim()),
-                next_user_rule.as_deref(),
-            )?,
+            "edit" => {
+                if disabled_user_rule_set.contains(raw.trim()) {
+                    if let Some(next_rule) = next_user_rule.as_deref() {
+                        replace_disabled_routing_user_rule(
+                            &self.app_data,
+                            &profile.id,
+                            raw.trim(),
+                            next_rule,
+                        )?
+                    }
+                } else {
+                    replace_routing_user_rule(
+                        &self.app_data,
+                        &profile.id,
+                        Some(raw.trim()),
+                        next_user_rule.as_deref(),
+                    )?
+                }
+            }
             "delete" => {
                 replace_routing_user_rule(&self.app_data, &profile.id, Some(raw.trim()), None)?
             }
+            "disable" => {
+                set_routing_user_rule_enabled(&self.app_data, &profile.id, raw.trim(), false)?
+            }
+            "enable" => {
+                let enabled_rule = next_user_rule.as_deref().unwrap_or(raw.trim());
+                set_routing_user_rule_enabled(&self.app_data, &profile.id, enabled_rule, true)?
+            }
+            "up" | "down" => sync_active_routing_user_rule_order(
+                &self.app_data,
+                &profile.id,
+                &active_order_after,
+            )?,
             _ => {}
         }
         Ok(result)
@@ -10139,6 +10311,18 @@ fn routing_user_rules_path(app_data: &Path) -> PathBuf {
     app_data.join("routing-user-rules.json")
 }
 
+fn json_string_list(value: Option<&JsonValue>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    value
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| value.as_str().map(|text| text.trim().to_string()))
+        .filter(|value| !value.is_empty() && seen.insert(value.to_string()))
+        .collect()
+}
+
 fn read_routing_user_rules(app_data: &Path) -> JsonValue {
     fs::read_to_string(routing_user_rules_path(app_data))
         .ok()
@@ -10152,16 +10336,71 @@ fn write_routing_user_rules(app_data: &Path, value: &JsonValue) -> Result<(), St
     atomic_write_text_confined(&path, app_data, &raw)
 }
 
-fn routing_user_rule_set(app_data: &Path, profile_id: &str) -> HashSet<String> {
-    read_routing_user_rules(app_data)
-        .get(profile_id)
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default()
+fn routing_user_rule_lists(app_data: &Path, profile_id: &str) -> (Vec<String>, Vec<String>) {
+    let registry = read_routing_user_rules(app_data);
+    let Some(entry) = registry.get(profile_id) else {
+        return (Vec::new(), Vec::new());
+    };
+    if entry.is_array() {
+        return (json_string_list(Some(entry)), Vec::new());
+    }
+    let active = json_string_list(entry.get("active"));
+    let active_set = active.iter().map(String::as_str).collect::<HashSet<_>>();
+    let disabled = json_string_list(entry.get("disabled"))
         .into_iter()
-        .filter_map(|value| value.as_str().map(|text| text.trim().to_string()))
-        .filter(|value| !value.is_empty())
-        .collect()
+        .filter(|rule| !active_set.contains(rule.as_str()))
+        .collect();
+    (active, disabled)
+}
+
+fn write_routing_user_rule_lists(
+    app_data: &Path,
+    profile_id: &str,
+    active: &[String],
+    disabled: &[String],
+) -> Result<(), String> {
+    let mut registry = read_routing_user_rules(app_data);
+    if !registry.is_object() {
+        registry = json!({});
+    }
+    let Some(map) = registry.as_object_mut() else {
+        return Ok(());
+    };
+    let mut seen_active = HashSet::new();
+    let active = active
+        .iter()
+        .map(|rule| rule.trim().to_string())
+        .filter(|rule| !rule.is_empty() && seen_active.insert(rule.to_string()))
+        .collect::<Vec<_>>();
+    let active_set = active.iter().map(String::as_str).collect::<HashSet<_>>();
+    let mut seen_disabled = HashSet::new();
+    let disabled = disabled
+        .iter()
+        .map(|rule| rule.trim().to_string())
+        .filter(|rule| {
+            !rule.is_empty()
+                && !active_set.contains(rule.as_str())
+                && seen_disabled.insert(rule.to_string())
+        })
+        .collect::<Vec<_>>();
+    map.insert(
+        profile_id.to_string(),
+        json!({
+            "active": active,
+            "disabled": disabled
+        }),
+    );
+    write_routing_user_rules(app_data, &registry)
+}
+
+fn routing_user_rule_set(app_data: &Path, profile_id: &str) -> HashSet<String> {
+    let (active, _) = routing_user_rule_lists(app_data, profile_id);
+    active.into_iter().collect()
+}
+
+fn routing_disabled_user_rule_list(app_data: &Path, profile_id: &str) -> Vec<String> {
+    let (_, disabled) = routing_user_rule_lists(app_data, profile_id);
+    disabled
 }
 
 fn add_routing_user_rules(
@@ -10172,34 +10411,17 @@ fn add_routing_user_rules(
     if rules.is_empty() {
         return Ok(());
     }
-    let mut registry = read_routing_user_rules(app_data);
-    if !registry.is_object() {
-        registry = json!({});
-    }
-    let Some(map) = registry.as_object_mut() else {
-        return Ok(());
-    };
-    let entry = map
-        .entry(profile_id.to_string())
-        .or_insert_with(|| json!([]));
-    if !entry.is_array() {
-        *entry = json!([]);
-    }
-    let Some(items) = entry.as_array_mut() else {
-        return Ok(());
-    };
-    let mut seen = items
-        .iter()
-        .filter_map(|value| value.as_str())
-        .map(str::to_string)
-        .collect::<HashSet<_>>();
+    let (mut active, mut disabled) = routing_user_rule_lists(app_data, profile_id);
+    let mut seen = active.iter().cloned().collect::<HashSet<_>>();
     for rule in rules {
         let trimmed = rule.trim();
         if !trimmed.is_empty() && seen.insert(trimmed.to_string()) {
-            items.push(json!(trimmed));
+            active.push(trimmed.to_string());
         }
     }
-    write_routing_user_rules(app_data, &registry)
+    let active_set = active.iter().map(String::as_str).collect::<HashSet<_>>();
+    disabled.retain(|rule| !active_set.contains(rule.as_str()));
+    write_routing_user_rule_lists(app_data, profile_id, &active, &disabled)
 }
 
 fn replace_routing_user_rule(
@@ -10208,34 +10430,72 @@ fn replace_routing_user_rule(
     old_rule: Option<&str>,
     new_rule: Option<&str>,
 ) -> Result<(), String> {
-    let mut registry = read_routing_user_rules(app_data);
-    if !registry.is_object() {
-        registry = json!({});
-    }
-    let Some(map) = registry.as_object_mut() else {
-        return Ok(());
-    };
-    let entry = map
-        .entry(profile_id.to_string())
-        .or_insert_with(|| json!([]));
-    if !entry.is_array() {
-        *entry = json!([]);
-    }
-    let Some(items) = entry.as_array_mut() else {
-        return Ok(());
-    };
+    let (mut active, mut disabled) = routing_user_rule_lists(app_data, profile_id);
     if let Some(old_rule) = old_rule {
-        items.retain(|value| value.as_str().map(str::trim) != Some(old_rule.trim()));
+        active.retain(|value| value.trim() != old_rule.trim());
+        disabled.retain(|value| value.trim() != old_rule.trim());
     }
     if let Some(new_rule) = new_rule.map(str::trim).filter(|value| !value.is_empty()) {
-        let exists = items
-            .iter()
-            .any(|value| value.as_str().map(str::trim) == Some(new_rule));
+        let exists = active.iter().any(|value| value.trim() == new_rule);
         if !exists {
-            items.push(json!(new_rule));
+            active.push(new_rule.to_string());
         }
     }
-    write_routing_user_rules(app_data, &registry)
+    write_routing_user_rule_lists(app_data, profile_id, &active, &disabled)
+}
+
+fn set_routing_user_rule_enabled(
+    app_data: &Path,
+    profile_id: &str,
+    rule: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    let (mut active, mut disabled) = routing_user_rule_lists(app_data, profile_id);
+    active.retain(|value| value.trim() != rule.trim());
+    disabled.retain(|value| value.trim() != rule.trim());
+    if enabled {
+        active.push(rule.trim().to_string());
+    } else {
+        disabled.push(rule.trim().to_string());
+    }
+    write_routing_user_rule_lists(app_data, profile_id, &active, &disabled)
+}
+
+fn replace_disabled_routing_user_rule(
+    app_data: &Path,
+    profile_id: &str,
+    old_rule: &str,
+    new_rule: &str,
+) -> Result<(), String> {
+    let (mut active, mut disabled) = routing_user_rule_lists(app_data, profile_id);
+    active.retain(|value| value.trim() != old_rule.trim());
+    disabled.retain(|value| value.trim() != old_rule.trim());
+    let next = new_rule.trim();
+    if !next.is_empty() && !disabled.iter().any(|value| value.trim() == next) {
+        disabled.push(next.to_string());
+    }
+    write_routing_user_rule_lists(app_data, profile_id, &active, &disabled)
+}
+
+fn sync_active_routing_user_rule_order(
+    app_data: &Path,
+    profile_id: &str,
+    ordered_rules: &[String],
+) -> Result<(), String> {
+    let (active, disabled) = routing_user_rule_lists(app_data, profile_id);
+    let active_set = active.iter().map(String::as_str).collect::<HashSet<_>>();
+    let mut ordered = ordered_rules
+        .iter()
+        .map(|rule| rule.trim())
+        .filter(|rule| active_set.contains(*rule))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    for rule in active {
+        if !ordered.iter().any(|value| value == &rule) {
+            ordered.push(rule);
+        }
+    }
+    write_routing_user_rule_lists(app_data, profile_id, &ordered, &disabled)
 }
 
 fn routing_rule_target(rule: &str) -> Option<String> {
@@ -10312,6 +10572,7 @@ fn mark_registered_user_routing_rules(rules: &mut [JsonValue], registry: &HashSe
         if let Some(map) = item.as_object_mut() {
             map.insert("source".to_string(), json!("user"));
             map.insert("editable".to_string(), json!(true));
+            map.insert("enabled".to_string(), json!(true));
         }
     }
 }
@@ -10890,6 +11151,29 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
     if let Some(profile) = active_profile.as_ref() {
         let registry = routing_user_rule_set(&state.app_data, &profile.id);
         mark_registered_user_routing_rules(&mut static_rules, &registry);
+        let active_raw = static_rules
+            .iter()
+            .filter_map(|item| item.get("raw").and_then(JsonValue::as_str))
+            .map(str::trim)
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+        for raw in routing_disabled_user_rule_list(&state.app_data, &profile.id) {
+            if active_raw.contains(raw.trim()) {
+                continue;
+            }
+            let mut item = parse_routing_rule_text(0, &raw);
+            if let Some(map) = item.as_object_mut() {
+                map.insert("source".to_string(), json!("user"));
+                map.insert("editable".to_string(), json!(true));
+                map.insert("enabled".to_string(), json!(false));
+                map.insert("status".to_string(), json!("disabled"));
+                map.insert(
+                    "note".to_string(),
+                    json!("This user rule is disabled and is not in the running config."),
+                );
+            }
+            static_rules.push(item);
+        }
     }
     mark_last_applied_routing_rules(&mut static_rules, last_apply.as_ref());
     mark_system_routing_rules(&mut static_rules);
