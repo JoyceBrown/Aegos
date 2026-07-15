@@ -68,6 +68,17 @@ check(
 );
 
 check(
+  'Windows proxy takeover integrity has one shared diagnostic contract',
+  coreRuntimeRs.includes('pub fn proxy_takeover_integrity_json') &&
+    coreRuntimeRs.includes('proxy_takeover_integrity_is_runtime_shaped') &&
+    diagnosticsBody.includes('core_runtime::proxy_takeover_integrity_json') &&
+    diagnosticsBody.includes('proxy_takeover_action') &&
+    mainRs.includes('"label": "System proxy takeover"') &&
+    mainRs.match(/core_runtime::proxy_takeover_integrity_json/g)?.length >= 2,
+  'diagnostics and environment readiness must not maintain separate proxy truth'
+);
+
+check(
   'manual system proxy preference does not auto-connect traffic takeover',
   setSystemProxyBody.includes('if enable && !self.traffic_takeover') &&
     setSystemProxyBody.includes('System proxy preference enabled; connect before applying Windows proxy takeover') &&

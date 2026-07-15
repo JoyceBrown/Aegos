@@ -8383,26 +8383,32 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
     };
     let recent_logs_ok = recent_error.is_none();
     let current_proxy = read_windows_proxy_snapshot();
-    let expected_proxy_endpoint = format!("127.0.0.1:{}", snapshot.settings.mixed_port);
-    let current_proxy_ok = current_proxy
-        .as_ref()
-        .map(|proxy| {
-            !snapshot.settings.system_proxy
-                || core_runtime::system_proxy_snapshot_points_to_aegos(
-                    proxy,
-                    snapshot.settings.mixed_port,
-                )
-        })
+    let proxy_takeover_integrity = core_runtime::proxy_takeover_integrity_json(
+        snapshot.settings.system_proxy,
+        snapshot.traffic_takeover,
+        snapshot.proxy_snapshot_path.exists(),
+        current_proxy.as_ref().ok(),
+        current_proxy.as_ref().err().map(|err| err.as_str()),
+        snapshot.settings.mixed_port,
+    );
+    let proxy_takeover_ok = proxy_takeover_integrity
+        .get("ok")
+        .and_then(JsonValue::as_bool)
         .unwrap_or(false);
-    let current_proxy_detail = current_proxy
-        .as_ref()
-        .map(|proxy| {
-            format!(
-                "enabled={}, server={}, expected={}",
-                proxy.proxy_enable, proxy.proxy_server, expected_proxy_endpoint
-            )
-        })
-        .unwrap_or_else(|err| format!("read failed: {err}"));
+    let proxy_takeover_level = proxy_takeover_integrity
+        .get("level")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("warning");
+    let proxy_takeover_detail = proxy_takeover_integrity
+        .get("detail")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("Windows system proxy state unavailable")
+        .to_string();
+    let proxy_takeover_action = proxy_takeover_integrity
+        .get("action")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("Use repair takeover or reconnect Aegos.")
+        .to_string();
     let mixed_port_free = is_port_free(snapshot.settings.mixed_port);
     let controller_port_free = is_port_free(snapshot.settings.controller_port);
     let checks = vec![
@@ -8506,11 +8512,15 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
         ),
         core_runtime::diagnostic_check_json(
             "Windows System Proxy takeover",
-            current_proxy_ok,
-            current_proxy_detail,
-            "warning",
+            proxy_takeover_ok,
+            proxy_takeover_detail,
+            if proxy_takeover_level == "error" {
+                "error"
+            } else {
+                "warning"
+            },
             "network",
-            "Aegos system proxy is enabled in settings, but Windows is not pointing at the Aegos endpoint. Toggle system proxy off/on or use repair takeover.",
+            &proxy_takeover_action,
         ),
         core_runtime::diagnostic_check_json(
             "TUN",
@@ -9654,6 +9664,19 @@ fn environment_readiness(state: State<AppState>) -> Result<JsonValue, String> {
     let is_admin = is_process_elevated();
     let mixed_port_ok = running || is_port_free(settings.mixed_port);
     let controller_port_ok = running || is_port_free(settings.controller_port);
+    let current_proxy = read_windows_proxy_snapshot();
+    let proxy_takeover_integrity = core_runtime::proxy_takeover_integrity_json(
+        settings.system_proxy,
+        traffic_takeover,
+        proxy_snapshot_exists,
+        current_proxy.as_ref().ok(),
+        current_proxy.as_ref().err().map(|err| err.as_str()),
+        settings.mixed_port,
+    );
+    let proxy_takeover_level = proxy_takeover_integrity
+        .get("level")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("warning");
     let mut checks = vec![
         json!({
             "id": "webview2",
@@ -9713,11 +9736,11 @@ fn environment_readiness(state: State<AppState>) -> Result<JsonValue, String> {
         }),
         json!({
             "id": "proxy-restore",
-            "label": "System proxy restore",
-            "ok": proxy_snapshot_exists || !traffic_takeover,
-            "level": if proxy_snapshot_exists || !traffic_takeover { "ok" } else { "warn" },
-            "detail": if proxy_snapshot_exists { "Proxy snapshot exists." } else if traffic_takeover { "Traffic takeover is active, but no snapshot exists." } else { "System proxy is not currently taken over." },
-            "action": if proxy_snapshot_exists || !traffic_takeover { "No action needed." } else { "If system proxy is abnormal, use repair takeover or disconnect." }
+            "label": "System proxy takeover",
+            "ok": proxy_takeover_integrity.get("ok").and_then(JsonValue::as_bool).unwrap_or(false),
+            "level": if proxy_takeover_level == "error" { "error" } else if proxy_takeover_level == "warning" { "warn" } else { "ok" },
+            "detail": proxy_takeover_integrity.get("detail").and_then(JsonValue::as_str).unwrap_or("Windows system proxy state unavailable"),
+            "action": proxy_takeover_integrity.get("action").and_then(JsonValue::as_str).unwrap_or("Use repair takeover or reconnect Aegos.")
         }),
     ];
     checks.sort_by_key(|item| {

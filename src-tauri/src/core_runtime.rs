@@ -754,6 +754,77 @@ pub fn proxy_takeover_status_json(
     })
 }
 
+pub fn proxy_takeover_integrity_json(
+    system_proxy_enabled: bool,
+    traffic_takeover: bool,
+    snapshot_captured: bool,
+    current: Option<&SystemProxySnapshot>,
+    read_error: Option<&str>,
+    mixed_port: u16,
+) -> JsonValue {
+    let expected = windows_proxy_server(mixed_port);
+    let current_server = current
+        .map(|snapshot| snapshot.proxy_server.clone())
+        .unwrap_or_else(|| "-".to_string());
+    let current_points_to_aegos = current
+        .map(|snapshot| system_proxy_snapshot_points_to_aegos(snapshot, mixed_port))
+        .unwrap_or(false);
+
+    let (ok, level, detail, action) = if !system_proxy_enabled {
+        (
+            true,
+            "ok",
+            "System proxy takeover is disabled.",
+            "No action needed.",
+        )
+    } else if !traffic_takeover {
+        (
+            true,
+            "info",
+            "System proxy is enabled as a preference, but traffic is not connected yet.",
+            "Click Connect when you want Aegos to apply Windows system proxy takeover.",
+        )
+    } else if current_points_to_aegos && snapshot_captured {
+        (
+            true,
+            "ok",
+            "Windows system proxy points to Aegos and a restore snapshot is available.",
+            "No action needed.",
+        )
+    } else if current_points_to_aegos {
+        (
+            false,
+            "warning",
+            "Windows system proxy points to Aegos, but no restore snapshot is available.",
+            "Disconnect or use repair takeover before closing Aegos.",
+        )
+    } else if let Some(error) = read_error {
+        (
+            false,
+            "warning",
+            error,
+            "Open Diagnostics or use repair takeover; if this repeats, restart Aegos as administrator.",
+        )
+    } else {
+        (
+            false,
+            "error",
+            "Windows system proxy does not point to the Aegos endpoint.",
+            "Use repair takeover or disconnect/reconnect Aegos.",
+        )
+    };
+
+    json!({
+        "ok": ok,
+        "level": level,
+        "expectedEndpoint": expected,
+        "currentServer": current_server,
+        "snapshotCaptured": snapshot_captured,
+        "detail": if read_error.is_some() { format!("read failed: {detail}") } else { format!("{detail} current={current_server}, expected={expected}") },
+        "action": action
+    })
+}
+
 pub fn system_proxy_repair_result_json(
     mixed_port: u16,
     current: &SystemProxySnapshot,
@@ -4435,6 +4506,79 @@ rules:
         assert_eq!(
             active.get("standby").and_then(JsonValue::as_bool),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn proxy_takeover_integrity_is_runtime_shaped() {
+        let aegos = SystemProxySnapshot {
+            proxy_enable: true,
+            proxy_server: "127.0.0.1:7891".to_string(),
+            proxy_override: "<local>".to_string(),
+            captured_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        let external = SystemProxySnapshot {
+            proxy_enable: true,
+            proxy_server: "127.0.0.1:7890".to_string(),
+            proxy_override: "<local>".to_string(),
+            captured_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+
+        let disabled =
+            proxy_takeover_integrity_json(false, false, false, Some(&external), None, 7891);
+        assert_eq!(disabled.get("ok").and_then(JsonValue::as_bool), Some(true));
+        assert_eq!(
+            disabled.get("level").and_then(JsonValue::as_str),
+            Some("ok")
+        );
+
+        let pending =
+            proxy_takeover_integrity_json(true, false, false, Some(&external), None, 7891);
+        assert_eq!(pending.get("ok").and_then(JsonValue::as_bool), Some(true));
+        assert_eq!(
+            pending.get("level").and_then(JsonValue::as_str),
+            Some("info")
+        );
+
+        let healthy = proxy_takeover_integrity_json(true, true, true, Some(&aegos), None, 7891);
+        assert_eq!(healthy.get("ok").and_then(JsonValue::as_bool), Some(true));
+        assert_eq!(healthy.get("level").and_then(JsonValue::as_str), Some("ok"));
+        assert_eq!(
+            healthy.get("expectedEndpoint").and_then(JsonValue::as_str),
+            Some("127.0.0.1:7891")
+        );
+
+        let no_snapshot =
+            proxy_takeover_integrity_json(true, true, false, Some(&aegos), None, 7891);
+        assert_eq!(
+            no_snapshot.get("ok").and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            no_snapshot.get("level").and_then(JsonValue::as_str),
+            Some("warning")
+        );
+
+        let read_failed =
+            proxy_takeover_integrity_json(true, true, false, None, Some("registry denied"), 7891);
+        assert_eq!(
+            read_failed.get("level").and_then(JsonValue::as_str),
+            Some("warning")
+        );
+        assert!(read_failed
+            .get("detail")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|detail| detail.contains("registry denied")));
+
+        let mismatch = proxy_takeover_integrity_json(true, true, true, Some(&external), None, 7891);
+        assert_eq!(mismatch.get("ok").and_then(JsonValue::as_bool), Some(false));
+        assert_eq!(
+            mismatch.get("level").and_then(JsonValue::as_str),
+            Some("error")
+        );
+        assert_eq!(
+            mismatch.get("currentServer").and_then(JsonValue::as_str),
+            Some("127.0.0.1:7890")
         );
     }
 
