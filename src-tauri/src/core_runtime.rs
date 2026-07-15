@@ -708,6 +708,10 @@ impl CoreController {
         self.request("GET", "/version", None, timeout_ms)
     }
 
+    pub fn runtime_reuse_ready(&self) -> bool {
+        self.version_probe(READY_REUSE_PROBE_TIMEOUT_MS).is_ok()
+    }
+
     pub fn wait_until_ready<F>(&self, mut process_exit_message: F) -> Result<(), String>
     where
         F: FnMut() -> Option<String>,
@@ -1935,6 +1939,13 @@ rules:
             controller.status_traffic_snapshot_or_idle(true, &previous),
             previous
         );
+    }
+
+    #[test]
+    fn controller_runtime_reuse_ready_owns_ready_reuse_probe_contract() {
+        assert_eq!(READY_REUSE_PROBE_TIMEOUT_MS, 900);
+        let controller = CoreController::new(0, "");
+        assert!(!controller.runtime_reuse_ready());
     }
 
     #[test]

@@ -189,6 +189,8 @@ check(
 check(
   'Aegos routes readiness and mode control through typed CoreController methods',
   coreRuntimeRs.includes('pub fn version_probe(&self, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn runtime_reuse_ready(&self) -> bool') &&
+    coreRuntimeRs.includes('self.version_probe(READY_REUSE_PROBE_TIMEOUT_MS).is_ok()') &&
     coreRuntimeRs.includes('pub fn wait_until_ready') &&
     coreRuntimeRs.includes('pub fn process_exit_message') &&
     coreRuntimeRs.includes('pub const READY_REUSE_PROBE_TIMEOUT_MS') &&
@@ -200,7 +202,8 @@ check(
     coreRuntimeRs.includes('pub fn apply_mode(&self, mode: &str)') &&
     coreRuntimeRs.includes('pub const MODE_APPLY_TIMEOUT_MS') &&
     mainRs.includes('.wait_until_ready(||') &&
-    mainRs.includes('core_runtime::READY_REUSE_PROBE_TIMEOUT_MS') &&
+    mainRs.includes('.runtime_reuse_ready()') &&
+    !mainRs.includes('core_runtime::READY_REUSE_PROBE_TIMEOUT_MS') &&
     mainRs.includes('core_runtime::RUNTIME_RESTART_SETTLE_MS') &&
     mainRs.includes('self.core_controller().apply_mode(mode)') &&
     !mainRs.includes('self.core_controller().set_mode(mode, 3000)') &&

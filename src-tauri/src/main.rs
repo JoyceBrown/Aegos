@@ -7384,12 +7384,7 @@ impl CoreManager {
         let config_digest = self.patch_profile_file(profile)?;
         let same_runtime = self.runtime_profile_id.as_deref() == Some(profile.id.as_str())
             && self.runtime_config_digest.as_deref() == Some(config_digest.as_str());
-        if same_runtime
-            && self
-                .core_controller()
-                .version_probe(core_runtime::READY_REUSE_PROBE_TIMEOUT_MS)
-                .is_ok()
-        {
+        if same_runtime && self.core_controller().runtime_reuse_ready() {
             self.add_log(
                 format!(
                     "Profile apply skipped; unchanged runtime config digest: {}",
@@ -7591,13 +7586,7 @@ impl CoreManager {
         if self.process.is_some() {
             let same_profile = self.runtime_profile_id.as_deref() == Some(profile.id.as_str());
             let same_config = self.runtime_config_digest.as_deref() == Some(config_digest.as_str());
-            if same_profile
-                && same_config
-                && self
-                    .core_controller()
-                    .version_probe(core_runtime::READY_REUSE_PROBE_TIMEOUT_MS)
-                    .is_ok()
-            {
+            if same_profile && same_config && self.core_controller().runtime_reuse_ready() {
                 self.apply_takeover_after_core_ready(enable_takeover);
                 return Ok(json!({
                     "ok": true,
@@ -8352,12 +8341,7 @@ impl CoreManager {
     }
 
     fn ensure_core_for_delay_test(&mut self) -> Result<(), String> {
-        if self.process.is_some()
-            && self
-                .core_controller()
-                .version_probe(core_runtime::READY_REUSE_PROBE_TIMEOUT_MS)
-                .is_ok()
-        {
+        if self.process.is_some() && self.core_controller().runtime_reuse_ready() {
             return Ok(());
         }
         if self.traffic_takeover {
