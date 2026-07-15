@@ -45,7 +45,8 @@ function hasControllerCallWithArg(method, arg, timeout) {
 check(
   'status snapshot avoids controller version probe',
   !statusBody.includes('"/version"') &&
-    statusBody.includes('core_runtime::runtime_status_json') &&
+    statusBody.includes('core_runtime::status_surface_json') &&
+    coreRuntimeRs.includes('pub fn status_surface_json(') &&
     coreRuntimeRs.includes('pub fn runtime_status_json(') &&
     coreRuntimeRs.includes('"version": JsonValue::Null') &&
     !statusBody.includes('"version": JsonValue::Null'),

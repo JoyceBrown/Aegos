@@ -622,6 +622,7 @@ struct DiagnosticsSnapshot {
     settings: Settings,
     active_profile: Option<Profile>,
     core_path: PathBuf,
+    runtime_info: JsonValue,
     proxy_snapshot_path: PathBuf,
     running: bool,
     traffic_takeover: bool,
@@ -6707,42 +6708,24 @@ impl CoreManager {
             .status_traffic_snapshot_or_idle(running, &self.last_traffic);
         self.last_traffic = traffic.clone();
         let lan_ip = self.cached_lan_ip();
-        let runtime_status = core_runtime::runtime_status_json(
+        core_runtime::status_surface_json(
             self.core_runtime_info(),
             running,
             self.traffic_takeover,
-        );
-        let mut status = json!({
-            "product": "Aegos",
-            "appVersion": env!("CARGO_PKG_VERSION"),
-            "shell": "tauri",
-            "traffic": traffic,
-            "mode": self.settings.mode,
-            "systemProxy": self.settings.system_proxy,
-            "activeProfile": self.active_profile(),
-            "network": {
-                "lanIp": lan_ip,
-                "proxyEndpoint": format!("127.0.0.1:{}", self.settings.mixed_port),
-                "outboundIp": self.cached_outbound_ip()
-            },
-            "permissions": {
-                "isAdmin": is_process_elevated(),
-                "requiresAdminFor": ["TUN", "鏂綉淇濇姢"]
-            },
-            "speedTest": self.speed_test_snapshot(),
-            "settings": self.public_settings(),
-            "connection": self.connection_status_summary(),
-            "protection": self.protection_status(),
-            "logs": self.recent_logs(120)
-        });
-        if let (Some(status_map), Some(runtime_map)) =
-            (status.as_object_mut(), runtime_status.as_object())
-        {
-            for (key, value) in runtime_map {
-                status_map.insert(key.clone(), value.clone());
-            }
-        }
-        status
+            traffic,
+            &self.settings.mode,
+            self.settings.system_proxy,
+            self.settings.mixed_port,
+            &lan_ip,
+            &self.cached_outbound_ip(),
+            is_process_elevated(),
+            json!(self.active_profile()),
+            self.speed_test_snapshot(),
+            self.public_settings(),
+            self.connection_status_summary(),
+            self.protection_status(),
+            json!(self.recent_logs(120)),
+        )
     }
 
     fn cached_lan_ip(&mut self) -> String {
@@ -8390,6 +8373,7 @@ fn take_diagnostics_snapshot(core: Arc<Mutex<CoreManager>>) -> DiagnosticsSnapsh
         settings: core.settings.clone(),
         active_profile: core.active_profile(),
         core_path: core.core_path.clone(),
+        runtime_info: core.core_runtime_info(),
         proxy_snapshot_path: core.proxy_snapshot_path.clone(),
         running: core.process.is_some(),
         traffic_takeover: core.traffic_takeover,
@@ -8478,37 +8462,31 @@ fn diagnostics_status_from_snapshot(snapshot: &DiagnosticsSnapshot, is_admin: bo
     let traffic = if snapshot.running {
         snapshot.last_traffic.clone()
     } else {
-        json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 })
+        core_runtime::idle_traffic_snapshot()
     };
-    json!({
-        "product": "Aegos",
-        "appVersion": env!("CARGO_PKG_VERSION"),
-        "runtime": "mihomo",
-        "shell": "tauri",
-        "running": snapshot.running,
-        "coreReady": snapshot.running,
-        "trafficTakeover": snapshot.traffic_takeover,
-        "standby": snapshot.running && !snapshot.traffic_takeover,
-        "controller": snapshot.running,
-        "version": JsonValue::Null,
-        "traffic": traffic,
-        "mode": snapshot.settings.mode,
-        "systemProxy": snapshot.settings.system_proxy,
-        "activeProfile": snapshot.active_profile,
-        "network": {
-            "lanIp": lan_ip,
-            "proxyEndpoint": format!("127.0.0.1:{}", snapshot.settings.mixed_port),
-            "outboundIp": snapshot.outbound_ip_cache
-        },
-        "permissions": {
-            "isAdmin": is_admin,
-            "requiresAdminFor": ["TUN", "鏂綉淇濇姢"]
-        },
-        "speedTest": diagnostics_speed_snapshot(&snapshot.speed_test),
-        "settings": diagnostics_public_settings(snapshot),
-        "protection": diagnostics_protection_status(snapshot),
-        "logs": snapshot.status_logs
-    })
+    core_runtime::status_surface_json(
+        snapshot.runtime_info.clone(),
+        snapshot.running,
+        snapshot.traffic_takeover,
+        traffic,
+        &snapshot.settings.mode,
+        snapshot.settings.system_proxy,
+        snapshot.settings.mixed_port,
+        &lan_ip,
+        &snapshot.outbound_ip_cache,
+        is_admin,
+        json!(snapshot.active_profile),
+        diagnostics_speed_snapshot(&snapshot.speed_test),
+        diagnostics_public_settings(snapshot),
+        core_runtime::connection_status_json(
+            snapshot.running,
+            snapshot.traffic_takeover,
+            snapshot.settings.system_proxy,
+            snapshot.settings.tun_enabled,
+        ),
+        diagnostics_protection_status(snapshot),
+        json!(snapshot.status_logs),
+    )
 }
 
 fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {

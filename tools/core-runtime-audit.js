@@ -101,11 +101,12 @@ check(
     'pub struct CoreRuntimeContract',
     'pub fn identity_json',
     'pub fn runtime_status_json',
+    'pub fn status_surface_json',
     'pub fn resolve_core_path',
     'runtime_core_resource_paths_are_owned_by_runtime_boundary',
     'fn core_runtime_info(&self) -> JsonValue',
     'CoreRuntimeContract::default()',
-    'core_runtime::runtime_status_json',
+    'core_runtime::status_surface_json',
     'core_runtime::resolve_core_path',
     'core_runtime::MISSING_RESOURCE_HINT',
     '#[tauri::command]\nfn core_runtime_info',
@@ -444,6 +445,16 @@ check(
     !mainRs.includes('"閸忋劌鐪') &&
     !mainRs.includes('"缁崵绮'),
   'home and diagnostics protection state must use one runtime-owned model without mojibake labels',
+);
+check(
+  'home and diagnostics status surfaces are owned by the core runtime boundary',
+  coreRuntimeRs.includes('pub fn status_surface_json') &&
+    coreRuntimeRs.includes('status_surface_json_is_runtime_shaped_without_mojibake_permissions') &&
+    (mainRs.match(/core_runtime::status_surface_json\(/g) || []).length === 2 &&
+    !mainRs.includes('"product": "Aegos"') &&
+    !mainRs.includes('"proxyEndpoint": format!("127.0.0.1:{}"') &&
+    !mainRs.includes('"requiresAdminFor": ["TUN"'),
+  'home and diagnostics must not rebuild the shared runtime status surface or mojibake permission labels',
 );
 check(
   'proxy takeover public status is owned by the core runtime boundary',

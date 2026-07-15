@@ -154,6 +154,59 @@ pub fn runtime_status_json(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn status_surface_json(
+    runtime_info: JsonValue,
+    running: bool,
+    traffic_takeover: bool,
+    traffic: JsonValue,
+    mode: &str,
+    system_proxy: bool,
+    mixed_port: u16,
+    lan_ip: &str,
+    outbound_ip: &str,
+    is_admin: bool,
+    active_profile: JsonValue,
+    speed_test: JsonValue,
+    settings: JsonValue,
+    connection: JsonValue,
+    protection: JsonValue,
+    logs: JsonValue,
+) -> JsonValue {
+    let mut status = json!({
+        "product": "Aegos",
+        "appVersion": env!("CARGO_PKG_VERSION"),
+        "shell": "tauri",
+        "traffic": traffic,
+        "mode": mode,
+        "systemProxy": system_proxy,
+        "activeProfile": active_profile,
+        "network": {
+            "lanIp": lan_ip,
+            "proxyEndpoint": windows_proxy_server(mixed_port),
+            "outboundIp": outbound_ip
+        },
+        "permissions": {
+            "isAdmin": is_admin,
+            "requiresAdminFor": ["TUN", "Disconnect protection"]
+        },
+        "speedTest": speed_test,
+        "settings": settings,
+        "connection": connection,
+        "protection": protection,
+        "logs": logs
+    });
+    let runtime_status = runtime_status_json(runtime_info, running, traffic_takeover);
+    if let (Some(status_map), Some(runtime_map)) =
+        (status.as_object_mut(), runtime_status.as_object())
+    {
+        for (key, value) in runtime_map {
+            status_map.insert(key.clone(), value.clone());
+        }
+    }
+    status
+}
+
 pub fn idle_traffic_snapshot() -> JsonValue {
     json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 })
 }
@@ -3051,6 +3104,56 @@ rules:
                 .and_then(|value| value.get("engine"))
                 .and_then(JsonValue::as_str),
             Some(ENGINE)
+        );
+    }
+
+    #[test]
+    fn status_surface_json_is_runtime_shaped_without_mojibake_permissions() {
+        let status = status_surface_json(
+            json!({ "engine": ENGINE }),
+            true,
+            true,
+            json!({ "up": 1, "down": 2, "upTotal": 3, "downTotal": 4 }),
+            "rule",
+            true,
+            7891,
+            "192.168.1.7",
+            "203.0.113.9",
+            true,
+            json!({ "name": "profile" }),
+            json!({ "running": false }),
+            json!({ "mixedPort": 7891 }),
+            connection_status_json(true, true, true, false),
+            protection_status_json(true, true, true, false, true),
+            json!([]),
+        );
+        assert_eq!(
+            status
+                .pointer("/network/proxyEndpoint")
+                .and_then(JsonValue::as_str),
+            Some("127.0.0.1:7891")
+        );
+        assert_eq!(
+            status.get("runtime").and_then(JsonValue::as_str),
+            Some(ENGINE)
+        );
+        assert_eq!(
+            status
+                .pointer("/permissions/requiresAdminFor/1")
+                .and_then(JsonValue::as_str),
+            Some("Disconnect protection")
+        );
+        assert_eq!(
+            status
+                .pointer("/connection/phase")
+                .and_then(JsonValue::as_str),
+            Some("connected-system-proxy")
+        );
+        assert_eq!(
+            status
+                .pointer("/protection/level")
+                .and_then(JsonValue::as_str),
+            Some("guarded")
         );
     }
 
