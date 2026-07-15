@@ -47,7 +47,7 @@ check(
 );
 check(
   'frontend owns shared status helpers',
-  ['const STATUS_TEXT = Object.freeze', 'function enabledLabel', 'function systemProxyUiLabel', 'function runtimeSummaryLabel'].every((needle) => appJs.includes(needle)),
+  ['const STATUS_TEXT = Object.freeze', 'function enabledLabel', 'function systemProxyUiLabel', 'function runtimeSummaryLabel', 'function statusSurfaceNotice'].every((needle) => appJs.includes(needle)),
   'STATUS_TEXT helpers'
 );
 check(
@@ -66,6 +66,13 @@ check(
     appJs.includes("$('#networkAvailabilityState').textContent = availability.label") &&
     appJs.includes("$('#networkAvailabilityMetric').textContent = availability.label"),
   'softwareState/networkAvailabilityState'
+);
+check(
+  'home status notice is derived from the shared status snapshot',
+  appJs.includes('setNotice(statusSurfaceNotice(status, settings, protection, availability))') &&
+    appJs.includes('availability.state ===') &&
+    appJs.includes('systemProxyWanted && !systemProxyApplied'),
+  'statusSurfaceNotice'
 );
 check(
   'backend exposes non-blocking network availability in status surface',

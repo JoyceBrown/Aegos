@@ -216,6 +216,38 @@ function networkAvailabilityInfo(status = {}) {
   };
 }
 
+function statusSurfaceNotice(status = {}, settings = {}, protection = {}, availability = networkAvailabilityInfo(status)) {
+  const coreReady = Boolean(status.coreReady ?? status.running);
+  const trafficTakeover = Boolean(status.trafficTakeover || settings.proxyTakeover?.active);
+  const connection = status.connection || {};
+  const systemProxyWanted = Boolean(connection.systemProxyWanted ?? settings.systemProxy);
+  const systemProxyApplied = Boolean(connection.systemProxyApplied ?? (trafficTakeover && Boolean(settings.systemProxy)));
+  const protectionLabel = protection.label || STATUS_TEXT.disabled;
+
+  if (!coreReady) {
+    return `${protectionLabel}\uff1a\u6838\u5fc3\u672a\u8fd0\u884c\uff0c\u5f53\u524d\u6ca1\u6709\u6d41\u91cf\u63a5\u7ba1\u3002`;
+  }
+  if (!trafficTakeover) {
+    return `${protectionLabel}\uff1a\u6838\u5fc3\u5f85\u547d\uff0c\u8fd8\u672a\u63a5\u7ba1\u7cfb\u7edf\u6d41\u91cf\u3002`;
+  }
+  if (systemProxyWanted && !systemProxyApplied) {
+    return `${protectionLabel}\uff1a\u7cfb\u7edf\u4ee3\u7406\u5f85\u751f\u6548\uff0c\u8bf7\u4f7f\u7528\u8bca\u65ad\u68c0\u67e5\u7aef\u53e3\u548c Windows \u4ee3\u7406\u72b6\u6001\u3002`;
+  }
+  if (availability.state === 'available') {
+    return `${protectionLabel}\uff1a\u5df2\u63a5\u7ba1\u6d41\u91cf\uff0c\u7f51\u7edc\u53ef\u7528\u6027\u5df2\u9a8c\u8bc1\u3002`;
+  }
+  if (availability.state === 'stale') {
+    return `${protectionLabel}\uff1a\u5df2\u63a5\u7ba1\u6d41\u91cf\uff0c\u843d\u5730 IP \u4e3a\u65e7\u7ed3\u679c\uff0c\u5efa\u8bae\u5237\u65b0\u72b6\u6001\u3002`;
+  }
+  if (availability.state === 'checking') {
+    return `${protectionLabel}\uff1a\u5df2\u63a5\u7ba1\u6d41\u91cf\uff0c\u6b63\u5728\u9a8c\u8bc1\u5f53\u524d\u7f51\u7edc\u3002`;
+  }
+  if (availability.state === 'unavailable') {
+    return `${protectionLabel}\uff1a\u5df2\u63a5\u7ba1\u6d41\u91cf\uff0c\u4f46\u6700\u8fd1\u4e00\u6b21\u843d\u5730 IP \u67e5\u8be2\u5931\u8d25\u3002`;
+  }
+  return `${protectionLabel}\uff1a\u5df2\u63a5\u7ba1\u6d41\u91cf\uff0c\u7f51\u7edc\u72b6\u6001\u5c1a\u672a\u9a8c\u8bc1\u3002`;
+}
+
 function formatProxyPort(endpoint = '') {
   const text = String(endpoint || '').trim();
   const match = text.match(/:(\d{2,5})$/);
@@ -3217,7 +3249,7 @@ function renderStatus(status) {
   if (nodeHost) nodeHost.textContent = status.network?.proxyEndpoint || '-';
   $('#connectBtn').textContent = trafficTakeover ? '断开连接' : '连接';
   $('#modeLabel').textContent = modeText;
-  setNotice(`${protection.label || STATUS_TEXT.disabled}：${trafficTakeover ? '正在按当前策略接管流量。' : coreReady ? '可操作，但未接管系统流量。' : '核心未运行，当前没有流量接管。'}`);
+  setNotice(statusSurfaceNotice(status, settings, protection, availability));
 
   $('#softwareState').textContent = runtimeSummaryLabel(status, settings);
   $('#softwareState').className = coreReady ? 'ok' : '';
