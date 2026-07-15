@@ -6300,12 +6300,9 @@ impl CoreManager {
                 ),
                 "info",
             );
-            return Ok(json!({
-                "ok": true,
-                "skipped": true,
-                "reason": "unchanged runtime config digest",
-                "digest": config_digest
-            }));
+            return Ok(core_runtime::runtime_config_unchanged_result_json(
+                config_digest,
+            ));
         }
         let apply_transaction = core_runtime::CoreRuntimeApplyTransaction::new(
             self.runtime_profile_path(),

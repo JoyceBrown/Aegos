@@ -512,6 +512,15 @@ pub fn system_proxy_repair_result_json(
     })
 }
 
+pub fn runtime_config_unchanged_result_json(digest: impl Into<String>) -> JsonValue {
+    json!({
+        "ok": true,
+        "skipped": true,
+        "reason": "unchanged runtime config digest",
+        "digest": digest.into()
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn public_settings_surface_json(
     active_profile_id: &str,
@@ -3793,6 +3802,24 @@ rules:
                 .pointer("/current/proxy_server")
                 .and_then(JsonValue::as_str),
             Some("127.0.0.1:7891")
+        );
+    }
+
+    #[test]
+    fn runtime_config_unchanged_result_is_runtime_shaped() {
+        let result = runtime_config_unchanged_result_json("abc123");
+        assert_eq!(result.get("ok").and_then(JsonValue::as_bool), Some(true));
+        assert_eq!(
+            result.get("skipped").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            result.get("reason").and_then(JsonValue::as_str),
+            Some("unchanged runtime config digest")
+        );
+        assert_eq!(
+            result.get("digest").and_then(JsonValue::as_str),
+            Some("abc123")
         );
     }
 

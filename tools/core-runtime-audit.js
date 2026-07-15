@@ -43,6 +43,7 @@ const probeProxyNetworkBody = mainRs.match(/fn probe_proxy_network\(&self, timeo
 const tryRecoverCurrentProfileBody = mainRs.match(/fn try_recover_current_profile\(&mut self\) -> Result<Option<JsonValue>, String> \{([\s\S]*?)\n    fn recover_network/)?.[1] || '';
 const recoverNetworkBody = mainRs.match(/fn recover_network\(&mut self, force: bool\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn change_proxy/)?.[1] || '';
 const repairSystemProxyTakeoverBody = mainRs.match(/fn repair_system_proxy_takeover\(&mut self\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn apply_setting_value/)?.[1] || '';
+const hotReloadProfileBody = mainRs.match(/fn hot_reload_profile\(&mut self, profile: &Profile\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn ensure_runtime_ports/)?.[1] || '';
 
 function hasControllerCall(method, timeout) {
   return new RegExp(`controller\\s*\\.\\s*${method}\\(\\s*${timeout}\\s*\\)`).test(mainRs);
@@ -352,6 +353,16 @@ check(
     mainRs.includes('apply_transaction.apply(&self.core_controller())') &&
     !mainRs.includes('"/configs?force=true"'),
   'runtime config apply must be owned by core_runtime instead of ad-hoc controller calls in main.rs',
+);
+check(
+  'runtime config unchanged result shaping is owned by the core runtime boundary',
+  coreRuntimeRs.includes('pub fn runtime_config_unchanged_result_json') &&
+    coreRuntimeRs.includes('runtime_config_unchanged_result_is_runtime_shaped') &&
+    hotReloadProfileBody.includes('core_runtime::runtime_config_unchanged_result_json(') &&
+    !hotReloadProfileBody.includes('"skipped": true') &&
+    !hotReloadProfileBody.includes('"reason": "unchanged runtime config digest"') &&
+    !hotReloadProfileBody.includes('"digest": config_digest'),
+  'main.rs may detect unchanged config, but skipped/reason/digest result fields belong to core_runtime',
 );
 check(
   'Aegos owns core-facing failure classification inside the core runtime boundary',
