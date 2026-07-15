@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
+const coreRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'core_runtime.rs'), 'utf8');
 const diagnosticsRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'diagnostics_runtime.rs'), 'utf8');
 const appJs = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
 const tauri = JSON.parse(fs.readFileSync(path.join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'));
@@ -71,7 +72,10 @@ check(
     setSystemProxyBody.includes('verify_system_proxy_points_to_aegos(false)') &&
     applyTakeoverBody.includes('system_proxy_applied') &&
     !applyTakeoverBody.includes('self.settings.system_proxy = true;') &&
-    applyTakeoverBody.includes('self.traffic_takeover = self.settings.tun_enabled || system_proxy_applied') &&
+    applyTakeoverBody.includes('takeover_plan.final_traffic_takeover(system_proxy_applied)') &&
+    coreRuntimeRs.includes('pub fn final_traffic_takeover(&self, system_proxy_applied: bool) -> bool') &&
+    coreRuntimeRs.includes('self.requested_takeover && (self.tun_enabled || system_proxy_applied)') &&
+    coreRuntimeRs.includes('assert!(!tun_off_requires_system_proxy.final_traffic_takeover(false))') &&
     stopBody.includes('Core stopped, but Windows system proxy restore failed'),
   'connection state must reflect actual OS proxy/TUN takeover, not a hopeful flag'
 );

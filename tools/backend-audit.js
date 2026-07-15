@@ -322,7 +322,11 @@ check(
 check(
   'TUN-off connect applies system proxy takeover',
   mainRs.includes('fn apply_takeover_after_core_ready') &&
-    mainRs.includes('|| !self.settings.tun_enabled') &&
+    mainRs.includes('CoreTrafficTakeoverPlan::after_core_ready') &&
+    coreRuntimeRs.includes('pub struct CoreTrafficTakeoverPlan') &&
+    coreRuntimeRs.includes('|| !tun_enabled') &&
+    coreRuntimeRs.includes('traffic_takeover_after_ready_is_owned_by_runtime_boundary') &&
+    coreRuntimeRs.includes('tun_off_requires_system_proxy') &&
     mainRs.includes('self.settings.system_proxy = true;') &&
     mainRs.includes('self.set_system_proxy(true)'),
   'connect should still take over traffic through Windows system proxy when TUN is off'

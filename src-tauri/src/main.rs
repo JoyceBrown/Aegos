@@ -6491,27 +6491,26 @@ impl CoreManager {
     }
 
     fn apply_takeover_after_core_ready(&mut self, enable_takeover: bool) {
-        if enable_takeover {
-            let should_apply_system_proxy = self.settings.system_proxy
-                || self.settings.start_with_system_proxy
-                || !self.settings.tun_enabled;
-            let mut system_proxy_applied = false;
-            if should_apply_system_proxy {
-                self.traffic_takeover = true;
-                match self.set_system_proxy(true) {
-                    Ok(_) => system_proxy_applied = true,
-                    Err(err) => {
-                        self.add_log(
-                            format!("System proxy enable failed after core start: {err}"),
-                            "warn",
-                        );
-                    }
+        let takeover_plan = core_runtime::CoreTrafficTakeoverPlan::after_core_ready(
+            enable_takeover,
+            self.settings.system_proxy,
+            self.settings.start_with_system_proxy,
+            self.settings.tun_enabled,
+        );
+        let mut system_proxy_applied = false;
+        if takeover_plan.should_apply_system_proxy {
+            self.traffic_takeover = takeover_plan.optimistic_takeover_before_system_proxy();
+            match self.set_system_proxy(true) {
+                Ok(_) => system_proxy_applied = true,
+                Err(err) => {
+                    self.add_log(
+                        format!("System proxy enable failed after core start: {err}"),
+                        "warn",
+                    );
                 }
             }
-            self.traffic_takeover = self.settings.tun_enabled || system_proxy_applied;
-        } else {
-            self.traffic_takeover = false;
         }
+        self.traffic_takeover = takeover_plan.final_traffic_takeover(system_proxy_applied);
     }
 
     fn start(&mut self) -> Result<JsonValue, String> {

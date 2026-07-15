@@ -1812,6 +1812,13 @@ pub struct CoreRuntimeRestartPlan {
     pub delay_ms: u64,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct CoreTrafficTakeoverPlan {
+    pub requested_takeover: bool,
+    pub tun_enabled: bool,
+    pub should_apply_system_proxy: bool,
+}
+
 impl CoreLaunchPlan {
     pub fn new(paths: CoreRuntimePaths, profile_name: impl Into<String>, standby: bool) -> Self {
         Self {
@@ -1898,6 +1905,30 @@ impl CoreRuntimeRestartPlan {
         } else {
             CoreRuntimeRestartAction::StartStandby
         }
+    }
+}
+
+impl CoreTrafficTakeoverPlan {
+    pub fn after_core_ready(
+        requested_takeover: bool,
+        system_proxy_enabled: bool,
+        start_with_system_proxy: bool,
+        tun_enabled: bool,
+    ) -> Self {
+        Self {
+            requested_takeover,
+            tun_enabled,
+            should_apply_system_proxy: requested_takeover
+                && (system_proxy_enabled || start_with_system_proxy || !tun_enabled),
+        }
+    }
+
+    pub fn optimistic_takeover_before_system_proxy(&self) -> bool {
+        self.requested_takeover && self.should_apply_system_proxy
+    }
+
+    pub fn final_traffic_takeover(&self, system_proxy_applied: bool) -> bool {
+        self.requested_takeover && (self.tun_enabled || system_proxy_applied)
     }
 }
 
@@ -2334,6 +2365,32 @@ mod tests {
             manual_restart.next_action(),
             CoreRuntimeRestartAction::StartWithTakeover
         );
+    }
+
+    #[test]
+    fn traffic_takeover_after_ready_is_owned_by_runtime_boundary() {
+        let standby = CoreTrafficTakeoverPlan::after_core_ready(false, true, true, true);
+        assert!(!standby.should_apply_system_proxy);
+        assert!(!standby.optimistic_takeover_before_system_proxy());
+        assert!(!standby.final_traffic_takeover(true));
+
+        let tun_takeover = CoreTrafficTakeoverPlan::after_core_ready(true, false, false, true);
+        assert!(!tun_takeover.should_apply_system_proxy);
+        assert!(!tun_takeover.optimistic_takeover_before_system_proxy());
+        assert!(tun_takeover.final_traffic_takeover(false));
+
+        let system_proxy_takeover =
+            CoreTrafficTakeoverPlan::after_core_ready(true, true, false, false);
+        assert!(system_proxy_takeover.should_apply_system_proxy);
+        assert!(system_proxy_takeover.optimistic_takeover_before_system_proxy());
+        assert!(system_proxy_takeover.final_traffic_takeover(true));
+        assert!(!system_proxy_takeover.final_traffic_takeover(false));
+
+        let tun_off_requires_system_proxy =
+            CoreTrafficTakeoverPlan::after_core_ready(true, false, false, false);
+        assert!(tun_off_requires_system_proxy.should_apply_system_proxy);
+        assert!(tun_off_requires_system_proxy.optimistic_takeover_before_system_proxy());
+        assert!(!tun_off_requires_system_proxy.final_traffic_takeover(false));
     }
 
     fn test_preflight_input<'a>() -> RuntimeConfigPreflightInput<'a> {

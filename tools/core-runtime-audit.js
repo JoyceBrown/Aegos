@@ -399,6 +399,19 @@ check(
   'main.rs may execute stop/start, but restore-takeover restart intent belongs to core_runtime',
 );
 check(
+  'traffic takeover after core readiness is planned inside the core runtime boundary',
+  coreRuntimeRs.includes('pub struct CoreTrafficTakeoverPlan') &&
+    coreRuntimeRs.includes('pub fn after_core_ready') &&
+    coreRuntimeRs.includes('pub fn optimistic_takeover_before_system_proxy') &&
+    coreRuntimeRs.includes('pub fn final_traffic_takeover') &&
+    coreRuntimeRs.includes('traffic_takeover_after_ready_is_owned_by_runtime_boundary') &&
+    mainRs.includes('CoreTrafficTakeoverPlan::after_core_ready') &&
+    mainRs.includes('takeover_plan.should_apply_system_proxy') &&
+    mainRs.includes('takeover_plan.final_traffic_takeover(system_proxy_applied)') &&
+    !mainRs.includes('let should_apply_system_proxy = self.settings.system_proxy'),
+  'main.rs may execute set_system_proxy, but takeover policy belongs to core_runtime',
+);
+check(
   'release gate requires core runtime audit',
   packageJson.scripts?.['audit:core-runtime'] === 'node tools/core-runtime-audit.js' &&
     releaseAudit.includes('core runtime audit script exists'),
