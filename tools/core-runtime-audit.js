@@ -115,6 +115,7 @@ check(
 check(
   'Aegos routes controller access through the CoreController adapter',
   coreRuntimeRs.includes('pub struct CoreController') &&
+    coreRuntimeRs.includes('#[derive(Clone, Debug)]\npub struct CoreController') &&
     coreRuntimeRs.includes('pub fn controller_request') &&
     coreRuntimeRs.includes('pub fn traffic_snapshot(&self, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn connections_snapshot(&self, timeout_ms: u64)') &&
@@ -190,6 +191,12 @@ check(
     !mainRs.includes('.proxy_groups_snapshot(1200, &[AEGOS_OUTBOUND_IP_GROUP])') &&
     !mainRs.includes('.proxies_snapshot(1200)') &&
     !mainRs.includes('fn normalize_proxy_item') &&
+    mainRs.includes('fn test_proxy_delay_request(\n    client: &Client,\n    controller: &core_runtime::CoreController,') &&
+    mainRs.includes('fn test_proxy_delay_plan(\n    client: &Client,\n    controller: &core_runtime::CoreController,') &&
+    mainRs.includes('fn test_proxy_delay_with_retry(\n    client: &Client,\n    controller: &core_runtime::CoreController,') &&
+    mainRs.includes('fn test_proxy_delay_fast(\n    client: &Client,\n    controller: &core_runtime::CoreController,') &&
+    !mainRs.includes('fn test_proxy_delay_plan(\n    client: &Client,\n    controller_port: u16,') &&
+    !mainRs.includes('fn test_proxy_delay_with_retry(\n    client: &Client,\n    controller_port: u16,') &&
     mainRs.includes('.proxy_delay_result_with_client(client, name, test_url, timeout_ms)') &&
     !mainRs.includes('fn classify_delay_http_failure') &&
     mainRs.includes('.apply_auxiliary_proxy_selection_if_running(') &&

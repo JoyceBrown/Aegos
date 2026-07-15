@@ -1812,13 +1812,11 @@ fn percent_decode(input: &str) -> String {
 
 fn test_proxy_delay_request(
     client: &Client,
-    controller_port: u16,
-    secret: &str,
+    controller: &core_runtime::CoreController,
     name: &str,
     test_url: &str,
     timeout_ms: u64,
 ) -> DelayTestResult {
-    let controller = core_runtime::CoreController::new(controller_port, secret);
     let result = controller.proxy_delay_result_with_client(client, name, test_url, timeout_ms);
     if result.delay >= 0 {
         DelayTestResult::ok(result.delay)
@@ -2467,22 +2465,15 @@ fn speed_test_preflight(targets: &[SpeedTestTarget]) -> Result<(), String> {
 
 fn test_proxy_delay_plan(
     client: &Client,
-    controller_port: u16,
-    secret: &str,
+    controller: &core_runtime::CoreController,
     name: &str,
     protocol: &str,
     depth: DelayProbeDepth,
 ) -> DelayTestResult {
     let mut failure_reason = String::new();
     for probe in delay_probe_plan(protocol, depth) {
-        let result = test_proxy_delay_request(
-            client,
-            controller_port,
-            secret,
-            name,
-            probe.url,
-            probe.timeout_ms,
-        );
+        let result =
+            test_proxy_delay_request(client, controller, name, probe.url, probe.timeout_ms);
         if result.delay >= 0 {
             return result;
         }
@@ -2497,30 +2488,17 @@ fn test_proxy_delay_plan(
 
 fn test_proxy_delay_with_retry(
     client: &Client,
-    controller_port: u16,
-    secret: &str,
+    controller: &core_runtime::CoreController,
     name: &str,
     protocol: &str,
 ) -> DelayTestResult {
-    let fast_result = test_proxy_delay_plan(
-        client,
-        controller_port,
-        secret,
-        name,
-        protocol,
-        DelayProbeDepth::Fast,
-    );
+    let fast_result =
+        test_proxy_delay_plan(client, controller, name, protocol, DelayProbeDepth::Fast);
     if fast_result.delay >= 0 {
         return fast_result;
     }
-    let full_result = test_proxy_delay_plan(
-        client,
-        controller_port,
-        secret,
-        name,
-        protocol,
-        DelayProbeDepth::Full,
-    );
+    let full_result =
+        test_proxy_delay_plan(client, controller, name, protocol, DelayProbeDepth::Full);
     if full_result.delay >= 0 {
         full_result
     } else if delay_failure_reason_rank(&full_result.failure_reason)
@@ -2534,19 +2512,11 @@ fn test_proxy_delay_with_retry(
 
 fn test_proxy_delay_fast(
     client: &Client,
-    controller_port: u16,
-    secret: &str,
+    controller: &core_runtime::CoreController,
     name: &str,
     protocol: &str,
 ) -> DelayTestResult {
-    test_proxy_delay_plan(
-        client,
-        controller_port,
-        secret,
-        name,
-        protocol,
-        DelayProbeDepth::Fast,
-    )
+    test_proxy_delay_plan(client, controller, name, protocol, DelayProbeDepth::Fast)
 }
 
 fn b64_decode_text(input: &str) -> Option<String> {
@@ -8397,8 +8367,7 @@ impl CoreManager {
             return Ok(self.speed_test_snapshot());
         }
 
-        let controller_port = self.settings.controller_port;
-        let secret = self.settings.secret.clone();
+        let controller = self.core_controller();
         let speed_test = self.speed_test.clone();
         let previous_health = speed_test.lock().unwrap().health.clone();
         let phases = speed_test_phases(targets.clone(), &previous_health, now_secs());
@@ -8502,13 +8471,12 @@ impl CoreManager {
                     let mut handles = Vec::with_capacity(chunk.len());
                     for target in chunk.iter().cloned() {
                         let tx = tx.clone();
-                        let secret = secret.clone();
+                        let controller = controller.clone();
                         let client = client.clone();
                         handles.push(thread::spawn(move || {
                             let result = test_proxy_delay_fast(
                                 &client,
-                                controller_port,
-                                &secret,
+                                &controller,
                                 &target.name,
                                 &target.protocol,
                             );
@@ -8597,8 +8565,7 @@ impl CoreManager {
                 return Err(message);
             }
         };
-        let controller_port = self.settings.controller_port;
-        let secret = self.settings.secret.clone();
+        let controller = self.core_controller();
         let speed_test = self.speed_test.clone();
         let targets_for_recommendation = targets.clone();
         let speed_firewall_enabled = self.settings.kill_switch_enabled;
@@ -8695,13 +8662,8 @@ impl CoreManager {
                     return;
                 }
             };
-            let result = test_proxy_delay_with_retry(
-                &client,
-                controller_port,
-                &secret,
-                &target.name,
-                &target.protocol,
-            );
+            let result =
+                test_proxy_delay_with_retry(&client, &controller, &target.name, &target.protocol);
             let now = now_secs();
             let mut speed = speed_test.lock().unwrap();
             if speed.run_id == run_id {
@@ -8858,6 +8820,7 @@ impl CoreManager {
         let mut results = Vec::new();
         let limit = self.settings.reliability_candidate_limit as usize;
         let max_delay = self.settings.reliability_max_delay_ms as i64;
+        let controller = self.core_controller();
         for group in group_refs {
             let group_name = group
                 .get("name")
@@ -8891,13 +8854,7 @@ impl CoreManager {
                     continue;
                 }
                 tested += 1;
-                let result = test_proxy_delay_with_retry(
-                    &client,
-                    self.settings.controller_port,
-                    &self.settings.secret,
-                    name,
-                    protocol,
-                );
+                let result = test_proxy_delay_with_retry(&client, &controller, name, protocol);
                 let delay = result.delay;
                 if delay > 0 && delay <= max_delay {
                     results.push((group_name.clone(), name.to_string(), delay));
