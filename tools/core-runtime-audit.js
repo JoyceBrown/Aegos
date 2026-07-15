@@ -42,6 +42,7 @@ const stopBody = mainRs.match(/fn stop\(&mut self\) -> Result<JsonValue, String>
 const probeProxyNetworkBody = mainRs.match(/fn probe_proxy_network\(&self, timeout_ms: u64\) -> JsonValue \{([\s\S]*?)\n    fn recovery_group_rank/)?.[1] || '';
 const tryRecoverCurrentProfileBody = mainRs.match(/fn try_recover_current_profile\(&mut self\) -> Result<Option<JsonValue>, String> \{([\s\S]*?)\n    fn recover_network/)?.[1] || '';
 const recoverNetworkBody = mainRs.match(/fn recover_network\(&mut self, force: bool\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn change_proxy/)?.[1] || '';
+const repairSystemProxyTakeoverBody = mainRs.match(/fn repair_system_proxy_takeover\(&mut self\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn apply_setting_value/)?.[1] || '';
 
 function hasControllerCall(method, timeout) {
   return new RegExp(`controller\\s*\\.\\s*${method}\\(\\s*${timeout}\\s*\\)`).test(mainRs);
@@ -434,6 +435,15 @@ check(
     !mainRs.includes('Windows system proxy verification failed: current') &&
     !mainRs.includes('Windows system proxy restore verification failed'),
   'main.rs may read/write Windows proxy state, but snapshot shape and matching policy belong to core_runtime',
+);
+check(
+  'system proxy repair result shaping is owned by the core runtime boundary',
+  coreRuntimeRs.includes('pub fn system_proxy_repair_result_json') &&
+    coreRuntimeRs.includes('system_proxy_repair_result_is_runtime_shaped') &&
+    repairSystemProxyTakeoverBody.includes('core_runtime::system_proxy_repair_result_json(') &&
+    !repairSystemProxyTakeoverBody.includes('"endpoint": format!("127.0.0.1:{}"') &&
+    !repairSystemProxyTakeoverBody.includes('"current": current'),
+  'main.rs may verify Windows proxy repair, but endpoint/current result fields belong to core_runtime',
 );
 check(
   'protection status shaping is owned by the core runtime boundary',

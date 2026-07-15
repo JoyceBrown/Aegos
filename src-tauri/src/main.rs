@@ -6854,11 +6854,10 @@ impl CoreManager {
                 current.proxy_server, self.settings.mixed_port
             ));
         }
-        Ok(json!({
-            "ok": true,
-            "endpoint": format!("127.0.0.1:{}", self.settings.mixed_port),
-            "current": current
-        }))
+        Ok(core_runtime::system_proxy_repair_result_json(
+            self.settings.mixed_port,
+            &current,
+        ))
     }
 
     fn apply_setting_value(&mut self, key: &str, value: &JsonValue) -> Result<bool, String> {

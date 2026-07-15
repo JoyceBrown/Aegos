@@ -501,6 +501,17 @@ pub fn proxy_takeover_status_json(
     })
 }
 
+pub fn system_proxy_repair_result_json(
+    mixed_port: u16,
+    current: &SystemProxySnapshot,
+) -> JsonValue {
+    json!({
+        "ok": true,
+        "endpoint": windows_proxy_server(mixed_port),
+        "current": current
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn public_settings_surface_json(
     active_profile_id: &str,
@@ -3760,6 +3771,28 @@ rules:
         assert_eq!(
             active.get("standby").and_then(JsonValue::as_bool),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn system_proxy_repair_result_is_runtime_shaped() {
+        let snapshot = SystemProxySnapshot {
+            proxy_enable: true,
+            proxy_server: "127.0.0.1:7891".to_string(),
+            proxy_override: "<local>".to_string(),
+            captured_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        let result = system_proxy_repair_result_json(7891, &snapshot);
+        assert_eq!(result.get("ok").and_then(JsonValue::as_bool), Some(true));
+        assert_eq!(
+            result.get("endpoint").and_then(JsonValue::as_str),
+            Some("127.0.0.1:7891")
+        );
+        assert_eq!(
+            result
+                .pointer("/current/proxy_server")
+                .and_then(JsonValue::as_str),
+            Some("127.0.0.1:7891")
         );
     }
 
