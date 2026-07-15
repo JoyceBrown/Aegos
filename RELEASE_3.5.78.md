@@ -24,5 +24,5 @@
 
 ## Artifact
 
-- Source-only checkpoint: no installer was built for 3.5.78.
-- SHA-256: Source-only / not applicable.
+- Installer: `src-tauri/target/release/bundle/nsis/Aegos_3.5.78_x64-setup.exe`
+- SHA-256: `A88A2E8CED9CF9C78F2A9A977EEC5738845C0E75FA4945C52534B8E45D28B849`
