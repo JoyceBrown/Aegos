@@ -33,5 +33,6 @@
 - `git diff --check`
 
 ## Artifact
-- Source-only checkpoint. SHA-256: source-only.
-- No installer was produced for this version.
+- Installer: `src-tauri/target/release/bundle/nsis/Aegos_3.5.64_x64-setup.exe`
+- Size: 15,735,746 bytes
+- SHA-256: `de8be6907f19c2ee50909a4d4121ca6b10dc93efdc934cd7ea36c83c997ef6e3`
