@@ -81,8 +81,9 @@ check(
 );
 
 check(
-  'current release records mainline and 3.5.85 verification',
-  release.includes('计划项：3.5.85 落地 IP 查询防卡死') &&
+  'current release records mainline verification',
+  release.includes('## 计划项') &&
+    release.includes('当前主线') &&
     release.includes('npm run audit:current-mainline') &&
     release.includes('cargo check --manifest-path src-tauri/Cargo.toml'),
   `RELEASE_${pkg.version}.md`
