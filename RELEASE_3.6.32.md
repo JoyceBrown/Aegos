@@ -10,6 +10,12 @@ This checkpoint carries the authoritative `3.5.71 - 3.6.40` mainline without cha
 
 ## Implemented
 
+- Replaced the mixed project-drawn UI glyphs with a pinned 38-icon subset of Microsoft Fluent UI System Icons at commit `9a1129bb2432b163b48044341664c68a3c100908` under the MIT license.
+- Used Fluent Regular icons for normal controls and Filled variants only for active navigation and favorites, while keeping the Aegos brand mark project-owned.
+- Embedded the selected SVGs into CSS masks so icons render under the packaged `file://` WebView without a runtime package, network request, icon font, or missing-file fallback.
+- Archived upstream SVG source and its license outside the frontend source tree to preserve traceability without duplicating source assets in the application bundle.
+- Standardized interface, display, and monospace typography on deterministic Windows font stacks headed by Segoe UI Variable and Microsoft YaHei UI, with tabular numerals for changing metrics.
+- Evaluated Lucide, Tabler Icons, Phosphor Icons, and Radix Icons; Fluent was selected for Windows-native geometry and semantic coverage without adding a package dependency. Large CJK font binaries were deliberately not bundled.
 - Replaced periodic full speed-result polling with per-node Tauri events, animation-frame-coalesced rendering, and a 1500 ms watchdog fallback.
 - Added protocol-aware adaptive scheduling with bounded global concurrency and lower TUIC/AnyTLS family limits.
 - Prioritized the current and visible nodes without serializing the entire subscription as a priority list.
@@ -84,6 +90,9 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 ## Verification
 
+- The visual audit proves all 38 archived Fluent SVGs are embedded exactly through the local registry, the MIT license and pinned source are preserved, and no unbundled Inter dependency remains.
+- Multi-viewport UI smoke passed at 100%, 125%, 150%, 175%, and 200% device scale with zero visible icons missing masks, zero unlabeled icon buttons, and no new text or panel overflow.
+- Home, node, settings, diagnostics, window controls, active navigation, quick actions, and row actions were visually inspected from generated screenshots.
 - Performance pressure evidence passed with 8000 per-node results, zero full-result polls on the healthy event path, startup-content timing, and 420 rapid navigation changes.
 - The 16-cycle mixed-operation soak passed with a stable DOM plateau and stable timer count.
 - Interaction, product journey, UI, Rust test, Cargo check, current-mainline, and release gates were executed for this checkpoint.

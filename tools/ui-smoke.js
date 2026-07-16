@@ -226,6 +226,11 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       const hasIcon = Boolean(button.querySelector('.aegos-icon'));
       return hasIcon && !hasVisibleText && !button.getAttribute('aria-label');
     }).map((button) => button.id || button.className || 'unnamed');
+    const missingIconMasks = all('.aegos-icon').filter((icon) => visible(icon)).filter((icon) => {
+      const style = getComputedStyle(icon, '::before');
+      const mask = style.maskImage || style.webkitMaskImage || '';
+      return !mask || mask === 'none';
+    }).map((icon) => icon.className || 'unnamed');
     return {
       width: window.innerWidth,
       height: window.innerHeight,
@@ -273,6 +278,7 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       diagnosticView,
       diagnosticsCard,
       unlabeledIconButtons,
+      missingIconMasks,
       badPanels: [...homeBase.badPanels, ...nodeBase.badPanels, ...settingsBase.badPanels, ...diagnosticsBase.badPanels]
     };
   })()`);
@@ -377,6 +383,7 @@ try {
     if (report.quickEscapes.length) failures.push(`${report.width}x${report.height}: quick buttons escape container: ${report.quickEscapes.join(', ')}`);
     if (report.badPanels.length) failures.push(`${report.width}x${report.height}: panels outside viewport: ${report.badPanels.join(', ')}`);
     if (report.unlabeledIconButtons.length) failures.push(`${report.width}x${report.height}: unlabeled icon buttons: ${report.unlabeledIconButtons.join(', ')}`);
+    if (report.missingIconMasks.length) failures.push(`${report.width}x${report.height}: visible icons without masks: ${report.missingIconMasks.join(', ')}`);
     if (!report.diagnosticsSummary || report.diagnosticsSummary.height < 48) failures.push(`${report.width}x${report.height}: diagnostic summary did not render with stable height`);
     if (!report.diagnosticsRows || report.diagnosticsRows.height < 120) failures.push(`${report.width}x${report.height}: diagnostic issue list did not receive usable space`);
     if (!report.diagnosticTabs || report.diagnosticTabs.height < 30) failures.push(`${report.width}x${report.height}: diagnostic internal tabs are missing`);
