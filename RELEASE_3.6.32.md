@@ -107,12 +107,12 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 ## Artifact
 
-Current canonical build with the Fluent icon and Windows typography polish:
+Current canonical build with the unified Aegos brand, latency-value action, Fluent UI icons, and Windows typography polish:
 
 - Canonical bundle: `src-tauri/target/release/bundle/nsis/Aegos_3.6.32_x64-setup.exe`
-- Size: `15,891,236` bytes
-- SHA-256: `FA8C36EB382A581DF17F7186839EC12F6B5E57AB85F69DBC241A71750918DD19`
-- Size change from the previous canonical 3.6.32 package: `+17,842` bytes (`+0.1124%`)
+- Size: `15,913,886` bytes
+- SHA-256: `FE98269DF0446B5558592DE9EC8E8D8CBF6AADDCF48D700BD21D8511C2FDFCF7`
+- Size change from the previous Fluent icon package: `+22,650` bytes (`+0.1425%`)
 - Font payload change: `0` bytes; typography uses installed Windows fonts
 
 The installer generated at the end of the earlier global performance pass is preserved for comparison only:
