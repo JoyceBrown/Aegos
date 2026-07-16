@@ -7,12 +7,12 @@ The icon and typography polish uses a pinned subset of Microsoft Fluent UI Syste
 - Repository: `microsoft/fluentui-system-icons`
 - Commit: `9a1129bb2432b163b48044341664c68a3c100908`
 - License: MIT
-- Scope: 38 archived 20 px SVG files plus the upstream license in `third_party/fluent-ui-system-icons`, totaling about 42 KB before compression
+- Scope: 38 archived 20 px UI SVG files, one 48 px shield source for the Aegos brand composition, and the upstream license in `third_party/fluent-ui-system-icons`
 - Runtime impact: SVG source is embedded into CSS masks; no package, script, file request, network request, icon font, or dynamic loader
 - Bundle impact: the archived source SVGs live outside `src`; only their CSS-embedded copies enter the frontend bundle
 - Removal plan: restore the project-owned CSS mask registry and delete `third_party/fluent-ui-system-icons`
 
-Aegos keeps its project-owned brand mark. Typography uses Windows system fonts only, so no font license or binary payload is added.
+The Aegos brand composition, A-shaped route glyph, and color treatment are project-owned. Its shield silhouette derives from Fluent `Shield 48 Filled` at the same pinned commit under MIT. Typography uses Windows system fonts only, so no font license or binary payload is added.
 
 ## Candidate policy
 

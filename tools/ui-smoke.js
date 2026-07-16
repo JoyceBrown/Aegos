@@ -242,6 +242,7 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       tableOverflowX: tableEl ? tableEl.scrollWidth - tableEl.clientWidth : 0,
       maxMetricIcon: Math.max(...metricIcons),
       brandFontSize: parseFloat(getComputedStyle(document.querySelector('.brand-name')).fontSize),
+      brandLogoLoaded: Boolean(document.querySelector('.brand-logo')?.complete && document.querySelector('.brand-logo')?.naturalWidth >= 48),
       shell: box('.shell'),
       nav: box('.nav'),
       navButtonHeight: box('.nav button')?.height || 0,
@@ -361,6 +362,7 @@ try {
     if (report.homeNodeLayout?.headToFirstRowGap > 16) failures.push(`${report.width}x${report.height}: home table head is separated from first row by ${report.homeNodeLayout.headToFirstRowGap}px`);
     if (report.homeNodeLayout?.headHeight > 42) failures.push(`${report.width}x${report.height}: home table head stretched to ${report.homeNodeLayout.headHeight}px`);
     if (report.maxMetricIcon > 24) failures.push(`${report.width}x${report.height}: metric icon width ${report.maxMetricIcon}px`);
+    if (!report.brandLogoLoaded) failures.push(`${report.width}x${report.height}: Aegos brand logo did not load`);
     if (!report.hero || report.hero.height > 276) failures.push(`${report.width}x${report.height}: home hero row too tall ${report.hero?.height || 0}px`);
     if (!report.quick || Math.abs(report.quick.height - 72) > 1) failures.push(`${report.width}x${report.height}: quick row height changed to ${report.quick?.height || 0}px`);
     if (report.heroCenterOffset > 8) failures.push(`${report.width}x${report.height}: home hero columns use mismatched vertical alignment (${report.heroCenterOffset.toFixed(1)}px)`);

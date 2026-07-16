@@ -2534,7 +2534,7 @@ window.addEventListener('error', (event) => {
 
 function isIconOnlyBusyButton(button) {
   if (!button) return false;
-  if (button.matches('.metric-refresh, .row-actions button')) return true;
+  if (button.matches('.metric-delay-action, .row-actions button')) return true;
   return Boolean(button.querySelector('.aegos-icon')) && !button.textContent.trim();
 }
 

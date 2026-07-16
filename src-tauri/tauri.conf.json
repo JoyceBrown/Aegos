@@ -28,6 +28,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
     "resources": {
       "../resources/core/mihomo.exe": "core/mihomo.exe"
     },

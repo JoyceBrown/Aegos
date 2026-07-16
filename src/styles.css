@@ -736,36 +736,43 @@ h1 {
   max-width: 100%;
 }
 
-.metric-refresh {
-  width: 20px;
-  height: 20px;
-  display: inline-grid;
-  place-items: center;
-  flex: 0 0 auto;
+.metric-delay-action {
+  min-width: 24px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0 4px;
   border: 0;
-  border-radius: 999px;
-  background: rgba(128, 101, 255, .08);
-  color: #6b63d9;
+  border-radius: 6px;
+  background: transparent;
   cursor: pointer;
-  overflow: hidden;
-  font-size: 0;
+  font-size: inherit;
+  font-weight: inherit;
   line-height: 1;
   box-shadow: none;
+  transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
 }
 
-.metric-refresh .aegos-icon {
-  --icon-size: 14px;
-  --glyph-size: 10px;
+.metric-delay-action:hover {
+  background: rgba(80, 111, 226, .09);
 }
 
-.metric-refresh:hover {
-  background: rgba(128, 101, 255, .14);
-  color: #5b4ee6;
+.metric-delay-action:active {
+  background: rgba(80, 111, 226, .14);
 }
 
-.metric-refresh.is-pending .aegos-icon,
+.metric-delay-action.is-pending {
+  animation: aegosMetricBusyPulse .9s ease-in-out infinite alternate;
+}
+
 .row-actions button.is-pending .aegos-icon {
   animation: aegosIconBusySpin .75s linear infinite;
+}
+
+@keyframes aegosMetricBusyPulse {
+  from { background: rgba(80, 111, 226, .06); }
+  to { background: rgba(80, 111, 226, .18); }
 }
 
 .metric-grid strong.is-danger {
@@ -5674,7 +5681,6 @@ select {
 }
 
 .icon-home { --icon: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHZpZXdCb3g9IjAgMCAyMCAyMCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTguOTk3NSAyLjM4ODExQzkuNTY3NjcgMS44NzU4NCAxMC40MzIzIDEuODc1ODQgMTEuMDAyNSAyLjM4ODExTDE2LjUwMjUgNy4zMjk2NUMxNi44MTkxIDcuNjE0MTQgMTcgOC4wMTk3NyAxNyA4LjQ0NTQ0VjE1LjQ5OTZDMTcgMTYuMzI4IDE2LjMyODQgMTYuOTk5NiAxNS41IDE2Ljk5OTZIMTNDMTIuMTcxNiAxNi45OTk2IDExLjUgMTYuMzI4IDExLjUgMTUuNDk5NlYxMS45OTk2QzExLjUgMTEuNzIzNCAxMS4yNzYxIDExLjQ5OTYgMTEgMTEuNDk5Nkg5QzguNzIzODYgMTEuNDk5NiA4LjUgMTEuNzIzNCA4LjUgMTEuOTk5NlYxNS40OTk2QzguNSAxNi4zMjggNy44Mjg0MyAxNi45OTk2IDcgMTYuOTk5Nkg0LjVDMy42NzE1NyAxNi45OTk2IDMgMTYuMzI4IDMgMTUuNDk5NlY4LjQ0NTQ0QzMgOC4wMTk3NyAzLjE4MDg2IDcuNjE0MTQgMy40OTc1IDcuMzI5NjVMOC45OTc1IDIuMzg4MTFaTTEwLjMzNDIgMy4xMzE5N0MxMC4xNDQxIDIuOTYxMjIgOS44NTU4OSAyLjk2MTIyIDkuNjY1ODMgMy4xMzE5N0w0LjE2NTgzIDguMDczNTFDNC4wNjAyOSA4LjE2ODM0IDQgOC4zMDM1NSA0IDguNDQ1NDRWMTUuNDk5NkM0IDE1Ljc3NTcgNC4yMjM4NiAxNS45OTk2IDQuNSAxNS45OTk2SDdDNy4yNzYxNCAxNS45OTk2IDcuNSAxNS43NzU3IDcuNSAxNS40OTk2VjExLjk5OTZDNy41IDExLjE3MTEgOC4xNzE1NyAxMC40OTk2IDkgMTAuNDk5NkgxMUMxMS44Mjg0IDEwLjQ5OTYgMTIuNSAxMS4xNzExIDEyLjUgMTEuOTk5NlYxNS40OTk2QzEyLjUgMTUuNzc1NyAxMi43MjM5IDE1Ljk5OTYgMTMgMTUuOTk5NkgxNS41QzE1Ljc3NjEgMTUuOTk5NiAxNiAxNS43NzU3IDE2IDE1LjQ5OTZWOC40NDU0NEMxNiA4LjMwMzU1IDE1LjkzOTcgOC4xNjgzNCAxNS44MzQyIDguMDczNTFMMTAuMzM0MiAzLjEzMTk3WiIgZmlsbD0iIzIxMjEyMSIvPgo8L3N2Zz4K"); }
-.icon-brand { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none' stroke='black' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 3.5 27 9.8v12.4l-11 6.3-11-6.3V9.8z'/%3E%3Cpath d='M16 8.5v15M11 12.5l5-4 5 4M10.5 20.5l5.5 3 5.5-3'/%3E%3C/svg%3E"); }
 .icon-nodes { --icon: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHZpZXdCb3g9IjAgMCAyMCAyMCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTkgNUM5IDMuMzQzMTUgNy42NTY4NSAyIDYgMkM0LjM0MzE1IDIgMyAzLjM0MzE1IDMgNUMzIDYuNDg2NSA0LjA4MTE0IDcuNzIwNDggNS41IDcuOTU4NTJWMTIuMDQxNUM0LjA4MTE0IDEyLjI3OTUgMyAxMy41MTM1IDMgMTVDMyAxNi42NTY5IDQuMzQzMTUgMTggNiAxOEM3LjY1Njg1IDE4IDkgMTYuNjU2OSA5IDE1QzkgMTMuNTEzNSA3LjkxODg2IDEyLjI3OTUgNi41IDEyLjA0MTVWMTFIMTJDMTMuMzgwNyAxMSAxNC41IDkuODgwNzEgMTQuNSA4LjVWNy45NTg1MkMxNS45MTg5IDcuNzIwNDggMTcgNi40ODY1IDE3IDVDMTcgMy4zNDMxNSAxNS42NTY5IDIgMTQgMkMxMi4zNDMxIDIgMTEgMy4zNDMxNSAxMSA1QzExIDYuNDg2NSAxMi4wODExIDcuNzIwNDggMTMuNSA3Ljk1ODUyVjguNUMxMy41IDkuMzI4NDMgMTIuODI4NCAxMCAxMiAxMEg2LjVWNy45NTg1MkM3LjkxODg2IDcuNzIwNDggOSA2LjQ4NjUgOSA1Wk02IDdDNC44OTU0MyA3IDQgNi4xMDQ1NyA0IDVDNCAzLjg5NTQzIDQuODk1NDMgMyA2IDNDNy4xMDQ1NyAzIDggMy44OTU0MyA4IDVDOCA2LjEwNDU3IDcuMTA0NTcgNyA2IDdaTTYgMTdDNC44OTU0MyAxNyA0IDE2LjEwNDYgNCAxNUM0IDEzLjg5NTQgNC44OTU0MyAxMyA2IDEzQzcuMTA0NTcgMTMgOCAxMy44OTU0IDggMTVDOCAxNi4xMDQ2IDcuMTA0NTcgMTcgNiAxN1pNMTYgNUMxNiA2LjEwNDU3IDE1LjEwNDYgNyAxNCA3QzEyLjg5NTQgNyAxMiA2LjEwNDU3IDEyIDVDMTIgMy44OTU0MyAxMi44OTU0IDMgMTQgM0MxNS4xMDQ2IDMgMTYgMy44OTU0MyAxNiA1WiIgZmlsbD0iIzIxMjEyMSIvPgo8L3N2Zz4K"); }
 .icon-connections { --icon: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHZpZXdCb3g9IjAgMCAyMCAyMCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTE3Ljg1MzYgMi44NTM1NUMxOC4wNDg4IDIuNjU4MjkgMTguMDQ4OCAyLjM0MTcxIDE3Ljg1MzYgMi4xNDY0NUMxNy42NTgzIDEuOTUxMTggMTcuMzQxNyAxLjk1MTE4IDE3LjE0NjQgMi4xNDY0NUwxNC40NzgxIDQuODE0NzVDMTIuODk0OSAzLjU3OTU3IDEwLjYwMjQgMy42OTAxNCA5LjE0NjA3IDUuMTQ2NDZMOC44NDYwNyA1LjQ0NjQ2QzguMjY0MjEgNi4wMjgzMiA4LjI2NDIxIDYuOTcxNzEgOC44NDYwNyA3LjU1MzU3TDEyLjQ0NjEgMTEuMTUzNkMxMy4wMjc5IDExLjczNTQgMTMuOTcxMyAxMS43MzU0IDE0LjU1MzIgMTEuMTUzNkwxNC44NTMyIDEwLjg1MzZDMTYuMzA5NCA5LjM5NzM3IDE2LjQyIDcuMTA1MTggMTUuMTg1MiA1LjUyMTkxTDE3Ljg1MzYgMi44NTM1NVpNMTMuODQ2MSAxMC40NDY1QzEzLjY1NDcgMTAuNjM3OCAxMy4zNDQ1IDEwLjYzNzggMTMuMTUzMiAxMC40NDY1TDkuNTUzMTggNi44NDY0NkM5LjM2MTg0IDYuNjU1MTMgOS4zNjE4NCA2LjM0NDkxIDkuNTUzMTggNi4xNTM1N0w5Ljg1MzE4IDUuODUzNTdDMTEuMDM4NiA0LjY2ODEyIDEyLjk2MDYgNC42NjgxMiAxNC4xNDYxIDUuODUzNTdDMTUuMzMxNSA3LjAzOTAyIDE1LjMzMTUgOC45NjEwMSAxNC4xNDYxIDEwLjE0NjVMMTMuODQ2MSAxMC40NDY1Wk03LjU1MzkzIDguODQ2NDNDNi45NzIwNyA4LjI2NDU3IDYuMDI4NjkgOC4yNjQ1NyA1LjQ0NjgyIDguODQ2NDNMNS4xNDY4MyA5LjE0NjQzQzMuNjkwNjMgMTAuNjAyNiAzLjU3OTk1IDEyLjg5NDggNC44MTQ4IDE0LjQ3ODFMMi4xNDY0NSAxNy4xNDY0QzEuOTUxMTggMTcuMzQxNyAxLjk1MTE4IDE3LjY1ODMgMi4xNDY0NSAxNy44NTM2QzIuMzQxNzEgMTguMDQ4OCAyLjY1ODI5IDE4LjA0ODggMi44NTM1NSAxNy44NTM2TDUuNTIxODYgMTUuMTg1MkM3LjEwNTE1IDE2LjQyMDQgOS4zOTc2MSAxNi4zMDk5IDEwLjg1MzkgMTQuODUzNUwxMS4xNTM5IDE0LjU1MzVDMTEuNzM1OCAxMy45NzE3IDExLjczNTggMTMuMDI4MyAxMS4xNTM5IDEyLjQ0NjRMNy41NTM5MyA4Ljg0NjQzWk02LjE1MzkzIDkuNTUzNTRDNi4zNDUyNyA5LjM2MjIgNi42NTU0OSA5LjM2MjIgNi44NDY4MiA5LjU1MzU0TDEwLjQ0NjggMTMuMTUzNUMxMC42MzgyIDEzLjM0NDkgMTAuNjM4MiAxMy42NTUxIDEwLjQ0NjggMTMuODQ2NEwxMC4xNDY4IDE0LjE0NjRDOC45NjEzNyAxNS4zMzE5IDcuMDM5MzggMTUuMzMxOSA1Ljg1MzkzIDE0LjE0NjRDNC42Njg0OCAxMi45NjEgNC42Njg0OCAxMS4wMzkgNS44NTM5MyA5Ljg1MzU0TDYuMTUzOTMgOS41NTM1NFoiIGZpbGw9IiMyMTIxMjEiLz4KPC9zdmc+Cg=="); }
 .icon-routing { --icon: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHZpZXdCb3g9IjAgMCAyMCAyMCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTE0LjMxMzcgMy4xNDY0NEMxNC4xMTg0IDIuOTUxMTggMTMuODAxOSAyLjk1MTE5IDEzLjYwNjYgMy4xNDY0NUMxMy40MTEzIDMuMzQxNzIgMTMuNDExMyAzLjY1ODMgMTMuNjA2NiAzLjg1MzU2TDE2LjI1MyA2LjQ5OTg5SDEyQzEwLjYxOTMgNi40OTk4OSA5LjUgNy42MTkxOCA5LjUgOC45OTk4OVYxMUM5LjUgMTEuODI4NCA4LjgyODQzIDEyLjUgOCAxMi41SDcuOTU4NTJDNy43MjA0OCAxMS4wODExIDYuNDg2NSAxMCA1IDEwQzMuMzQzMTUgMTAgMiAxMS4zNDMxIDIgMTNDMiAxNC42NTY5IDMuMzQzMTUgMTYgNSAxNkM2LjQ4NjUgMTYgNy43MjA0OCAxNC45MTg5IDcuOTU4NTIgMTMuNUg4QzkuMzgwNzEgMTMuNSAxMC41IDEyLjM4MDcgMTAuNSAxMVY4Ljk5OTg5QzEwLjUgOC4xNzE0NiAxMS4xNzE2IDcuNDk5ODkgMTIgNy40OTk4OUgxNi4yNTNMMTMuNjA2NiAxMC4xNDYzQzEzLjQxMTMgMTAuMzQxNiAxMy40MTEzIDEwLjY1ODIgMTMuNjA2NiAxMC44NTM0QzEzLjgwMTkgMTEuMDQ4NyAxNC4xMTg0IDExLjA0ODcgMTQuMzEzNyAxMC44NTM0TDE3LjgxMzcgNy4zNTM0NEMxNy45MDc1IDcuMjU5NjcgMTcuOTYwMiA3LjEzMjQ5IDE3Ljk2MDIgNi45OTk4OEMxNy45NjAyIDYuODY3MjggMTcuOTA3NSA2Ljc0MDEgMTcuODEzNyA2LjY0NjMzTDE0LjMxMzcgMy4xNDY0NFpNNyAxM0M3IDE0LjEwNDYgNi4xMDQ1NyAxNSA1IDE1QzMuODk1NDMgMTUgMyAxNC4xMDQ2IDMgMTNDMyAxMS44OTU0IDMuODk1NDMgMTEgNSAxMUM2LjEwNDU3IDExIDcgMTEuODk1NCA3IDEzWiIgZmlsbD0iIzIxMjEyMSIvPgo8L3N2Zz4K"); }
@@ -5726,20 +5732,15 @@ select {
   position: relative;
   overflow: hidden;
   clip-path: none;
-  border-radius: 12px;
-  color: #5d86ff;
-  background:
-    linear-gradient(145deg, rgba(255, 255, 255, .88), rgba(224, 242, 255, .62)),
-    radial-gradient(circle at 28% 22%, rgba(85, 203, 217, .34), transparent 54%),
-    radial-gradient(circle at 70% 78%, rgba(157, 136, 255, .30), transparent 56%);
-  box-shadow: inset 0 0 0 1px rgba(89, 148, 255, .18), 0 10px 22px rgba(77, 140, 255, .16);
+  border-radius: 11px;
+  background: transparent;
+  box-shadow: 0 8px 18px rgba(63, 111, 229, .18);
 }
 
-.brand-mark .aegos-icon {
-  --icon-size: 24px;
-  --glyph-size: 22px;
-  color: #668bff;
-  filter: drop-shadow(0 3px 7px rgba(64, 134, 255, .28));
+.brand-logo {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .nav button.active .aegos-icon {

@@ -16,7 +16,7 @@
   <main class="shell">
     <aside class="sidebar">
       <section class="brand drag-zone" data-tauri-drag-region>
-        <div class="brand-mark"><span class="aegos-icon icon-brand" aria-hidden="true"></span></div>
+        <div class="brand-mark"><img class="brand-logo" src="assets/brand/aegos-mark-64.png" alt=""></div>
         <div>
           <strong class="brand-name">Aegos</strong>
           <span id="appVersionLabel" class="brand-version">v3.6.32</span>
@@ -111,7 +111,7 @@
             </div>
 
             <div class="metric-grid top">
-              <article><span class="metric-icon purple aegos-icon icon-latency" aria-hidden="true"></span><small>延迟</small><strong class="metric-inline"><span id="delayMetric">-</span><button id="currentNodeTestBtn" class="metric-refresh" aria-label="测速当前节点"><span class="aegos-icon icon-speed" aria-hidden="true"></span></button></strong></article>
+              <article><span class="metric-icon purple aegos-icon icon-latency" aria-hidden="true"></span><small>延迟</small><strong class="metric-inline"><button id="currentNodeTestBtn" class="metric-delay-action" aria-label="测速当前节点" title="测速当前节点"><span id="delayMetric">-</span></button></strong></article>
               <article><span class="metric-icon blue aegos-icon icon-loss" aria-hidden="true"></span><small>稳定性</small><strong id="stabilityMetric">未测速</strong></article>
               <article><span class="metric-icon amber aegos-icon icon-load" aria-hidden="true"></span><small>活跃连接</small><strong id="activeConnectionsMetric">0</strong></article>
               <article><span class="metric-icon cyan aegos-icon icon-protocol" aria-hidden="true"></span><small>&#21327;&#35758;</small><strong id="protocolMetric">DIRECT</strong></article>

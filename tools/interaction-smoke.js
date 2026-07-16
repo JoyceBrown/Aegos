@@ -638,9 +638,11 @@ try {
     const currentNodeButtonWidth = currentNodeButton?.getBoundingClientRect().width || 0;
     currentNodeButton?.click();
     await new Promise((resolve) => setTimeout(resolve, 40));
-    if ((currentNodeButton?.textContent || '').length > 4) throw new Error('current node icon refresh button rendered busy text');
-    if (!currentNodeButton?.classList.contains('is-pending')) throw new Error('current node icon refresh button did not show pending state');
-    if (Math.abs((currentNodeButton?.getBoundingClientRect().width || 0) - currentNodeButtonWidth) > 1) throw new Error('current node icon refresh button changed width while pending');
+    if (!currentNodeButton?.matches('.metric-delay-action') || currentNodeButton.querySelector('#delayMetric') == null) throw new Error('current node delay value is not the speed-test action');
+    if (currentNodeButton.querySelector('.aegos-icon') || document.querySelector('.metric-refresh')) throw new Error('separate current node speed-test icon still renders');
+    if ((currentNodeButton?.textContent || '').length > 8) throw new Error('current node delay action replaced its value with busy text');
+    if (!currentNodeButton?.classList.contains('is-pending')) throw new Error('current node delay action did not show pending state');
+    if (Math.abs((currentNodeButton?.getBoundingClientRect().width || 0) - currentNodeButtonWidth) > 1) throw new Error('current node delay action changed width while pending');
     await navDown('[data-page="settings"]');
     if (!document.querySelector('[data-page-panel="settings"]')?.classList.contains('active')) throw new Error('single node speed test blocked sidebar page switching');
     await navDown('[data-page="nodes"]');
@@ -649,7 +651,7 @@ try {
     if (!window.__aegosCalls.some((item) => item.command === 'test_single_proxy_delay')) throw new Error('current node delay refresh did not call single-node speed test');
     if (switchCallsAfterCurrentNodeTest !== switchCallsBeforeCurrentNodeTest) throw new Error('current node delay refresh triggered a proxy switch');
     if (!document.querySelector('#stabilityMetric')?.textContent.trim() || document.querySelector('#stabilityMetric')?.textContent.includes('\u672a')) throw new Error('current node stability did not render a real level');
-    if (!document.querySelector('#currentNodeTestBtn .icon-speed')) throw new Error('current node delay refresh did not use a speed icon');
+    if (!document.querySelector('#currentNodeTestBtn > #delayMetric')) throw new Error('current node delay result is not rendered inside the speed-test action');
     const stabilityStyle = getComputedStyle(document.querySelector('#stabilityMetric'));
     if (stabilityStyle.backgroundColor !== 'rgba(0, 0, 0, 0)') throw new Error('home stability metric rendered a colored background block');
     if (!/metric-stability-(high|medium|low)/.test(document.querySelector('#stabilityMetric')?.className || '')) throw new Error('home stability metric did not use dedicated level text class');

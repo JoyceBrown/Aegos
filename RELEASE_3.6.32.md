@@ -10,6 +10,10 @@ This checkpoint carries the authoritative `3.5.71 - 3.6.40` mainline without cha
 
 ## Implemented
 
+- Moved current-node speed testing directly onto the displayed latency value and removed the separate circular lightning action; pending feedback now stays on the value without changing its width or blocking navigation.
+- Replaced the unrelated single-frame green taskbar `A` and the separate sidebar glyph with one Aegos brand master: a Fluent `Shield 48 Filled` silhouette plus an original A-shaped routing path.
+- Generated the sidebar PNG and the Windows executable, taskbar, and NSIS six-resolution ICO from the same SVG master, and explicitly pinned that icon in Tauri bundle configuration.
+- Archived the exact Fluent shield source and extended MIT attribution without adding a runtime dependency.
 - Replaced the mixed project-drawn UI glyphs with a pinned 38-icon subset of Microsoft Fluent UI System Icons at commit `9a1129bb2432b163b48044341664c68a3c100908` under the MIT license.
 - Used Fluent Regular icons for normal controls and Filled variants only for active navigation and favorites, while keeping the Aegos brand mark project-owned.
 - Embedded the selected SVGs into CSS masks so icons render under the packaged `file://` WebView without a runtime package, network request, icon font, or missing-file fallback.
@@ -90,6 +94,9 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 ## Verification
 
+- UI smoke verifies the generated brand raster loads under the packaged `file://` model at every tested viewport and DPI; the visual audit verifies it and six Windows icon sizes share the same SVG source contract.
+- Interaction smoke verifies the latency value is the sole current-node speed-test target, keeps fixed geometry while pending, remains navigation-safe, and never switches or connects a node.
+- A same-host three-run comparison against untouched commit `f40a042` found the same intermittent headless software-compositor frame and startup spikes in both trees. Current median startup remained at least as fast (`147 ms` status / `228 ms` nodes versus baseline `155 ms` / `254 ms`), visual navigation stayed `16.8 ms` p95, and layout shift stayed zero; no performance threshold was relaxed.
 - The visual audit proves all 38 archived Fluent SVGs are embedded exactly through the local registry, the MIT license and pinned source are preserved, and no unbundled Inter dependency remains.
 - Multi-viewport UI smoke passed at 100%, 125%, 150%, 175%, and 200% device scale with zero visible icons missing masks, zero unlabeled icon buttons, and no new text or panel overflow.
 - Home, node, settings, diagnostics, window controls, active navigation, quick actions, and row actions were visually inspected from generated screenshots.
