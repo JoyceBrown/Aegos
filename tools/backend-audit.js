@@ -15,6 +15,7 @@ const taskRuntimeRs = readSource('src-tauri', 'src', 'task_runtime.rs');
 const speedRuntimeRs = readSource('src-tauri', 'src', 'speed_runtime.rs');
 const diagnosticsRuntimeRs = readSource('src-tauri', 'src', 'diagnostics_runtime.rs');
 const subscriptionRuntimeRs = readSource('src-tauri', 'src', 'subscription_runtime.rs');
+const configDeploymentRs = readSource('src-tauri', 'src', 'config_deployment.rs');
 
 const fail = [];
 const pass = [];
@@ -23,13 +24,18 @@ function check(name, ok, detail = '') {
   (ok ? pass : fail).push({ name, ok, detail });
 }
 
-const statusBody = mainRs.match(/fn status\(&mut self\) -> JsonValue \{([\s\S]*?)\n    \}/)?.[1] || '';
+const statusBody = mainRs.match(/fn status_from_observed_traffic\([\s\S]*?\) -> JsonValue \{([\s\S]*?)\n    \}/)?.[1] || '';
+const appStatusBody = mainRs.match(/fn app_status\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 const commandSection = mainRs.slice(mainRs.indexOf('#[tauri::command]'));
 const speedStart = mainRs.indexOf('fn start_proxy_delay_test');
 const speedEnd = mainRs.indexOf('fn test_single_proxy_delay', speedStart);
 const speedTestBody = speedStart >= 0 && speedEnd > speedStart ? mainRs.slice(speedStart, speedEnd) : '';
-const speedCommandBody = mainRs.match(/fn start_proxy_delay_test\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
-const singleSpeedCommandBody = mainRs.match(/fn test_single_proxy_delay\(state: State<AppState>, name: String\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
+const speedCommandStart = mainRs.indexOf('fn start_proxy_delay_test(');
+const speedCommandEnd = mainRs.indexOf('#[tauri::command]', speedCommandStart + 1);
+const speedCommandBody = speedCommandStart >= 0 && speedCommandEnd > speedCommandStart ? mainRs.slice(speedCommandStart, speedCommandEnd) : '';
+const singleSpeedCommandStart = mainRs.indexOf('fn test_single_proxy_delay(');
+const singleSpeedCommandEnd = mainRs.indexOf('#[tauri::command]', singleSpeedCommandStart + 1);
+const singleSpeedCommandBody = singleSpeedCommandStart >= 0 && singleSpeedCommandEnd > singleSpeedCommandStart ? mainRs.slice(singleSpeedCommandStart, singleSpeedCommandEnd) : '';
 const activeConnectionCommandBody = mainRs.match(/fn active_connection_count\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 const connectionStatusSummaryBody = mainRs.match(/fn connection_status_summary\(&self\) -> JsonValue \{([\s\S]*?)\n    \}/)?.[1] || '';
 const connectionClosureBody = mainRs.match(/fn connection_closure\(&self\) -> JsonValue \{([\s\S]*?)\n    \}/)?.[1] || '';
@@ -55,14 +61,14 @@ check(
 );
 check(
   'status traffic timeout stays short',
-  statusBody.includes('status_traffic_snapshot_or_idle(running, &self.last_traffic)') &&
+  appStatusBody.includes('status_traffic_snapshot_or_idle(observed_running, &previous_traffic)') &&
     coreRuntimeRs.includes('pub fn status_traffic_snapshot(&self)') &&
     coreRuntimeRs.includes('pub fn status_traffic_snapshot_or_idle(') &&
     coreRuntimeRs.includes('pub fn idle_traffic_snapshot()') &&
     coreRuntimeRs.includes('pub const STATUS_TRAFFIC_TIMEOUT_MS') &&
     !mainRs.includes('fn traffic_snapshot(&self)') &&
-    !statusBody.includes('traffic_snapshot(120)') &&
-    !statusBody.includes('traffic_snapshot(450)'),
+    !appStatusBody.includes('traffic_snapshot(120)') &&
+    !appStatusBody.includes('traffic_snapshot(450)'),
   'traffic snapshot timeout'
 );
 check(
@@ -88,7 +94,7 @@ check(
   'batch speed-test command returns before slow core preparation',
   speedCommandBody.includes('mark_speed_test_preparing(&state.speed_test, now_secs())') &&
     speedCommandBody.includes('thread::spawn(move ||') &&
-    speedCommandBody.includes('start_proxy_delay_test_for_run(Some(run_id))') &&
+    speedCommandBody.includes('start_proxy_delay_test_for_run(Some(run_id), app, priority_names)') &&
     !speedCommandBody.includes('state.core.lock().unwrap().start_proxy_delay_test()'),
   'clicking speed test should not wait for standby core preparation or proxy-group assembly'
 );
@@ -129,8 +135,9 @@ check(
 check(
   'TUIC delay path has lower concurrency',
   mainRs.includes('fn protocol_concurrency') &&
-    mainRs.includes('"tuic" => 8') &&
-    mainRs.includes('speed_test_phases') &&
+    mainRs.includes('"tuic" => 6') &&
+    mainRs.includes('speed_test_ordered_targets') &&
+    mainRs.includes('next_schedulable_target') &&
     mainRs.includes('protocol_primary_timeout_ms'),
   'protocol-aware concurrency'
 );
@@ -190,7 +197,8 @@ check(
     configPipelineRs.includes('fn ensure_auto_select_group_contains_all_nodes') &&
     coreRuntimeRs.includes('pub const LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME') &&
     coreRuntimeRs.includes('name == LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME') &&
-    configPipelineRs.includes('core_runtime::LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME') &&
+    configPipelineRs.includes('core_runtime::AEGOS_AUTO_SELECT_GROUP_NAME') &&
+    configPipelineRs.includes('matching_indices.into_iter().skip(1).rev()') &&
     mainRs.includes('config_pipeline::normalize_runtime_proxy_groups_for_display') &&
     mainRs.includes('config_pipeline::is_internal_proxy_group_name') &&
     !mainRs.includes('fn synthesize_default_proxy_groups_if_needed') &&
@@ -612,8 +620,14 @@ check(
   'subscription import and update rollback on runtime failure',
   mainRs.includes('Profile import applied but startup failed; rolled back') &&
     mainRs.includes('Profile update applied but startup failed; restored previous subscription') &&
-    mainRs.includes('let previous_raw = fs::read_to_string(&profile_path).ok()') &&
-    mainRs.includes('atomic_write_text_confined(&profile_path, &profile_root, raw)') &&
+    mainRs.includes('ConfigDeploymentTransaction::stage(') &&
+    mainRs.includes('"Subscription import"') &&
+    mainRs.includes('"Subscription update"') &&
+    mainRs.includes('deployment.rollback("subscription startup verification failed")') &&
+    mainRs.includes('deployment.rollback("subscription runtime restart failed")') &&
+    configDeploymentRs.includes('pub fn promote(') &&
+    configDeploymentRs.includes('pub fn rollback(') &&
+    configDeploymentRs.includes('pub fn recover_interrupted_deployments(') &&
     mainRs.includes('Profile was removed before update completed') &&
     mainRs.includes('let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(') &&
     mainRs.includes('core.start_from_restart_plan(rollback_plan).map(|_| ())') &&

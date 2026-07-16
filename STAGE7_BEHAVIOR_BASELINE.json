@@ -1,0 +1,29 @@
+{
+  "version": "3.6.24",
+  "literalInvokeCounts": {
+    "active_connection_count": 1,
+    "app_status": 1,
+    "cancel_job": 1,
+    "clear_logs": 1,
+    "close_connection": 1,
+    "close_connections": 1,
+    "connections": 1,
+    "environment_readiness": 1,
+    "export_logs": 1,
+    "ipv6_dns_safety_snapshot": 1,
+    "job_status": 2,
+    "node_diagnostics": 1,
+    "preview_profile_groups": 1,
+    "proxy_groups": 1,
+    "relaunch_as_admin": 2,
+    "routing_snapshot": 1,
+    "save_manual_node": 1,
+    "speed_test_status": 2,
+    "start_job": 1,
+    "start_proxy_delay_test": 1,
+    "test_single_proxy_delay": 1,
+    "window_close": 1,
+    "window_minimize": 1,
+    "window_toggle_maximize": 1
+  }
+}

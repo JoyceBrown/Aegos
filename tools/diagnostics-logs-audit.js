@@ -38,6 +38,17 @@ const exportLogsBackendBody = sliceBetween(mainRs, 'fn export_logs_from_state', 
 const diagnosticsJobBody = sliceBetween(mainRs, '"diagnostics" => {', '"recoverNetwork" => {');
 
 check(
+  'diagnostics and logs share one navigation surface with lazy log rendering',
+  !indexHtml.includes('data-page="logs"') &&
+    !indexHtml.includes('data-page-panel="logs"') &&
+    indexHtml.includes('data-diagnostic-view="overview"') &&
+    indexHtml.includes('data-diagnostic-view="logs"') &&
+    appJs.includes("if (!isPageActive('diagnostics') || diagnosticView !== 'logs') return;") &&
+    interactionSmoke.includes('running diagnostics blocked the internal logs view'),
+  'one repair-center workflow, with logs available as on-demand evidence'
+);
+
+check(
   'diagnostics page navigation renders cached data only',
   schedulePageLoadBody.includes("page === 'diagnostics'") &&
     schedulePageLoadBody.includes('renderCachedDiagnostics();') &&

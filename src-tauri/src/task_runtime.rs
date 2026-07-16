@@ -21,6 +21,7 @@ pub struct JobRecord {
     pub message: String,
     pub result: Option<JsonValue>,
     pub error: Option<String>,
+    pub issue: Option<JsonValue>,
     pub cancel_requested: bool,
 }
 
@@ -45,6 +46,7 @@ pub fn new_job_record(id: String, kind: String, label: String) -> JobRecord {
         message: "queued".to_string(),
         result: None,
         error: None,
+        issue: None,
         cancel_requested: false,
     }
 }
@@ -97,6 +99,7 @@ pub fn finish_job(jobs: &JobStore, id: &str, result: Result<JsonValue, String>) 
                 job.message = "done".to_string();
                 job.result = Some(value);
                 job.error = None;
+                job.issue = None;
             }
             Err(err) => {
                 job.state = "failed".to_string();
@@ -104,6 +107,12 @@ pub fn finish_job(jobs: &JobStore, id: &str, result: Result<JsonValue, String>) 
                 job.error = Some(err);
             }
         }
+    }
+}
+
+pub fn set_job_issue(jobs: &JobStore, id: &str, issue: JsonValue) {
+    if let Some(job) = jobs.lock().unwrap().get_mut(id) {
+        job.issue = Some(issue);
     }
 }
 

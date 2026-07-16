@@ -30,14 +30,16 @@ const singleNodeBody = bodyOf(appJs, 'testSingleNode');
 const positionProfileBody = bodyOf(appJs, 'positionQuickProfileMenu');
 
 check(
-  'FlClash-style batch speed baseline is explicit',
+  'batch speed uses a bounded streaming scheduler',
   mainRs.includes('const FLCLASH_STYLE_TEST_URL') &&
     mainRs.includes('https://www.gstatic.com/generate_204') &&
-    mainRs.includes('const FLCLASH_STYLE_SPEED_BATCH_SIZE: usize = 100') &&
-    mainRs.includes('.max(FLCLASH_STYLE_SPEED_BATCH_SIZE)') &&
-    mainRs.includes('phases.push((rest, chunk_size))') &&
+    mainRs.includes('SPEED_GLOBAL_CONCURRENCY_INITIAL') &&
+    mainRs.includes('SPEED_GLOBAL_CONCURRENCY_MAX') &&
+    mainRs.includes('speed_test_ordered_targets') &&
+    mainRs.includes('next_schedulable_target') &&
+    mainRs.includes('emit_speed_test_event') &&
     mainRs.includes('assert_eq!(fast_tuic_probes.len(), 1)'),
-  'batch speed first pass must be single URL and high concurrency, matching the FlClash behavior we audited'
+  'batch speed must stream a single-URL first pass without phase barriers or unbounded concurrency'
 );
 
 check(
@@ -47,7 +49,8 @@ check(
     mainRs.includes('fn test_proxy_delay_plan') &&
     mainRs.includes('DelayProbeDepth::Fast') &&
     mainRs.includes('DelayProbeDepth::Full') &&
-    mainRs.includes('let fast_result = test_proxy_delay_plan') &&
+    mainRs.includes('let fast_result =') &&
+    mainRs.includes('test_proxy_delay_plan(client, controller, name, protocol, DelayProbeDepth::Fast)') &&
     mainRs.includes('test_proxy_delay_with_retry('),
   'batch and single-node speed tests intentionally serve different user needs'
 );
@@ -55,10 +58,10 @@ check(
 check(
   'startup uses local profile preview before verified proxy refresh',
   appJs.includes('async function initializeAppData') &&
-    initBody.includes('await refreshStatus(true)') &&
-    initBody.includes('void previewProfileNodes(activeProfileId)') &&
-    initBody.includes('await refreshNodes(true)') &&
-    appJs.includes('initializeAppData().catch'),
+    initBody.includes('const statusReady = refreshStatus(true)') &&
+    initBody.includes("refreshNodes(true, { delay: 0, target: 'home' })") &&
+    initBody.includes('await Promise.all([') &&
+    appJs.includes('.then(() => initializeAppData())'),
   'home common nodes should not wait for the full controller refresh on app start'
 );
 
@@ -75,10 +78,12 @@ check(
 
 check(
   'speed results are shared and rendered incrementally',
-  appJs.includes('speedTestPollMs = 180') &&
+  appJs.includes("listen('aegos-speed-test', handleSpeedTestEvent)") &&
+    appJs.includes('function flushSpeedResultEvents') &&
+    appJs.includes('requestAnimationFrame(flushSpeedResultEvents)') &&
     appJs.includes('function applySpeedStatusToNodes') &&
-    appJs.includes('latestSpeedStatus = status || latestSpeedStatus') &&
-    appJs.includes("scheduleRowsRender(latestGroup.items, { force: true, target: 'all', delay: 0 })") &&
+    appJs.includes('preserveLatest: true') &&
+    appJs.includes('updateVisibleNodeDelays(visibleChanges)') &&
     interactionSmoke.includes('home page did not receive node batch speed results') &&
     interactionSmoke.includes('node page did not receive quick home speed results'),
   'home and node pages must share the same speed result stream'

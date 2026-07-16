@@ -1,11 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod config_deployment;
 mod config_pipeline;
 mod core_runtime;
 mod diagnostics_runtime;
 mod profile_compiler;
 mod speed_runtime;
 mod subscription_runtime;
+mod system_takeover;
 mod task_runtime;
 
 use base64::{engine::general_purpose, Engine as _};
@@ -23,7 +25,7 @@ use speed_runtime::{
     SpeedTestState, SpeedTestStore,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     fs,
     io::{BufRead, BufReader, Write},
     net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket},
@@ -31,14 +33,14 @@ use std::{
     process::{Child, Command},
     sync::{mpsc, Arc, Mutex, OnceLock},
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use subscription_runtime::{ProfileSource, ProfileSourceSummary};
 use task_runtime::{
     finish_cancelled, finish_job, job_cancel_requested, job_status_snapshot, new_job_record,
-    request_job_cancel, set_job_state, JobStore,
+    request_job_cancel, set_job_issue, set_job_state, JobStore,
 };
-use tauri::{AppHandle, Manager, State, Window, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State, Window, WindowEvent};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -47,7 +49,11 @@ const AEGOS_DEFAULT_MIXED_PORT: u16 = 7891;
 const AEGOS_DEFAULT_CONTROLLER_PORT: u16 = 19091;
 const AEGOS_OUTBOUND_IP_GROUP: &str = "Aegos Landing IP";
 const FLCLASH_STYLE_TEST_URL: &str = "https://www.gstatic.com/generate_204";
-const FLCLASH_STYLE_SPEED_BATCH_SIZE: usize = 100;
+const SPEED_TEST_EVENT: &str = "aegos-speed-test";
+const SPEED_GLOBAL_CONCURRENCY_INITIAL: usize = 24;
+const SPEED_GLOBAL_CONCURRENCY_MIN: usize = 12;
+const SPEED_GLOBAL_CONCURRENCY_MAX: usize = 40;
+const SPEED_ADAPTIVE_WINDOW: usize = 8;
 const OUTBOUND_IP_RULE_DOMAINS: &[&str] = &[
     "api.ipify.org",
     "api64.ipify.org",
@@ -281,7 +287,8 @@ fn diagnostics_report_text(report: &JsonValue) -> String {
     lines.push("Checks:".to_string());
     for item in checks {
         let name = item
-            .get("name")
+            .get("title")
+            .or_else(|| item.get("name"))
             .and_then(JsonValue::as_str)
             .unwrap_or("Check");
         let severity = item
@@ -294,15 +301,55 @@ fn diagnostics_report_text(report: &JsonValue) -> String {
             .and_then(JsonValue::as_str)
             .unwrap_or("-");
         let hint = item.get("hint").and_then(JsonValue::as_str).unwrap_or("");
+        let code = item
+            .get("code")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("AEG-UNK-000");
+        let category = item
+            .get("category")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("connection");
         lines.push(format!(
-            "[{}] {}: {}",
+            "[{}] [{}] [{}] {}: {}",
             severity,
+            code,
+            category,
             sanitize_sensitive_text(name),
             if ok { "ok" } else { "failed" }
         ));
         lines.push(format!("  detail: {}", sanitize_sensitive_text(detail)));
         if !hint.is_empty() {
             lines.push(format!("  action: {}", sanitize_sensitive_text(hint)));
+        }
+    }
+    lines.push(String::new());
+    lines.push("Recent evidence (redacted):".to_string());
+    let evidence = report
+        .get("evidenceLogs")
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if evidence.is_empty() {
+        lines.push("- No recent evidence logs.".to_string());
+    } else {
+        for entry in evidence {
+            let at = entry.get("at").and_then(JsonValue::as_str).unwrap_or("-");
+            let level = entry
+                .get("level")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("info");
+            let category = entry
+                .get("category")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("runtime");
+            let line = entry.get("line").and_then(JsonValue::as_str).unwrap_or("-");
+            lines.push(format!(
+                "- {} [{}:{}] {}",
+                at,
+                level,
+                category,
+                sanitize_sensitive_text(line)
+            ));
         }
     }
     lines.join("\n") + "\n"
@@ -1029,12 +1076,12 @@ fn protocol_family(protocol: &str) -> &'static str {
 
 fn protocol_concurrency(protocol: &str) -> usize {
     match protocol_family(protocol) {
-        "tuic" => 8,
-        "hysteria" | "wireguard" => 10,
+        "tuic" => 6,
+        "hysteria" | "wireguard" => 8,
         "ss-obfs" => 12,
-        "anytls" => 16,
+        "anytls" => 10,
         "reality" | "vmess" | "trojan" | "ss" => 32,
-        _ => 24,
+        _ => 20,
     }
 }
 
@@ -1437,14 +1484,25 @@ fn update_node_health(
     health
 }
 
-fn speed_test_phases(
+fn speed_test_ordered_targets(
     targets: Vec<SpeedTestTarget>,
     health: &HashMap<String, NodeHealth>,
+    priority_names: &[String],
     now: u64,
-) -> Vec<(Vec<SpeedTestTarget>, usize)> {
+) -> VecDeque<SpeedTestTarget> {
+    let priority = priority_names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.as_str(), index))
+        .collect::<HashMap<_, _>>();
     let mut ordered = targets;
     ordered.sort_by_key(|target| {
         let current = health.get(&target.name);
+        let priority_rank = priority
+            .get(target.name.as_str())
+            .or_else(|| priority.get(target.select_name.as_str()))
+            .copied()
+            .unwrap_or(usize::MAX);
         let cooldown = current
             .map(|item| item.cooldown_until > now)
             .unwrap_or(false);
@@ -1455,29 +1513,45 @@ fn speed_test_phases(
             _ => 1,
         };
         let score = current.map(|item| item.score).unwrap_or(800);
-        (cooldown, family_rank, score)
+        (priority_rank, cooldown, family_rank, score)
     });
-    let first_count = ordered.len().min(24);
-    let first = ordered
-        .iter()
-        .take(first_count)
-        .cloned()
-        .collect::<Vec<_>>();
-    let rest = ordered.into_iter().skip(first_count).collect::<Vec<_>>();
-    let mut phases = Vec::new();
-    if !first.is_empty() {
-        phases.push((first, 24usize));
+    VecDeque::from(ordered)
+}
+
+fn next_schedulable_target(
+    pending: &mut VecDeque<SpeedTestTarget>,
+    active_by_family: &HashMap<&'static str, usize>,
+) -> Option<SpeedTestTarget> {
+    let index = pending.iter().position(|target| {
+        let family = protocol_family(&target.protocol);
+        active_by_family.get(family).copied().unwrap_or(0)
+            < protocol_concurrency(&target.protocol)
+    })?;
+    pending.remove(index)
+}
+
+fn adaptive_speed_concurrency(
+    current: usize,
+    completed: usize,
+    failures: usize,
+    elapsed_ms: u128,
+) -> usize {
+    if completed == 0 {
+        return current;
     }
-    if !rest.is_empty() {
-        let chunk_size = rest
-            .iter()
-            .map(|target| protocol_concurrency(&target.protocol))
-            .max()
-            .unwrap_or(FLCLASH_STYLE_SPEED_BATCH_SIZE)
-            .max(FLCLASH_STYLE_SPEED_BATCH_SIZE);
-        phases.push((rest, chunk_size));
+    let failure_percent = failures.saturating_mul(100) / completed;
+    let average_ms = elapsed_ms / completed as u128;
+    if failure_percent >= 50 {
+        current.saturating_sub(4).max(SPEED_GLOBAL_CONCURRENCY_MIN)
+    } else if failure_percent <= 20 && average_ms <= 1_800 {
+        (current + 4).min(SPEED_GLOBAL_CONCURRENCY_MAX)
+    } else {
+        current
     }
-    phases
+}
+
+fn emit_speed_test_event(app: &AppHandle, payload: JsonValue) {
+    let _ = app.emit(SPEED_TEST_EVENT, payload);
 }
 
 fn speed_recommendation(
@@ -2530,6 +2604,7 @@ fn patch_config_with_settings(
         );
         set_yaml(tun_map, "auto-route", YamlValue::Bool(true));
         set_yaml(tun_map, "auto-detect-interface", YamlValue::Bool(true));
+        set_yaml(tun_map, "device", YamlValue::String("Aegos".to_string()));
         set_yaml(
             tun_map,
             "dns-hijack",
@@ -3962,6 +4037,77 @@ rules:
     }
 
     #[test]
+    fn tun_candidate_has_route_interface_and_dns_takeover_contract() {
+        let source: YamlValue = serde_yaml::from_str(
+            r#"
+proxies:
+  - name: Node A
+    type: ss
+    server: node-a.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: Proxies
+    type: select
+    proxies: [Node A]
+rules: ["MATCH,Proxies"]
+"#,
+        )
+        .expect("source");
+        let mut settings = default_settings();
+        settings.tun_enabled = true;
+        settings.dns_hijack_enabled = true;
+        let patched =
+            patch_config_with_settings(source, &settings, Some("test")).expect("TUN candidate");
+        let tun = patched.get(yaml_key("tun")).expect("tun section");
+        assert_eq!(
+            tun.get(yaml_key("enable")).and_then(YamlValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            tun.get(yaml_key("auto-route")).and_then(YamlValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            tun.get(yaml_key("auto-detect-interface"))
+                .and_then(YamlValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            tun.get(yaml_key("device")).and_then(YamlValue::as_str),
+            Some("Aegos")
+        );
+        assert!(tun
+            .get(yaml_key("dns-hijack"))
+            .and_then(YamlValue::as_sequence)
+            .is_some_and(|items| items.iter().any(|item| item.as_str() == Some("any:53"))));
+        assert!(config_pipeline::runtime_dns_safety_report(&patched).is_ok());
+    }
+
+    #[test]
+    fn windows_takeover_scripts_preserve_external_network_policy() {
+        let enable_proxy = build_proxy_script(true, 7891);
+        assert!(enable_proxy.contains("Remove-ItemProperty -Path $path -Name AutoConfigURL"));
+        assert!(enable_proxy.contains("-Name AutoDetect -Type DWord -Value 0"));
+
+        let disable_proxy = build_proxy_script(false, 7891);
+        assert!(disable_proxy.contains("ProxyEnable -Type DWord -Value 0"));
+        assert!(!disable_proxy.contains("Remove-ItemProperty -Path $path -Name AutoConfigURL"));
+        assert!(!disable_proxy.contains("-Name ProxyOverride"));
+
+        let cleanup = build_kill_switch_script(
+            false,
+            &std::env::temp_dir(),
+            &std::env::current_exe().unwrap_or_default(),
+        );
+        assert!(cleanup.contains(core_runtime::FIREWALL_DISCONNECT_PROTECTION_GROUP));
+        assert!(cleanup.contains(core_runtime::FIREWALL_SPEED_TEST_GROUP));
+        assert!(cleanup.contains("Aegos firewall rules were not fully removed"));
+        assert!(!cleanup.contains("DefaultOutboundAction Allow"));
+    }
+
+    #[test]
     fn subscription_metadata_nodes_are_removed_before_runtime_and_speed() {
         let source: YamlValue = serde_yaml::from_str(
             r#"
@@ -4086,7 +4232,7 @@ rules:
             .filter_map(yaml_mapping_name)
             .collect::<Vec<_>>();
         assert!(group_names.iter().any(|name| *name == "Proxies"));
-        assert!(group_names.iter().any(|name| *name == "鑷姩閫夋嫨"));
+        assert!(group_names.iter().any(|name| *name == "自动选择"));
         let proxies_group = yaml_sequence(&patched, "proxy-groups")
             .expect("groups")
             .iter()
@@ -4102,6 +4248,49 @@ rules:
             .collect::<Vec<_>>();
         assert!(proxies.contains(&"HK 01"));
         assert!(proxies.contains(&"SG 01"));
+    }
+
+    #[test]
+    fn patch_config_migrates_and_deduplicates_legacy_auto_groups() {
+        let source: YamlValue = serde_yaml::from_str(
+            r#"
+proxies:
+  - name: Node A
+    type: ss
+    server: a.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+  - name: Node B
+    type: ss
+    server: b.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: Proxies
+    type: select
+    proxies: [Node A, Node B]
+  - name: 鑷姩閫夋嫨
+    type: url-test
+    proxies: [Node A]
+  - name: 自动选择
+    type: url-test
+    proxies: [Node B]
+rules:
+  - MATCH,Proxies
+"#,
+        )
+        .expect("source");
+        let patched =
+            patch_config_with_settings(source, &default_settings(), Some("test")).expect("patch");
+        let auto_groups = yaml_sequence(&patched, "proxy-groups")
+            .expect("groups")
+            .iter()
+            .filter_map(yaml_mapping_name)
+            .filter(|name| core_runtime::is_aegos_auto_select_group_name(name))
+            .collect::<Vec<_>>();
+        assert_eq!(auto_groups, vec!["自动选择"]);
     }
 
     #[test]
@@ -4531,6 +4720,66 @@ rules:
     }
 
     #[test]
+    fn support_report_keeps_aegos_codes_and_redacts_evidence() {
+        let report = json!({
+            "appVersion": "test",
+            "generatedAt": "now",
+            "status": {
+                "coreReady": true,
+                "trafficTakeover": true,
+                "mode": "rule"
+            },
+            "summary": {
+                "errors": 1,
+                "warnings": 0,
+                "failed": 1,
+                "nextActions": ["重新导入订阅"]
+            },
+            "checks": [{
+                "name": "subscription",
+                "title": "订阅授权失败",
+                "code": "AEG-SUB-003",
+                "category": "subscription",
+                "ok": false,
+                "severity": "error",
+                "detail": "订阅令牌无效。",
+                "hint": "重新生成订阅链接。"
+            }],
+            "evidenceLogs": [{
+                "at": "now",
+                "level": "error",
+                "category": "diagnostic",
+                "line": "https://train.example/api?token=top-secret password: hidden path C:\\Users\\JIE\\secret.txt lan 192.168.1.8"
+            }]
+        });
+
+        let text = diagnostics_report_text(&report);
+        assert!(text.contains("AEG-SUB-003"));
+        assert!(text.contains("[redacted]"));
+        assert!(text.contains("[local-path]"));
+        assert!(text.contains("[private-ip]"));
+        assert!(!text.contains("top-secret"));
+        assert!(!text.contains("password: hidden"));
+        assert!(!text.contains("C:\\Users\\JIE"));
+        assert!(!text.contains("192.168.1.8"));
+    }
+
+    #[test]
+    fn diagnostic_repair_allowlist_rejects_unknown_system_actions() {
+        for action in [
+            "system-proxy",
+            "recommended-ports",
+            "cleanup-firewall",
+            "restart-core",
+            "recover-network",
+        ] {
+            assert!(is_supported_diagnostic_repair_action(action));
+        }
+        assert!(!is_supported_diagnostic_repair_action("powershell"));
+        assert!(!is_supported_diagnostic_repair_action("delete-firewall"));
+    }
+
+    #[test]
     fn node_log_matching_finds_related_failures() {
         let entry = LogEntry {
             at: "test".to_string(),
@@ -4544,7 +4793,7 @@ rules:
     }
 
     #[test]
-    fn speed_test_phases_prioritize_fast_non_tuic_targets() {
+    fn speed_test_queue_prioritizes_visible_targets_without_protocol_barriers() {
         let targets = vec![
             SpeedTestTarget {
                 name: "TUIC".to_string(),
@@ -4561,14 +4810,10 @@ rules:
                 server: "trojan.example.com".to_string(),
             },
         ];
-        let phases = speed_test_phases(targets, &HashMap::new(), 1);
-        assert_eq!(phases.first().unwrap().0[0].name, "Trojan");
-        assert!(phases
-            .first()
-            .unwrap()
-            .0
-            .iter()
-            .any(|item| item.name == "TUIC"));
+        let priority = vec!["TUIC".to_string()];
+        let queue = speed_test_ordered_targets(targets, &HashMap::new(), &priority, 1);
+        assert_eq!(queue.front().unwrap().name, "TUIC");
+        assert!(queue.iter().any(|item| item.name == "Trojan"));
     }
 
     #[test]
@@ -4579,9 +4824,9 @@ rules:
         assert_eq!(protocol_family("anytls"), "anytls");
         assert_eq!(protocol_family("ss-obfs"), "ss-obfs");
         assert_eq!(protocol_concurrency("vless-reality"), 32);
-        assert_eq!(protocol_concurrency("hysteria2"), 10);
-        assert_eq!(protocol_concurrency("anytls"), 16);
-        assert_eq!(protocol_concurrency("tuic"), 8);
+        assert_eq!(protocol_concurrency("hysteria2"), 8);
+        assert_eq!(protocol_concurrency("anytls"), 10);
+        assert_eq!(protocol_concurrency("tuic"), 6);
         assert_eq!(protocol_concurrency("ss-obfs"), 12);
         assert_eq!(protocol_primary_timeout_ms("vless-reality"), 5000);
         assert_eq!(protocol_primary_timeout_ms("hysteria2"), 5000);
@@ -4645,16 +4890,53 @@ rules:
                 server: "ss.example.com".to_string(),
             },
         ];
-        let phases = speed_test_phases(targets, &HashMap::new(), 1);
-        assert_eq!(phases.first().unwrap().0[0].name, "Reality");
-        let phase_names = phases
+        let queue = speed_test_ordered_targets(targets, &HashMap::new(), &[], 1);
+        assert_eq!(queue.front().unwrap().name, "Reality");
+        let phase_names = queue
             .iter()
-            .flat_map(|phase| phase.0.iter())
             .map(|item| item.name.as_str())
             .collect::<Vec<_>>();
         assert!(phase_names.contains(&"Hysteria2"));
         assert!(phase_names.contains(&"TUIC"));
         assert!(phase_names.contains(&"SS Obfs"));
+    }
+
+    #[test]
+    fn speed_scheduler_adapts_without_exceeding_safe_bounds() {
+        assert_eq!(adaptive_speed_concurrency(24, 8, 0, 4_000), 28);
+        assert_eq!(adaptive_speed_concurrency(24, 8, 5, 20_000), 20);
+        assert_eq!(
+            adaptive_speed_concurrency(SPEED_GLOBAL_CONCURRENCY_MAX, 8, 0, 2_000),
+            SPEED_GLOBAL_CONCURRENCY_MAX
+        );
+        assert_eq!(
+            adaptive_speed_concurrency(SPEED_GLOBAL_CONCURRENCY_MIN, 8, 8, 40_000),
+            SPEED_GLOBAL_CONCURRENCY_MIN
+        );
+    }
+
+    #[test]
+    fn saturated_quic_family_does_not_block_ready_stream_targets() {
+        let mut pending = VecDeque::from(vec![
+            SpeedTestTarget {
+                name: "TUIC next".to_string(),
+                select_name: "TUIC next".to_string(),
+                group_name: "Proxies".to_string(),
+                protocol: "tuic".to_string(),
+                server: "tuic.example.com".to_string(),
+            },
+            SpeedTestTarget {
+                name: "Trojan next".to_string(),
+                select_name: "Trojan next".to_string(),
+                group_name: "Proxies".to_string(),
+                protocol: "trojan".to_string(),
+                server: "trojan.example.com".to_string(),
+            },
+        ]);
+        let active = HashMap::from([("tuic", protocol_concurrency("tuic"))]);
+        let next = next_schedulable_target(&mut pending, &active).expect("stream target");
+        assert_eq!(next.name, "Trojan next");
+        assert_eq!(pending.front().unwrap().name, "TUIC next");
     }
 
     #[test]
@@ -5104,6 +5386,8 @@ $item = Get-ItemProperty -Path $path
   proxy_enable = [bool]$item.ProxyEnable
   proxy_server = [string]$item.ProxyServer
   proxy_override = [string]$item.ProxyOverride
+  auto_config_url = [string]$item.AutoConfigURL
+  auto_detect = [bool]$item.AutoDetect
   captured_at = (Get-Date).ToString('o')
 } | ConvertTo-Json -Compress
 "#,
@@ -5119,12 +5403,20 @@ fn write_windows_proxy_snapshot(
     let enable = plan.proxy_enable_value;
     let server = plan.proxy_server_literal.as_deref().unwrap_or("''");
     let override_value = plan.proxy_override_literal;
+    let auto_config_url = plan.auto_config_url_literal;
+    let auto_detect = plan.auto_detect_value;
     run_powershell(&format!(
         r#"
 $path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
 Set-ItemProperty -Path $path -Name ProxyEnable -Type DWord -Value {enable}
 Set-ItemProperty -Path $path -Name ProxyServer -Type String -Value {server}
 Set-ItemProperty -Path $path -Name ProxyOverride -Type String -Value {override_value}
+if ({auto_config_url} -eq '') {{
+  Remove-ItemProperty -Path $path -Name AutoConfigURL -ErrorAction SilentlyContinue
+}} else {{
+  Set-ItemProperty -Path $path -Name AutoConfigURL -Type String -Value {auto_config_url}
+}}
+Set-ItemProperty -Path $path -Name AutoDetect -Type DWord -Value {auto_detect}
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -5150,12 +5442,20 @@ fn build_proxy_script(enable: bool, mixed_port: u16) -> String {
         String::new()
     };
     let proxy_override = plan.proxy_override_literal;
+    let auto_detect = plan.auto_detect_value;
+    let takeover_auxiliary = if enable {
+        format!(
+            "Set-ItemProperty -Path $path -Name ProxyOverride -Type String -Value {proxy_override}\nRemove-ItemProperty -Path $path -Name AutoConfigURL -ErrorAction SilentlyContinue\nSet-ItemProperty -Path $path -Name AutoDetect -Type DWord -Value {auto_detect}"
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"
 $path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
 Set-ItemProperty -Path $path -Name ProxyEnable -Type DWord -Value {flag}
 {set_server}
-Set-ItemProperty -Path $path -Name ProxyOverride -Type String -Value {proxy_override}
+{takeover_auxiliary}
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -5177,6 +5477,9 @@ fn build_kill_switch_script(enable: bool, user_data: &Path, core_path: &Path) ->
     let exe = std::env::current_exe().unwrap_or_default();
     let programs = core_runtime::firewall_program_paths([exe, core_path.to_path_buf()]);
     let program_array = core_runtime::powershell_string_array_literal(&programs);
+    let speed_plan = core_runtime::CoreFirewallPolicyPlan::speed_test();
+    let speed_group = speed_plan.group_name;
+    let speed_marker = speed_plan.state_path(user_data);
     if enable {
         format!(
             r#"
@@ -5230,8 +5533,6 @@ try {{
         Set-NetFirewallProfile -Profile $profile.Name -DefaultOutboundAction $profile.DefaultOutboundAction
       }}
       Remove-Item -LiteralPath $snapshotPath -Force
-    }} else {{
-      Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Allow
     }}
     Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
   }} catch {{}}
@@ -5252,6 +5553,9 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $snapshotPath = '{}'
 $group = '{}'
 $rulePrefix = "$group Allow"
+$speedGroup = '{}'
+$speedRulePrefix = "$speedGroup Allow"
+$speedMarkerPath = '{}'
 function Invoke-AegosNetsh {{
   $output = & netsh @args 2>&1
   if ($LASTEXITCODE -ne 0) {{
@@ -5267,15 +5571,22 @@ if (Test-Path -LiteralPath $snapshotPath) {{
     Set-NetFirewallProfile -Profile $profile.Name -DefaultOutboundAction $profile.DefaultOutboundAction
   }}
   Remove-Item -LiteralPath $snapshotPath -Force
-}} else {{
-  Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Allow
 }}
 Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-$rules = @(Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue)
-if ($rules.Count -gt 0) {{ throw 'Disconnect protection rules were not fully removed' }}
+Get-NetFirewallRule -DisplayName "$speedRulePrefix *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+if (Test-Path -LiteralPath $speedMarkerPath) {{ Remove-Item -LiteralPath $speedMarkerPath -Force }}
+$rules = @(
+  Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue
+  Get-NetFirewallRule -DisplayName "$speedRulePrefix *" -ErrorAction SilentlyContinue
+)
+if ($rules.Count -gt 0) {{ throw 'Aegos firewall rules were not fully removed' }}
+if (Test-Path -LiteralPath $snapshotPath) {{ throw 'Disconnect protection profile snapshot was not removed' }}
+if (Test-Path -LiteralPath $speedMarkerPath) {{ throw 'Speed test firewall marker was not removed' }}
 "#,
             core_runtime::powershell_single_quote_escape(snapshot.to_string_lossy()),
-            core_runtime::powershell_single_quote_escape(&group)
+            core_runtime::powershell_single_quote_escape(&group),
+            core_runtime::powershell_single_quote_escape(&speed_group),
+            core_runtime::powershell_single_quote_escape(speed_marker.to_string_lossy())
         )
     }
 }
@@ -5365,6 +5676,253 @@ if (Test-Path -LiteralPath $markerPath) {{ throw 'Speed test firewall marker was
     }
 }
 
+fn takeover_failure_message(
+    transaction: system_takeover::SystemTakeoverTransaction,
+    reason: impl Into<String>,
+    rollback: Result<(), String>,
+) -> String {
+    let reason = reason.into();
+    let (rolled_back, message) = match rollback {
+        Ok(()) => (
+            true,
+            format!("{reason}; previous Windows network state was restored"),
+        ),
+        Err(err) => (
+            false,
+            format!("{reason}; automatic restore also failed: {err}"),
+        ),
+    };
+    match transaction.fail(&message, rolled_back) {
+        Ok(_) => message,
+        Err(err) => format!("{message}; takeover journal update failed: {err}"),
+    }
+}
+
+fn windows_tun_evidence() -> Result<JsonValue, String> {
+    let output = run_powershell(
+        r#"
+$pattern = '(?i)^aegos$'
+$adapters = @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -match $pattern } |
+  Select-Object Name,InterfaceDescription,Status,ifIndex)
+$routes = @()
+foreach ($adapter in $adapters) {
+  $routes += @(Get-NetRoute -InterfaceIndex $adapter.ifIndex -ErrorAction SilentlyContinue |
+    Where-Object { $_.DestinationPrefix -in @('0.0.0.0/0','0.0.0.0/1','128.0.0.0/1','::/0','::/1','8000::/1') } |
+    Select-Object DestinationPrefix,InterfaceIndex,RouteMetric)
+}
+[pscustomobject]@{
+  adapter_count = $adapters.Count
+  active_adapter_count = @($adapters | Where-Object { $_.Status -eq 'Up' }).Count
+  route_count = $routes.Count
+  adapters = $adapters
+  routes = $routes
+} | ConvertTo-Json -Depth 5 -Compress
+"#,
+    )?;
+    serde_json::from_str(&output).map_err(|err| format!("TUN evidence parse failed: {err}"))
+}
+
+fn stop_stale_managed_core(core_path: &Path) -> Result<(), String> {
+    let core_literal = core_runtime::powershell_single_quoted_literal(
+        core_runtime::normalize_windows_program_path_text(&core_path.to_string_lossy()),
+    );
+    run_powershell(&format!(
+        r#"
+$target = {core_literal}
+$processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+  Where-Object {{ $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq [IO.Path]::GetFullPath($target)) }})
+foreach ($process in $processes) {{ Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop }}
+Start-Sleep -Milliseconds 250
+$remaining = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+  Where-Object {{ $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq [IO.Path]::GetFullPath($target)) }})
+if ($remaining.Count -gt 0) {{ throw 'The interrupted Aegos network engine is still running' }}
+"#
+    ))?;
+    Ok(())
+}
+
+fn windows_network_conflict_report(
+    mixed_port: u16,
+    controller_port: u16,
+    core_path: &Path,
+    tun_enabled: bool,
+) -> JsonValue {
+    let core_literal = core_runtime::powershell_single_quoted_literal(
+        core_runtime::normalize_windows_program_path_text(&core_path.to_string_lossy()),
+    );
+    let script = format!(
+        r#"
+$selfPid = {self_pid}
+$corePath = {core_literal}
+$ports = @({mixed_port},{controller_port},7890,7891) | Select-Object -Unique
+$proxyPattern = '(?i)^(flclash|clash|clash-verge|clash-verge-service|mihomo|sing-box|v2rayn|nekoray|hiddify|wireguard|openvpn|tailscale|zerotier)'
+$adapterPattern = '(?i)(flclash|clash|meta|vpn|tun|tap|wintun|wireguard|tailscale|zerotier|sing-box)'
+$processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+  Where-Object {{
+    $_.ProcessId -ne $selfPid -and $_.Name -match $proxyPattern -and
+    (-not $_.ExecutablePath -or -not $corePath -or ([IO.Path]::GetFullPath($_.ExecutablePath) -ine [IO.Path]::GetFullPath($corePath)))
+  }} | Select-Object ProcessId,Name,ExecutablePath)
+$listeners = @()
+foreach ($port in $ports) {{
+  foreach ($listener in @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)) {{
+    if ($listener.OwningProcess -eq $selfPid) {{ continue }}
+    $owner = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
+    if ($owner -and $owner.ExecutablePath -and $corePath -and ([IO.Path]::GetFullPath($owner.ExecutablePath) -ieq [IO.Path]::GetFullPath($corePath))) {{ continue }}
+    $listeners += [pscustomobject]@{{ port=$port; pid=$listener.OwningProcess; process=if($owner){{$owner.Name}}else{{'unknown'}}; path=if($owner){{$owner.ExecutablePath}}else{{''}} }}
+  }}
+}}
+$adapters = @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue |
+  Where-Object {{ $_.Status -eq 'Up' -and "$($_.Name) $($_.InterfaceDescription)" -match $adapterPattern }} |
+  Select-Object Name,InterfaceDescription,ifIndex,Status)
+$routes = @()
+foreach ($adapter in $adapters) {{
+  foreach ($route in @(Get-NetRoute -InterfaceIndex $adapter.ifIndex -ErrorAction SilentlyContinue |
+    Where-Object {{ $_.DestinationPrefix -in @('0.0.0.0/0','0.0.0.0/1','128.0.0.0/1','::/0','::/1','8000::/1') }})) {{
+    $routes += [pscustomobject]@{{ adapter=$adapter.Name; destination=$route.DestinationPrefix; metric=$route.RouteMetric }}
+  }}
+}}
+[pscustomobject]@{{ processes=$processes; listeners=$listeners; adapters=$adapters; routes=$routes }} |
+  ConvertTo-Json -Depth 5 -Compress
+"#,
+        self_pid = std::process::id(),
+    );
+    let raw = match run_powershell(&script) {
+        Ok(output) => match serde_json::from_str::<JsonValue>(&output) {
+            Ok(value) => value,
+            Err(err) => {
+                return json!({
+                    "ok": false,
+                    "level": "warning",
+                    "count": 0,
+                    "summary": format!("Network conflict scan output could not be parsed: {err}"),
+                    "action": "Use Diagnostics to retry the read-only conflict scan.",
+                    "findings": []
+                })
+            }
+        },
+        Err(err) => {
+            return json!({
+                "ok": false,
+                "level": "warning",
+                "count": 0,
+                "summary": format!("Network conflict scan could not run: {err}"),
+                "action": "Aegos will not change other apps. Close other proxy/VPN apps manually if connection or TUN fails.",
+                "findings": []
+            })
+        }
+    };
+    let mut findings = Vec::new();
+    for process in raw
+        .get("processes")
+        .and_then(JsonValue::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = process
+            .get("Name")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("proxy/VPN app");
+        let pid = process
+            .get("ProcessId")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(0);
+        findings.push(json!({
+            "kind": "process",
+            "title": format!("{name} is running"),
+            "detail": format!("Another proxy or VPN process is active (PID {pid})."),
+            "action": "Close it before enabling TUN if routes, DNS, or speed tests behave inconsistently."
+        }));
+    }
+    for listener in raw
+        .get("listeners")
+        .and_then(JsonValue::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let port = listener
+            .get("port")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(0);
+        let process = listener
+            .get("process")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("unknown process");
+        findings.push(json!({
+            "kind": "port",
+            "title": format!("Port {port} is occupied"),
+            "detail": format!("{process} is listening on a port used or reserved by Aegos."),
+            "action": "Close the owning app or choose a different Aegos proxy/controller port."
+        }));
+    }
+    for adapter in raw
+        .get("adapters")
+        .and_then(JsonValue::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = adapter
+            .get("Name")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("virtual adapter");
+        let aegos_tun = tun_enabled && name.eq_ignore_ascii_case("Aegos");
+        if !aegos_tun {
+            findings.push(json!({
+                "kind": "adapter",
+                "title": format!("Virtual network adapter '{name}' is active"),
+                "detail": "An active VPN/TUN/TAP adapter can compete for default routes or DNS.",
+                "action": "Disable the other VPN/TUN adapter temporarily if Aegos TUN validation fails."
+            }));
+        }
+    }
+    let count = findings.len();
+    json!({
+        "ok": count == 0,
+        "level": if count == 0 { "ok" } else { "warning" },
+        "count": count,
+        "summary": if count == 0 {
+            "No competing proxy process, occupied Aegos port, or external active VPN adapter was detected.".to_string()
+        } else {
+            format!("Detected {count} possible proxy/VPN conflict(s); Aegos did not change them.")
+        },
+        "action": if count == 0 {
+            "No action needed."
+        } else {
+            "Review the findings and close only the conflicting app or adapter before retrying."
+        },
+        "findings": findings,
+        "routes": raw.get("routes").cloned().unwrap_or_else(|| json!([]))
+    })
+}
+
+fn direct_connectivity_probe() -> Result<String, String> {
+    let client = Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_millis(1800))
+        .timeout(Duration::from_millis(3200))
+        .user_agent("Aegos/3 tun-verification")
+        .build()
+        .map_err(|err| format!("TUN connectivity client failed: {err}"))?;
+    let endpoints = [
+        "https://www.msftconnecttest.com/connecttest.txt",
+        "https://cp.cloudflare.com/generate_204",
+    ];
+    let mut last_error = String::new();
+    for endpoint in endpoints {
+        match client
+            .get(endpoint)
+            .send()
+            .and_then(|res| res.error_for_status())
+        {
+            Ok(_) => return Ok(endpoint.to_string()),
+            Err(err) => last_error = err.to_string(),
+        }
+    }
+    Err(format!(
+        "TUN direct connectivity verification failed: {last_error}"
+    ))
+}
+
 impl CoreManager {
     fn new(app: &AppHandle) -> Result<Self, String> {
         let app_data = app.path().app_data_dir().unwrap_or_else(|_| {
@@ -5384,6 +5942,8 @@ impl CoreManager {
         let proxy_snapshot_path = app_data.join("system-proxy-snapshot.json");
         ensure_dir(&home_dir)?;
         ensure_dir(&profile_dir)?;
+        let recovered_deployments =
+            config_deployment::recover_interrupted_deployments(&app_data, &profile_dir);
         let settings = load_settings(&settings_path);
         let mut manager = Self {
             app_data,
@@ -5413,10 +5973,132 @@ impl CoreManager {
         } else {
             String::new()
         };
+        manager.recover_interrupted_system_takeover();
         manager.ensure_direct_profile()?;
         manager.repair_profile_metadata();
         manager.save_settings()?;
+        for operation in recovered_deployments {
+            manager.add_log(
+                format!(
+                    "A previous {operation} deployment did not finish runtime verification and its previous configuration was restored."
+                ),
+                "warn",
+            );
+        }
         Ok(manager)
+    }
+
+    fn recover_takeover_component(&mut self, component: &str) -> Result<String, String> {
+        let result = match component {
+            "system-proxy" => {
+                if let Some(snapshot) = self.load_system_proxy_snapshot() {
+                    self.restore_system_proxy_snapshot_verified(&snapshot)?;
+                    self.clear_system_proxy_snapshot();
+                } else {
+                    run_powershell(&build_proxy_script(false, self.settings.mixed_port))?;
+                    self.verify_system_proxy_points_to_aegos(false)?;
+                }
+                self.settings.system_proxy = false;
+                self.traffic_takeover = false;
+                "Interrupted system proxy takeover was restored and verified.".to_string()
+            }
+            "firewall" => {
+                run_powershell(&build_kill_switch_script(
+                    false,
+                    &self.app_data,
+                    &self.core_path,
+                ))?;
+                self.settings.kill_switch_enabled = false;
+                "Interrupted firewall takeover was restored; Aegos rules and state files were removed."
+                    .to_string()
+            }
+            "tun" => {
+                stop_stale_managed_core(&self.core_path)?;
+                let evidence = windows_tun_evidence()?;
+                let active = evidence
+                    .get("active_adapter_count")
+                    .and_then(JsonValue::as_u64)
+                    .unwrap_or(0);
+                let routes = evidence
+                    .get("route_count")
+                    .and_then(JsonValue::as_u64)
+                    .unwrap_or(0);
+                if active > 0 && routes > 0 {
+                    return Err("A TUN adapter and takeover routes remain after stopping the interrupted Aegos engine".to_string());
+                }
+                self.settings.tun_enabled = false;
+                self.traffic_takeover = false;
+                "Interrupted TUN engine was stopped and no active Aegos TUN takeover routes remain."
+                    .to_string()
+            }
+            _ => {
+                return Err(format!(
+                    "Unknown interrupted system takeover component '{component}' requires manual review"
+                ))
+            }
+        };
+        system_takeover::set_component_active(&self.app_data, component, false)?;
+        self.save_settings()?;
+        Ok(result)
+    }
+
+    fn recover_interrupted_system_takeover(&mut self) {
+        let pending = system_takeover::interrupted_transactions(&self.app_data);
+        for (path, journal) in pending {
+            let result = self.recover_takeover_component(&journal.component);
+            let (ok, detail) = match result {
+                Ok(detail) => (true, detail),
+                Err(err) => (false, format!("Startup network recovery failed: {err}")),
+            };
+            if ok {
+                let _ = self.save_settings();
+            }
+            if let Err(err) = system_takeover::mark_recovered(&path, journal, &detail, ok) {
+                self.add_log(
+                    format!("{detail}; recovery journal update failed: {err}"),
+                    "error",
+                );
+            } else {
+                self.add_log(&detail, if ok { "warn" } else { "error" });
+            }
+        }
+        let active = system_takeover::active_takeover_state(&self.app_data);
+        for (component, enabled) in [
+            ("system-proxy", active.system_proxy),
+            ("firewall", active.firewall),
+            ("tun", active.tun),
+        ] {
+            if !enabled {
+                continue;
+            }
+            let mut transaction = match system_takeover::SystemTakeoverTransaction::begin(
+                &self.app_data,
+                "Recover unclean Aegos shutdown",
+                component,
+                false,
+            ) {
+                Ok(transaction) => transaction,
+                Err(err) => {
+                    self.add_log(format!("Startup recovery journal failed: {err}"), "error");
+                    continue;
+                }
+            };
+            let result = self.recover_takeover_component(component);
+            match result {
+                Ok(detail) => {
+                    let _ = transaction.step("startup-recovery", "restore", "ok", &detail);
+                    let _ = transaction
+                        .complete("Unclean shutdown takeover state was restored and verified.");
+                    self.add_log(detail, "warn");
+                }
+                Err(err) => {
+                    let detail =
+                        format!("Startup recovery after an unclean shutdown failed: {err}");
+                    let _ = transaction.fail(&detail, false);
+                    self.add_log(detail, "error");
+                }
+            }
+        }
     }
 
     fn add_log(&self, line: impl AsRef<str>, level: &str) {
@@ -5439,6 +6121,22 @@ impl CoreManager {
 
     fn save_settings(&self) -> Result<(), String> {
         save_json(&self.settings_path, &self.app_data, &self.settings)
+    }
+
+    fn stage_settings_deployment(
+        &self,
+        operation: &str,
+    ) -> Result<config_deployment::ConfigDeploymentTransaction, String> {
+        let candidate = serde_json::to_string_pretty(&self.settings)
+            .map_err(|err| format!("{operation} settings serialization failed: {err}"))?;
+        config_deployment::ConfigDeploymentTransaction::stage(
+            &self.app_data,
+            &self.app_data,
+            &self.settings_path,
+            operation,
+            "settings",
+            &candidate,
+        )
     }
 
     fn save_system_proxy_snapshot(
@@ -5497,6 +6195,69 @@ impl CoreManager {
     fn verify_system_proxy_points_to_aegos(&self, expected: bool) -> Result<(), String> {
         let current = read_windows_proxy_snapshot()?;
         core_runtime::verify_system_proxy_snapshot(&current, expected, self.settings.mixed_port)
+    }
+
+    fn restore_system_proxy_snapshot_verified(
+        &self,
+        snapshot: &core_runtime::SystemProxySnapshot,
+    ) -> Result<(), String> {
+        write_windows_proxy_snapshot(snapshot)?;
+        let current = read_windows_proxy_snapshot()?;
+        core_runtime::verify_system_proxy_restore(&current, snapshot)
+    }
+
+    fn verify_tun_state(
+        &self,
+        expected_enabled: bool,
+        require_runtime: bool,
+    ) -> Result<JsonValue, String> {
+        let profile = self
+            .active_profile()
+            .ok_or_else(|| "TUN verification failed: no active profile".to_string())?;
+        let rendered = self.render_runtime_profile(&profile)?;
+        let candidate = profile_compiler::verify_tun_candidate(&rendered.yaml, expected_enabled)?;
+        if !require_runtime {
+            return Ok(json!({
+                "candidate": candidate,
+                "runtimeChecked": false,
+                "detail": "TUN candidate configuration passed; Windows takeover is deferred until connection."
+            }));
+        }
+        if self.process.is_none() || !self.core_controller().runtime_reuse_ready() {
+            return Err(
+                "TUN runtime verification failed: network engine/controller is not ready"
+                    .to_string(),
+            );
+        }
+        let evidence = windows_tun_evidence()?;
+        let active_adapters = evidence
+            .get("active_adapter_count")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(0);
+        let routes = evidence
+            .get("route_count")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(0);
+        if expected_enabled && (active_adapters == 0 || routes == 0) {
+            return Err(format!(
+                "TUN runtime verification failed: Windows reported {active_adapters} active Aegos TUN adapter(s) and {routes} takeover route(s)"
+            ));
+        }
+        if !expected_enabled && active_adapters > 0 && routes > 0 {
+            return Err("TUN disable verification failed: an active Aegos TUN adapter still owns takeover routes".to_string());
+        }
+        let connectivity = if expected_enabled {
+            Some(direct_connectivity_probe()?)
+        } else {
+            None
+        };
+        Ok(json!({
+            "candidate": candidate,
+            "runtimeChecked": true,
+            "controllerReady": true,
+            "windows": evidence,
+            "connectivityEndpoint": connectivity
+        }))
     }
 
     fn ensure_direct_profile(&mut self) -> Result<(), String> {
@@ -5750,12 +6511,16 @@ impl CoreManager {
             config_pipeline::preflight_profile_source(source.clone(), &profile, &settings)
                 .map_err(|err| format!("Routing preflight failed: {err}"))?;
         let runtime_preflight = runtime.report;
-        let next_raw = serde_yaml::to_string(&source)
-            .map_err(|err| format!("鍒嗘祦瑙勫垯搴忓垪鍖栧け璐ワ細{err}"))?;
+        let deployment =
+            self.deploy_profile_config(&profile, &source, &previous_raw, "Routing drafts apply")?;
         let (backup_path, backup_meta_path) = self.routing_apply_backup_paths();
         atomic_write_text_confined(&backup_path, &self.app_data, &previous_raw)?;
         let previous_digest = sha256_text(&previous_raw);
-        let next_digest = sha256_text(&next_raw);
+        let next_digest = deployment
+            .get("digest")
+            .and_then(JsonValue::as_str)
+            .unwrap_or_default()
+            .to_string();
         let metadata = json!({
             "profileId": profile.id,
             "profileName": profile.name,
@@ -5770,53 +6535,6 @@ impl CoreManager {
             &self.app_data,
             &serde_json::to_string_pretty(&metadata).map_err(|err| err.to_string())?,
         )?;
-        atomic_write_text_confined(&profile_path, &self.profile_dir, &next_raw)?;
-        let was_running = self.process.is_some();
-        let reload_result = if was_running {
-            self.hot_reload_profile(&profile)
-        } else {
-            Ok(json!({ "ok": true, "skipped": true, "reason": "core is not running" }))
-        };
-        let reload_report = match reload_result {
-            Ok(value) => value,
-            Err(err) => {
-                let restore_file =
-                    atomic_write_text_confined(&profile_path, &self.profile_dir, &previous_raw);
-                let restore_runtime = if was_running && restore_file.is_ok() {
-                    self.hot_reload_profile(&profile).map(|_| ())
-                } else {
-                    restore_file.map(|_| ())
-                };
-                return Err(match restore_runtime {
-                    Ok(_) => format!("Routing hot reload failed and config was rolled back: {err}"),
-                    Err(rollback_err) => {
-                        format!(
-                            "Routing hot reload failed: {err}; rollback also failed: {rollback_err}"
-                        )
-                    }
-                });
-            }
-        };
-        let controller_verified = if was_running {
-            self.core_controller().runtime_reuse_ready()
-        } else {
-            true
-        };
-        if !controller_verified {
-            let restore_file =
-                atomic_write_text_confined(&profile_path, &self.profile_dir, &previous_raw);
-            let restore_runtime = if restore_file.is_ok() {
-                self.hot_reload_profile(&profile).map(|_| ())
-            } else {
-                restore_file.map(|_| ())
-            };
-            return Err(match restore_runtime {
-                Ok(_) => "Routing verification failed after hot reload; config was rolled back: controller did not confirm runtime readiness".to_string(),
-                Err(rollback_err) => format!(
-                    "Routing verification failed after hot reload; rollback also failed: {rollback_err}"
-                ),
-            });
-        }
         self.add_log(
             format!(
                 "Routing drafts applied: {} rule(s), profile {}, digest {}",
@@ -5834,14 +6552,8 @@ impl CoreManager {
             "appliedCount": applied_details.len(),
             "rules": applied_details,
             "runtimePreflight": runtime_preflight,
-            "deploymentValidation": {
-                "runtimePreflightOk": true,
-                "hotReloadRan": was_running,
-                "hotReload": reload_report,
-                "controllerReady": controller_verified,
-                "rollbackReady": true,
-                "verifiedAt": now_iso()
-            },
+            "deploymentValidation": deployment.get("deploymentValidation").cloned().unwrap_or_else(|| json!({})),
+            "deploymentReport": deployment.get("deploymentReport").cloned().unwrap_or_else(|| json!({})),
             "rollbackAvailable": true,
             "nextStep": "Applied. You can undo the latest routing apply from the routing page."
         }))
@@ -5876,16 +6588,11 @@ impl CoreManager {
             .map_err(|err| format!("Routing undo failed: backup YAML parse failed: {err}"))?;
         let settings = self.settings.clone();
         let runtime =
-            config_pipeline::preflight_profile_source(restored_config, &profile, &settings)
+            config_pipeline::preflight_profile_source(restored_config.clone(), &profile, &settings)
                 .map_err(|err| format!("Routing undo preflight failed: {err}"))?;
         let runtime_preflight = runtime.report;
-        let profile_path = PathBuf::from(&profile.path);
-        atomic_write_text_confined(&profile_path, &self.profile_dir, &backup_raw)?;
-        if self.process.is_some() {
-            self.hot_reload_profile(&profile).map_err(|err| {
-                format!("Routing undo restored the file, but hot reload failed: {err}")
-            })?;
-        }
+        let deployment =
+            self.deploy_profile_config(&profile, &restored_config, "", "Routing undo")?;
         let _ = remove_file_confined(&backup_path, &self.app_data);
         let _ = remove_file_confined(&backup_meta_path, &self.app_data);
         self.add_log(
@@ -5901,8 +6608,100 @@ impl CoreManager {
             "profileId": profile.id,
             "profileName": profile.name,
             "runtimePreflight": runtime_preflight,
+            "deploymentValidation": deployment.get("deploymentValidation").cloned().unwrap_or_else(|| json!({})),
+            "deploymentReport": deployment.get("deploymentReport").cloned().unwrap_or_else(|| json!({})),
             "rollbackAvailable": false,
             "nextStep": "Latest routing apply has been undone."
+        }))
+    }
+
+    fn deploy_profile_config(
+        &mut self,
+        profile: &Profile,
+        source: &YamlValue,
+        _previous_raw: &str,
+        label: &str,
+    ) -> Result<JsonValue, String> {
+        let settings = self.settings.clone();
+        let runtime = config_pipeline::preflight_profile_source(source.clone(), profile, &settings)
+            .map_err(|err| format!("{label} preflight failed: {err}"))?;
+        let runtime_preflight = runtime.report;
+        let next_raw = serde_yaml::to_string(source)
+            .map_err(|err| format!("{label} YAML serialization failed: {err}"))?;
+        let profile_path = PathBuf::from(&profile.path);
+        let mut deployment = config_deployment::ConfigDeploymentTransaction::stage(
+            &self.app_data,
+            &self.profile_dir,
+            &profile_path,
+            label,
+            &profile.id,
+            &next_raw,
+        )?;
+        deployment.promote()?;
+        let was_running = self.process.is_some();
+        let reload = if was_running {
+            self.hot_reload_profile(profile)
+        } else {
+            Ok(json!({ "ok": true, "skipped": true, "reason": "core is not running" }))
+        };
+        let controller_ready = !was_running || self.core_controller().runtime_reuse_ready();
+        let runtime_identity_ok = !was_running
+            || (self.runtime_profile_id.as_deref() == Some(profile.id.as_str())
+                && self.runtime_config_digest.is_some());
+        let reload_report = match reload {
+            Ok(value) if controller_ready && runtime_identity_ok => value,
+            Ok(_) => {
+                let reason = "runtime identity or controller readiness verification failed";
+                let rollback_file = deployment.rollback(reason);
+                let rollback_runtime = if rollback_file.is_ok() && was_running {
+                    self.hot_reload_profile(profile).map(|_| ())
+                } else {
+                    rollback_file.map(|_| ())
+                };
+                return Err(match rollback_runtime {
+                    Ok(_) => format!("{label} verification failed and configuration was rolled back: {reason}"),
+                    Err(rollback_err) => format!("{label} verification failed: {reason}; rollback also failed: {rollback_err}"),
+                });
+            }
+            Err(err) => {
+                let rollback_file = deployment.rollback(format!("runtime apply failed: {err}"));
+                let rollback_runtime = if rollback_file.is_ok() && was_running {
+                    self.hot_reload_profile(profile).map(|_| ())
+                } else {
+                    rollback_file.map(|_| ())
+                };
+                return Err(match rollback_runtime {
+                    Ok(_) => format!(
+                        "{label} hot reload failed and configuration was rolled back: {err}"
+                    ),
+                    Err(rollback_err) => format!(
+                        "{label} hot reload failed: {err}; rollback also failed: {rollback_err}"
+                    ),
+                });
+            }
+        };
+        let deployment_report = deployment.complete(if was_running {
+            "Candidate promoted, Mihomo reloaded, controller and runtime identity verified."
+        } else {
+            "Candidate promoted and validated; runtime verification will occur when the core starts."
+        })?;
+        Ok(json!({
+            "ok": true,
+            "profileId": profile.id,
+            "profileName": profile.name,
+            "runtimePreflight": runtime_preflight,
+            "digest": sha256_text(&next_raw)
+            ,"deploymentReport": deployment_report,
+            "deploymentValidation": {
+                "candidateValidated": true,
+                "atomicPromotion": true,
+                "hotReloadRan": was_running,
+                "controllerReady": controller_ready,
+                "runtimeIdentity": runtime_identity_ok,
+                "rollbackReady": true,
+                "hotReload": reload_report,
+                "verifiedAt": now_iso()
+            }
         }))
     }
 
@@ -5913,39 +6712,7 @@ impl CoreManager {
         previous_raw: &str,
         label: &str,
     ) -> Result<JsonValue, String> {
-        let settings = self.settings.clone();
-        let runtime = config_pipeline::preflight_profile_source(source.clone(), profile, &settings)
-            .map_err(|err| format!("{label} preflight failed: {err}"))?;
-        let runtime_preflight = runtime.report;
-        let next_raw = serde_yaml::to_string(source)
-            .map_err(|err| format!("{label} YAML serialization failed: {err}"))?;
-        let profile_path = PathBuf::from(&profile.path);
-        atomic_write_text_confined(&profile_path, &self.profile_dir, &next_raw)?;
-        let was_running = self.process.is_some();
-        if was_running {
-            if let Err(err) = self.hot_reload_profile(profile) {
-                let restore_file =
-                    atomic_write_text_confined(&profile_path, &self.profile_dir, previous_raw);
-                let restore_runtime = if restore_file.is_ok() {
-                    self.hot_reload_profile(profile).map(|_| ())
-                } else {
-                    restore_file.map(|_| ())
-                };
-                return Err(match restore_runtime {
-                    Ok(_) => format!("{label} hot reload failed and config was rolled back: {err}"),
-                    Err(rollback_err) => {
-                        format!("{label} hot reload failed: {err}; rollback also failed: {rollback_err}")
-                    }
-                });
-            }
-        }
-        Ok(json!({
-            "ok": true,
-            "profileId": profile.id,
-            "profileName": profile.name,
-            "runtimePreflight": runtime_preflight,
-            "digest": sha256_text(&next_raw)
-        }))
+        self.deploy_profile_config(profile, source, previous_raw, label)
     }
 
     fn active_editable_profile_and_config(
@@ -6695,7 +7462,59 @@ impl CoreManager {
     }
 
     fn start(&mut self) -> Result<JsonValue, String> {
-        self.start_with_takeover(true)
+        if !self.settings.tun_enabled {
+            return self.start_with_takeover(true);
+        }
+        let mut transaction = system_takeover::SystemTakeoverTransaction::begin(
+            &self.app_data,
+            "Start TUN takeover",
+            "tun",
+            true,
+        )?;
+        transaction.step(
+            "tun",
+            "launch",
+            "pending",
+            "The network engine is starting with a validated TUN candidate configuration.",
+        )?;
+        match self.start_with_takeover(true) {
+            Ok(result) => match self.verify_tun_state(true, true) {
+                Ok(report) => {
+                    if let Err(err) =
+                        system_takeover::set_component_active(&self.app_data, "tun", true)
+                    {
+                        let _ = self.stop();
+                        let message = format!(
+                            "TUN started but crash-recovery state could not be persisted: {err}"
+                        );
+                        let _ = transaction.fail(&message, true);
+                        return Err(message);
+                    }
+                    transaction.step(
+                        "tun",
+                        "verify",
+                        "ok",
+                        format!("TUN runtime verification passed: {report}"),
+                    )?;
+                    transaction.complete(
+                        "TUN controller, Windows adapter/routes, DNS safety and connectivity were verified.",
+                    )?;
+                    Ok(result)
+                }
+                Err(err) => {
+                    let rollback = self.stop().map(|_| ());
+                    let message = takeover_failure_message(transaction, err, rollback);
+                    let _ = system_takeover::set_component_active(&self.app_data, "tun", false);
+                    Err(message)
+                }
+            },
+            Err(err) => {
+                self.terminate_core_process(core_runtime::TERMINATE_FAILED_STARTUP_MESSAGE);
+                let _ = system_takeover::set_component_active(&self.app_data, "tun", false);
+                let _ = transaction.fail(&err, true);
+                Err(err)
+            }
+        }
     }
 
     fn start_standby(&mut self) -> Result<JsonValue, String> {
@@ -6894,7 +7713,22 @@ impl CoreManager {
                 );
             }
         }
+        let active = system_takeover::active_takeover_state(&self.app_data);
+        if self.settings.kill_switch_enabled || active.firewall {
+            if let Err(err) = self.set_kill_switch(false) {
+                self.add_log(
+                    format!("Disconnect protection restore failed during exit: {err}"),
+                    "error",
+                );
+            }
+        }
         self.terminate_core_process(core_runtime::TERMINATE_EXIT_MESSAGE);
+        if let Err(err) = system_takeover::set_component_active(&self.app_data, "tun", false) {
+            self.add_log(
+                format!("TUN clean-exit marker update failed: {err}"),
+                "error",
+            );
+        }
     }
 
     fn wait_for_controller(&mut self) -> Result<(), String> {
@@ -6908,16 +7742,39 @@ impl CoreManager {
         })
     }
 
-    fn status(&mut self) -> JsonValue {
+    fn status_observation(&mut self) -> (bool, core_runtime::CoreController, JsonValue, bool) {
         if let Some(reason) = self.reap_exited_core() {
             self.add_log(reason, "warn");
         }
         let running = self.process.is_some();
-        let traffic = self
-            .core_controller()
-            .status_traffic_snapshot_or_idle(running, &self.last_traffic);
+        let refresh_lan_ip = now_secs().saturating_sub(self.lan_ip_checked_at) >= 45;
+        (
+            running,
+            self.core_controller(),
+            self.last_traffic.clone(),
+            refresh_lan_ip,
+        )
+    }
+
+    fn status_from_observed_traffic(
+        &mut self,
+        observed_running: bool,
+        observed_traffic: JsonValue,
+        refreshed_lan_ip: Option<String>,
+    ) -> JsonValue {
+        let running = self.process.is_some();
+        let traffic = if running == observed_running {
+            observed_traffic
+        } else {
+            self.core_controller()
+                .status_traffic_snapshot_or_idle(false, &self.last_traffic)
+        };
         self.last_traffic = traffic.clone();
-        let lan_ip = self.cached_lan_ip();
+        if let Some(lan_ip) = refreshed_lan_ip {
+            self.lan_ip_cache = lan_ip;
+            self.lan_ip_checked_at = now_secs();
+        }
+        let lan_ip = self.lan_ip_cache.clone();
         core_runtime::status_surface_json(
             self.core_runtime_info(),
             running,
@@ -6947,16 +7804,6 @@ impl CoreManager {
             self.outbound_ip_checked_at,
             now_secs(),
         )
-    }
-
-    fn cached_lan_ip(&mut self) -> String {
-        let now = now_secs();
-        if now.saturating_sub(self.lan_ip_checked_at) < 45 && self.lan_ip_cache != "-" {
-            return self.lan_ip_cache.clone();
-        }
-        self.lan_ip_cache = primary_lan_ip();
-        self.lan_ip_checked_at = now;
-        self.lan_ip_cache.clone()
     }
 
     fn cached_outbound_ip(&self) -> String {
@@ -7049,22 +7896,95 @@ impl CoreManager {
             );
             return Ok(enable);
         }
-        if enable {
-            self.capture_proxy_snapshot_before_takeover()?;
-            run_powershell(&build_proxy_script(true, self.settings.mixed_port))?;
-            self.verify_system_proxy_points_to_aegos(true)?;
-        } else if let Some(snapshot) = self.load_system_proxy_snapshot() {
-            write_windows_proxy_snapshot(&snapshot)?;
-            self.clear_system_proxy_snapshot();
-            self.verify_system_proxy_points_to_aegos(false)?;
-        } else {
-            run_powershell(&build_proxy_script(false, self.settings.mixed_port))?;
-            self.verify_system_proxy_points_to_aegos(false)?;
+        let previous_settings = self.settings.clone();
+        let previous_takeover = self.traffic_takeover;
+        let previous_os = read_windows_proxy_snapshot()?;
+        let restore_snapshot = self.load_system_proxy_snapshot();
+        let mut transaction = system_takeover::SystemTakeoverTransaction::begin(
+            &self.app_data,
+            if enable {
+                "Enable Windows system proxy"
+            } else {
+                "Restore Windows system proxy"
+            },
+            "system-proxy",
+            enable,
+        )?;
+        let operation = (|| -> Result<(), String> {
+            if enable {
+                self.capture_proxy_snapshot_before_takeover()?;
+                transaction.step(
+                    "system-proxy",
+                    "snapshot",
+                    "ok",
+                    "Manual proxy, bypass list, PAC URL and auto-detect state were captured.",
+                )?;
+                run_powershell(&build_proxy_script(true, self.settings.mixed_port))?;
+                transaction.step(
+                    "system-proxy",
+                    "apply",
+                    "ok",
+                    "Aegos manual proxy was applied and competing PAC/auto-detect takeover was paused.",
+                )?;
+                self.verify_system_proxy_points_to_aegos(true)?;
+            } else if let Some(snapshot) = restore_snapshot.as_ref() {
+                self.restore_system_proxy_snapshot_verified(snapshot)?;
+                transaction.step(
+                    "system-proxy",
+                    "restore",
+                    "ok",
+                    "The complete pre-Aegos proxy state was restored and verified.",
+                )?;
+            } else {
+                run_powershell(&build_proxy_script(false, self.settings.mixed_port))?;
+                self.verify_system_proxy_points_to_aegos(false)?;
+                transaction.step(
+                    "system-proxy",
+                    "disable",
+                    "ok",
+                    "No saved snapshot existed; only Aegos manual proxy takeover was disabled.",
+                )?;
+            }
+            self.settings.system_proxy = enable;
+            self.traffic_takeover = self.process.is_some()
+                && (enable || (self.traffic_takeover && self.settings.tun_enabled));
+            self.save_settings()?;
+            transaction.step(
+                "settings",
+                "persist",
+                "ok",
+                "Applied state was persisted after Windows verification.",
+            )?;
+            system_takeover::set_component_active(&self.app_data, "system-proxy", enable)?;
+            Ok(())
+        })();
+        if let Err(reason) = operation {
+            self.settings = previous_settings;
+            self.traffic_takeover = previous_takeover;
+            let rollback = self
+                .restore_system_proxy_snapshot_verified(&previous_os)
+                .and_then(|_| self.save_settings())
+                .and_then(|_| {
+                    system_takeover::set_component_active(
+                        &self.app_data,
+                        "system-proxy",
+                        core_runtime::system_proxy_snapshot_points_to_aegos(
+                            &previous_os,
+                            self.settings.mixed_port,
+                        ),
+                    )
+                    .map(|_| ())
+                });
+            return Err(takeover_failure_message(transaction, reason, rollback));
         }
-        self.settings.system_proxy = enable;
-        self.traffic_takeover = self.process.is_some()
-            && (enable || (self.traffic_takeover && self.settings.tun_enabled));
-        self.save_settings()?;
+        transaction.complete(if enable {
+            "Windows system proxy points to Aegos and the original complete proxy state remains recoverable."
+        } else {
+            "Windows system proxy no longer points to Aegos and the original complete proxy state was restored."
+        })?;
+        if !enable {
+            self.clear_system_proxy_snapshot();
+        }
         self.add_log(
             if enable {
                 "System proxy takeover enabled"
@@ -7080,13 +8000,68 @@ impl CoreManager {
         if enable && !is_process_elevated() {
             return Err("Disconnect protection requires administrator permission; restart Aegos as administrator in settings.".to_string());
         }
-        run_powershell(&build_kill_switch_script(
-            enable,
+        let previous_settings = self.settings.clone();
+        let mut transaction = system_takeover::SystemTakeoverTransaction::begin(
             &self.app_data,
-            &self.core_path,
-        ))?;
-        self.settings.kill_switch_enabled = enable;
-        self.save_settings()?;
+            if enable {
+                "Enable disconnect protection"
+            } else {
+                "Disable disconnect protection"
+            },
+            "firewall",
+            enable,
+        )?;
+        let operation = (|| -> Result<(), String> {
+            run_powershell(&build_kill_switch_script(
+                enable,
+                &self.app_data,
+                &self.core_path,
+            ))?;
+            transaction.step(
+                "firewall",
+                if enable { "apply" } else { "restore" },
+                "ok",
+                if enable {
+                    "Windows firewall defaults were snapshotted; Aegos allow rules and outbound blocking were verified."
+                } else {
+                    "Saved firewall defaults were restored; all Aegos protection and speed-test rules were removed and verified."
+                },
+            )?;
+            self.settings.kill_switch_enabled = enable;
+            self.save_settings()?;
+            transaction.step(
+                "settings",
+                "persist",
+                "ok",
+                "Disconnect protection state was persisted after firewall verification.",
+            )?;
+            system_takeover::set_component_active(&self.app_data, "firewall", enable)?;
+            Ok(())
+        })();
+        if let Err(reason) = operation {
+            self.settings = previous_settings;
+            let rollback = run_powershell(&build_kill_switch_script(
+                self.settings.kill_switch_enabled,
+                &self.app_data,
+                &self.core_path,
+            ))
+            .map(|_| ())
+            .and_then(|_| self.save_settings())
+            .and_then(|_| {
+                system_takeover::set_component_active(
+                    &self.app_data,
+                    "firewall",
+                    self.settings.kill_switch_enabled,
+                )
+                .map(|_| ())
+            });
+            return Err(takeover_failure_message(transaction, reason, rollback));
+        }
+        transaction.complete(if enable {
+            "Disconnect protection is active and firewall enforcement was verified."
+        } else {
+            "Disconnect protection is inactive and no Aegos firewall artifacts remain."
+        })?;
         Ok(enable)
     }
 
@@ -7108,6 +8083,45 @@ impl CoreManager {
             self.settings.mixed_port,
             &current,
         ))
+    }
+
+    fn repair_recommended_ports(&mut self) -> Result<JsonValue, String> {
+        let mixed_port = find_free_port(
+            AEGOS_DEFAULT_MIXED_PORT,
+            AEGOS_DEFAULT_MIXED_PORT,
+            core_runtime::RESERVED_MIXED_PORTS,
+        )?;
+        let controller_port = find_free_port(
+            AEGOS_DEFAULT_CONTROLLER_PORT,
+            AEGOS_DEFAULT_CONTROLLER_PORT,
+            &[mixed_port],
+        )?;
+        let previous = self.settings.clone();
+        let was_running = self.process.is_some();
+        self.settings.mixed_port = mixed_port;
+        self.settings.controller_port = controller_port;
+        if let Err(err) = self.validate_port_settings() {
+            self.settings = previous;
+            return Err(err);
+        }
+        if let Err(err) = self.save_settings() {
+            self.settings = previous;
+            return Err(format!(
+                "Recommended port settings could not be saved: {err}"
+            ));
+        }
+        if was_running {
+            if let Err(err) = self.restart_core_preserving_proxy(350) {
+                return Err(self.rollback_settings_after_failure(previous, true, err));
+            }
+        }
+        Ok(json!({
+            "ok": true,
+            "action": "recommended-ports",
+            "mixedPort": mixed_port,
+            "controllerPort": controller_port,
+            "runtimeRestarted": was_running
+        }))
     }
 
     fn apply_setting_value(&mut self, key: &str, value: &JsonValue) -> Result<bool, String> {
@@ -7211,27 +8225,123 @@ impl CoreManager {
     fn update_setting(&mut self, key: &str, value: JsonValue) -> Result<JsonValue, String> {
         let previous_settings = self.settings.clone();
         let was_running = self.process.is_some();
-        self.validate_setting_update_candidate(key, &value)?;
-        let restart = match self.apply_setting_value(key, &value) {
-            Ok(restart) => restart,
-            Err(err) => {
-                return Err(self.rollback_settings_after_failure(previous_settings, false, err));
-            }
+        let tun_change = key == "tunEnabled"
+            && value.as_bool().unwrap_or(false) != previous_settings.tun_enabled;
+        let desired_tun = value.as_bool().unwrap_or(previous_settings.tun_enabled);
+        let mut tun_transaction = if tun_change {
+            Some(system_takeover::SystemTakeoverTransaction::begin(
+                &self.app_data,
+                if desired_tun {
+                    "Enable TUN takeover"
+                } else {
+                    "Disable TUN takeover"
+                },
+                "tun",
+                desired_tun,
+            )?)
+        } else {
+            None
         };
-        if let Err(err) = self.validate_port_settings() {
-            return Err(self.rollback_settings_after_failure(previous_settings, false, err));
+        let operation = (|| -> Result<JsonValue, String> {
+            self.validate_setting_update_candidate(key, &value)?;
+            let restart = match self.apply_setting_value(key, &value) {
+                Ok(restart) => restart,
+                Err(err) => {
+                    return Err(self.rollback_settings_after_failure(
+                        previous_settings.clone(),
+                        false,
+                        err,
+                    ));
+                }
+            };
+            if let Some(transaction) = tun_transaction.as_mut() {
+                transaction.step(
+                    "tun",
+                    "prepare",
+                    "ok",
+                    "TUN candidate settings passed permission and value checks.",
+                )?;
+            }
+            if let Err(err) = self.validate_port_settings() {
+                return Err(self.rollback_settings_after_failure(
+                    previous_settings.clone(),
+                    false,
+                    err,
+                ));
+            }
+            if let Err(err) = self.save_settings() {
+                self.settings = previous_settings.clone();
+                return Err(format!("Settings save failed: {err}"));
+            }
+            if let Err(err) = self.ensure_direct_profile() {
+                return Err(self.rollback_settings_after_failure(
+                    previous_settings.clone(),
+                    false,
+                    err,
+                ));
+            }
+            if let Err(err) = self.restart_after_settings_if_needed(was_running, restart) {
+                return Err(self.rollback_settings_after_failure(
+                    previous_settings.clone(),
+                    was_running,
+                    err,
+                ));
+            }
+            if tun_change {
+                let report = match self.verify_tun_state(desired_tun, was_running) {
+                    Ok(report) => report,
+                    Err(err) => {
+                        return Err(self.rollback_settings_after_failure(
+                            previous_settings.clone(),
+                            was_running,
+                            err,
+                        ));
+                    }
+                };
+                if let Some(transaction) = tun_transaction.as_mut() {
+                    transaction.step(
+                        "tun",
+                        "verify",
+                        "ok",
+                        format!("TUN candidate/runtime verification passed: {report}"),
+                    )?;
+                }
+                system_takeover::set_component_active(
+                    &self.app_data,
+                    "tun",
+                    desired_tun && was_running,
+                )?;
+            }
+            Ok(self.public_settings())
+        })();
+        match operation {
+            Ok(result) => {
+                if let Some(transaction) = tun_transaction {
+                    transaction.complete(if was_running {
+                        "TUN configuration, controller, Windows route/adapter evidence and connectivity were verified."
+                    } else {
+                        "TUN candidate configuration was verified; Windows takeover remains deferred until connection."
+                    })?;
+                }
+                Ok(result)
+            }
+            Err(err) => {
+                if let Some(transaction) = tun_transaction {
+                    let rollback_ok = self.settings.tun_enabled == previous_settings.tun_enabled
+                        && (!was_running
+                            || self
+                                .verify_tun_state(previous_settings.tun_enabled, true)
+                                .is_ok());
+                    let _ = transaction.fail(&err, rollback_ok);
+                }
+                let _ = system_takeover::set_component_active(
+                    &self.app_data,
+                    "tun",
+                    previous_settings.tun_enabled && was_running,
+                );
+                Err(err)
+            }
         }
-        if let Err(err) = self.save_settings() {
-            self.settings = previous_settings;
-            return Err(format!("Settings save failed: {err}"));
-        }
-        if let Err(err) = self.ensure_direct_profile() {
-            return Err(self.rollback_settings_after_failure(previous_settings, false, err));
-        }
-        if let Err(err) = self.restart_after_settings_if_needed(was_running, restart) {
-            return Err(self.rollback_settings_after_failure(previous_settings, was_running, err));
-        }
-        Ok(self.public_settings())
     }
 
     fn update_settings(&mut self, updates: JsonValue) -> Result<JsonValue, String> {
@@ -7240,34 +8350,133 @@ impl CoreManager {
             .ok_or_else(|| "Settings update must be an object".to_string())?;
         let previous_settings = self.settings.clone();
         let was_running = self.process.is_some();
-        let mut restart = false;
-        self.validate_settings_update_candidate(map)?;
-        for (key, value) in map {
-            restart |= match self.apply_setting_value(key, value) {
-                Ok(item_restart) => item_restart,
-                Err(err) => {
-                    return Err(self.rollback_settings_after_failure(
-                        previous_settings,
-                        false,
-                        err,
-                    ));
+        let desired_tun = map
+            .get("tunEnabled")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(previous_settings.tun_enabled);
+        let tun_change = desired_tun != previous_settings.tun_enabled;
+        let kill_change = map
+            .get("killSwitchEnabled")
+            .and_then(JsonValue::as_bool)
+            .is_some_and(|value| value != previous_settings.kill_switch_enabled);
+        let mut tun_transaction = if tun_change {
+            Some(system_takeover::SystemTakeoverTransaction::begin(
+                &self.app_data,
+                if desired_tun {
+                    "Enable TUN takeover"
+                } else {
+                    "Disable TUN takeover"
+                },
+                "tun",
+                desired_tun,
+            )?)
+        } else {
+            None
+        };
+        let operation = (|| -> Result<JsonValue, String> {
+            let mut restart = false;
+            self.validate_settings_update_candidate(map)?;
+            for (key, value) in map {
+                restart |= match self.apply_setting_value(key, value) {
+                    Ok(item_restart) => item_restart,
+                    Err(err) => {
+                        return Err(self.rollback_settings_after_failure(
+                            previous_settings.clone(),
+                            false,
+                            err,
+                        ));
+                    }
+                };
+            }
+            if let Err(err) = self.validate_port_settings() {
+                return Err(self.rollback_settings_after_failure(
+                    previous_settings.clone(),
+                    false,
+                    err,
+                ));
+            }
+            if let Err(err) = self.save_settings() {
+                self.settings = previous_settings.clone();
+                return Err(format!("Settings save failed: {err}"));
+            }
+            if let Err(err) = self.ensure_direct_profile() {
+                return Err(self.rollback_settings_after_failure(
+                    previous_settings.clone(),
+                    false,
+                    err,
+                ));
+            }
+            if let Err(err) = self.restart_after_settings_if_needed(was_running, restart) {
+                return Err(self.rollback_settings_after_failure(
+                    previous_settings.clone(),
+                    was_running,
+                    err,
+                ));
+            }
+            if tun_change {
+                let report = match self.verify_tun_state(desired_tun, was_running) {
+                    Ok(report) => report,
+                    Err(err) => {
+                        return Err(self.rollback_settings_after_failure(
+                            previous_settings.clone(),
+                            was_running,
+                            err,
+                        ));
+                    }
+                };
+                if let Some(transaction) = tun_transaction.as_mut() {
+                    transaction.step(
+                        "tun",
+                        "verify",
+                        "ok",
+                        format!("TUN batch candidate/runtime verification passed: {report}"),
+                    )?;
                 }
-            };
+                system_takeover::set_component_active(
+                    &self.app_data,
+                    "tun",
+                    desired_tun && was_running,
+                )?;
+            }
+            Ok(self.public_settings())
+        })();
+        match operation {
+            Ok(result) => {
+                if let Some(transaction) = tun_transaction {
+                    transaction.complete(if was_running {
+                        "Batch settings applied; TUN runtime and Windows takeover were verified."
+                    } else {
+                        "Batch settings applied; TUN candidate is valid and takeover is deferred until connection."
+                    })?;
+                }
+                Ok(result)
+            }
+            Err(err) => {
+                if kill_change {
+                    let _ = run_powershell(&build_kill_switch_script(
+                        previous_settings.kill_switch_enabled,
+                        &self.app_data,
+                        &self.core_path,
+                    ));
+                    self.settings.kill_switch_enabled = previous_settings.kill_switch_enabled;
+                    let _ = self.save_settings();
+                }
+                if let Some(transaction) = tun_transaction {
+                    let rollback_ok = self.settings.tun_enabled == previous_settings.tun_enabled
+                        && (!was_running
+                            || self
+                                .verify_tun_state(previous_settings.tun_enabled, true)
+                                .is_ok());
+                    let _ = transaction.fail(&err, rollback_ok);
+                }
+                let _ = system_takeover::set_component_active(
+                    &self.app_data,
+                    "tun",
+                    previous_settings.tun_enabled && was_running,
+                );
+                Err(err)
+            }
         }
-        if let Err(err) = self.validate_port_settings() {
-            return Err(self.rollback_settings_after_failure(previous_settings, false, err));
-        }
-        if let Err(err) = self.save_settings() {
-            self.settings = previous_settings;
-            return Err(format!("Settings save failed: {err}"));
-        }
-        if let Err(err) = self.ensure_direct_profile() {
-            return Err(self.rollback_settings_after_failure(previous_settings, false, err));
-        }
-        if let Err(err) = self.restart_after_settings_if_needed(was_running, restart) {
-            return Err(self.rollback_settings_after_failure(previous_settings, was_running, err));
-        }
-        Ok(self.public_settings())
     }
 
     fn set_mode(&mut self, mode: &str) -> Result<String, String> {
@@ -7493,6 +8702,8 @@ impl CoreManager {
     fn start_proxy_delay_test_for_run(
         &mut self,
         expected_run_id: Option<u64>,
+        app: AppHandle,
+        priority_names: Vec<String>,
     ) -> Result<JsonValue, String> {
         if let Err(err) = self.ensure_core_for_delay_test() {
             let message = format!("speed-test-prepare-failed: {err}");
@@ -7533,7 +8744,13 @@ impl CoreManager {
         let controller = self.core_controller();
         let speed_test = self.speed_test.clone();
         let previous_health = speed_test.lock().unwrap().health.clone();
-        let phases = speed_test_phases(targets.clone(), &previous_health, now_secs());
+        let pending = speed_test_ordered_targets(
+            targets.clone(),
+            &previous_health,
+            &priority_names,
+            now_secs(),
+        );
+        let profile_id = self.settings.active_profile_id.clone();
         let run_id;
         {
             let mut speed = speed_test.lock().unwrap();
@@ -7567,6 +8784,15 @@ impl CoreManager {
             };
         }
 
+        emit_speed_test_event(
+            &app,
+            json!({
+                "kind": "started",
+                "profileId": profile_id.clone(),
+                "status": self.speed_test_snapshot()
+            }),
+        );
+
         let speed_firewall_enabled =
             core_runtime::speed_test_firewall_enabled(self.settings.kill_switch_enabled);
         let speed_firewall_ports = core_runtime::speed_test_firewall_ports(
@@ -7585,12 +8811,22 @@ impl CoreManager {
                     &speed_firewall_ports,
                 )) {
                     let message = format!("protection-blocked: {err}");
-                    let mut speed = speed_test.lock().unwrap();
-                    if speed.run_id == run_id {
-                        speed.running = false;
-                        speed.error = Some(message);
-                        speed.updated_at = now_secs();
+                    {
+                        let mut speed = speed_test.lock().unwrap();
+                        if speed.run_id == run_id {
+                            speed.running = false;
+                            speed.error = Some(message);
+                            speed.updated_at = now_secs();
+                        }
                     }
+                    emit_speed_test_event(
+                        &app,
+                        json!({
+                            "kind": "error",
+                            "profileId": profile_id,
+                            "status": speed_test_runtime_snapshot(&speed_test, now_secs())
+                        }),
+                    );
                     return;
                 }
             }
@@ -7611,48 +8847,87 @@ impl CoreManager {
             {
                 Ok(client) => Arc::new(client),
                 Err(err) => {
-                    let mut speed = speed_test.lock().unwrap();
-                    if speed.run_id == run_id {
-                        speed.running = false;
-                        speed.error = Some(err.to_string());
-                        speed.updated_at = now_secs();
+                    {
+                        let mut speed = speed_test.lock().unwrap();
+                        if speed.run_id == run_id {
+                            speed.running = false;
+                            speed.error = Some(err.to_string());
+                            speed.updated_at = now_secs();
+                        }
                     }
+                    emit_speed_test_event(
+                        &app,
+                        json!({
+                            "kind": "error",
+                            "profileId": profile_id,
+                            "status": speed_test_runtime_snapshot(&speed_test, now_secs())
+                        }),
+                    );
                     cleanup_speed_firewall();
                     return;
                 }
             };
-            for (phase_targets, chunk_size) in phases {
-                for chunk in phase_targets.chunks(chunk_size) {
-                    {
-                        let speed = speed_test.lock().unwrap();
-                        if !speed.running || speed.run_id != run_id {
-                            cleanup_speed_firewall();
-                            return;
-                        }
-                    }
-                    let (tx, rx) = mpsc::channel();
-                    let mut handles = Vec::with_capacity(chunk.len());
-                    for target in chunk.iter().cloned() {
-                        let tx = tx.clone();
-                        let controller = controller.clone();
-                        let client = client.clone();
-                        handles.push(thread::spawn(move || {
-                            let result = test_proxy_delay_fast(
-                                &client,
-                                &controller,
-                                &target.name,
-                                &target.protocol,
-                            );
-                            let _ = tx.send((target, result));
-                        }));
-                    }
-                    drop(tx);
-                    for (target, result) in rx {
-                        let mut speed = speed_test.lock().unwrap();
-                        if !speed.running || speed.run_id != run_id {
-                            cleanup_speed_firewall();
-                            return;
-                        }
+            let (tx, rx) = mpsc::channel();
+            let mut pending = pending;
+            let mut handles = Vec::with_capacity(total);
+            let mut active = 0usize;
+            let mut active_by_family: HashMap<&'static str, usize> = HashMap::new();
+            let mut concurrency = SPEED_GLOBAL_CONCURRENCY_INITIAL.min(total.max(1));
+            let mut window_completed = 0usize;
+            let mut window_failures = 0usize;
+            let mut window_elapsed_ms = 0u128;
+
+            while !pending.is_empty() || active > 0 {
+                let is_current = {
+                    let speed = speed_test.lock().unwrap();
+                    speed.running && speed.run_id == run_id
+                };
+                if !is_current {
+                    cleanup_speed_firewall();
+                    return;
+                }
+
+                while active < concurrency {
+                    let Some(target) = next_schedulable_target(&mut pending, &active_by_family)
+                    else {
+                        break;
+                    };
+                    let family = protocol_family(&target.protocol);
+                    *active_by_family.entry(family).or_insert(0) += 1;
+                    active += 1;
+                    let tx = tx.clone();
+                    let controller = controller.clone();
+                    let client = client.clone();
+                    handles.push(thread::spawn(move || {
+                        let started = Instant::now();
+                        let result = test_proxy_delay_fast(
+                            &client,
+                            &controller,
+                            &target.name,
+                            &target.protocol,
+                        );
+                        let _ = tx.send((target, result, started.elapsed().as_millis()));
+                    }));
+                }
+
+                if active == 0 {
+                    break;
+                }
+                let Ok((target, result, elapsed_ms)) = rx.recv() else {
+                    break;
+                };
+                active = active.saturating_sub(1);
+                let family = protocol_family(&target.protocol);
+                if let Some(count) = active_by_family.get_mut(family) {
+                    *count = count.saturating_sub(1);
+                }
+
+                let now = now_secs();
+                let event_state = {
+                    let mut speed = speed_test.lock().unwrap();
+                    if !speed.running || speed.run_id != run_id {
+                        None
+                    } else {
                         speed.completed += 1;
                         if result.delay > 0 {
                             speed.ok += 1;
@@ -7660,7 +8935,6 @@ impl CoreManager {
                             speed.failed += 1;
                         }
                         speed.delays.insert(target.name.clone(), result.delay);
-                        let now = now_secs();
                         let health = update_node_health(
                             speed.health.get(&target.name),
                             &target.name,
@@ -7669,22 +8943,79 @@ impl CoreManager {
                             &result.failure_reason,
                             now,
                         );
-                        speed.health.insert(target.name.clone(), health);
+                        speed.health.insert(target.name.clone(), health.clone());
                         speed.low_latency = low_latency_names(&speed.health, now);
                         speed.recommended = speed_recommendation(&targets, &speed.health, now);
                         speed.updated_at = now;
+                        Some((
+                            health,
+                            speed.completed,
+                            speed.total,
+                            speed.ok,
+                            speed.failed,
+                        ))
                     }
-                    for handle in handles {
-                        let _ = handle.join();
-                    }
+                };
+                let Some((health, completed, total, ok, failed)) = event_state else {
+                    cleanup_speed_firewall();
+                    return;
+                };
+
+                emit_speed_test_event(
+                    &app,
+                    json!({
+                        "kind": "result",
+                        "runId": run_id,
+                        "profileId": profile_id,
+                        "name": target.name,
+                        "selectName": target.select_name,
+                        "protocol": target.protocol,
+                        "delay": result.delay,
+                        "failureReason": result.failure_reason,
+                        "elapsedMs": elapsed_ms as u64,
+                        "completed": completed,
+                        "total": total,
+                        "ok": ok,
+                        "failed": failed,
+                        "health": health
+                    }),
+                );
+
+                window_completed += 1;
+                window_failures += usize::from(result.delay <= 0);
+                window_elapsed_ms += elapsed_ms;
+                if window_completed >= SPEED_ADAPTIVE_WINDOW {
+                    concurrency = adaptive_speed_concurrency(
+                        concurrency,
+                        window_completed,
+                        window_failures,
+                        window_elapsed_ms,
+                    )
+                    .min(total.max(1));
+                    window_completed = 0;
+                    window_failures = 0;
+                    window_elapsed_ms = 0;
                 }
             }
-            let mut speed = speed_test.lock().unwrap();
-            if speed.run_id == run_id {
-                speed.running = false;
-                speed.updated_at = now_secs();
+
+            for handle in handles {
+                let _ = handle.join();
             }
-            drop(speed);
+            {
+                let mut speed = speed_test.lock().unwrap();
+                if speed.run_id == run_id {
+                    speed.running = false;
+                    speed.updated_at = now_secs();
+                }
+            }
+            emit_speed_test_event(
+                &app,
+                json!({
+                    "kind": "complete",
+                    "profileId": profile_id,
+                    "status": speed_test_runtime_snapshot(&speed_test, now_secs())
+                }),
+            );
             cleanup_speed_firewall();
         });
         Ok(self.speed_test_snapshot())
@@ -8302,20 +9633,37 @@ impl CoreManager {
             profile_nodes.remove(&original_name);
         }
         profile_nodes.insert(name.clone(), node.clone());
-        if let Err(err) = self.save_settings() {
+        let mut deployment = match self.stage_settings_deployment("Fixed node save") {
+            Ok(deployment) => deployment,
+            Err(err) => {
+                self.settings = previous_settings;
+                return Err(format!("Fixed node candidate preparation failed: {err}"));
+            }
+        };
+        if let Err(err) = deployment.promote() {
             self.settings = previous_settings;
-            return Err(format!("Fixed node save failed: {err}"));
+            return Err(format!("Fixed node candidate promotion failed: {err}"));
         }
         if self.process.is_some() && self.settings.active_profile_id == profile.id {
             if let Err(err) = self.hot_reload_profile(&profile) {
                 self.settings = previous_settings;
-                let _ = self.save_settings();
+                let rollback_settings = deployment.rollback("fixed node runtime reload failed");
+                let rollback_runtime = if rollback_settings.is_ok() {
+                    self.hot_reload_profile(&profile).map(|_| ())
+                } else {
+                    rollback_settings.map(|_| ())
+                };
                 let message =
-                    format!("Fixed node hot reload failed after save; rolled back: {err}");
+                    match rollback_runtime {
+                        Ok(_) => format!("Fixed node hot reload failed after save; settings and runtime were rolled back: {err}"),
+                        Err(rollback_err) => format!("Fixed node hot reload failed: {err}; rollback also failed: {rollback_err}"),
+                    };
                 self.add_log(&message, "error");
                 return Err(message);
             }
         }
+        let _ = deployment
+            .complete("Fixed node settings promoted and active runtime verification completed.")?;
         self.add_log(
             format!("Manual fixed node saved: {} / {}", profile.name, name),
             "info",
@@ -8425,8 +9773,20 @@ fn node_diagnostics_from_snapshot(
     let target = targets
         .iter()
         .find(|target| target.name == name || target.select_name == name)
-        .cloned()
-        .ok_or_else(|| format!("Node not found: {name}"))?;
+        .cloned();
+    let Some(target) = target else {
+        let issue =
+            diagnostics_runtime::issue_from_failure("node", "node-not-found", "node not found");
+        return Ok(json!({
+            "node": { "proxy": name },
+            "health": JsonValue::Null,
+            "logs": [],
+            "lastFailure": JsonValue::Null,
+            "issue": issue,
+            "suggestions": [],
+            "generatedAt": now_secs()
+        }));
+    };
     let health = speed.health.get(&target.name).cloned();
     let logs = recent_node_logs_from_snapshot(logs, &target.name, 20);
     let last_failure = logs
@@ -8452,6 +9812,25 @@ fn node_diagnostics_from_snapshot(
         })
         .take(5)
         .collect::<Vec<_>>();
+    let failure_reason = health
+        .as_ref()
+        .map(|item| item.last_failure_reason.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .or_else(|| {
+            last_failure
+                .as_ref()
+                .and_then(|item| item.get("line"))
+                .and_then(JsonValue::as_str)
+                .map(str::to_string)
+        });
+    let issue = failure_reason.as_ref().map(|reason| {
+        let classification = core_runtime::classify_failure_reason(reason);
+        json!(diagnostics_runtime::issue_from_failure(
+            "node",
+            classification,
+            reason
+        ))
+    });
     Ok(json!({
         "node": {
             "group": target.group_name,
@@ -8463,6 +9842,7 @@ fn node_diagnostics_from_snapshot(
         "health": health,
         "logs": logs,
         "lastFailure": last_failure,
+        "issue": issue,
         "suggestions": suggestions,
         "generatedAt": now_secs()
     }))
@@ -8709,6 +10089,26 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
         .to_string();
     let mixed_port_free = is_port_free(snapshot.settings.mixed_port);
     let controller_port_free = is_port_free(snapshot.settings.controller_port);
+    let conflict_report = windows_network_conflict_report(
+        snapshot.settings.mixed_port,
+        snapshot.settings.controller_port,
+        &snapshot.core_path,
+        snapshot.settings.tun_enabled,
+    );
+    let conflict_ok = conflict_report
+        .get("ok")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false);
+    let conflict_summary = conflict_report
+        .get("summary")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("Network conflict scan unavailable")
+        .to_string();
+    let conflict_action = conflict_report
+        .get("action")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("Close other proxy or VPN software before retrying TUN.")
+        .to_string();
     let checks = vec![
         core_runtime::diagnostic_check_json(
             "mihomo core",
@@ -8809,6 +10209,14 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             "Aegos core is not running, but the controller port is already occupied. Change Aegos controller port or close the conflicting app.",
         ),
         core_runtime::diagnostic_check_json(
+            "Proxy and VPN conflicts",
+            conflict_ok,
+            conflict_summary,
+            "warning",
+            "network",
+            &conflict_action,
+        ),
+        core_runtime::diagnostic_check_json(
             "Windows System Proxy takeover",
             proxy_takeover_ok,
             proxy_takeover_detail,
@@ -8854,14 +10262,30 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
             "logs",
             "Recent core logs contain warning/error entries. Open Logs for startup or proxy failure context.",
         ),
-    ];
+    ]
+    .into_iter()
+    .map(diagnostics_runtime::enrich_check)
+    .collect::<Vec<_>>();
     let summary = core_runtime::diagnostic_summary_json(&checks);
+    let evidence_logs = snapshot
+        .status_logs
+        .iter()
+        .rev()
+        .filter(|entry| {
+            matches!(entry.level.as_str(), "error" | "warn" | "warning" | "core")
+                || matches!(entry.category.as_str(), "diagnostic" | "core")
+        })
+        .take(80)
+        .cloned()
+        .collect::<Vec<_>>();
     json!({
         "generatedAt": now_iso(),
         "appVersion": env!("CARGO_PKG_VERSION"),
         "status": diagnostics_status_from_snapshot(&snapshot, is_admin),
         "summary": summary,
-        "checks": checks
+        "checks": checks,
+        "evidenceLogs": evidence_logs,
+        "groups": ["connection", "subscription", "node", "dns", "tun", "system-proxy", "firewall"]
     })
 }
 
@@ -8875,9 +10299,13 @@ fn add_profile_url_detached(
     url: &str,
 ) -> Result<Profile, String> {
     let parsed = reqwest::Url::parse(url).map_err(|err| err.to_string())?;
-    let (settings, profile_dir) = {
+    let (settings, profile_dir, app_data) = {
         let core = core.lock().unwrap();
-        (core.settings.clone(), core.profile_dir.clone())
+        (
+            core.settings.clone(),
+            core.profile_dir.clone(),
+            core.app_data.clone(),
+        )
     };
     let source = download_profile_source_url_diagnostic(url)?;
     let summary = source.summary.clone();
@@ -8903,11 +10331,16 @@ fn add_profile_url_detached(
             )
         })?;
     let patched = runtime.config;
-    atomic_write_text_confined(
-        &path,
+    let candidate_yaml = serde_yaml::to_string(&patched).map_err(|err| err.to_string())?;
+    let mut deployment = config_deployment::ConfigDeploymentTransaction::stage(
+        &app_data,
         &profile_dir,
-        &serde_yaml::to_string(&patched).map_err(|err| err.to_string())?,
+        &path,
+        "Subscription import",
+        &profile.id,
+        &candidate_yaml,
     )?;
+    deployment.promote()?;
     profile.digest = sha256_file(&path);
     {
         let _operation = lock_operation_queue(&operations, "addProfileUrl apply")?;
@@ -8924,7 +10357,7 @@ fn add_profile_url_detached(
         if let Err(err) = core.save_settings() {
             core.settings.profiles.retain(|item| item.id != profile.id);
             core.settings.active_profile_id = previous_profile_id;
-            let _ = remove_file_confined(&path, &profile_dir);
+            let _ = deployment.rollback("subscription metadata save failed");
             return Err(err);
         }
         core.add_log(
@@ -8944,7 +10377,7 @@ fn add_profile_url_detached(
                 let _ = core.stop();
                 core.settings.profiles.retain(|item| item.id != profile.id);
                 core.settings.active_profile_id = previous_profile_id.clone();
-                let _ = remove_file_confined(&path, &profile_dir);
+                let _ = deployment.rollback("subscription startup verification failed");
                 let save_result = core.save_settings();
                 let rollback_result = if save_result.is_ok() {
                     core.start_from_restart_plan(rollback_plan).map(|_| ())
@@ -8962,6 +10395,9 @@ fn add_profile_url_detached(
             }
         }
     }
+    let _ = deployment.complete(
+        "Subscription candidate promoted and profile registration/runtime startup verified.",
+    )?;
     Ok(profile)
 }
 
@@ -8970,7 +10406,7 @@ fn update_profile_detached(
     operations: Arc<Mutex<()>>,
     id: &str,
 ) -> Result<Profile, String> {
-    let (mut profile, settings) = {
+    let (mut profile, settings, app_data) = {
         let core = core.lock().unwrap();
         let profile = core
             .settings
@@ -8979,7 +10415,7 @@ fn update_profile_detached(
             .find(|p| p.id == id)
             .cloned()
             .ok_or_else(|| "Profile not found".to_string())?;
-        (profile, core.settings.clone())
+        (profile, core.settings.clone(), core.app_data.clone())
     };
     let Some(url) = profile.source_url.clone() else {
         return Ok(profile);
@@ -8999,16 +10435,20 @@ fn update_profile_detached(
     let patched = runtime.config;
     let previous_profile = profile.clone();
     let profile_path = PathBuf::from(&profile.path);
-    let previous_raw = fs::read_to_string(&profile_path).ok();
     let profile_root = profile_path
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| format!("Profile path has no parent: {}", profile_path.display()))?;
-    atomic_write_text_confined(
-        &profile_path,
+    let candidate_yaml = serde_yaml::to_string(&patched).map_err(|err| err.to_string())?;
+    let mut deployment = config_deployment::ConfigDeploymentTransaction::stage(
+        &app_data,
         &profile_root,
-        &serde_yaml::to_string(&patched).map_err(|err| err.to_string())?,
+        &profile_path,
+        "Subscription update",
+        &profile.id,
+        &candidate_yaml,
     )?;
+    deployment.promote()?;
     profile.updated_at = now_iso();
     profile.digest = sha256_file(&profile_path);
     {
@@ -9022,16 +10462,12 @@ fn update_profile_detached(
             core_runtime::RUNTIME_RESTART_SETTLE_MS,
         );
         let Some(stored) = core.settings.profiles.iter_mut().find(|p| p.id == id) else {
-            if let Some(raw) = previous_raw.as_ref() {
-                let _ = atomic_write_text_confined(&profile_path, &profile_root, raw);
-            }
+            let _ = deployment.rollback("subscription disappeared before metadata update");
             return Err("Profile was removed before update completed".to_string());
         };
         *stored = profile.clone();
         if let Err(err) = core.save_settings() {
-            if let Some(raw) = previous_raw.as_ref() {
-                let _ = atomic_write_text_confined(&profile_path, &profile_root, raw);
-            }
+            let _ = deployment.rollback("subscription metadata save failed");
             if let Some(stored) = core.settings.profiles.iter_mut().find(|p| p.id == id) {
                 *stored = previous_profile.clone();
             }
@@ -9054,9 +10490,7 @@ fn update_profile_detached(
         if was_running && was_active {
             if let Err(start_err) = core.restart_core_preserving_proxy(250) {
                 let _ = core.stop();
-                if let Some(raw) = previous_raw.as_ref() {
-                    let _ = atomic_write_text_confined(&profile_path, &profile_root, raw);
-                }
+                let _ = deployment.rollback("subscription runtime restart failed");
                 if let Some(stored) = core.settings.profiles.iter_mut().find(|p| p.id == id) {
                     *stored = previous_profile.clone();
                 }
@@ -9077,6 +10511,9 @@ fn update_profile_detached(
             }
         }
     }
+    let _ = deployment.complete(
+        "Subscription candidate promoted and profile metadata/runtime verification completed.",
+    )?;
     Ok(profile)
 }
 
@@ -9178,7 +10615,19 @@ fn update_all_profiles_detached(
         );
         match update_profile_detached(core.clone(), operations.clone(), profile_id) {
             Ok(profile) => updated.push(profile),
-            Err(err) => failed.push(json!({ "id": profile_id, "error": err })),
+            Err(err) => {
+                let classification = core_runtime::classify_failure_reason(&err);
+                let issue = diagnostics_runtime::issue_from_failure(
+                    "subscription update",
+                    classification,
+                    &err,
+                );
+                failed.push(json!({
+                    "id": profile_id,
+                    "error": issue.public_message(),
+                    "issue": issue
+                }));
+            }
         }
     }
     if updated.is_empty() {
@@ -9205,28 +10654,42 @@ fn lock_operation_queue<'a>(
 
 fn job_label(kind: &str) -> String {
     match kind {
-        "addProfileUrl" => "瀵煎叆璁㈤槄",
-        "renameProfile" => "Rename profile",
-        "updateProfile" => "鏇存柊璁㈤槄",
-        "recoverNetwork" => "缃戠粶鑷剤",
-        "refreshOutboundIp" => "鍒锋柊钀藉湴 IP",
-        "startCore" => "杩炴帴鏍稿績",
-        "stopCore" => "鏂紑鏍稿績",
-        "restartCore" => "閲嶅惎鏍稿績",
-        "setActiveProfile" => "鍒囨崲璁㈤槄",
-        "updateSettings" => "淇濆瓨璁剧疆",
-        "updateSetting" => "淇濆瓨璁剧疆",
-        "setMode" => "鍒囨崲妯″紡",
-        "changeProxy" => "鍒囨崲鑺傜偣",
-        "selectBestProxy" => "Switch to recommended",
-        "applyRoutingDrafts" => "搴旂敤鍒嗘祦鑽夌",
-        "undoRoutingApply" => "鎾ら攢鍒嗘祦搴旂敤",
-        "applyRoutingGroupEdit" => "Edit strategy group",
-        "applyRoutingRuleEdit" => "缂栬緫鐢ㄦ埛瑙勫垯",
-        "exportDiagnostics" => "瀵煎嚭璇婃柇鎶ュ憡",
-        _ => "鍚庡彴浠诲姟",
+        "repairDiagnostic" => "修复诊断问题",
+        "addProfileUrl" => "导入订阅",
+        "renameProfile" => "重命名订阅",
+        "updateProfile" | "updateAllProfiles" => "更新订阅",
+        "recoverNetwork" => "修复网络",
+        "refreshOutboundIp" => "刷新落地 IP",
+        "diagnostics" => "运行诊断",
+        "startCore" => "建立连接",
+        "stopCore" => "断开连接",
+        "restartCore" => "重启网络核心",
+        "setActiveProfile" => "切换订阅",
+        "removeProfile" => "删除订阅",
+        "updateSettings" | "updateSetting" => "保存设置",
+        "setMode" => "切换模式",
+        "changeProxy" => "切换节点",
+        "selectBestProxy" => "选择推荐节点",
+        "repairSystemProxy" => "修复系统代理",
+        "applyRoutingDrafts" => "应用分流规则",
+        "undoRoutingApply" => "撤销分流规则",
+        "applyRoutingGroupEdit" => "编辑策略组",
+        "applyRoutingRuleEdit" => "编辑用户规则",
+        "exportDiagnostics" => "导出支持报告",
+        _ => "后台任务",
     }
     .to_string()
+}
+
+fn is_supported_diagnostic_repair_action(action: &str) -> bool {
+    matches!(
+        action,
+        "system-proxy"
+            | "recommended-ports"
+            | "cleanup-firewall"
+            | "restart-core"
+            | "recover-network"
+    )
 }
 
 #[tauri::command]
@@ -9244,6 +10707,7 @@ fn start_job(
             | "recoverNetwork"
             | "refreshOutboundIp"
             | "diagnostics"
+            | "repairDiagnostic"
             | "startCore"
             | "stopCore"
             | "restartCore"
@@ -9277,7 +10741,7 @@ fn start_job(
     let operations = state.operations.clone();
     let app_data = state.app_data.clone();
     thread::spawn(move || {
-        set_job_state(&jobs, &id, "running", 0, 3, "姝ｅ湪鍑嗗");
+        set_job_state(&jobs, &id, "running", 0, 3, "正在准备");
         if job_cancel_requested(&jobs, &id) {
             finish_cancelled(&jobs, &id, "cancelled before start");
             return;
@@ -9289,7 +10753,7 @@ fn start_job(
                     .and_then(|value| value.as_str())
                     .ok_or_else(|| "Missing url".to_string())
                     .and_then(|url| {
-                        set_job_state(&jobs, &id, "running", 1, 3, "姝ｅ湪涓嬭浇璁㈤槄");
+                        set_job_state(&jobs, &id, "running", 1, 3, "正在下载订阅");
                         add_profile_url_detached(core.clone(), operations.clone(), url)
                             .map(|profile| json!({ "profile": profile }))
                     });
@@ -9301,7 +10765,7 @@ fn start_job(
                     .and_then(|value| value.as_str())
                     .ok_or_else(|| "Missing profile id".to_string())
                     .and_then(|profile_id| {
-                        set_job_state(&jobs, &id, "running", 1, 3, "姝ｅ湪鏇存柊璁㈤槄");
+                        set_job_state(&jobs, &id, "running", 1, 3, "正在更新订阅");
                         update_profile_detached(core.clone(), operations.clone(), profile_id)
                             .map(|profile| json!({ "profile": profile }))
                     });
@@ -9330,15 +10794,43 @@ fn start_job(
                 update_all_profiles_detached(core.clone(), operations.clone(), jobs.clone(), &id)
             }
             "refreshOutboundIp" => {
-                set_job_state(&jobs, &id, "running", 1, 2, "姝ｅ湪鏌ヨ钀藉湴 IP");
+                set_job_state(&jobs, &id, "running", 1, 2, "正在查询落地 IP");
                 refresh_outbound_ip_detached(core.clone()).map(|ip| json!({ "ip": ip }))
             }
             "diagnostics" => {
-                set_job_state(&jobs, &id, "running", 1, 2, "diagnostics running");
+                set_job_state(&jobs, &id, "running", 1, 2, "正在检查网络状态");
                 Ok(diagnostics_detached(core.clone()))
             }
+            "repairDiagnostic" => (|| -> Result<JsonValue, String> {
+                let action = payload
+                    .get("action")
+                    .and_then(JsonValue::as_str)
+                    .ok_or_else(|| "Missing diagnostic repair action".to_string())?;
+                if !is_supported_diagnostic_repair_action(action) {
+                    return Err("Unsupported diagnostic repair action".to_string());
+                }
+                set_job_state(&jobs, &id, "running", 1, 4, "正在验证并修复");
+                let _operation = lock_operation_queue(&operations, "repairDiagnostic")?;
+                let mut core = core.lock().unwrap();
+                match action {
+                    "system-proxy" => core.repair_system_proxy_takeover(),
+                    "recommended-ports" => core.repair_recommended_ports(),
+                    "cleanup-firewall" => core
+                        .set_kill_switch(false)
+                        .map(|_| json!({ "ok": true, "action": action })),
+                    "restart-core" => {
+                        if core.process.is_some() {
+                            core.restart_core_preserving_proxy(350)
+                        } else {
+                            core.start()
+                        }
+                    }
+                    "recover-network" => core.recover_network(true),
+                    _ => Err(format!("Unsupported diagnostic repair action: {action}")),
+                }
+            })(),
             "exportDiagnostics" => {
-                set_job_state(&jobs, &id, "running", 1, 2, "姝ｅ湪瀵煎嚭璇婃柇鎶ュ憡");
+                set_job_state(&jobs, &id, "running", 1, 2, "正在导出支持报告");
                 export_diagnostics_report_from_state(core.clone(), &app_data)
             }
             "recoverNetwork" => {
@@ -9346,28 +10838,28 @@ fn start_job(
                     .get("force")
                     .and_then(|value| value.as_bool())
                     .unwrap_or(false);
-                set_job_state(&jobs, &id, "running", 1, 4, "姝ｅ湪鎵ц缃戠粶鑷剤");
+                set_job_state(&jobs, &id, "running", 1, 4, "正在修复网络");
                 (|| -> Result<JsonValue, String> {
                     let _operation = lock_operation_queue(&operations, "recoverNetwork")?;
                     core.lock().unwrap().recover_network(force)
                 })()
             }
             "startCore" => {
-                set_job_state(&jobs, &id, "running", 1, 4, "姝ｅ湪鍚姩鏍稿績");
+                set_job_state(&jobs, &id, "running", 1, 4, "正在建立连接");
                 (|| -> Result<JsonValue, String> {
                     let _operation = lock_operation_queue(&operations, "startCore")?;
                     core.lock().unwrap().start()
                 })()
             }
             "stopCore" => {
-                set_job_state(&jobs, &id, "running", 1, 2, "姝ｅ湪鏂紑鏍稿績");
+                set_job_state(&jobs, &id, "running", 1, 2, "正在断开连接");
                 (|| -> Result<JsonValue, String> {
                     let _operation = lock_operation_queue(&operations, "stopCore")?;
                     core.lock().unwrap().stop()
                 })()
             }
             "restartCore" => {
-                set_job_state(&jobs, &id, "running", 1, 5, "姝ｅ湪閲嶅惎鏍稿績");
+                set_job_state(&jobs, &id, "running", 1, 5, "正在重启网络核心");
                 (|| -> Result<JsonValue, String> {
                     let _operation = lock_operation_queue(&operations, "restartCore")?;
                     let mut core = core.lock().unwrap();
@@ -9380,7 +10872,7 @@ fn start_job(
                     .and_then(|value| value.as_str())
                     .ok_or_else(|| "Missing profile id".to_string())
                     .and_then(|profile_id| {
-                        set_job_state(&jobs, &id, "running", 1, 4, "姝ｅ湪搴旂敤璁㈤槄");
+                        set_job_state(&jobs, &id, "running", 1, 4, "正在切换订阅");
                         let _operation = lock_operation_queue(&operations, "setActiveProfile")?;
                         core.lock()
                             .unwrap()
@@ -9409,7 +10901,7 @@ fn start_job(
                     .get("updates")
                     .cloned()
                     .unwrap_or_else(|| payload.clone());
-                set_job_state(&jobs, &id, "running", 1, 4, "姝ｅ湪淇濆瓨璁剧疆");
+                set_job_state(&jobs, &id, "running", 1, 4, "正在保存设置");
                 (|| -> Result<JsonValue, String> {
                     let _operation = lock_operation_queue(&operations, "updateSettings")?;
                     core.lock()
@@ -9427,7 +10919,7 @@ fn start_job(
                     .get("value")
                     .cloned()
                     .ok_or_else(|| "Missing setting value".to_string())?;
-                set_job_state(&jobs, &id, "running", 1, 3, "姝ｅ湪淇濆瓨璁剧疆");
+                set_job_state(&jobs, &id, "running", 1, 3, "正在保存设置");
                 let _operation = lock_operation_queue(&operations, "updateSetting")?;
                 let mut core = core.lock().unwrap();
                 if key == "systemProxy" {
@@ -9444,7 +10936,7 @@ fn start_job(
                     .and_then(|value| value.as_str())
                     .ok_or_else(|| "Missing mode".to_string())
                     .and_then(|mode| {
-                        set_job_state(&jobs, &id, "running", 1, 2, "姝ｅ湪鍒囨崲妯″紡");
+                        set_job_state(&jobs, &id, "running", 1, 2, "正在切换模式");
                         let _operation = lock_operation_queue(&operations, "setMode")?;
                         core.lock()
                             .unwrap()
@@ -9462,7 +10954,7 @@ fn start_job(
                     .get("proxy")
                     .and_then(|value| value.as_str())
                     .ok_or_else(|| "Missing proxy name".to_string())?;
-                set_job_state(&jobs, &id, "running", 1, 2, "姝ｅ湪鍒囨崲鑺傜偣");
+                set_job_state(&jobs, &id, "running", 1, 2, "正在切换节点");
                 let _operation = lock_operation_queue(&operations, "changeProxy")?;
                 let mut core = core.lock().unwrap();
                 core.change_proxy(group, proxy)?;
@@ -9493,12 +10985,12 @@ fn start_job(
                     .ok_or_else(|| "Missing routing drafts".to_string())?;
                 let drafts = serde_json::from_value::<Vec<RoutingDraftInput>>(drafts_value)
                     .map_err(|err| format!("Invalid routing drafts: {err}"))?;
-                set_job_state(&jobs, &id, "running", 1, 4, "姝ｅ湪棰勬鍒嗘祦鑽夌");
+                set_job_state(&jobs, &id, "running", 1, 4, "正在预检分流规则");
                 let _operation = lock_operation_queue(&operations, "applyRoutingDrafts")?;
                 core.lock().unwrap().apply_routing_drafts(drafts)
             })(),
             "undoRoutingApply" => (|| -> Result<JsonValue, String> {
-                set_job_state(&jobs, &id, "running", 1, 3, "姝ｅ湪鎾ら攢鍒嗘祦搴旂敤");
+                set_job_state(&jobs, &id, "running", 1, 3, "正在撤销分流规则");
                 let _operation = lock_operation_queue(&operations, "undoRoutingApply")?;
                 core.lock().unwrap().undo_last_routing_apply()
             })(),
@@ -9512,11 +11004,23 @@ fn start_job(
             "applyRoutingRuleEdit" => (|| -> Result<JsonValue, String> {
                 let edit = serde_json::from_value::<RoutingRuleEditInput>(payload.clone())
                     .map_err(|err| format!("Invalid routing rule edit: {err}"))?;
-                set_job_state(&jobs, &id, "running", 1, 4, "姝ｅ湪淇濆瓨鐢ㄦ埛瑙勫垯");
+                set_job_state(&jobs, &id, "running", 1, 4, "正在保存用户规则");
                 let _operation = lock_operation_queue(&operations, "applyRoutingRuleEdit")?;
                 core.lock().unwrap().apply_routing_rule_edit(edit)
             })(),
             _ => Err("Unsupported job kind".to_string()),
+        };
+        let result = match result {
+            Ok(value) => Ok(value),
+            Err(raw) => {
+                let classification = core_runtime::classify_failure_reason(&raw);
+                let issue = diagnostics_runtime::issue_from_failure(&kind, classification, &raw);
+                if let Ok(core) = core.lock() {
+                    core.add_log(format!("{} technical detail: {}", issue.code, raw), "error");
+                }
+                set_job_issue(&jobs, &id, json!(issue.clone()));
+                Err(issue.public_message())
+            }
         };
         finish_job(&jobs, &id, result);
     });
@@ -9536,7 +11040,21 @@ fn cancel_job(state: State<AppState>, id: String) -> Result<JsonValue, String> {
 
 #[tauri::command]
 fn app_status(state: State<AppState>) -> Result<JsonValue, String> {
-    Ok(state.core.lock().unwrap().status())
+    let (observed_running, controller, previous_traffic, refresh_lan_ip) = {
+        let mut core = state
+            .core
+            .lock()
+            .map_err(|_| "core state lock poisoned before status observation".to_string())?;
+        core.status_observation()
+    };
+    let observed_traffic =
+        controller.status_traffic_snapshot_or_idle(observed_running, &previous_traffic);
+    let refreshed_lan_ip = refresh_lan_ip.then(primary_lan_ip);
+    let mut core = state
+        .core
+        .lock()
+        .map_err(|_| "core state lock poisoned after status observation".to_string())?;
+    Ok(core.status_from_observed_traffic(observed_running, observed_traffic, refreshed_lan_ip))
 }
 
 #[tauri::command]
@@ -9806,7 +11324,11 @@ fn undo_last_routing_apply(state: State<AppState>) -> Result<JsonValue, String> 
 }
 
 #[tauri::command]
-fn start_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
+fn start_proxy_delay_test(
+    state: State<AppState>,
+    app: AppHandle,
+    priority_names: Option<Vec<String>>,
+) -> Result<JsonValue, String> {
     let already_running = state.speed_test.lock().unwrap().running;
     let snapshot = mark_speed_test_preparing(&state.speed_test, now_secs());
     let run_id = snapshot
@@ -9818,11 +11340,12 @@ fn start_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
     }
     let core = state.core.clone();
     let speed_test = state.speed_test.clone();
+    let priority_names = priority_names.unwrap_or_default();
     thread::spawn(move || {
         let result = core
             .lock()
             .unwrap()
-            .start_proxy_delay_test_for_run(Some(run_id));
+            .start_proxy_delay_test_for_run(Some(run_id), app, priority_names);
         if let Err(err) = result {
             fail_speed_test_if_current(&speed_test, run_id, err, now_secs());
         }
@@ -9832,7 +11355,7 @@ fn start_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
 
 #[tauri::command]
 fn test_single_proxy_delay(state: State<AppState>, name: String) -> Result<JsonValue, String> {
-    let snapshot = mark_single_speed_test_preparing(&state.speed_test, &name, now_secs());
+    let snapshot = mark_single_speed_test_preparing(&state.speed_test, &name, now_secs())?;
     let run_id = snapshot
         .get("runId")
         .and_then(|value| value.as_u64())
@@ -9903,8 +11426,16 @@ fn speed_test_status(state: State<AppState>) -> Result<JsonValue, String> {
 }
 
 #[tauri::command]
-fn cancel_proxy_delay_test(state: State<AppState>) -> Result<JsonValue, String> {
+fn cancel_proxy_delay_test(state: State<AppState>, app: AppHandle) -> Result<JsonValue, String> {
     reset_speed_test_runtime_state(&state.speed_test, "cancelled", false, now_secs());
+    let status = speed_test_runtime_snapshot(&state.speed_test, now_secs());
+    emit_speed_test_event(
+        &app,
+        json!({
+            "kind": "cancelled",
+            "status": status
+        }),
+    );
     Ok(json!({ "ok": true }))
 }
 
@@ -9996,6 +11527,12 @@ fn environment_readiness(state: State<AppState>) -> Result<JsonValue, String> {
         .get("level")
         .and_then(JsonValue::as_str)
         .unwrap_or("warning");
+    let conflict_report = windows_network_conflict_report(
+        settings.mixed_port,
+        settings.controller_port,
+        &core_path,
+        settings.tun_enabled,
+    );
     let mut checks = vec![
         json!({
             "id": "webview2",
@@ -10060,6 +11597,15 @@ fn environment_readiness(state: State<AppState>) -> Result<JsonValue, String> {
             "level": if proxy_takeover_level == "error" { "error" } else if proxy_takeover_level == "warning" { "warn" } else { "ok" },
             "detail": proxy_takeover_integrity.get("detail").and_then(JsonValue::as_str).unwrap_or("Windows system proxy state unavailable"),
             "action": proxy_takeover_integrity.get("action").and_then(JsonValue::as_str).unwrap_or("Use repair takeover or reconnect Aegos.")
+        }),
+        json!({
+            "id": "network-conflicts",
+            "label": "Other proxy or VPN software",
+            "ok": conflict_report.get("ok").and_then(JsonValue::as_bool).unwrap_or(false),
+            "level": conflict_report.get("level").and_then(JsonValue::as_str).unwrap_or("warning"),
+            "detail": conflict_report.get("summary").and_then(JsonValue::as_str).unwrap_or("Network conflict scan unavailable"),
+            "action": conflict_report.get("action").and_then(JsonValue::as_str).unwrap_or("Close other proxy or VPN software before retrying TUN."),
+            "findings": conflict_report.get("findings").cloned().unwrap_or_else(|| json!([]))
         }),
     ];
     checks.sort_by_key(|item| {

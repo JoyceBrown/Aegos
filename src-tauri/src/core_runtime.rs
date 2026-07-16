@@ -22,8 +22,9 @@ pub const EXPECTED_SHA256: &str =
     "c14bda8dc4cc8910ccd2110fe2be083c51a1b66da59141a0b87aff6fe6126517";
 pub const MANAGED_BY: &str = "Aegos";
 pub const CONTROL_PLANE: &str = "Aegos";
-pub const AEGOS_AUTO_SELECT_GROUP_NAME: &str = "閼奉亜濮╅柅澶嬪";
+pub const AEGOS_AUTO_SELECT_GROUP_NAME: &str = "自动选择";
 pub const LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME: &str = "鑷姩閫夋嫨";
+pub const LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME_V2: &str = "閼奉亜濮╅柅澶嬪";
 pub const CREATE_NO_WINDOW: u32 = 0x08000000;
 pub const READY_CHECK_ATTEMPTS: usize = 24;
 pub const READY_PROBE_TIMEOUT_MS: u64 = 300;
@@ -1849,9 +1850,13 @@ pub fn classify_failure_reason(reason: &str) -> &'static str {
         || text.contains("/proxies")
         || text.contains("/configs")
         || text.contains("127.0.0.1")
-        || text.contains("connection refused")
     {
         "controller-unavailable"
+    } else if text.contains("connection refused")
+        || text.contains("actively refused")
+        || text.contains("reset by peer")
+    {
+        "refused"
     } else if text.contains("yaml") || text.contains("config") || text.contains("preflight") {
         "config"
     } else if text.contains("delay test")
@@ -2009,6 +2014,7 @@ pub fn is_aegos_auto_select_group_name(name: &str) -> bool {
         || name.eq_ignore_ascii_case("Auto Select")
         || name == AEGOS_AUTO_SELECT_GROUP_NAME
         || name == LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME
+        || name == LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME_V2
 }
 
 pub fn normalize_proxy_groups_snapshot_defaults(groups: &mut JsonValue) {
@@ -2614,6 +2620,10 @@ pub struct SystemProxySnapshot {
     pub proxy_enable: bool,
     pub proxy_server: String,
     pub proxy_override: String,
+    #[serde(default)]
+    pub auto_config_url: String,
+    #[serde(default)]
+    pub auto_detect: bool,
     pub captured_at: String,
 }
 
@@ -2637,6 +2647,8 @@ pub struct WindowsSystemProxyScriptPlan {
     pub proxy_enable_value: u8,
     pub proxy_server_literal: Option<String>,
     pub proxy_override_literal: String,
+    pub auto_config_url_literal: String,
+    pub auto_detect_value: u8,
     pub write_proxy_server: bool,
 }
 
@@ -2800,6 +2812,32 @@ pub fn verify_system_proxy_snapshot(
     Ok(())
 }
 
+pub fn verify_system_proxy_restore(
+    current: &SystemProxySnapshot,
+    expected: &SystemProxySnapshot,
+) -> Result<(), String> {
+    let matches = current.proxy_enable == expected.proxy_enable
+        && current.proxy_server == expected.proxy_server
+        && current.proxy_override == expected.proxy_override
+        && current.auto_config_url == expected.auto_config_url
+        && current.auto_detect == expected.auto_detect;
+    if matches {
+        Ok(())
+    } else {
+        Err(format!(
+            "Windows proxy restore verification failed: expected manual={}, server='{}', PAC='{}', auto-detect={}; current manual={}, server='{}', PAC='{}', auto-detect={}",
+            expected.proxy_enable,
+            expected.proxy_server,
+            expected.auto_config_url,
+            expected.auto_detect,
+            current.proxy_enable,
+            current.proxy_server,
+            current.auto_config_url,
+            current.auto_detect
+        ))
+    }
+}
+
 impl CoreFirewallPolicyPlan {
     pub fn disconnect_protection() -> Self {
         Self {
@@ -2899,6 +2937,8 @@ pub fn windows_proxy_snapshot_script_plan(
         proxy_enable_value: u8::from(snapshot.proxy_enable),
         proxy_server_literal: Some(powershell_single_quoted_literal(&snapshot.proxy_server)),
         proxy_override_literal: powershell_single_quoted_literal(&snapshot.proxy_override),
+        auto_config_url_literal: powershell_single_quoted_literal(&snapshot.auto_config_url),
+        auto_detect_value: u8::from(snapshot.auto_detect),
         write_proxy_server: true,
     }
 }
@@ -2915,6 +2955,8 @@ pub fn windows_proxy_takeover_script_plan(
             .as_ref()
             .map(powershell_single_quoted_literal),
         proxy_override_literal: powershell_single_quoted_literal(plan.proxy_override),
+        auto_config_url_literal: "''".to_string(),
+        auto_detect_value: 0,
         write_proxy_server: plan.should_write_proxy_server(),
     }
 }
@@ -3408,6 +3450,8 @@ mod tests {
             proxy_enable: true,
             proxy_server: "127.0.0.1:7890;https=proxy.example:443".to_string(),
             proxy_override: "<local>".to_string(),
+            auto_config_url: String::new(),
+            auto_detect: false,
             captured_at: "2026-07-15T00:00:00Z".to_string(),
         };
         assert!(!system_proxy_snapshot_points_to_aegos(&external, 7891));
@@ -3418,6 +3462,8 @@ mod tests {
             proxy_enable: true,
             proxy_server: "http=127.0.0.1:7890;127.0.0.1:7891".to_string(),
             proxy_override: "<local>".to_string(),
+            auto_config_url: String::new(),
+            auto_detect: false,
             captured_at: "2026-07-15T00:00:00Z".to_string(),
         };
         assert!(system_proxy_snapshot_points_to_aegos(&aegos, 7891));
@@ -3427,6 +3473,8 @@ mod tests {
             proxy_enable: false,
             proxy_server: "127.0.0.1:7891".to_string(),
             proxy_override: String::new(),
+            auto_config_url: String::new(),
+            auto_detect: false,
             captured_at: "2026-07-15T00:00:00Z".to_string(),
         };
         assert!(!system_proxy_snapshot_points_to_aegos(&disabled, 7891));
@@ -3520,6 +3568,8 @@ mod tests {
             proxy_enable: true,
             proxy_server: "127.0.0.1:7890;http='quoted'".to_string(),
             proxy_override: "<local>;a'b".to_string(),
+            auto_config_url: "https://pac.example/proxy's.pac".to_string(),
+            auto_detect: true,
             captured_at: "2026-07-15T00:00:00Z".to_string(),
         });
         assert_eq!(snapshot_script.proxy_enable_value, 1);
@@ -3528,6 +3578,11 @@ mod tests {
             Some("'127.0.0.1:7890;http=''quoted'''")
         );
         assert_eq!(snapshot_script.proxy_override_literal, "'<local>;a''b'");
+        assert_eq!(
+            snapshot_script.auto_config_url_literal,
+            "'https://pac.example/proxy''s.pac'"
+        );
+        assert_eq!(snapshot_script.auto_detect_value, 1);
         assert!(snapshot_script.should_write_proxy_server());
     }
 
@@ -3537,6 +3592,8 @@ mod tests {
             proxy_enable: true,
             proxy_server: "127.0.0.1:7891".to_string(),
             proxy_override: WINDOWS_PROXY_BYPASS_LIST.to_string(),
+            auto_config_url: String::new(),
+            auto_detect: false,
             captured_at: "2026-07-15T00:00:00Z".to_string(),
         };
         assert!(verify_system_proxy_snapshot(&aegos, true, 7891).is_ok());
@@ -3548,12 +3605,29 @@ mod tests {
             proxy_enable: true,
             proxy_server: "127.0.0.1:7890".to_string(),
             proxy_override: "<local>".to_string(),
+            auto_config_url: String::new(),
+            auto_detect: false,
             captured_at: "2026-07-15T00:00:00Z".to_string(),
         };
         assert!(verify_system_proxy_snapshot(&external, false, 7891).is_ok());
         let failure = verify_system_proxy_snapshot(&external, true, 7891).unwrap_err();
         assert!(failure.contains("verification failed"));
         assert!(failure.contains("expected 127.0.0.1:7891"));
+
+        let restored = SystemProxySnapshot {
+            proxy_enable: false,
+            proxy_server: "corp.proxy:8080".to_string(),
+            proxy_override: "<local>;intranet".to_string(),
+            auto_config_url: "https://corp.example/proxy.pac".to_string(),
+            auto_detect: true,
+            captured_at: "2026-07-15T00:00:01Z".to_string(),
+        };
+        assert!(verify_system_proxy_restore(&restored, &restored).is_ok());
+        let mut incomplete = restored.clone();
+        incomplete.auto_config_url.clear();
+        assert!(verify_system_proxy_restore(&incomplete, &restored)
+            .unwrap_err()
+            .contains("PAC"));
     }
 
     fn test_preflight_input<'a>() -> RuntimeConfigPreflightInput<'a> {
@@ -4537,12 +4611,16 @@ rules:
             proxy_enable: true,
             proxy_server: "127.0.0.1:7891".to_string(),
             proxy_override: "<local>".to_string(),
+            auto_config_url: String::new(),
+            auto_detect: false,
             captured_at: "2026-07-15T00:00:00Z".to_string(),
         };
         let external = SystemProxySnapshot {
             proxy_enable: true,
             proxy_server: "127.0.0.1:7890".to_string(),
             proxy_override: "<local>".to_string(),
+            auto_config_url: String::new(),
+            auto_detect: false,
             captured_at: "2026-07-15T00:00:00Z".to_string(),
         };
 
@@ -4610,6 +4688,8 @@ rules:
             proxy_enable: true,
             proxy_server: "127.0.0.1:7891".to_string(),
             proxy_override: "<local>".to_string(),
+            auto_config_url: String::new(),
+            auto_detect: false,
             captured_at: "2026-07-15T00:00:00Z".to_string(),
         };
         let result = system_proxy_repair_result_json(7891, &snapshot);
@@ -4915,6 +4995,6 @@ rules:
             "controller-unavailable"
         );
         assert!(classified_error("Node switch", "connection refused")
-            .contains("Node switch failed [controller-unavailable]"));
+            .contains("Node switch failed [refused]"));
     }
 }

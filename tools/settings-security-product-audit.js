@@ -19,7 +19,8 @@ function check(name, ok, detail = '') {
   else failures.push(`${name}${detail ? ` (${detail})` : ''}`);
 }
 
-check('version is at least 3.4.18 settings/security checkpoint', /^3\.4\.(18|19|20)$/.test(pkg.version), pkg.version);
+const versionParts = pkg.version.split('.').map(Number);
+check('version is at least 3.4.18 settings/security checkpoint', versionParts[0] > 3 || (versionParts[0] === 3 && (versionParts[1] > 4 || (versionParts[1] === 4 && versionParts[2] >= 18))), pkg.version);
 check(
   'environment readiness backend command is registered',
   mainRs.includes('fn environment_readiness(') &&
@@ -32,16 +33,18 @@ check(
   'readiness covers install, permission, ports, controller bind, LAN, core, and proxy restore',
   ['webview2', 'admin', 'mixed-port', 'controller-port', 'controller-bind', 'allow-lan', 'core-resource', 'proxy-restore']
     .every((id) => mainRs.includes(`"id": "${id}"`)) &&
-    mainRs.includes('默认仅 127.0.0.1 本机访问') &&
-    mainRs.includes('allow-lan 开启时会扩大监听面'),
+    mainRs.includes('Controller is bound to 127.0.0.1 by default.') &&
+    mainRs.includes('allow-lan expands the listening surface.'),
   'readiness checklist'
 );
 check(
-  'settings page exposes user-facing install and security check',
+  'settings page exposes a plain-language on-demand system check',
   indexHtml.includes('id="environmentSummary"') &&
     indexHtml.includes('id="environmentRows"') &&
     indexHtml.includes('id="refreshEnvironmentBtn"') &&
-    indexHtml.includes('安装与安全检查'),
+    indexHtml.includes('id="environmentDetailsBtn"') &&
+    indexHtml.includes('系统检查') &&
+    indexHtml.includes('运行检查'),
   'settings UI'
 );
 check(
@@ -49,18 +52,21 @@ check(
   appJs.includes("invoke('environment_readiness'") &&
     appJs.includes('function renderEnvironmentReadiness') &&
     appJs.includes('function refreshEnvironmentReadiness') &&
+    appJs.includes('function refreshSettingsChecks') &&
     appJs.includes("runDetachedButtonAction(event.currentTarget, '检查中...'") &&
-    appJs.includes("if (page === 'settings')") &&
-    appJs.includes('refreshEnvironmentReadiness(false)'),
+    appJs.includes("if (isPageActive('settings')) renderEnvironmentReadiness(data)") &&
+    !appJs.includes('refreshEnvironmentReadiness(false)'),
   'frontend readiness flow'
 );
 check(
-  'readiness rows have bounded layout for long process/path text',
+  'readiness rows avoid nested scrolling and expose details on demand',
   stylesCss.includes('.environment-list') &&
-    stylesCss.includes('max-height: 186px') &&
+    !stylesCss.includes('max-height: 186px') &&
+    stylesCss.includes('.environment-action') &&
+    stylesCss.includes('white-space: normal') &&
     stylesCss.includes('text-overflow: ellipsis') &&
     stylesCss.includes('.environment-row.level-error'),
-  'bounded readiness CSS'
+  'single-scroll readiness CSS'
 );
 check(
   'WebView2 installer remains user-visible',

@@ -209,9 +209,15 @@ pub fn mark_single_speed_test_preparing(
     speed_test: &SpeedTestStore,
     name: &str,
     now: u64,
-) -> JsonValue {
+) -> Result<JsonValue, String> {
     {
         let mut speed = speed_test.lock().unwrap();
+        if speed.running {
+            return Err(
+                "A speed test is already running; this node will receive the shared result."
+                    .to_string(),
+            );
+        }
         let previous_health = speed.health.clone();
         let run_id = speed.run_id.saturating_add(1);
         let mut delays = HashMap::new();
@@ -232,7 +238,7 @@ pub fn mark_single_speed_test_preparing(
             error: None,
         };
     }
-    speed_test_snapshot(speed_test, now)
+    Ok(speed_test_snapshot(speed_test, now))
 }
 
 pub fn speed_test_run_is_current(speed_test: &SpeedTestStore, run_id: u64) -> bool {
@@ -322,6 +328,22 @@ mod tests {
         assert!(!speed.running);
         assert!(speed.health.contains_key("node-a"));
         assert_eq!(speed.error.as_deref(), Some("cancelled"));
+    }
+
+    #[test]
+    fn single_speed_prepare_cannot_replace_an_active_batch() {
+        let store: SpeedTestStore = Arc::new(Mutex::new(SpeedTestState {
+            run_id: 7,
+            running: true,
+            total: 20,
+            ..SpeedTestState::default()
+        }));
+        let error = mark_single_speed_test_preparing(&store, "node-a", 30)
+            .expect_err("active batch must win");
+        assert!(error.contains("already running"));
+        let speed = store.lock().unwrap();
+        assert_eq!(speed.run_id, 7);
+        assert_eq!(speed.total, 20);
     }
 
     #[test]

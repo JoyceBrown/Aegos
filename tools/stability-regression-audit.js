@@ -57,7 +57,7 @@ check(
   'batch speed command returns a snapshot and moves core work into a worker',
     startSpeedCommand.includes('mark_speed_test_preparing(&state.speed_test, now_secs())') &&
     startSpeedCommand.includes('thread::spawn(move ||') &&
-    startSpeedCommand.includes('start_proxy_delay_test_for_run(Some(run_id))') &&
+    startSpeedCommand.includes('start_proxy_delay_test_for_run(Some(run_id), app, priority_names)') &&
     startSpeedCommand.includes('Ok(snapshot)') &&
     !startSpeedCommand.includes('state.core.lock().unwrap().start_proxy_delay_test'),
   'clicking one-key speed test must not wait for core preparation or proxy-group assembly'
@@ -98,8 +98,9 @@ check(
 check(
   'speed test UI does not use foreground busy or disabling wrappers',
   testNodesBody.includes("invoke('start_proxy_delay_test'") &&
-    testNodesBody.includes('setInterval(pollSpeedTest, speedTestPollMs)') &&
-    testNodesBody.includes('await pollSpeedTest()') &&
+    appJs.includes("listen('aegos-speed-test', handleSpeedTestEvent)") &&
+    testNodesBody.includes('Date.now() - speedLastEventAt > 1500') &&
+    testNodesBody.includes('if (!speedEventReady) await pollSpeedTest()') &&
     !testNodesBody.includes('runForegroundAction') &&
     !testNodesBody.includes('runButtonAction') &&
     !testNodesBody.includes('.disabled = true'),

@@ -19,7 +19,7 @@
         <div class="brand-mark"><span class="aegos-icon icon-brand" aria-hidden="true"></span></div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v3.6.0</span>
+          <span id="appVersionLabel" class="brand-version">v3.6.32</span>
         </div>
       </section>
 
@@ -30,41 +30,39 @@
         <button data-page="routing"><span class="aegos-icon icon-routing" aria-hidden="true"></span>分流</button>
         <button data-page="profiles"><span class="aegos-icon icon-profiles" aria-hidden="true"></span>订阅</button>
         <button data-page="diagnostics"><span class="aegos-icon icon-diagnostics" aria-hidden="true"></span>诊断</button>
-        <button data-page="logs"><span class="aegos-icon icon-logs" aria-hidden="true"></span>日志</button>
         <button data-page="settings"><span class="aegos-icon icon-settings" aria-hidden="true"></span>设置</button>
       </nav>
 
-      <section class="side-card status-card">
-        <h3>网络状态</h3>
-        <dl>
-          <div><dt>软件状态</dt><dd id="softwareState">未运行</dd></div>
-          <div><dt>网络可用</dt><dd id="networkAvailabilityState">未验证</dd></div>
-          <div><dt>保护模式</dt><dd id="protectMode">未接管</dd></div>
-          <div><dt>DNS 防泄漏</dt><dd id="dnsState" class="ok">已开启</dd></div>
-          <div><dt>TUN 模式</dt><dd id="tunState">未开启</dd></div>
-          <div><dt>断网保护</dt><dd id="killState">未开启</dd></div>
-          <div id="proxyStateRow"><dt>&#31995;&#32479;&#20195;&#29702;</dt><dd id="proxyState">&#26410;&#24320;&#21551;</dd></div>
-          <div><dt>局域网 IP</dt><dd id="lanIpState" class="ok">-</dd></div>
-          <div><dt>&#24403;&#21069;&#21327;&#35758;</dt><dd id="protocolState" class="ok">DIRECT</dd></div>
-          <div><dt>代理端口</dt><dd id="proxyPortState">-</dd></div>
-          <div><dt>落地 IP</dt><dd id="outboundIpState">-</dd></div>
-        </dl>
-      </section>
-
-      <section class="side-card job-card">
-        <h3>&#21518;&#21488;&#20219;&#21153;</h3>
-        <div id="jobRows" class="job-list">
-          <p class="empty">&#26242;&#26080;&#21518;&#21488;&#20219;&#21153;</p>
+      <section class="sidebar-runtime-summary" aria-labelledby="sidebarRuntimeTitle">
+        <div class="sidebar-runtime-head">
+          <span id="sidebarRuntimeIndicator" class="runtime-indicator" aria-hidden="true"></span>
+          <div>
+            <small id="sidebarRuntimeTitle">当前状态</small>
+            <strong id="sidebarConnectionState">未连接</strong>
+          </div>
         </div>
+        <p id="sidebarNodeName" title="等待节点数据">等待节点数据</p>
+        <div class="sidebar-runtime-meta">
+          <span>延迟 <b id="sidebarDelayMetric">-</b></span>
+          <span>任务 <b id="sidebarJobCount">0</b></span>
+        </div>
+        <button id="sidebarStatusCenterBtn" class="sidebar-status-button" aria-controls="statusCenterPanel" aria-expanded="false">
+          <span class="aegos-icon icon-diagnostics" aria-hidden="true"></span>
+          查看状态中心
+        </button>
       </section>
     </aside>
 
     <section class="workspace">
       <header class="titlebar drag-zone" data-tauri-drag-region>
+        <button id="titlebarStatusCenterBtn" class="titlebar-status-button" aria-label="打开状态中心" title="状态中心" aria-controls="statusCenterPanel" aria-expanded="false">
+          <span id="titlebarRuntimeIndicator" class="runtime-indicator" aria-hidden="true"></span>
+          <span>状态</span>
+        </button>
         <div class="window-actions">
-          <button id="minBtn" aria-label="最小化">−</button>
-          <button id="maxBtn" aria-label="最大化">□</button>
-          <button id="closeBtn" aria-label="关闭">×</button>
+          <button id="minBtn" class="window-control" aria-label="最小化" title="最小化"><span class="aegos-icon icon-minimize" aria-hidden="true"></span></button>
+          <button id="maxBtn" class="window-control" aria-label="最大化" title="最大化"><span class="aegos-icon icon-maximize" aria-hidden="true"></span></button>
+          <button id="closeBtn" class="window-control window-control-close" aria-label="关闭" title="关闭"><span class="aegos-icon icon-close" aria-hidden="true"></span></button>
         </div>
       </header>
 
@@ -196,7 +194,7 @@
       <section class="page" data-page-panel="connections">
         <section class="panel fill page-card">
           <header class="section-head">
-            <div><h2>连接管理</h2><p>查看并关闭当前由 mihomo 接管的连接。</p></div>
+            <div><h2>连接管理</h2><p>查看并关闭当前由 Aegos 接管的连接。</p></div>
             <div class="head-actions">
               <button id="refreshConnectionsBtn" class="ghost">刷新</button>
               <button id="closeAllConnectionsBtn" class="primary compact">全部关闭</button>
@@ -254,37 +252,48 @@
       <section class="page" data-page-panel="diagnostics">
         <section class="panel fill page-card diagnostic-card">
           <header class="section-head">
-            <div><h2>诊断</h2><p>检查内核、端口、代理、TUN 与断网保护状态。</p></div>
+            <div><h2>诊断与修复</h2><p>定位连接问题，按建议修复；需要排查细节时再查看运行日志。</p></div>
             <div class="section-actions">
               <button id="copyDiagBtn" class="ghost compact">复制报告</button>
-              <button id="exportDiagBtn" class="ghost compact">导出报告</button>
+              <button id="exportDiagBtn" class="ghost compact">导出支持报告</button>
               <button id="runDiagBtn" class="primary compact">运行诊断</button>
             </div>
           </header>
-          <div id="diagSummary" class="diagnostic-summary"></div>
-          <div id="diagLogPreview" class="diagnostic-log-preview"></div>
-          <div id="diagRows" class="card-list"></div>
-        </section>
-      </section>
-
-      <section class="page" data-page-panel="logs">
-        <section class="panel fill page-card">
-          <header class="section-head">
-            <div><h2>日志</h2><p>查看 Aegos 与 mihomo 运行日志。</p></div>
-            <div class="section-actions">
-              <button id="exportLogsBtn" class="ghost">导出</button>
-              <button id="clearLogsBtn" class="ghost">清空</button>
-            </div>
-          </header>
-          <div class="tabs log-filter-row" role="tablist" aria-label="Log filters">
-            <button class="active" data-log-filter="all">&#20840;&#37096;</button>
-            <button data-log-filter="user">&#29992;&#25143;</button>
-            <button data-log-filter="runtime">&#36816;&#34892;</button>
-            <button data-log-filter="core">&#26680;&#24515;</button>
-            <button data-log-filter="diagnostic">&#35786;&#26029;</button>
-            <button data-log-filter="debug">&#35843;&#35797;</button>
+          <div class="diagnostic-view-tabs" role="tablist" aria-label="诊断内容">
+            <button class="active" data-diagnostic-view="overview" role="tab" aria-selected="true">问题诊断</button>
+            <button data-diagnostic-view="logs" role="tab" aria-selected="false">运行日志</button>
           </div>
-          <div id="logRows" class="log-list"></div>
+          <div id="diagnosticOverviewView" class="diagnostic-view active" data-diagnostic-view-panel="overview">
+            <div id="diagSummary" class="diagnostic-summary"></div>
+            <div class="diagnostic-category-filters" role="tablist" aria-label="问题类别">
+              <button class="active" data-diagnostic-category="all">全部</button>
+              <button data-diagnostic-category="connection">连接</button>
+              <button data-diagnostic-category="subscription">订阅</button>
+              <button data-diagnostic-category="node">节点</button>
+              <button data-diagnostic-category="dns">DNS</button>
+              <button data-diagnostic-category="tun">TUN</button>
+              <button data-diagnostic-category="system-proxy">系统代理</button>
+              <button data-diagnostic-category="firewall">防火墙</button>
+            </div>
+            <div id="diagRows" class="diagnostic-groups"></div>
+          </div>
+          <div id="diagnosticLogsView" class="diagnostic-view" data-diagnostic-view-panel="logs">
+            <div class="diagnostic-log-toolbar">
+              <div class="tabs log-filter-row" role="tablist" aria-label="日志筛选">
+                <button class="active" data-log-filter="all">全部</button>
+                <button data-log-filter="user">用户</button>
+                <button data-log-filter="runtime">运行</button>
+                <button data-log-filter="core">网络核心</button>
+                <button data-log-filter="diagnostic">诊断</button>
+                <button data-log-filter="debug">调试</button>
+              </div>
+              <div class="section-actions">
+                <button id="exportLogsBtn" class="ghost compact">仅导出日志</button>
+                <button id="clearLogsBtn" class="ghost compact">清空日志</button>
+              </div>
+            </div>
+            <div id="logRows" class="log-list"></div>
+          </div>
         </section>
       </section>
 
@@ -303,77 +312,117 @@
               </div>
             </section>
 
+            <div class="settings-primary-grid">
+              <section class="settings-section settings-network-section">
+                <header class="settings-section-head">
+                  <h3>网络接管</h3>
+                  <span id="settingsProxySummary">系统代理未开启</span>
+                </header>
+                <div class="settings-grid compact-grid">
+                  <label class="switch-row"><span><b>系统代理</b><small>接管使用 Windows 代理的应用</small></span><input id="systemProxyToggle" type="checkbox"></label>
+                  <label class="switch-row"><span><b>连接后自动接管</b><small>连接成功后开启系统代理</small></span><input id="startProxyToggle" type="checkbox"></label>
+                  <label class="switch-row"><span><b>TUN 模式</b><small>接管不使用系统代理的应用</small></span><input id="tunToggle" type="checkbox"></label>
+                  <label class="switch-row"><span><b>DNS 防泄漏</b><small>阻止 DNS 绕过当前代理</small></span><input id="dnsToggle" type="checkbox"></label>
+                  <label class="switch-row"><span><b>断网保护</b><small>代理异常时阻止流量直接联网</small></span><input id="killToggle" type="checkbox"></label>
+                  <label class="switch-row"><span><b>允许局域网设备使用</b><small>向同一局域网开放代理端口</small></span><input id="allowLanToggle" type="checkbox"></label>
+                  <label class="switch-row"><span><b>IPv6</b><small>当前由 Aegos 自动管理</small></span><input id="ipv6Toggle" type="checkbox"></label>
+                  <label class="input-row"><span><b>TUN 兼容模式</b><small>默认 mixed，异常时再调整</small></span><select id="tunStackSelect"><option value="mixed">mixed</option><option value="gvisor">gvisor</option><option value="system">system</option></select></label>
+                </div>
+              </section>
+
+              <section class="settings-section settings-reliability-section">
+                <header class="settings-section-head">
+                  <h3>自动恢复</h3>
+                  <span id="settingsReliabilitySummary">自动恢复开启</span>
+                </header>
+                <div class="settings-grid compact-grid">
+                  <label class="switch-row"><span><b>自动恢复网络</b><small>异常时尝试恢复当前连接</small></span><input id="reliabilityAutoToggle" type="checkbox"></label>
+                  <label class="switch-row"><span><b>订阅故障转移</b><small>当前订阅不可用时寻找可用订阅</small></span><input id="profileFailoverToggle" type="checkbox"></label>
+                  <label class="input-row"><span><b>可接受的最大延迟</b><small>超过此值不作为恢复候选</small></span><input id="reliabilityMaxDelayInput" type="number" min="100" max="10000"></label>
+                  <label class="input-row"><span><b>候选节点数量</b><small>限制恢复时检查的节点数量</small></span><input id="reliabilityCandidateLimitInput" type="number" min="3" max="200"></label>
+                </div>
+              </section>
+            </div>
+
             <section class="settings-section environment-section">
               <header class="settings-section-head">
-                <h3>安装与安全检查</h3>
-                <span id="environmentSummary">等待检查</span>
+                <div><h3>系统检查</h3><small>组件、权限、端口和其他代理冲突</small></div>
+                <span id="environmentSummary">尚未检查</span>
               </header>
               <div id="environmentRows" class="environment-list"></div>
-              <div class="settings-actions">
-                <button id="refreshEnvironmentBtn" class="ghost compact">刷新检查</button>
+              <div class="settings-actions environment-actions">
+                <button id="environmentDetailsBtn" class="ghost compact hidden">查看全部</button>
+                <button id="refreshEnvironmentBtn" class="primary compact">运行检查</button>
               </div>
             </section>
 
-            <section class="settings-section">
-              <header class="settings-section-head">
-                <h3>代理接管</h3>
-                <span id="settingsProxySummary">系统代理未开启</span>
-              </header>
-              <div class="settings-grid compact-grid">
-                <label class="switch-row"><span><b>系统代理</b><small>Windows 代理开关</small></span><input id="systemProxyToggle" type="checkbox"></label>
-                <label class="switch-row"><span><b>连接后自动系统代理</b><small>启动核心后自动接管</small></span><input id="startProxyToggle" type="checkbox"></label>
-                <label class="switch-row"><span><b>允许局域网</b><small>开放局域网访问</small></span><input id="allowLanToggle" type="checkbox"></label>
-                <label class="switch-row"><span><b>IPv6</b><small>启用 IPv6 支持</small></span><input id="ipv6Toggle" type="checkbox"></label>
-              </div>
-            </section>
-
-            <section class="settings-section">
-              <header class="settings-section-head">
-                <h3>安全与网络</h3>
-                <span>TUN / DNS / 断网保护</span>
-              </header>
-              <div class="settings-grid compact-grid">
-                <label class="switch-row"><span><b>TUN 模式</b><small>接管应用流量</small></span><input id="tunToggle" type="checkbox"></label>
-                <label class="switch-row"><span><b>DNS 防泄漏</b><small>DNS hijack: any:53</small></span><input id="dnsToggle" type="checkbox"></label>
-                <label class="switch-row"><span><b>断网保护</b><small>代理异常时阻止直连流量</small></span><input id="killToggle" type="checkbox"></label>
-                <label class="input-row"><span><b>TUN Stack</b><small>内核栈选择</small></span><select id="tunStackSelect"><option value="mixed">mixed</option><option value="gvisor">gvisor</option><option value="system">system</option></select></label>
-              </div>
-            </section>
-
-            <section class="settings-section">
-              <header class="settings-section-head">
-                <h3>自愈策略</h3>
-                <span id="settingsReliabilitySummary">自动自愈开启</span>
-              </header>
-              <div class="settings-grid compact-grid">
-                <label class="switch-row"><span><b>Aegos 自愈引擎</b><small>异常时自动恢复</small></span><input id="reliabilityAutoToggle" type="checkbox"></label>
-                <label class="switch-row"><span><b>订阅故障转移</b><small>切换可用订阅</small></span><input id="profileFailoverToggle" type="checkbox"></label>
-                <label class="input-row"><span><b>最大延迟 ms</b><small>候选节点阈值</small></span><input id="reliabilityMaxDelayInput" type="number" min="100" max="10000"></label>
-                <label class="input-row"><span><b>候选数量</b><small>测速候选上限</small></span><input id="reliabilityCandidateLimitInput" type="number" min="3" max="200"></label>
-              </div>
-            </section>
-
-            <section class="settings-section">
-              <header class="settings-section-head">
-                <h3>高级运行时</h3>
-                <span>端口与日志</span>
-              </header>
+            <details class="settings-section settings-advanced">
+              <summary class="settings-section-head">
+                <div><h3>高级设置</h3><small>端口、日志和维护操作</small></div>
+                <span class="settings-disclosure" aria-hidden="true"></span>
+              </summary>
               <div class="form-grid">
                 <label><span>混合代理端口</span><input id="mixedPortInput" type="number" min="1024" max="65535"></label>
                 <label><span>控制端口</span><input id="controllerPortInput" type="number" min="1024" max="65535"></label>
                 <label><span>日志等级</span><select id="logLevelSelect"><option value="info">info</option><option value="warning">warning</option><option value="error">error</option><option value="debug">debug</option></select></label>
               </div>
               <div class="settings-actions">
-                <button id="savePortBtn" class="primary compact">保存高级项</button>
-                <button id="elevateBtn" class="ghost">管理员重启</button>
-                <button id="restartCoreBtn" class="ghost">重启内核</button>
+                <button id="savePortBtn" class="primary compact">保存高级设置</button>
+                <button id="elevateBtn" class="ghost">以管理员身份重启</button>
+                <button id="restartCoreBtn" class="ghost">重启网络核心</button>
               </div>
-            </section>
+            </details>
           </div>
         </section>
       </section>
     </section>
   </main>
+  <div id="statusCenterOverlay" class="status-center-overlay hidden" aria-hidden="true">
+    <aside id="statusCenterPanel" class="status-center-panel" role="dialog" aria-modal="true" aria-labelledby="statusCenterTitle" tabindex="-1">
+      <header class="status-center-header">
+        <div>
+          <span class="status-center-eyebrow">Aegos Runtime</span>
+          <h2 id="statusCenterTitle">状态中心</h2>
+          <p id="statusCenterSummary">查看网络接管、当前出口与后台任务。</p>
+        </div>
+        <button id="closeStatusCenterBtn" class="icon-button" aria-label="关闭状态中心" title="关闭状态中心">
+          <span class="aegos-icon icon-close" aria-hidden="true"></span>
+        </button>
+      </header>
+
+      <div class="status-center-content">
+        <section class="status-center-section status-card" aria-labelledby="networkStatusTitle">
+          <div class="status-center-section-head">
+            <h3 id="networkStatusTitle">网络状态</h3>
+            <span>同一份运行时快照</span>
+          </div>
+          <dl>
+            <div><dt>软件状态</dt><dd id="softwareState">未运行</dd></div>
+            <div><dt>网络可用</dt><dd id="networkAvailabilityState">未验证</dd></div>
+            <div><dt>保护模式</dt><dd id="protectMode">未接管</dd></div>
+            <div><dt>DNS 防泄漏</dt><dd id="dnsState" class="ok">已开启</dd></div>
+            <div><dt>TUN 模式</dt><dd id="tunState">未开启</dd></div>
+            <div><dt>断网保护</dt><dd id="killState">未开启</dd></div>
+            <div id="proxyStateRow"><dt>&#31995;&#32479;&#20195;&#29702;</dt><dd id="proxyState">&#26410;&#24320;&#21551;</dd></div>
+            <div><dt>局域网 IP</dt><dd id="lanIpState" class="ok">-</dd></div>
+            <div><dt>&#24403;&#21069;&#21327;&#35758;</dt><dd id="protocolState" class="ok">DIRECT</dd></div>
+            <div><dt>代理端口</dt><dd id="proxyPortState">-</dd></div>
+            <div><dt>落地 IP</dt><dd id="outboundIpState">-</dd></div>
+          </dl>
+        </section>
+
+        <section class="status-center-section job-card" aria-labelledby="backgroundJobsTitle">
+          <div class="status-center-section-head">
+            <h3 id="backgroundJobsTitle">后台任务</h3>
+            <span>任务运行时仍可切换页面</span>
+          </div>
+          <div id="jobRows" class="job-list">
+            <p class="empty">&#26242;&#26080;&#21518;&#21488;&#20219;&#21153;</p>
+          </div>
+        </section>
+      </div>
+    </aside>
+  </div>
   <div id="nodeEditorOverlay" class="editor-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="nodeEditorTitle">
     <form id="nodeEditorForm" class="editor-dialog">
       <header>
@@ -381,7 +430,7 @@
           <h3 id="nodeEditorTitle">编辑固定节点</h3>
           <p>适合住宅、静态 IP 或自建节点；保存后会写入当前订阅配置。</p>
         </div>
-        <button id="closeNodeEditorBtn" type="button" aria-label="关闭">×</button>
+        <button id="closeNodeEditorBtn" class="icon-button" type="button" aria-label="关闭" title="关闭"><span class="aegos-icon icon-close" aria-hidden="true"></span></button>
       </header>
       <input id="nodeOriginalNameInput" type="hidden">
       <div class="editor-grid">

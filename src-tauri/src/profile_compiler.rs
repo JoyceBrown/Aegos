@@ -1,4 +1,4 @@
-use serde_json::Value as JsonValue;
+use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf};
@@ -35,6 +35,51 @@ pub(crate) fn compile_profile_source(
         yaml,
         report: runtime.report,
     })
+}
+
+pub(crate) fn verify_tun_candidate(
+    rendered_yaml: &str,
+    expected_enabled: bool,
+) -> Result<JsonValue, String> {
+    let source: YamlValue = serde_yaml::from_str(rendered_yaml)
+        .map_err(|err| format!("TUN candidate verification parse failed: {err}"))?;
+    let key = |value: &str| YamlValue::String(value.to_string());
+    let tun = source.get(key("tun"));
+    let configured = tun
+        .and_then(|value| value.get(key("enable")))
+        .and_then(YamlValue::as_bool)
+        .unwrap_or(false);
+    if configured != expected_enabled {
+        return Err(format!(
+            "TUN candidate verification failed: expected enable={expected_enabled}, got {configured}"
+        ));
+    }
+    if expected_enabled {
+        let auto_route = tun
+            .and_then(|value| value.get(key("auto-route")))
+            .and_then(YamlValue::as_bool)
+            .unwrap_or(false);
+        let auto_detect = tun
+            .and_then(|value| value.get(key("auto-detect-interface")))
+            .and_then(YamlValue::as_bool)
+            .unwrap_or(false);
+        let device = tun
+            .and_then(|value| value.get(key("device")))
+            .and_then(YamlValue::as_str)
+            .unwrap_or_default();
+        if !auto_route || !auto_detect || device != "Aegos" {
+            return Err(
+                "TUN candidate verification failed: Aegos device, automatic route, or interface detection is missing"
+                    .to_string(),
+            );
+        }
+        config_pipeline::runtime_dns_safety_report(&source)?;
+    }
+    Ok(json!({
+        "configured": configured,
+        "device": if expected_enabled { "Aegos" } else { "-" },
+        "dnsSafety": !expected_enabled || config_pipeline::runtime_dns_safety_report(&source).is_ok()
+    }))
 }
 
 fn sha256_text(text: &str) -> String {

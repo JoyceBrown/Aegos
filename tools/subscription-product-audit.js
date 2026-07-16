@@ -31,8 +31,16 @@ const applyProfileBody = bodyBetween(appJs, 'function applyOptimisticProfile', '
 const profileClickBody = bodyBetween(appJs, 'const profileSwitch =', 'const profileRename =');
 const addProfileBody = bodyBetween(mainRs, 'fn add_profile_url_detached', 'fn update_profile_detached');
 const updateProfileBody = bodyBetween(mainRs, 'fn update_profile_detached', 'fn update_all_profiles_detached');
+const semverAtLeast = (version, baseline) => {
+  const current = String(version).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const minimum = String(baseline).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  for (let index = 0; index < Math.max(current.length, minimum.length); index += 1) {
+    if ((current[index] || 0) !== (minimum[index] || 0)) return (current[index] || 0) > (minimum[index] || 0);
+  }
+  return true;
+};
 
-check('version is at least 3.4.14 subscription product checkpoint', /^3\.4\.(1[4-9]|20)$/.test(pkg.version), pkg.version);
+check('version is at least 3.4.14 subscription product checkpoint', semverAtLeast(pkg.version, '3.4.14'), pkg.version);
 
 check(
   'subscription diagnostics remain actionable',
@@ -49,11 +57,12 @@ check(
   'import and update are transactional with rollback',
   addProfileBody.includes('previous_profile_id') &&
     addProfileBody.includes('Profile import applied but startup failed; rolled back') &&
-    addProfileBody.includes('remove_file_confined') &&
-    updateProfileBody.includes('previous_raw') &&
+    addProfileBody.includes('ConfigDeploymentTransaction::stage') &&
+    addProfileBody.includes('deployment.rollback("subscription startup verification failed")') &&
     updateProfileBody.includes('previous_profile') &&
     updateProfileBody.includes('Profile update applied but startup failed; restored previous subscription') &&
-    updateProfileBody.includes('atomic_write_text_confined'),
+    updateProfileBody.includes('ConfigDeploymentTransaction::stage') &&
+    updateProfileBody.includes('deployment.rollback("subscription runtime restart failed")'),
   'bad subscriptions must not overwrite the last usable profile'
 );
 

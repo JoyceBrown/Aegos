@@ -126,9 +126,11 @@ check(
   appJs.includes('speedTestStarting') &&
     appJs.includes('speedTestButtons') &&
     appJs.includes('function applySpeedStatusToNodes') &&
-    appJs.includes("scheduleRowsRender(latestGroup.items, { force: true, target: 'all', delay: 0 })") &&
+    appJs.includes('function flushSpeedResultEvents') &&
+    appJs.includes('requestAnimationFrame(flushSpeedResultEvents)') &&
+    appJs.includes('updateVisibleNodeDelays(visibleChanges)') &&
     appJs.includes('function refreshVisibleNodesForSpeed') &&
-    appJs.includes('queueNodeRefresh') &&
+    appJs.includes("listen('aegos-speed-test', handleSpeedTestEvent)") &&
     !appJs.includes("$('#quickTestBtn').onclick = (event) => runButtonAction"),
   'foreground UI is not marked busy and speed results update home/nodes together'
 );
@@ -225,9 +227,10 @@ check(
     mainRs.includes('protocol_concurrency("tuic")') &&
     mainRs.includes('protocol_concurrency("hysteria2")') &&
     mainRs.includes('protocol_scheduler_handles_reality_hysteria2_and_tuic_explicitly') &&
-    mainRs.includes('"tuic" => 8') &&
-    mainRs.includes('"hysteria" | "wireguard" => 10') &&
-    mainRs.includes('FLCLASH_STYLE_SPEED_BATCH_SIZE: usize = 100') &&
+    mainRs.includes('"tuic" => 6') &&
+    mainRs.includes('"hysteria" | "wireguard" => 8') &&
+    mainRs.includes('adaptive_speed_concurrency') &&
+    mainRs.includes('SPEED_GLOBAL_CONCURRENCY_MAX') &&
     mainRs.includes('text.contains("reality")'),
   'TUIC/Reality/Hysteria2 have tested scheduler branches'
 );

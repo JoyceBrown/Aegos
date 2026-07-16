@@ -140,7 +140,13 @@ try {
             { name: 'US 01', server: 'us.example', type: 'vless', alive: true, delay: -1, healthStatus: 'unknown', healthScore: 999999 }
           ]
         }];
+        window.__aegosMockGroups = groups;
         let speedTestPollsRemaining = 0;
+        let speedRunId = 42;
+        const eventListeners = new Map();
+        const emitEvent = (name, payload) => {
+          for (const listener of eventListeners.get(name) || []) listener({ event: name, payload });
+        };
         const speedStatusSnapshot = (running, completed) => {
           const delays = Object.fromEntries(groups[0].items.map((item) => [item.name, item.delay]));
           const health = Object.fromEntries(groups[0].items.map((item) => [item.name, {
@@ -154,6 +160,7 @@ try {
             last_tested_at: item.lastTestedAt || 0
           }]));
           return {
+            runId: speedRunId,
             running,
             total: groups[0].items.length,
             completed,
@@ -248,14 +255,25 @@ try {
             failed: 1,
             errors: 0,
             warnings: 1,
-            nextActions: ['Open logs and inspect the latest core warning.']
+            nextActions: ['重启网络核心后重新检查。']
           },
           checks: [
-            { name: 'mihomo core', ok: true, detail: 'mock', severity: 'ok', category: 'runtime', hint: '' },
-            { name: 'Recent core logs', ok: false, detail: '[warn] mock warning', severity: 'warning', category: 'logs', hint: 'Open logs and inspect the latest core warning.', actionable: true }
-          ]
+            { name: 'mihomo core', title: '网络核心', code: 'AEG-CON-001', ok: true, detail: '网络核心文件可用。', technicalDetail: 'mock core path', severity: 'ok', category: 'connection', hint: '', repair: { available: false } },
+            { name: 'Recent core logs', title: '近期网络异常', code: 'AEG-NOD-099', ok: false, detail: '近期日志中出现了需要关注的节点错误。', technicalDetail: '[warn] mock warning', severity: 'warning', category: 'node', hint: '重启网络核心后重新检查。', actionable: true, repair: { available: true, kind: 'restart-core', label: '重启网络核心' } }
+          ],
+          evidenceLogs: [{ at: 'now', level: 'warn', category: 'core', line: 'mock warning' }],
+          groups: ['connection', 'subscription', 'node', 'dns', 'tun', 'system-proxy', 'firewall']
         });
-        window.__TAURI__ = { core: { invoke: async (command, args = {}) => {
+        window.__TAURI__ = {
+          event: {
+            listen: async (name, listener) => {
+              const listeners = eventListeners.get(name) || [];
+              listeners.push(listener);
+              eventListeners.set(name, listeners);
+              return () => eventListeners.set(name, (eventListeners.get(name) || []).filter((item) => item !== listener));
+            }
+          },
+          core: { invoke: async (command, args = {}) => {
           calls.push({ command, args });
           if (command === 'app_status') return status();
           if (command === 'start_core') { state.running = true; state.trafficTakeover = true; if (!state.tunEnabled) state.systemProxy = true; return { ok: true, trafficTakeover: true }; }
@@ -315,6 +333,7 @@ try {
               state.systemProxy = true;
               result = { ok: true, endpoint: '127.0.0.1:' + state.settings.mixedPort };
             }
+            if (args.kind === 'repairDiagnostic') result = { ok: true, action: args.payload?.action };
             if (args.kind === 'recoverNetwork') {
               state.running = true;
               state.trafficTakeover = true;
@@ -324,6 +343,14 @@ try {
             if (args.kind === 'updateProfile') result = { profile: profiles.find((item) => item.id === args.payload?.id) };
             if (args.kind === 'updateAllProfiles') result = { updated: profiles.filter((item) => item.sourceUrl), failed: [], total: 1 };
             if (args.kind === 'addProfileUrl') result = { profile: profiles[1] };
+            if (args.kind === 'applyRoutingDrafts') result = {
+              appliedCount: Array.isArray(args.payload?.drafts) ? args.payload.drafts.length : 0,
+              profileName: profiles.find((item) => item.id === state.activeProfileId)?.name || 'Example Sub',
+              rollbackAvailable: true,
+              deploymentValidation: { controllerReady: true, runtimeIdentityOk: true, networkAvailable: true }
+            };
+            if (args.kind === 'undoRoutingApply') result = { undone: true, rollbackAvailable: false };
+            if (args.kind === 'applyRoutingRuleEdit') result = { ok: true, action: args.payload?.action || 'add' };
             const job = { id, kind: args.kind, label: args.kind, state: 'succeeded', progress: 1, total: 1, message: 'done', result, error: null };
             jobs.set(id, job);
             return { ...job, state: 'running' };
@@ -340,6 +367,7 @@ try {
             return job;
           }
           if (command === 'start_proxy_delay_test') {
+            speedRunId = 42;
             state.running = true;
             groups[0].items.forEach((item, index) => {
               item.delay = 0;
@@ -352,9 +380,51 @@ try {
               item.recommended = false;
             });
             speedTestPollsRemaining = 2;
+            setTimeout(() => emitEvent('aegos-speed-test', {
+              kind: 'started',
+              profileId: state.activeProfileId,
+              status: speedStatusSnapshot(true, 0)
+            }), 0);
+            const values = [31, 48, 116, 132, 99];
+            groups[0].items.forEach((item, index) => {
+              setTimeout(() => {
+                const testedAt = Math.floor(Date.now() / 1000);
+                item.delay = values[index];
+                item.alive = true;
+                item.healthStatus = item.delay < 100 ? 'low' : 'available';
+                item.healthScore = item.delay + (item.type === 'tuic' ? 18 : 0);
+                item.medianDelay = item.delay;
+                item.jitter = index;
+                item.healthConfidence = item.delay < 100 ? 'high' : 'medium';
+                item.lastTestedAt = testedAt;
+                item.recommended = item.name === 'HK 02';
+                emitEvent('aegos-speed-test', {
+                  kind: 'result',
+                  runId: 42,
+                  profileId: state.activeProfileId,
+                  name: item.name,
+                  selectName: item.name,
+                  protocol: item.type,
+                  delay: item.delay,
+                  failureReason: '',
+                  completed: index + 1,
+                  total: groups[0].items.length,
+                  ok: index + 1,
+                  failed: 0,
+                  health: speedStatusSnapshot(true, index + 1).health[item.name]
+                });
+              }, 20 + index * 12);
+            });
+            setTimeout(() => emitEvent('aegos-speed-test', {
+              kind: 'complete',
+              profileId: state.activeProfileId,
+              status: speedStatusSnapshot(false, groups[0].items.length)
+            }), 100);
             return speedStatusSnapshot(true, 0);
           }
           if (command === 'test_single_proxy_delay') {
+            speedRunId = 77;
+            speedTestPollsRemaining = 2;
             const item = groups[0].items.find((item) => item.name === args.name);
             if (item) {
               item.delay = 0;
@@ -433,7 +503,7 @@ try {
                 { rule: 'DOMAIN-SUFFIX,example.com', chains: 'GLOBAL -> HK 01', count: 1, note: 'mock hit' }
               ],
               rules: [
-                { index: 1, kind: 'DOMAIN-SUFFIX', condition: 'example.com', target: 'GLOBAL', status: 'readonly', note: 'profile rule', options: [] },
+                { index: 1, kind: 'DOMAIN-SUFFIX', condition: state.activeProfileId + '.example.com', target: 'GLOBAL', status: 'readonly', note: 'profile rule', options: [] },
                 { index: 2, kind: 'DOMAIN', condition: 'api.ipify.org', target: 'Aegos Landing IP', status: 'readonly', note: 'system rule', options: [] }
               ],
               summary: { groupCount: 2, autoGroupCount: 1, recentRuleHits: 1, ruleCount: 2 }
@@ -441,6 +511,19 @@ try {
           }
           if (command === 'connections') return [{ id: '1', metadata: { host: 'example.com' }, rule: 'MATCH', chains: ['GLOBAL', 'HK 01'], upload: 1, download: 2 }];
           if (command === 'active_connection_count') return { count: state.trafficTakeover ? 2 : 0, checkedAt: Date.now() };
+          if (command === 'environment_readiness') {
+            await new Promise((resolve) => setTimeout(resolve, 650));
+            return {
+            summary: { label: '环境可用', level: 'ok', errors: 0, warnings: 0 },
+            checks: [
+              { id: 'webview2', label: 'WebView2', detail: 'available', action: '', level: 'ok', ok: true },
+              { id: 'admin', label: 'Administrator', detail: 'normal', action: '', level: 'ok', ok: true },
+              { id: 'mixed-port', label: 'Proxy port', detail: 'available', action: '', level: 'ok', ok: true },
+              { id: 'controller-port', label: 'Controller port', detail: 'available', action: '', level: 'ok', ok: true },
+              { id: 'core-resource', label: 'Core file', detail: 'available', action: '', level: 'ok', ok: true }
+            ]
+          };
+          }
           if (command === 'export_logs') return { path: 'C:\\Users\\JIE\\AppData\\Roaming\\Aegos\\diagnostics\\aegos-logs-smoke.txt', count: status().logs.length };
           if (command === 'close_connection' || command === 'close_connections' || command === 'clear_logs') { await new Promise((resolve) => setTimeout(resolve, 350)); return true; }
           if (command === 'diagnostics') {
@@ -469,6 +552,32 @@ try {
       el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
       await new Promise((resolve) => setTimeout(resolve, 20));
     };
+    const journeys = {
+      startupTruth: false,
+      tunOffConnection: false,
+      tunOnConnection: false,
+      measurementOnlySpeed: false,
+      nodeAndOutboundIp: false,
+      subscriptionLifecycle: false,
+      routingRuleLifecycle: false,
+      diagnosticsRepairAndExport: false,
+      settingsAndEnvironment: false,
+      nonBlockingBackgroundWork: false
+    };
+    const statusCenterCallsBefore = window.__aegosCalls.length;
+    document.querySelector('#titlebarStatusCenterBtn').focus();
+    document.querySelector('#titlebarStatusCenterBtn').click();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    if (document.querySelector('#statusCenterOverlay')?.classList.contains('hidden')) throw new Error('status center did not open from titlebar');
+    if (document.activeElement?.id !== 'closeStatusCenterBtn') throw new Error('status center did not receive focus');
+    if (!document.querySelector('#statusCenterPanel .status-card #lanIpState')) throw new Error('status center did not preserve runtime status fields');
+    if (window.__aegosCalls.length !== statusCenterCallsBefore) throw new Error('status center open triggered a backend command');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    if (!document.querySelector('#statusCenterOverlay')?.classList.contains('hidden')) throw new Error('status center did not close with Escape');
+    if (document.activeElement?.id !== 'titlebarStatusCenterBtn') throw new Error('status center did not restore trigger focus');
+    if (window.__aegosCalls.length !== statusCenterCallsBefore) throw new Error('status center close triggered a backend command');
+    const statusCenterInitialBackendDelta = window.__aegosCalls.length - statusCenterCallsBefore;
+    journeys.startupTruth = true;
     await click('#connectBtn');
     if (document.querySelector('#pageTitle')) throw new Error('duplicate top-left page title still renders');
     if (![...document.querySelectorAll('.status-card div')].some((item) => item.querySelector('dd#lanIpState') && item.querySelector('dt')?.textContent.includes('IP'))) throw new Error('network status did not render LAN IP label/value pair');
@@ -477,11 +586,12 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     if (document.querySelector('#connectBtn')?.textContent.trim() !== '\u65ad\u5f00\u8fde\u63a5') throw new Error('connect button did not reconcile to disconnect after start');
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'refreshOutboundIp')) throw new Error('first connect did not auto refresh outbound IP');
+    journeys.tunOffConnection = true;
     if (document.querySelector('#quickIpBtn')) throw new Error('manual outbound IP quick action still renders');
     await click('#quickKillBtn');
     await new Promise((resolve) => setTimeout(resolve, 420));
     if (!document.querySelector('#quickKillBtn .kill-icon')) throw new Error('disconnect protection icon is not using stable css icon');
-    if (!document.querySelector('#killToggle')?.checked) throw new Error('quick kill protection did not update setting');
+    if (!document.querySelector('#quickKillBtn')?.classList.contains('active')) throw new Error('visible disconnect protection action did not update immediately');
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'updateSetting' && item.args.payload?.key === 'killSwitchEnabled')) throw new Error('quick kill protection did not call backend setting');
     await click('#quickUpdateSubBtn');
     if (!document.querySelector('[data-home-mode="region"]')?.classList.contains('active')) throw new Error('home did not default to common regions');
@@ -493,8 +603,12 @@ try {
     await navDown('[data-page="nodes"]');
     await new Promise((resolve) => setTimeout(resolve, 380));
     if (!document.querySelector('#nodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('node page did not receive quick home speed results');
+    const speedStartCall = window.__aegosCalls.find((item) => item.command === 'start_proxy_delay_test');
+    if (!Array.isArray(speedStartCall?.args?.priorityNames) || speedStartCall.args.priorityNames.length === 0) throw new Error('speed test did not prioritize current visible nodes');
+    if (window.__aegosCalls.some((item) => item.command === 'speed_test_status')) throw new Error('healthy speed event stream unnecessarily fell back to polling');
     await navDown('[data-page="settings"]');
     if (!document.querySelector('[data-page-panel="settings"]')?.classList.contains('active')) throw new Error('speed test blocked sidebar page switching');
+    if (!document.querySelector('#killToggle')?.checked) throw new Error('settings page did not reconcile disconnect protection when it became visible');
     await navDown('[data-page="home"]');
     await click('[data-home-mode="favorite"]');
     await click('[data-home-mode="region"]');
@@ -504,6 +618,7 @@ try {
     if (document.querySelector('#homeNodeRows [data-node-action="test"].is-pending')) throw new Error('home filter switch left rows stuck in testing state after speed test');
     const switchCallsAfterSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     if (switchCallsAfterSpeed !== switchCallsBeforeSpeed) throw new Error('speed test triggered a proxy switch');
+    journeys.measurementOnlySpeed = true;
     if (document.querySelector('#switchRecommendedBtn') || document.querySelector('.recommend-compact')) throw new Error('recommended switch control still renders');
     if (document.querySelector('#autoGroupNotice')?.classList.contains('hidden')) throw new Error('automatic strategy group warning did not render');
     if (document.querySelector('#bestNodeList') || document.querySelector('.best-node')) throw new Error('duplicate recommended node strip still renders');
@@ -516,6 +631,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'refreshOutboundIp')) throw new Error('node switch did not auto refresh outbound IP');
     if (!document.querySelector('#outboundMetric')?.textContent.includes('203.0.113.8')) throw new Error('auto refreshed outbound IP did not render');
+    journeys.nodeAndOutboundIp = true;
     if (!document.querySelector('#homeNodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('home node delays did not update after quick speed test');
     const switchCallsBeforeCurrentNodeTest = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     const currentNodeButton = document.querySelector('#currentNodeTestBtn');
@@ -559,6 +675,18 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 420));
     if (document.querySelector('#connectBtn')?.textContent.trim() !== '\u8fde\u63a5') throw new Error('manual system proxy toggle auto-connected traffic takeover');
     if (!document.querySelector('#systemProxyToggle')?.checked || document.querySelector('#systemProxyMetric')?.classList.contains('is-danger') === false) throw new Error('manual system proxy preference did not show pending connection state');
+    const tunToggle = document.querySelector('#tunHomeToggle');
+    tunToggle.click();
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    if (!tunToggle.checked || document.querySelector('#tunState')?.textContent.trim() !== '\u5df2\u5f00\u542f') throw new Error('TUN preference did not reconcile before connection');
+    await click('#connectBtn');
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    if (document.querySelector('#connectBtn')?.textContent.trim() !== '\u65ad\u5f00\u8fde\u63a5') throw new Error('TUN-on connection did not reach connected state');
+    if (!document.querySelector('#tunHomeToggle')?.checked || document.querySelector('#tunState')?.textContent.trim() !== '\u5df2\u5f00\u542f') throw new Error('TUN-on connection lost TUN runtime truth');
+    journeys.tunOnConnection = true;
+    await click('#connectBtn');
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    if (document.querySelector('#connectBtn')?.textContent.trim() !== '\u8fde\u63a5') throw new Error('TUN-on disconnect did not restore idle connection state');
     if (document.querySelector('#quickTunBtn') || document.querySelector('#quickCopyProxyBtn') || document.querySelector('#smartRecoverBtn') || document.querySelector('#quickModeBtn')) throw new Error('removed quick actions still render');
     await click('#quickProfileBtn');
     if (document.querySelector('[data-page-panel="profiles"]')?.classList.contains('active')) throw new Error('quick subscription switch navigated to profiles page');
@@ -614,7 +742,7 @@ try {
     await navDown('[data-page="settings"]');
     await navDown('[data-page="diagnostics"]');
     await navDown('[data-page="profiles"]');
-    await navDown('[data-page="logs"]');
+    await navDown('[data-page="diagnostics"]');
     await navDown('[data-page="home"]');
     await navDown('[data-page="connections"]');
     await navDown('[data-page="settings"]');
@@ -629,10 +757,18 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 900));
     if (!document.querySelector('#routingGroupRows .routing-row')) throw new Error('routing page did not render strategy rows after quiet load');
     if (!document.querySelector('#routingReadonlyBadge')?.textContent.includes('安全预览')) throw new Error('routing page did not keep safe preview badge visible');
-    if (!document.querySelector('#routingRuleRows .routing-rule-row')?.textContent.includes('example.com')) throw new Error('routing page did not render ordinary rule rows');
+    const routingAdvanced = document.querySelector('#routingAdvancedPanel');
+    if (!routingAdvanced) throw new Error('routing advanced details control is missing');
+    routingAdvanced.open = true;
+    routingAdvanced.dispatchEvent(new Event('toggle'));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    if (!document.querySelector('#routingRuleRows .routing-rule-row')?.textContent.includes('url-test.example.com')) throw new Error('routing page rendered a stale profile snapshot after subscription switch');
     if (document.querySelector('#routingRuleRows')?.textContent.includes('api.ipify.org')) throw new Error('routing page leaked Aegos internal landing IP rule into ordinary rules');
+    if (document.querySelectorAll('#routingRuleRows .routing-rule-row').length > 80) throw new Error('routing advanced details exceeded the bounded row window');
+    routingAdvanced.open = false;
+    routingAdvanced.dispatchEvent(new Event('toggle'));
     if (document.querySelector('#routingSystemRuleCount')?.textContent.trim() !== '1') throw new Error('routing page did not count hidden system rules');
-    document.querySelector('#routingRuleTestInput').value = 'www.example.com';
+    document.querySelector('#routingRuleTestInput').value = 'www.url-test.example.com';
     await click('#testRoutingRuleBtn');
     if (!document.querySelector('#routingRuleTestResult')?.textContent.includes('GLOBAL')) throw new Error('routing rule test did not explain the matched target');
     await click('[data-routing-test-example="openai.com"]');
@@ -647,6 +783,13 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 40));
     if (!document.querySelector('#routingAppDraftPreview')?.dataset.rule?.includes('PROCESS-NAME,Telegram.exe')) throw new Error('app routing preview did not create a process-name draft');
     if (window.__aegosCalls.length !== callsBeforeAppDraft) throw new Error('app routing preview triggered a backend command');
+    await click('#verifyAllRoutingDraftsBtn');
+    if ([...document.querySelectorAll('#routingDraftList .routing-draft-row')].some((row) => !row.textContent.includes('\u5df2\u9a8c\u8bc1'))) throw new Error('routing draft verification did not mark every draft verified');
+    await click('#applyRoutingDraftsBtn');
+    await new Promise((resolve) => setTimeout(resolve, 520));
+    if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'applyRoutingDrafts')) throw new Error('routing drafts did not use the safe deployment job');
+    if (!document.querySelector('#routingApplyStatus')?.textContent.includes('\u5df2\u5e94\u7528')) throw new Error('routing apply did not show verified applied state');
+    journeys.routingRuleLifecycle = true;
     if (document.querySelector('#routingModeState')?.textContent.trim() !== document.querySelector('#modeLabel')?.textContent.trim()) throw new Error('routing mode summary did not match current backend mode');
     await navDown('[data-page="diagnostics"]');
     await new Promise((resolve) => setTimeout(resolve, 900));
@@ -717,6 +860,43 @@ try {
     await click('[data-node-filter="favorite"]');
     if (!document.querySelector('#nodeRows .row[data-node]')) throw new Error('favorite node filter did not show favorited node');
     await click('#nodeRows .row[data-node]');
+    window.__aegosMockGroups.push(
+      { name: 'Proxies', type: 'Selector', now: 'HK 01', items: window.__aegosMockGroups[0].items },
+      { name: 'Spotify', type: 'Selector', now: 'HK 01', items: window.__aegosMockGroups[0].items.slice(0, 2) },
+      { name: '鑷姩閫夋嫨', type: 'URLTest', now: 'HK 02', items: window.__aegosMockGroups[0].items }
+    );
+    setLatestGroups(structuredClone(window.__aegosMockGroups), 'Proxies');
+    renderNodeGroupSwitcher();
+    const groupCards = [...document.querySelectorAll('#nodeGroupStrip [data-node-group]')];
+    if (groupCards.length < 3) throw new Error('strategy fixture did not render enough cards: ' + groupCards.length);
+    if (groupCards.filter((item) => item.textContent.includes('自动选择')).length !== 1) throw new Error('legacy auto-select groups were not normalized and deduplicated');
+    if (document.querySelector('#nodeGroupStrip')?.textContent.includes('鑷姩閫夋嫨')) throw new Error('legacy auto-select mojibake remained visible');
+    const firstGroup = groupCards[0];
+    const firstBox = firstGroup.getBoundingClientRect();
+    firstGroup.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: firstBox.left + 10, clientY: firstBox.top + 10 }));
+    document.querySelector('[data-node-group-menu-action="sort"]')?.click();
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    const groupRegion = document.querySelector('#nodeGroupRegion');
+    const nodeTableBeforeDrag = document.querySelector('.node-table');
+    const regionBox = groupRegion?.getBoundingClientRect();
+    const nodeTableBox = nodeTableBeforeDrag?.getBoundingClientRect();
+    if (!regionBox || !nodeTableBox || regionBox.bottom > nodeTableBox.top + 1) throw new Error('strategy sort region overlapped the node table');
+    const strip = document.querySelector('#nodeGroupStrip');
+    const sortableCards = [...strip.querySelectorAll('[data-node-group]')];
+    const sourceCard = sortableCards[0];
+    const targetCard = sortableCards[1];
+    const sourceBox = sourceCard.getBoundingClientRect();
+    const targetBox = targetCard.getBoundingClientRect();
+    const sourceName = sourceCard.dataset.nodeGroup;
+    sourceCard.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 31, pointerType: 'mouse', clientX: sourceBox.left + 8, clientY: sourceBox.top + 8 }));
+    strip.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, buttons: 1, pointerId: 31, pointerType: 'mouse', clientX: targetBox.right - 4, clientY: targetBox.top + targetBox.height / 2 }));
+    strip.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, button: 0, pointerId: 31, pointerType: 'mouse', clientX: targetBox.right - 4, clientY: targetBox.top + targetBox.height / 2 }));
+    if (strip.querySelector('[data-node-group]')?.dataset.nodeGroup === sourceName) throw new Error('pointer strategy-group drag did not change visual order');
+    document.querySelector('[data-node-group-sort-done]')?.click();
+    if (!document.querySelector('#nodeGroupSortBar')?.classList.contains('hidden')) throw new Error('strategy sort mode did not close cleanly');
+    window.__aegosMockGroups.splice(1);
+    setLatestGroups(structuredClone(window.__aegosMockGroups));
+    renderNodeGroupSwitcher();
     await click('[data-page="connections"]');
     await click('#refreshConnectionsBtn');
     await new Promise((resolve) => setTimeout(resolve, 420));
@@ -762,17 +942,26 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 20));
     if (document.querySelector('[data-profile-row="url-test"]')) throw new Error('profile row did not remove optimistically');
     await new Promise((resolve) => setTimeout(resolve, 420));
+    journeys.subscriptionLifecycle = true;
     await click('[data-page="diagnostics"]');
     await click('#runDiagBtn');
     if (!document.querySelector('#runDiagBtn')?.classList.contains('is-pending')) throw new Error('diagnostics button did not show running feedback');
-    await navDown('[data-page="logs"]');
-    if (!document.querySelector('[data-page-panel="logs"]')?.classList.contains('active')) throw new Error('running diagnostics blocked sidebar page switching');
+    await click('[data-diagnostic-view="logs"]');
+    if (!document.querySelector('[data-diagnostic-view-panel="logs"]')?.classList.contains('active')) throw new Error('running diagnostics blocked the internal logs view');
+    await navDown('[data-page="settings"]');
+    if (!document.querySelector('[data-page-panel="settings"]')?.classList.contains('active')) throw new Error('running diagnostics blocked sidebar page switching');
     await navDown('[data-page="diagnostics"]');
     await new Promise((resolve) => setTimeout(resolve, 300));
+    await click('[data-diagnostic-view="overview"]');
     if (!document.querySelector('#diagSummary .diagnostic-status')) throw new Error('diagnostic summary did not render');
     if (!document.querySelector('#diagRows .diagnostic-row.severity-warning')) throw new Error('diagnostic severity row did not render');
     if (!document.querySelector('#diagRows .diagnostic-hint')) throw new Error('diagnostic actionable hint did not render');
-    await click('[data-page="logs"]');
+    if (!document.querySelector('#diagRows .diagnostic-code')?.textContent.includes('AEG-')) throw new Error('diagnostic error code did not render');
+    if (!document.querySelector('[data-diagnostic-group="node"]')) throw new Error('diagnostic category group did not render');
+    await click('#diagRows [data-diagnostic-repair="restart-core"]');
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'repairDiagnostic')) throw new Error('diagnostic repair did not use the repair background job');
+    await click('[data-diagnostic-view="logs"]');
     const callsBeforeLogFilter = window.__aegosCalls.length;
     await click('[data-log-filter="core"]');
     if (!document.querySelector('[data-log-filter="core"]')?.classList.contains('active')) throw new Error('core log filter did not activate');
@@ -783,10 +972,31 @@ try {
     if (window.__aegosCalls.length !== callsBeforeLogFilter) throw new Error('log filters triggered backend calls');
     await click('#exportLogsBtn');
     if (!window.__aegosCalls.some((item) => item.command === 'export_logs')) throw new Error('log export button did not call export_logs');
+    journeys.diagnosticsRepairAndExport = true;
+    const environmentCallsBeforeSettings = window.__aegosCalls.filter((item) => item.command === 'environment_readiness').length;
     await click('[data-page="settings"]');
+    await new Promise((resolve) => setTimeout(resolve, 220));
     if (!document.querySelector('.settings-summary-grid')) throw new Error('settings runtime summary did not render');
-    if (document.querySelectorAll('[data-page-panel="settings"] .settings-section').length < 5) throw new Error('settings grouped sections did not render');
+    if (document.querySelectorAll('[data-page-panel="settings"] .settings-section').length < 4) throw new Error('settings grouped sections did not render');
     if (!document.querySelector('#settingsTakeoverSummary')) throw new Error('settings takeover summary did not render');
+    const environmentCallsAfterSettings = window.__aegosCalls.filter((item) => item.command === 'environment_readiness').length;
+    if (environmentCallsAfterSettings !== environmentCallsBeforeSettings) throw new Error('opening settings automatically started the heavy system check');
+    if (getComputedStyle(document.querySelector('#environmentRows')).overflowY === 'auto' || getComputedStyle(document.querySelector('#environmentRows')).overflowY === 'scroll') throw new Error('system check kept a nested scroll container');
+    if (document.querySelector('.settings-advanced')?.open) throw new Error('advanced settings were expanded by default');
+    document.querySelector('#refreshEnvironmentBtn')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const settingsExitStarted = performance.now();
+    document.querySelector('[data-page="home"]')?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
+    const settingsExitMs = performance.now() - settingsExitStarted;
+    if (!document.querySelector('[data-page-panel="home"]')?.classList.contains('active') || settingsExitMs > 16) throw new Error('running system check blocked navigation away from settings');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    await navDown('[data-page="settings"]');
+    if (!document.querySelector('#environmentRows .environment-clear-state')) throw new Error('successful system check did not render a concise result');
+    document.querySelector('#environmentDetailsBtn')?.click();
+    if (document.querySelectorAll('#environmentRows .environment-row').length < 4) throw new Error('system check did not expose detailed checks on demand');
+    if ([...document.querySelectorAll('#environmentRows .environment-row')].some((item) => /Administrator|Proxy port|Controller port/.test(item.textContent))) throw new Error('system check leaked technical English labels');
+    journeys.settingsAndEnvironment = true;
     await click('#repairProxyBtn');
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'repairSystemProxy')) throw new Error('repair proxy button did not use repairSystemProxy job');
     await click('#elevateBtn');
@@ -799,10 +1009,19 @@ try {
     await click('#connectBtn');
     const jobCenterText = document.querySelector('#jobRows')?.textContent || '';
     if (!jobCenterText.includes('startCore') && !jobCenterText.includes('restartCore') && !jobCenterText.includes('updateSettings')) throw new Error('background job center did not render recent jobs');
+    if (document.querySelector('#sidebarJobCount')?.textContent.trim() === '0') throw new Error('compact sidebar did not summarize active background jobs');
+    if (!document.querySelector('#sidebarNodeName')?.textContent.trim()) throw new Error('compact sidebar did not summarize the current node');
+    const statusCenterCallsWithJobs = window.__aegosCalls.length;
+    document.querySelector('#sidebarStatusCenterBtn').click();
+    if (!document.querySelector('#statusCenterPanel #jobRows')?.textContent.includes('startCore') && !document.querySelector('#statusCenterPanel #jobRows')?.textContent.includes('restartCore') && !document.querySelector('#statusCenterPanel #jobRows')?.textContent.includes('updateSettings')) throw new Error('status center did not show background jobs');
+    if (window.__aegosCalls.length !== statusCenterCallsWithJobs) throw new Error('status center with jobs triggered a backend command');
+    document.querySelector('#closeStatusCenterBtn').click();
+    const statusCenterJobBackendDelta = window.__aegosCalls.length - statusCenterCallsWithJobs;
     const cancelJobButton = document.querySelector('#jobRows [data-job-cancel]');
     if (!cancelJobButton) throw new Error('background job center did not render cancel action');
     cancelJobButton.click();
     await new Promise((resolve) => setTimeout(resolve, 20));
+    journeys.nonBlockingBackgroundWork = true;
     const commands = window.__aegosCalls.map((item) => item.command);
     const advancedSettingsCall = window.__aegosCalls.find((item) => item.command === 'start_job' && item.args.kind === 'updateSettings');
     const required = ['start_job', 'job_status', 'cancel_job', 'start_proxy_delay_test', 'speed_test_status', 'relaunch_as_admin', 'connections', 'close_connections'];
@@ -810,14 +1029,24 @@ try {
     return {
       commands,
       missing: required.filter((name) => !commands.includes(name)),
-      missingJobKinds: ['startCore', 'stopCore', 'restartCore', 'setMode', 'changeProxy', 'repairSystemProxy', 'setActiveProfile', 'removeProfile', 'renameProfile', 'updateSetting', 'updateSettings', 'refreshOutboundIp', 'diagnostics', 'updateProfile', 'updateAllProfiles', 'addProfileUrl'].filter((name) => !jobKinds.includes(name)),
+      missingJobKinds: ['startCore', 'stopCore', 'restartCore', 'setMode', 'changeProxy', 'repairSystemProxy', 'setActiveProfile', 'removeProfile', 'renameProfile', 'updateSetting', 'updateSettings', 'refreshOutboundIp', 'diagnostics', 'updateProfile', 'updateAllProfiles', 'addProfileUrl', 'applyRoutingDrafts'].filter((name) => !jobKinds.includes(name)),
+      journeys,
+      forbiddenSideEffects: {
+        speedProxySwitches: switchCallsAfterSpeed - switchCallsBeforeSpeed,
+        standbySpeedConnections: startCoreAfterStandbySpeed - startCoreBeforeStandbySpeed,
+        standbySpeedProxySwitches: switchCallsAfterStandbySpeed - switchCallsBeforeStandbySpeed,
+        statusCenterInitialBackendCalls: statusCenterInitialBackendDelta,
+        statusCenterJobBackendCalls: statusCenterJobBackendDelta
+      },
       advancedSettings: advancedSettingsCall?.args?.payload?.updates || null,
       jobCenterText,
       notice: document.querySelector('#protectionNotice')?.textContent || ''
     };
   })()`);
-  const ok = report.missing.length === 0 && report.missingJobKinds.length === 0;
-  console.log(JSON.stringify({ ok, ...report }, null, 2));
+  const missingJourneys = Object.entries(report.journeys || {}).filter(([, complete]) => !complete).map(([name]) => name);
+  const forbiddenSideEffects = Object.entries(report.forbiddenSideEffects || {}).filter(([, count]) => Number(count) !== 0).map(([name, count]) => `${name}:${count}`);
+  const ok = report.missing.length === 0 && report.missingJobKinds.length === 0 && missingJourneys.length === 0 && forbiddenSideEffects.length === 0;
+  console.log(JSON.stringify({ ok, missingJourneys, forbiddenSideEffects, ...report }, null, 2));
   if (!ok) process.exitCode = 2;
 } finally {
   try { page?.close(); } catch {}

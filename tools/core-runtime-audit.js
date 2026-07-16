@@ -161,7 +161,7 @@ check(
     !mainRs.includes('fn controller_request(') &&
     !mainRs.includes('self.controller(') &&
     !mainRs.includes('fn traffic_snapshot(&self)') &&
-    mainRs.includes('.status_traffic_snapshot_or_idle(running, &self.last_traffic)') &&
+    mainRs.includes('.status_traffic_snapshot_or_idle(observed_running, &previous_traffic)') &&
     mainRs.includes('controller.ui_connections_snapshot_or_empty(running)') &&
     mainRs.includes('controller.home_active_connection_count_snapshot_or_idle(running)') &&
     mainRs.includes('.routing_recent_rule_hits_snapshot_or_empty(running)') &&
@@ -264,7 +264,8 @@ check(
     mainRs.includes('core_runtime::resolve_group_leaf(') &&
     configPipelineRs.includes('core_runtime::is_proxies_group_name') &&
     configPipelineRs.includes('core_runtime::is_aegos_auto_select_group_name') &&
-    configPipelineRs.includes('core_runtime::LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME') &&
+    configPipelineRs.includes('core_runtime::AEGOS_AUTO_SELECT_GROUP_NAME') &&
+    configPipelineRs.includes('matching_indices.into_iter().skip(1).rev()') &&
     !mainRs.includes('fn normalize_proxy_groups_snapshot_defaults') &&
     !mainRs.includes('fn apply_group_resolution_with_selected_map') &&
     !mainRs.includes('fn annotate_manual_groups_with_names') &&

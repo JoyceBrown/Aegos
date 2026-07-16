@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
+const coreRuntime = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'core_runtime.rs'), 'utf8');
+const speedRuntime = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'speed_runtime.rs'), 'utf8');
 const appJs = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -29,13 +31,15 @@ const batchFrontend = bodyBetween(appJs, 'async function testNodes', 'async func
 const singleFrontend = bodyBetween(appJs, 'async function waitForSingleNodeDelay', 'function openNodeEditor');
 const applySpeed = bodyBetween(appJs, 'function applySpeedStatusToNodes', 'function normalizeNodeItem');
 const profileSwitch = bodyBetween(appJs, 'function resetSpeedUiForProfileSwitch', 'async function pollSpeedTest');
+const versionParts = pkg.version.split('.').map((part) => Number(part || 0));
+const versionAtLeast3413 = versionParts[0] > 3 || (versionParts[0] === 3 && (versionParts[1] > 4 || (versionParts[1] === 4 && versionParts[2] >= 13)));
 
-check('version is at least 3.4.13 speed product checkpoint', /^3\.4\.(1[3-9]|20)$/.test(pkg.version), pkg.version);
+check('version is at least 3.4.13 speed product checkpoint', versionAtLeast3413, pkg.version);
 
 check(
   'speed-test snapshot has a result signature',
-  mainRs.includes('fn speed_result_signature') &&
-    mainRs.includes('"resultSignature": speed_result_signature(&speed)') &&
+  speedRuntime.includes('pub fn speed_result_signature') &&
+    speedRuntime.includes('"resultSignature": speed_result_signature(&speed)') &&
     appJs.includes('status.resultSignature ||') &&
     applySpeed.includes('status.runId || 0'),
   'prevents equal-count stale UI refresh misses'
@@ -67,8 +71,8 @@ check(
 
 check(
   'failure reasons are structured and visible',
-  ['timeout', 'dns', 'tls', 'auth', 'unsupported-protocol', 'blocked', 'unreachable', 'controller-unavailable', 'node-not-found'].every((key) => mainRs.includes(key)) &&
-    appJs.includes("return '被拦截'") &&
+  ['timeout', 'dns', 'tls', 'auth', 'unsupported-protocol', 'blocked', 'unreachable', 'controller-unavailable', 'node-not-found'].every((key) => `${mainRs}\n${coreRuntime}`.includes(key)) &&
+    appJs.includes("return '被阻断'") &&
     appJs.includes("return '不可达'") &&
     appJs.includes('function speedFailureReasonLabel') &&
     appJs.includes('function nodeSpeedNoteInfo') &&
@@ -80,8 +84,10 @@ check(
 check(
   'home and node pages share one speed state source',
   appJs.includes('let latestSpeedStatus') &&
-    appJs.includes('applySpeedStatusToNodes(status)') &&
-    appJs.includes("scheduleRowsRender(latestGroup.items, { force: true, target: 'all', delay: 0 })") &&
+    appJs.includes('const changed = applySpeedStatusToNodes(status)') &&
+    appJs.includes('updateVisibleNodeDelays(visibleChanges)') &&
+    appJs.includes('refreshVisibleNodesForSpeed(!status.running, changed)') &&
+    appJs.includes('pendingRowItems || latestGroup.items') &&
     appJs.includes('renderHomeNodeSummary(summaryRowsFromLatestGroup())') &&
     interactionSmoke.includes('node page did not receive quick home speed results') &&
     interactionSmoke.includes('home page did not receive node batch speed results'),

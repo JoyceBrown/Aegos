@@ -51,7 +51,8 @@ check(
   appJs.includes('function normalizeNodeGroups') &&
     appJs.includes('.filter((group) => !isGlobalGroup(group))') &&
     appJs.includes('visible.filter(isProxiesGroup).forEach(pushGroup)') &&
-    appJs.includes('visible.filter(isAutoSelectGroup).forEach(pushGroup)') &&
+    appJs.includes('.filter(isAutoSelectGroup)') &&
+    appJs.includes("const key = isAutoSelectGroup(group) ? 'auto-select'") &&
     appJs.includes('if (autoGroup && !visible.some(isAutoSelectGroup)) pushGroup(autoGroup)') &&
     appJs.includes('if ((Array.isArray(groups) ? groups : []).some(isAutoSelectGroup)) return null') &&
     !appJs.includes('visible.filter(isGlobalGroup).forEach(pushGroup)'),
@@ -113,7 +114,7 @@ check(
   'target website editor has summary, priority explanation, and safe delete confirmation',
   appJs.includes("id: 'nodeTargetSummary'") &&
     appJs.includes('node-target-summary-card') &&
-    appJs.includes('具体网站 > 场景规则') &&
+    appJs.includes('用户规则优先；越具体的网站/应用规则越先判断。') &&
     appJs.includes('async function deleteNodeTargetRuleFromEditor') &&
     appJs.includes("title: '删除目标网站'") &&
     appJs.includes('requestAppConfirm') &&
@@ -142,10 +143,13 @@ check(
     stylesCss.includes('.node-group-context-menu') &&
     stylesCss.includes('.node-member-editor') &&
     stylesCss.includes('.node-member-regions') &&
+    stylesCss.includes('.node-group-region') &&
     stylesCss.includes('.node-group-strip.sorting .node-group-card') &&
     appJs.includes('handleNodeGroupWheel') &&
     appJs.includes("strip.addEventListener('contextmenu', openNodeGroupContextMenu)") &&
-    appJs.includes("strip.addEventListener('pointerdown', handleNodeGroupPointerDown)"),
+    appJs.includes("strip.addEventListener('pointerdown', handleNodeGroupPointerDown)") &&
+    appJs.includes("strip.addEventListener('pointermove', handleNodeGroupPointerMove)") &&
+    !appJs.includes("strip.addEventListener('dragstart'"),
   'strategy cards stay compact, scroll horizontally, float while sorting, and edit members without text prompts'
 );
 

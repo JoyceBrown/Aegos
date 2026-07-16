@@ -52,6 +52,12 @@ Manual checklist:
 [ ] Disconnect protection enable failure rolls back.
 [ ] Disconnect protection close cleans firewall rules.
 [ ] Repair/recovery action can restore proxy/firewall state.
+[ ] Existing PAC URL and auto-detect state are restored byte-for-byte after disconnect.
+[ ] With TUN enabled, Windows shows the dedicated Aegos adapter and Aegos-owned takeover routes.
+[ ] Force-terminate Aegos with system proxy active; relaunch restores the saved proxy/PAC state.
+[ ] Force-terminate Aegos with disconnect protection active; relaunch as administrator restores firewall profile defaults and removes both Aegos rule groups.
+[ ] Force-terminate Aegos with TUN active; relaunch stops only the bundled Aegos engine and confirms no Aegos adapter route remains.
+[ ] A competing FlClash/Clash/VPN process, occupied port, or virtual adapter is reported without being terminated or disabled.
 ```
 
 ## 4. Subscription And Speed Regression
@@ -104,6 +110,7 @@ Required:
 - `npm run audit:subscription-fixtures`
 - `npm run audit:outbound-ip`
 - `npm run audit:takeover`
+- `npm run audit:system-takeover-stage5`
 - `npm run audit:opensource`
 - `npm run audit:flclash`
 - `npm run audit:provider-healthcheck`

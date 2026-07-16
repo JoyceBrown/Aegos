@@ -81,6 +81,7 @@ const chrome = spawn(chromePath, [
   '--headless=new',
   '--disable-gpu',
   '--disable-extensions',
+  '--enable-precise-memory-info',
   '--no-first-run',
   '--no-default-browser-check',
   `--remote-debugging-port=${port}`,
@@ -98,6 +99,35 @@ try {
   await page.send('Page.addScriptToEvaluateOnNewDocument', {
     source: `
       (() => {
+        const nativeSetInterval = window.setInterval.bind(window);
+        const nativeClearInterval = window.clearInterval.bind(window);
+        const nativeSetTimeout = window.setTimeout.bind(window);
+        const nativeClearTimeout = window.clearTimeout.bind(window);
+        const activeIntervals = new Set();
+        const activeTimeouts = new Set();
+        window.setInterval = (callback, delay, ...args) => {
+          const id = nativeSetInterval(callback, delay, ...args);
+          activeIntervals.add(id);
+          return id;
+        };
+        window.clearInterval = (id) => {
+          activeIntervals.delete(id);
+          return nativeClearInterval(id);
+        };
+        window.setTimeout = (callback, delay, ...args) => {
+          let id = 0;
+          id = nativeSetTimeout((...callbackArgs) => {
+            activeTimeouts.delete(id);
+            callback(...callbackArgs);
+          }, delay, ...args);
+          activeTimeouts.add(id);
+          return id;
+        };
+        window.clearTimeout = (id) => {
+          activeTimeouts.delete(id);
+          return nativeClearTimeout(id);
+        };
+        window.__aegosTimerStats = () => ({ intervals: activeIntervals.size, timeouts: activeTimeouts.size });
         const calls = [];
         const jobs = new Map();
         let jobSeq = 0;
@@ -205,6 +235,8 @@ try {
   });
   await page.send('Page.navigate', { url: appUrl });
   await delay(900);
+  await page.send('Performance.enable');
+  const domBefore = await page.send('Memory.getDOMCounters');
   const report = await evaluate(page, `(async () => {
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const click = (selector) => {
@@ -214,7 +246,17 @@ try {
       el.click();
     };
     const failures = [];
-    for (let cycle = 0; cycle < 8; cycle += 1) {
+    const resourceSamples = [];
+    const sampleResources = (cycle) => resourceSamples.push({
+      cycle,
+      elements: document.querySelectorAll('*').length,
+      nodeRows: document.querySelectorAll('#nodeRows .row[data-node]').length,
+      homeRows: document.querySelectorAll('#homeNodeRows .row[data-node]').length,
+      heap: performance.memory?.usedJSHeapSize || 0,
+      timers: window.__aegosTimerStats()
+    });
+    sampleResources(0);
+    for (let cycle = 0; cycle < 16; cycle += 1) {
       click('#connectBtn');
       await wait(80);
       click('[data-page="nodes"]');
@@ -225,7 +267,7 @@ try {
       await wait(160);
       click('[data-page="diagnostics"]');
       click('#runDiagBtn');
-      click('[data-page="logs"]');
+      click('[data-diagnostic-view="logs"]');
       click('[data-log-filter="runtime"]');
       click('[data-page="home"]');
       click('#quickProfileBtn');
@@ -237,6 +279,7 @@ try {
       if (!document.querySelector('[data-page-panel="home"]')?.classList.contains('active')) failures.push('home page not active after cycle ' + cycle);
       if (document.querySelector('.nav button.active')?.dataset.page !== 'home') failures.push('home nav not active after cycle ' + cycle);
       if (document.querySelector('#connectBtn')?.disabled) failures.push('connect button disabled after cycle ' + cycle);
+      if ((cycle + 1) % 4 === 0) sampleResources(cycle + 1);
     }
     click('[data-page="nodes"]');
     await wait(220);
@@ -260,9 +303,13 @@ try {
       connectText: document.querySelector('#connectBtn')?.textContent.trim(),
       versionText: document.querySelector('#appVersionLabel')?.textContent.trim(),
       stuckTesting: document.body.textContent.includes('测速中'),
-      profileMenuHidden: document.querySelector('#profileMenu')?.classList.contains('hidden') ?? true
+      profileMenuHidden: document.querySelector('#profileMenu')?.classList.contains('hidden') ?? true,
+      resourceSamples
     };
   })()`);
+  await page.send('HeapProfiler.collectGarbage');
+  const domAfter = await page.send('Memory.getDOMCounters');
+  report.dom = { before: domBefore, after: domAfter };
 
   const failures = [...report.failures];
   for (const kind of ['startCore', 'stopCore', 'setActiveProfile', 'diagnostics']) {
@@ -277,8 +324,31 @@ try {
   if (report.stuckTesting) failures.push('UI left visible testing text after soak');
   if (!report.profileMenuHidden) failures.push('profile menu left open after soak');
   if (report.versionText !== `v${pkg.version}`) failures.push(`version label ${report.versionText}, expected v${pkg.version}`);
+  const settledSamples = report.resourceSamples.slice(1);
+  const elementCounts = settledSamples.map((sample) => sample.elements);
+  const intervalCounts = settledSamples.map((sample) => sample.timers.intervals);
+  const timeoutCounts = settledSamples.map((sample) => sample.timers.timeouts);
+  if (elementCounts.length && Math.max(...elementCounts) - Math.min(...elementCounts) > 180) failures.push(`DOM element count did not stabilize: ${elementCounts.join(', ')}`);
+  if (intervalCounts.some((count) => count > 7)) failures.push(`interval retention exceeded budget: ${intervalCounts.join(', ')}`);
+  if (timeoutCounts.some((count) => count > 5)) failures.push(`timeout retention exceeded budget: ${timeoutCounts.join(', ')}`);
+  if (domAfter.nodes > domBefore.nodes + 300) failures.push(`DOM nodes retained after soak: before=${domBefore.nodes} after=${domAfter.nodes}`);
 
   const result = { ...report, ok: failures.length === 0, failures };
+  if (result.ok) {
+    const evidence = {
+      ok: true,
+      version: pkg.version,
+      generatedAt: new Date().toISOString(),
+      cycles: 16,
+      commandCount: report.commandCount,
+      jobKinds: [...new Set(report.jobKinds)],
+      finalPage: report.finalPage,
+      resourceSamples: report.resourceSamples,
+      dom: report.dom,
+      failures: []
+    };
+    fs.writeFileSync(path.join(root, `PERFORMANCE_SOAK_${pkg.version}.json`), `${JSON.stringify(evidence, null, 2)}\n`);
+  }
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) process.exitCode = 2;
 } finally {

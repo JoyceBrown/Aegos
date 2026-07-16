@@ -95,7 +95,10 @@ check(
     killScriptBody.includes('DefaultOutboundAction Block') &&
     killScriptBody.includes('Disconnect protection did not create Aegos allow rules') &&
     killScriptBody.includes('Disconnect protection enable failed') &&
-    killScriptBody.includes('Disconnect protection rules were not fully removed') &&
+    killScriptBody.includes('Aegos firewall rules were not fully removed') &&
+    setSystemProxyBody.includes('SystemTakeoverTransaction::begin') &&
+    mainRs.includes('fn set_kill_switch') &&
+    mainRs.includes('"firewall",') &&
     !killScriptBody.includes('"group=$group"') &&
     releaseAudit.includes('disconnect protection verifies firewall state'),
   'firewall changes must verify and roll back when Windows rejects them'

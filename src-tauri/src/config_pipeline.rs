@@ -245,11 +245,16 @@ fn ensure_auto_select_group_contains_all_nodes(config: &mut Mapping, proxy_names
     let Some(groups) = groups.as_sequence_mut() else {
         return;
     };
-    let Some(index) = groups.iter().position(|group| {
-        yaml_mapping_name(group)
-            .map(core_runtime::is_aegos_auto_select_group_name)
-            .unwrap_or(false)
-    }) else {
+    let matching_indices = groups
+        .iter()
+        .enumerate()
+        .filter_map(|(index, group)| {
+            yaml_mapping_name(group)
+                .filter(|name| core_runtime::is_aegos_auto_select_group_name(name))
+                .map(|_| index)
+        })
+        .collect::<Vec<_>>();
+    let Some(index) = matching_indices.first().copied() else {
         let insert_index = groups
             .iter()
             .position(|group| {
@@ -261,20 +266,23 @@ fn ensure_auto_select_group_contains_all_nodes(config: &mut Mapping, proxy_names
             .unwrap_or(0);
         groups.insert(
             insert_index,
-            url_test_proxy_group(
-                core_runtime::LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME,
-                proxy_names,
-            ),
+            url_test_proxy_group(core_runtime::AEGOS_AUTO_SELECT_GROUP_NAME, proxy_names),
         );
         return;
     };
+    for duplicate_index in matching_indices.into_iter().skip(1).rev() {
+        groups.remove(duplicate_index);
+    }
     let Some(map) = groups[index].as_mapping_mut() else {
-        groups[index] = url_test_proxy_group(
-            core_runtime::LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME,
-            proxy_names,
-        );
+        groups[index] =
+            url_test_proxy_group(core_runtime::AEGOS_AUTO_SELECT_GROUP_NAME, proxy_names);
         return;
     };
+    set_yaml(
+        map,
+        "name",
+        yaml_str(core_runtime::AEGOS_AUTO_SELECT_GROUP_NAME),
+    );
     set_yaml(map, "type", yaml_str("url-test"));
     set_yaml(map, "url", yaml_str("https://www.gstatic.com/generate_204"));
     set_yaml(map, "interval", YamlValue::Number(300.into()));

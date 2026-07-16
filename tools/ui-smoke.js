@@ -108,11 +108,11 @@ async function evaluate(page, expression) {
   return result.result.value;
 }
 
-async function auditViewport(page, width, height) {
+async function auditViewport(page, width, height, deviceScaleFactor = 1) {
   await page.send('Emulation.setDeviceMetricsOverride', {
     width,
     height,
-    deviceScaleFactor: 1,
+    deviceScaleFactor,
     mobile: false
   });
   await page.send('Page.navigate', { url: appUrl });
@@ -145,11 +145,9 @@ async function auditViewport(page, width, height) {
       const parent = el.closest('.quick').getBoundingClientRect();
       return visible(el) && (r.left < parent.left - 1 || r.right > parent.right + 1 || r.height > 36);
     }).map((el) => el.textContent.trim());
-    const sidebarWrappedRows = all('.status-card dl div').filter((el) => {
-      const dd = el.querySelector('dd');
-      const dt = el.querySelector('dt');
-      return visible(el) && ((dd && dd.scrollHeight > dd.clientHeight + 1) || (dt && dt.scrollHeight > dt.clientHeight + 1) || el.getBoundingClientRect().height > 27);
-    }).map((el) => el.textContent.trim());
+    const sidebarSummaryOverflow = all('.sidebar-runtime-summary :is(strong, p, span, button)').filter((el) => {
+      return visible(el) && (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1);
+    }).map((el) => el.id || el.textContent.trim());
     const metricIcons = all('.metric-icon').map((el) => el.getBoundingClientRect().width);
     const homeRows = all('#homeNodeRows .row').filter(visible).length;
     const activeHomeRegion = document.querySelector('[data-region].active')?.dataset.region || '';
@@ -165,10 +163,17 @@ async function auditViewport(page, width, height) {
     } : null;
     const tunHome = document.querySelector('#tunHomeToggle');
     const tunHomeVisible = Boolean(tunHome && visible(tunHome));
+    const topDragBox = box('.edge-drag-top');
+    const titlebarStatusBox = box('#titlebarStatusCenterBtn');
+    const topDragOverlapsStatus = topDragBox && titlebarStatusBox ? topDragBox.right > titlebarStatusBox.left + 1 : false;
     const navBox = box('.nav');
-    const statusBox = box('.status-card');
-    const sidebarOverlap = navBox && statusBox ? navBox.bottom > statusBox.top + 1 : false;
+    const sidebarSummaryBox = box('.sidebar-runtime-summary');
+    const sidebarOverlap = navBox && sidebarSummaryBox ? navBox.bottom > sidebarSummaryBox.top + 1 : false;
     const bottomMetricWidths = all('.metric-grid.bottom article').map((el) => Math.round(el.getBoundingClientRect().width));
+    const homeHeroBox = box('.hero');
+    const homeQuickBox = box('.quick');
+    const homeNodesBox = box('.nodes');
+    const homeRingWidth = box('.ring')?.width || 0;
     const contentCenter = (selector) => {
       const boxes = all(selector).filter((el) => visible(el) && !el.classList.contains('hidden')).map((el) => el.getBoundingClientRect());
       if (!boxes.length) return null;
@@ -177,6 +182,16 @@ async function auditViewport(page, width, height) {
       return (top + bottom) / 2;
     };
     const heroCenterOffset = Math.abs((contentCenter('.connect-column > *') || 0) - (contentCenter('.node-column > *') || 0));
+    const statusTrigger = document.querySelector('#sidebarStatusCenterBtn');
+    statusTrigger.focus();
+    statusTrigger.click();
+    const statusCenterPanelBox = box('#statusCenterPanel');
+    const statusCenterRowsWrapped = all('#statusCenterPanel .status-card dl div').filter((el) => visible(el) && el.getBoundingClientRect().height > 34).map((el) => el.textContent.trim());
+    const statusCenterOpen = !document.querySelector('#statusCenterOverlay')?.classList.contains('hidden');
+    const statusCenterFocusEntered = document.activeElement?.id === 'closeStatusCenterBtn';
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    const statusCenterClosed = document.querySelector('#statusCenterOverlay')?.classList.contains('hidden') || false;
+    const statusCenterFocusRestored = document.activeElement?.id === 'sidebarStatusCenterBtn';
     document.querySelector('[data-page="nodes"]').click();
     const nodeBase = collectBase();
     const table = document.querySelector('.node-table')?.getBoundingClientRect();
@@ -195,16 +210,26 @@ async function auditViewport(page, width, height) {
     const settingsSummary = box('[data-page-panel="settings"] .settings-summary-grid');
     const settingsSections = all('[data-page-panel="settings"] .settings-section').filter(visible).length;
     document.querySelector('[data-page="diagnostics"]').click();
-    document.querySelector('#diagSummary').innerHTML = '<div class="diagnostic-status is-warn"><b>需要关注</b><span>2 项检查 / 1 项异常</span></div><div class="diagnostic-metrics"><span><b>0</b>错误</span><span><b>1</b>警告</span><span><b>1</b>通过</span></div><div class="diagnostic-actions"><small>打开日志页查看最近核心 warning。</small></div>';
-    document.querySelector('#diagRows').innerHTML = '<article class="list-card diagnostic-row severity-warning"><div><b>Recent core logs</b><small>[warn] mock warning</small><small class="diagnostic-hint">打开日志页查看最近核心 warning。</small></div><span class="warn">警告</span></article><article class="list-card diagnostic-row severity-ok"><div><b>mihomo core</b><small>mock</small></div><span class="ok">通过</span></article>';
+    document.querySelector('#diagSummary').innerHTML = '<div class="diagnostic-status is-warn"><b>需要关注</b><span>2 项检查 / 1 项异常</span></div><div class="diagnostic-metrics"><span><b>0</b>错误</span><span><b>1</b>警告</span><span><b>1</b>通过</span></div><div class="diagnostic-actions"><small>重启网络核心后重新检查。</small></div>';
+    document.querySelector('#diagRows').innerHTML = '<section class="diagnostic-group"><header class="diagnostic-group-head"><div><h3>节点</h3><span>1 项需要处理</span></div><b>2 项</b></header><div class="diagnostic-group-rows"><article class="diagnostic-row severity-warning"><div class="diagnostic-row-copy"><div class="diagnostic-row-title"><b>近期网络异常</b><span class="diagnostic-code">AEG-NOD-099</span></div><p>近期日志中出现了需要关注的节点错误。</p><div class="diagnostic-hint"><b>建议</b><span>重启网络核心后重新检查。</span></div><details class="diagnostic-technical"><summary>查看技术细节</summary><code>[warn] mock warning</code></details></div><div class="diagnostic-row-actions"><span class="diagnostic-result warn">需要关注</span><button class="primary compact diagnostic-repair-btn">重启网络核心</button></div></article><article class="diagnostic-row severity-ok"><div class="diagnostic-row-copy"><div class="diagnostic-row-title"><b>网络核心</b><span class="diagnostic-code">AEG-CON-001</span></div><p>网络核心文件可用。</p></div><div class="diagnostic-row-actions"><span class="diagnostic-result ok">正常</span></div></article></div></section>';
     const diagnosticsBase = collectBase();
     const diagnosticsPanel = document.querySelector('[data-page-panel="diagnostics"]');
     const diagnosticsActive = diagnosticsPanel?.classList.contains('active') || false;
     const diagnosticsSummary = box('#diagSummary');
-    document.querySelector('[data-page="home"]').click();
+    const diagnosticsRows = box('#diagRows');
+    const diagnosticTabs = box('.diagnostic-view-tabs');
+    const diagnosticRepair = box('.diagnostic-repair-btn');
+    const diagnosticView = box('#diagnosticOverviewView');
+    const diagnosticsCard = box('[data-page-panel="diagnostics"] .diagnostic-card');
+    const unlabeledIconButtons = all('button').filter((button) => {
+      const hasVisibleText = button.textContent.trim().length > 0;
+      const hasIcon = Boolean(button.querySelector('.aegos-icon'));
+      return hasIcon && !hasVisibleText && !button.getAttribute('aria-label');
+    }).map((button) => button.id || button.className || 'unnamed');
     return {
       width: window.innerWidth,
       height: window.innerHeight,
+      deviceScaleFactor: window.devicePixelRatio,
       overflowX: Math.max(homeBase.overflowX, nodeBase.overflowX, settingsBase.overflowX, diagnosticsBase.overflowX),
       textOverflow: [...homeBase.textOverflow, ...nodeBase.textOverflow, ...settingsBase.textOverflow, ...diagnosticsBase.textOverflow],
       quickEscapes,
@@ -215,18 +240,26 @@ async function auditViewport(page, width, height) {
       shell: box('.shell'),
       nav: box('.nav'),
       navButtonHeight: box('.nav button')?.height || 0,
-      ringWidth: box('.ring')?.width || 0,
+      ringWidth: homeRingWidth,
       tunHomeVisible,
+      topDragOverlapsStatus,
       homeRows,
       activeHomeRegion,
       homeNodeLayout,
-      sidebarWrappedRows,
+      sidebarSummaryOverflow,
       sidebarOverlap,
-      hero: box('.hero'),
-      quick: box('.quick'),
+      sidebarSummary: sidebarSummaryBox,
+      statusCenterPanel: statusCenterPanelBox,
+      statusCenterRowsWrapped,
+      statusCenterOpen,
+      statusCenterClosed,
+      statusCenterFocusEntered,
+      statusCenterFocusRestored,
+      hero: homeHeroBox,
+      quick: homeQuickBox,
       bottomMetricWidths,
       heroCenterOffset,
-      nodes: box('.nodes'),
+      nodes: homeNodesBox,
       settings: settingsBox,
       settingsActive,
       settingsSummary,
@@ -234,14 +267,40 @@ async function auditViewport(page, width, height) {
       tunToggleVisible,
       diagnosticsActive,
       diagnosticsSummary,
+      diagnosticsRows,
+      diagnosticTabs,
+      diagnosticRepair,
+      diagnosticView,
+      diagnosticsCard,
+      unlabeledIconButtons,
       badPanels: [...homeBase.badPanels, ...nodeBase.badPanels, ...settingsBase.badPanels, ...diagnosticsBase.badPanels]
     };
   })()`);
 
+  const scaleSuffix = deviceScaleFactor === 1 ? '' : `-dpr${String(deviceScaleFactor).replace('.', '_')}`;
   const screenshot = await page.send('Page.captureScreenshot', { format: 'png' });
-  const pngPath = path.join(screenshotDir, `home-${width}x${height}.png`);
+  const pngPath = path.join(screenshotDir, `diagnostics-${width}x${height}${scaleSuffix}.png`);
   fs.writeFileSync(pngPath, Buffer.from(screenshot.data, 'base64'));
   report.screenshot = pngPath;
+  report.pageScreenshots = [];
+  report.statusCenterScreenshot = '';
+  if (width === 1280 && height === 820 && deviceScaleFactor === 1) {
+    for (const pageName of ['home', 'nodes', 'connections', 'routing', 'profiles', 'diagnostics', 'settings']) {
+      await evaluate(page, `document.querySelector('[data-page="${pageName}"]').click()`);
+      await delay(160);
+      const pageShot = await page.send('Page.captureScreenshot', { format: 'png' });
+      const pagePath = path.join(screenshotDir, `stage7-${pageName}-1280x820.png`);
+      fs.writeFileSync(pagePath, Buffer.from(pageShot.data, 'base64'));
+      report.pageScreenshots.push(pagePath);
+    }
+    await evaluate(page, `document.querySelector('#titlebarStatusCenterBtn').click()`);
+    await delay(180);
+    const statusCenterShot = await page.send('Page.captureScreenshot', { format: 'png' });
+    const statusCenterPath = path.join(screenshotDir, 'stage7-status-center-1280x820.png');
+    fs.writeFileSync(statusCenterPath, Buffer.from(statusCenterShot.data, 'base64'));
+    report.statusCenterScreenshot = statusCenterPath;
+    await evaluate(page, `document.querySelector('#closeStatusCenterBtn').click()`);
+  }
   return report;
 }
 
@@ -263,11 +322,18 @@ try {
   await page.send('Page.enable');
   await page.send('Runtime.enable');
   const reports = [
-    await auditViewport(page, 1280, 820),
-    await auditViewport(page, 1280, 700),
-    await auditViewport(page, 1180, 700),
-    await auditViewport(page, 1700, 900),
-    await auditViewport(page, 1280, 1080)
+    await auditViewport(page, 1280, 820, 1),
+    await auditViewport(page, 1280, 700, 1),
+    await auditViewport(page, 1180, 700, 1),
+    await auditViewport(page, 1180, 720, 1),
+    await auditViewport(page, 1440, 900, 1),
+    await auditViewport(page, 1536, 960, 1),
+    await auditViewport(page, 1700, 900, 1),
+    await auditViewport(page, 1280, 1080, 1),
+    await auditViewport(page, 1280, 820, 1.25),
+    await auditViewport(page, 1280, 820, 1.5),
+    await auditViewport(page, 1280, 820, 1.75),
+    await auditViewport(page, 1280, 820, 2)
   ];
   const failures = [];
   for (const report of reports) {
@@ -280,6 +346,7 @@ try {
     if (!report.diagnosticsActive) failures.push(`${report.width}x${report.height}: diagnostics page did not activate`);
     if (!report.tunToggleVisible) failures.push(`${report.width}x${report.height}: TUN toggle is not visible`);
     if (!report.tunHomeVisible) failures.push(`${report.width}x${report.height}: home TUN toggle is not visible`);
+    if (report.topDragOverlapsStatus) failures.push(`${report.width}x${report.height}: top drag region overlaps status center trigger`);
     const minHomeRows = report.activeHomeRegion ? 1 : 5;
     if (report.homeRows < minHomeRows) failures.push(`${report.width}x${report.height}: only ${report.homeRows} home node rows visible`);
     if (!report.homeNodeLayout) failures.push(`${report.width}x${report.height}: home node layout metrics missing`);
@@ -300,16 +367,28 @@ try {
     } else {
       failures.push(`${report.width}x${report.height}: bottom metric widths missing`);
     }
-    if (report.sidebarOverlap) failures.push(`${report.width}x${report.height}: sidebar navigation overlaps status card`);
-    if (report.sidebarWrappedRows.length) failures.push(`${report.width}x${report.height}: sidebar status rows wrap: ${report.sidebarWrappedRows.join(', ')}`);
+    if (report.sidebarOverlap) failures.push(`${report.width}x${report.height}: sidebar navigation overlaps compact runtime summary`);
+    if (report.sidebarSummaryOverflow.length) failures.push(`${report.width}x${report.height}: sidebar runtime summary overflows: ${report.sidebarSummaryOverflow.join(', ')}`);
+    if (!report.sidebarSummary || report.sidebarSummary.height < 120 || report.sidebarSummary.height > 180) failures.push(`${report.width}x${report.height}: compact runtime summary has unstable height ${report.sidebarSummary?.height || 0}px`);
+    if (!report.statusCenterOpen || !report.statusCenterClosed) failures.push(`${report.width}x${report.height}: status center did not open and close`);
+    if (!report.statusCenterFocusEntered || !report.statusCenterFocusRestored) failures.push(`${report.width}x${report.height}: status center focus lifecycle failed`);
+    if (!report.statusCenterPanel || report.statusCenterPanel.right > report.width + 1 || report.statusCenterPanel.bottom > report.height + 1 || report.statusCenterPanel.width < 330) failures.push(`${report.width}x${report.height}: status center panel is clipped or undersized`);
+    if (report.statusCenterRowsWrapped.length) failures.push(`${report.width}x${report.height}: status center rows wrap: ${report.statusCenterRowsWrapped.join(', ')}`);
     if (report.quickEscapes.length) failures.push(`${report.width}x${report.height}: quick buttons escape container: ${report.quickEscapes.join(', ')}`);
     if (report.badPanels.length) failures.push(`${report.width}x${report.height}: panels outside viewport: ${report.badPanels.join(', ')}`);
+    if (report.unlabeledIconButtons.length) failures.push(`${report.width}x${report.height}: unlabeled icon buttons: ${report.unlabeledIconButtons.join(', ')}`);
     if (!report.diagnosticsSummary || report.diagnosticsSummary.height < 48) failures.push(`${report.width}x${report.height}: diagnostic summary did not render with stable height`);
+    if (!report.diagnosticsRows || report.diagnosticsRows.height < 120) failures.push(`${report.width}x${report.height}: diagnostic issue list did not receive usable space`);
+    if (!report.diagnosticTabs || report.diagnosticTabs.height < 30) failures.push(`${report.width}x${report.height}: diagnostic internal tabs are missing`);
+    if (!report.diagnosticRepair || report.diagnosticRepair.width < 80) failures.push(`${report.width}x${report.height}: diagnostic repair action is clipped`);
+    if (!report.diagnosticView || report.diagnosticView.bottom - report.diagnosticsRows.bottom > 20) failures.push(`${report.width}x${report.height}: diagnostic issue list leaves unused vertical space`);
+    if (!report.diagnosticsCard || report.height - report.diagnosticsCard.bottom > 32) failures.push(`${report.width}x${report.height}: diagnostic repair center does not fill the page height`);
     const seriousTextOverflow = report.textOverflow.filter((text) => text && !text.includes('127.0.0.1'));
     if (seriousTextOverflow.length) failures.push(`${report.width}x${report.height}: text overflow: ${seriousTextOverflow.join(', ')}`);
   }
   const base = reports[0];
   for (const report of reports.slice(1)) {
+    if (![1, 1.25, 1.5, 1.75, 2].includes(report.deviceScaleFactor)) failures.push(`${report.width}x${report.height}: unexpected device scale ${report.deviceScaleFactor}`);
     if (Math.abs(report.brandFontSize - base.brandFontSize) > 0.1) failures.push(`${report.width}x${report.height}: brand font scaled from ${base.brandFontSize}px to ${report.brandFontSize}px`);
     if (Math.abs(report.maxMetricIcon - base.maxMetricIcon) > 0.1) failures.push(`${report.width}x${report.height}: metric icons scaled from ${base.maxMetricIcon}px to ${report.maxMetricIcon}px`);
     if (Math.abs(report.navButtonHeight - base.navButtonHeight) > 4) failures.push(`${report.width}x${report.height}: nav height changed from ${base.navButtonHeight}px to ${report.navButtonHeight}px`);

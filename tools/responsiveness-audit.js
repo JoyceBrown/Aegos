@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const appJs = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
+const styles = fs.readFileSync(path.join(root, 'src', 'styles.css'), 'utf8');
+const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
 const perfSmoke = fs.readFileSync(path.join(root, 'tools', 'perf-smoke.js'), 'utf8');
 const interactionSmoke = fs.readFileSync(path.join(root, 'tools', 'interaction-smoke.js'), 'utf8');
 const releaseAudit = fs.readFileSync(path.join(root, 'tools', 'release-audit.js'), 'utf8');
@@ -66,15 +68,56 @@ check(
 );
 
 check(
-  'settings page environment checks are cached and detached from immediate navigation',
+  'unchanged status heartbeats avoid hidden-page repaint work',
+  renderStatusBody.includes('if (!fullRender)') &&
+    renderStatusBody.includes("if (isPageActive('home')) renderHomeNodeSummary()") &&
+    renderStatusBody.includes("if (isPageActive('nodes')) renderNodeGroupSwitcher()") &&
+    renderStatusBody.includes("if (isPageActive('settings')) renderSettings(status)") &&
+    !renderStatusBody.includes('warmStaticPageCaches()') &&
+    appJs.includes('function statusUiSignature') &&
+    appJs.includes('function renderTrafficMetrics'),
+  'periodic status updates may repaint only changed traffic or the visible page'
+);
+
+check(
+  'visible page reconciliation is coalesced to the final animation frame',
+  setPageBody.includes('scheduleVisiblePagePaint(next)') &&
+    appJs.includes('if (pagePaintFrame) cancelAnimationFrame(pagePaintFrame)') &&
+    appJs.includes('pagePaintFrame = requestAnimationFrame') &&
+    setPageBody.includes('delay: 16'),
+  'rapid navigation must cancel work for pages the user never settled on'
+);
+
+check(
+  'status controller and LAN probes execute outside the CoreManager lock',
+  mainRs.includes('fn status_observation(') &&
+    mainRs.includes('fn status_from_observed_traffic(') &&
+    /let observed_traffic\s*=\s*controller\s*\.status_traffic_snapshot_or_idle/.test(mainRs) &&
+    mainRs.includes('let refreshed_lan_ip = refresh_lan_ip.then(primary_lan_ip)') &&
+    mainRs.includes('core.status_from_observed_traffic('),
+  'slow controller or PowerShell reads cannot hold the global core mutex'
+);
+
+check(
+  'large static surfaces avoid continuous backdrop blur composition',
+  styles.includes('.side-card,\n.sidebar {') &&
+    styles.includes('backdrop-filter: none;'),
+  'static panels use preblended surfaces; blur remains limited to transient overlays'
+);
+
+check(
+  'settings page heavy checks are explicit, cached, and detached from navigation',
   appJs.includes('settings: 30000') &&
     appJs.includes('settings: { loaded: false, loading: false, updatedAt: 0 }') &&
     schedulePageLoadBody.includes("page === 'settings' && shouldRefreshPageCache(page)") &&
-    schedulePageLoadBody.includes('Promise.allSettled') &&
-    schedulePageLoadBody.includes('refreshEnvironmentReadiness(false)') &&
+    schedulePageLoadBody.includes('renderEnvironmentReadiness()') &&
+    schedulePageLoadBody.includes("markPageCache(page)") &&
+    !schedulePageLoadBody.includes('refreshEnvironmentReadiness') &&
+    !schedulePageLoadBody.includes('refreshIpv6DnsSafety') &&
+    appJs.includes('function refreshSettingsChecks') &&
     !setPageBody.includes('refreshEnvironmentReadiness') &&
     !setPageBody.includes('refreshIpv6DnsSafety'),
-  'settings checks should not repeat on every quick page switch'
+  'opening or leaving settings must not launch PowerShell and network probes'
 );
 
 check(
@@ -109,9 +152,10 @@ check(
     testNodesBody.includes("invoke('start_proxy_delay_test'") &&
     !testNodesBody.includes('runForegroundAction') &&
     !testNodesBody.includes('foregroundBusy') &&
-    pollSpeedBody.includes('applySpeedStatusToNodes(status)') &&
+    pollSpeedBody.includes('const changed = applySpeedStatusToNodes(status)') &&
+    pollSpeedBody.includes('refreshVisibleNodesForSpeed(!status.running, changed)') &&
     appJs.includes('function applySpeedStatusToNodes') &&
-    appJs.includes("scheduleRowsRender(latestGroup.items, { force: true, target: 'all', delay: 0 })"),
+    appJs.includes('updateVisibleNodeDelays(visibleChanges)'),
   'measurement can run while the user continues using the app'
 );
 
@@ -134,7 +178,10 @@ check(
     perfSmoke.includes('menu toggles triggered backend calls') &&
     perfSmoke.includes('filter/search interactions triggered backend calls') &&
     perfSmoke.includes('longTaskBudget') &&
-    perfSmoke.includes('long tasks exceeded budget'),
+    perfSmoke.includes('long tasks exceeded budget') &&
+    perfSmoke.includes('p95FrameMs') &&
+    perfSmoke.includes('unexpectedLayoutShift') &&
+    perfSmoke.includes('rapid navigation frame pacing regressed'),
   'perf smoke models the user complaints directly'
 );
 
