@@ -55,18 +55,20 @@ check(
   'rule test has non-blocking local feedback and no global task lock',
   appJs.includes("button.classList.add('is-pending')") &&
     appJs.includes("button.setAttribute('aria-busy', 'true')") &&
-    appJs.includes('window.setTimeout') &&
+    appJs.includes("button?.classList.remove('is-pending')") &&
+    appJs.includes('routingRuleTestRequestSeq') &&
     !appJs.includes("runBackgroundJob('testRouting") &&
-    !appJs.includes("invoke('test_routing"),
+    appJs.includes("invoke('test_routing_website'"),
   'local pending feedback'
 );
 
 check(
   'rule test handles unloaded, invalid, miss, and hit states',
   appJs.includes('!parsed.ok') &&
-    appJs.includes('!latestRoutingSnapshot || !Array.isArray(latestRoutingSnapshot.rules)') &&
-    appJs.includes('!rules.length') &&
-    appJs.includes('compareRoutingRuleMatch') &&
+    appJs.includes('正在按当前订阅检查规则') &&
+    appJs.includes('!result?.matched') &&
+    appJs.includes("result.source === 'system'") &&
+    appJs.includes('规则测试失败') &&
     appJs.includes('renderRoutingRuleTestResult'),
   'explicit state branches'
 );

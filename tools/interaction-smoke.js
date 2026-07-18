@@ -137,7 +137,12 @@ try {
             { name: 'HK 02', server: 'hk2.example', type: 'trojan', alive: true, delay: -1, healthStatus: 'unknown', healthScore: 999999 },
             { name: 'JP 01', server: 'jp.example', type: 'trojan', alive: true, delay: -1, healthStatus: 'unknown', healthScore: 999999 },
             { name: 'SG 01', server: 'sg.example', type: 'ss', alive: true, delay: -1, healthStatus: 'unknown', healthScore: 999999 },
-            { name: 'US 01', server: 'us.example', type: 'vless', alive: true, delay: -1, healthStatus: 'unknown', healthScore: 999999 }
+            { name: 'US 01', server: 'us.example', type: 'vless', alive: true, delay: -1, healthStatus: 'unknown', healthScore: 999999 },
+            ...Array.from({ length: 84 }, (_, index) => {
+              const number = String(index + 6).padStart(2, '0');
+              const region = ['HK', 'JP', 'SG', 'US'][index % 4];
+              return { name: region + ' ' + number, server: region.toLowerCase() + number + '.example', type: ['ss', 'tuic', 'anytls', 'vless', 'trojan'][index % 5], alive: true, delay: -1, healthStatus: 'unknown', healthScore: 999999 };
+            })
           ]
         }];
         window.__aegosMockGroups = groups;
@@ -189,7 +194,7 @@ try {
         const applyDelayResults = () => {
           const testedAt = Math.floor(Date.now() / 1000);
           groups[0].items.forEach((item, index) => {
-            item.delay = [31, 48, 116, 132, 99][index];
+            item.delay = [31, 48, 116, 132, 99][index % 5];
             item.alive = true;
             item.healthStatus = item.delay < 100 ? 'low' : 'available';
             item.healthScore = item.delay + (item.type === 'tuic' ? 18 : 0);
@@ -389,7 +394,7 @@ try {
             groups[0].items.forEach((item, index) => {
               setTimeout(() => {
                 const testedAt = Math.floor(Date.now() / 1000);
-                item.delay = values[index];
+                item.delay = values[index % values.length];
                 item.alive = true;
                 item.healthStatus = item.delay < 100 ? 'low' : 'available';
                 item.healthScore = item.delay + (item.type === 'tuic' ? 18 : 0);
@@ -413,18 +418,24 @@ try {
                   failed: 0,
                   health: speedStatusSnapshot(true, index + 1).health[item.name]
                 });
-              }, 20 + index * 12);
+              }, 20 + index * 2);
             });
             setTimeout(() => emitEvent('aegos-speed-test', {
               kind: 'complete',
               profileId: state.activeProfileId,
               status: speedStatusSnapshot(false, groups[0].items.length)
-            }), 100);
+            }), 40 + groups[0].items.length * 2);
             return speedStatusSnapshot(true, 0);
           }
           if (command === 'test_single_proxy_delay') {
             speedRunId = 77;
             speedTestPollsRemaining = 2;
+            setTimeout(() => emitEvent('aegos-speed-test', {
+              kind: 'started',
+              runId: 77,
+              profileId: state.activeProfileId,
+              status: speedStatusSnapshot(true, 0)
+            }), 0);
             const item = groups[0].items.find((item) => item.name === args.name);
             if (item) {
               item.delay = 0;
@@ -442,6 +453,29 @@ try {
                 item.medianDelay = 42;
                 item.healthConfidence = 'high';
                 item.lastTestedAt = Math.floor(Date.now() / 1000);
+                const health = speedStatusSnapshot(false, 1).health[item.name];
+                emitEvent('aegos-speed-test', {
+                  kind: 'result',
+                  phase: 'single',
+                  runId: 77,
+                  profileId: state.activeProfileId,
+                  name: item.name,
+                  selectName: item.name,
+                  protocol: item.type,
+                  delay: 42,
+                  failureReason: '',
+                  completed: 1,
+                  total: 1,
+                  ok: 1,
+                  failed: 0,
+                  health
+                });
+                emitEvent('aegos-speed-test', {
+                  kind: 'complete',
+                  runId: 77,
+                  profileId: state.activeProfileId,
+                  status: speedStatusSnapshot(false, 1)
+                });
               }, 180);
             }
             return { ok: true, queued: true, runId: 77, proxy: args.name, realProxyName: args.name, delay: 0, healthStatus: 'testing' };
@@ -488,6 +522,7 @@ try {
           if (command === 'update_profile') return profiles.find((item) => item.id === args.id);
           if (command === 'set_active_profile') { await new Promise((resolve) => setTimeout(resolve, 350)); state.activeProfileId = args.id; return profiles.find((item) => item.id === args.id); }
           if (command === 'preview_profile_groups') return groups;
+          if (command === 'profile_removal_impact') return { profileId: args.id, profileName: profiles.find((item) => item.id === args.id)?.name || 'Test', affectedRuleCount: 0, rulesWillBeRetained: true };
           if (command === 'remove_profile') { await new Promise((resolve) => setTimeout(resolve, 350)); const index = profiles.findIndex((item) => item.id === args.id); if (index >= 0) profiles.splice(index, 1); if (state.activeProfileId === args.id) state.activeProfileId = profiles[0]?.id || 'direct'; return true; }
           if (command === 'add_profile_url') return profiles[1];
           if (command === 'routing_snapshot') {
@@ -500,7 +535,7 @@ try {
                 { name: 'Auto', type: 'url-test', now: 'HK 02', itemCount: 2, automatic: true }
               ],
               recentRules: [
-                { rule: 'DOMAIN-SUFFIX,example.com', chains: 'GLOBAL -> HK 01', count: 1, note: 'mock hit' }
+                { rule: 'DOMAIN-SUFFIX,example.com', route: 'GLOBAL > HK 01', count: 1, note: 'mock hit' }
               ],
               rules: [
                 { index: 1, kind: 'DOMAIN-SUFFIX', condition: state.activeProfileId + '.example.com', target: 'GLOBAL', status: 'readonly', note: 'profile rule', options: [] },
@@ -509,7 +544,9 @@ try {
               summary: { groupCount: 2, autoGroupCount: 1, recentRuleHits: 1, ruleCount: 2 }
             };
           }
-          if (command === 'connections') return [{ id: '1', metadata: { host: 'example.com' }, rule: 'MATCH', chains: ['GLOBAL', 'HK 01'], upload: 1, download: 2 }];
+          if (command === 'routing_rule_page') return { profileId: args.profileId, offset: args.offset || 0, limit: args.limit || 80, total: 1, hasMore: false, items: [{ index: 1, kind: 'DOMAIN-SUFFIX', condition: state.activeProfileId + '.example.com', target: 'GLOBAL', status: 'readonly', options: [] }] };
+          if (command === 'test_routing_website') return { domain: args.input, matched: true, source: 'subscription', target: 'GLOBAL', kind: 'DOMAIN-SUFFIX', condition: args.input, explanation: 'mock rule match' };
+          if (command === 'connections') return [{ id: '1', target: 'example.com', rule: 'MATCH', route: ['GLOBAL', 'HK 01'], upload: 1, download: 2, process: 'browser.exe', network: 'tcp', protocol: 'HTTPS' }];
           if (command === 'active_connection_count') return { count: state.trafficTakeover ? 2 : 0, checkedAt: Date.now() };
           if (command === 'environment_readiness') {
             await new Promise((resolve) => setTimeout(resolve, 650));
@@ -524,7 +561,7 @@ try {
             ]
           };
           }
-          if (command === 'export_logs') return { path: 'C:\\Users\\JIE\\AppData\\Roaming\\Aegos\\diagnostics\\aegos-logs-smoke.txt', count: status().logs.length };
+          if (command === 'export_logs') return { path: 'C:\\Users\\Example\\AppData\\Roaming\\Aegos\\diagnostics\\aegos-logs-smoke.txt', count: status().logs.length };
           if (command === 'close_connection' || command === 'close_connections' || command === 'clear_logs') { await new Promise((resolve) => setTimeout(resolve, 350)); return true; }
           if (command === 'diagnostics') {
             await new Promise((resolve) => setTimeout(resolve, 350));
@@ -564,6 +601,12 @@ try {
       settingsAndEnvironment: false,
       nonBlockingBackgroundWork: false
     };
+    const startupSpeedCalls = window.__aegosCalls.filter((item) => item.command === 'start_proxy_delay_test');
+    if (startupSpeedCalls.length !== 1) throw new Error('startup did not launch exactly one Aegos-managed first speed test: ' + startupSpeedCalls.length);
+    const startupStatusCall = window.__aegosCalls.find((item) => item.command === 'app_status');
+    const startupGroupsCall = window.__aegosCalls.find((item) => item.command === 'proxy_groups');
+    if (!startupStatusCall || !startupGroupsCall || startupSpeedCalls[0].at <= Math.max(startupStatusCall.at, startupGroupsCall.at)) throw new Error('startup speed test began before status and nodes were ready');
+    if (window.__aegosCalls.some((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'startCore'))) throw new Error('startup speed test changed the connection or selected proxy');
     const statusCenterCallsBefore = window.__aegosCalls.length;
     document.querySelector('#titlebarStatusCenterBtn').focus();
     document.querySelector('#titlebarStatusCenterBtn').click();
@@ -602,6 +645,8 @@ try {
     await click('#quickTestBtn');
     await navDown('[data-page="nodes"]');
     await new Promise((resolve) => setTimeout(resolve, 380));
+    if (document.querySelectorAll('#nodeRows .row[data-node]').length !== 89) throw new Error('ordinary subscription did not render all 89 nodes');
+    if (document.querySelector('#nodeRows')?.textContent.includes('24 / 89')) throw new Error('node list still exposes the legacy 24-node truncation');
     if (!document.querySelector('#nodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('node page did not receive quick home speed results');
     const speedStartCall = window.__aegosCalls.find((item) => item.command === 'start_proxy_delay_test');
     if (!Array.isArray(speedStartCall?.args?.priorityNames) || speedStartCall.args.priorityNames.length === 0) throw new Error('speed test did not prioritize current visible nodes');
@@ -941,6 +986,9 @@ try {
     if (document.querySelector('#addProfileBtn')?.disabled) throw new Error('profile import button became disabled during pending feedback');
     await new Promise((resolve) => setTimeout(resolve, 420));
     document.querySelector('[data-profile-remove="url-test"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    if (document.querySelector('#appDialogOverlay')?.classList.contains('hidden')) throw new Error('profile removal did not explain deletion impact');
+    document.querySelector('#appDialogOkBtn')?.click();
     await new Promise((resolve) => setTimeout(resolve, 20));
     if (document.querySelector('[data-profile-row="url-test"]')) throw new Error('profile row did not remove optimistically');
     await new Promise((resolve) => setTimeout(resolve, 420));
@@ -1026,7 +1074,7 @@ try {
     journeys.nonBlockingBackgroundWork = true;
     const commands = window.__aegosCalls.map((item) => item.command);
     const advancedSettingsCall = window.__aegosCalls.find((item) => item.command === 'start_job' && item.args.kind === 'updateSettings');
-    const required = ['start_job', 'job_status', 'cancel_job', 'start_proxy_delay_test', 'speed_test_status', 'relaunch_as_admin', 'connections', 'close_connections'];
+    const required = ['start_job', 'job_status', 'cancel_job', 'prepare_speed_runtime', 'start_proxy_delay_test', 'relaunch_as_admin', 'connections', 'close_connections'];
     const jobKinds = window.__aegosCalls.filter((item) => item.command === 'start_job').map((item) => item.args.kind);
     return {
       commands,

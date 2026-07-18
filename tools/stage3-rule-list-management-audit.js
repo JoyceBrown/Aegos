@@ -34,13 +34,15 @@ const pkg = JSON.parse(read('package.json'));
 const appJs = read('src/app.js');
 const styles = read('src/styles.css');
 const mainRs = read('src-tauri/src/main.rs');
+const routingStoreRs = read('src-tauri/src/routing_store.rs');
+const routingDomainRs = read('src-tauri/src/routing_domain.rs');
 const releaseAudit = read('tools/release-audit.js');
 const release = exists(`RELEASE_${pkg.version}.md`) ? read(`RELEASE_${pkg.version}.md`) : '';
-const editStart = mainRs.indexOf('fn apply_routing_rule_edit');
-const editEnd = mainRs.indexOf('fn standby_settings', editStart);
+const editStart = mainRs.indexOf('fn apply_user_rule_store_edit');
+const editEnd = mainRs.indexOf('fn resolve_unbound_user_rule', editStart);
 const editBody = editStart >= 0 && editEnd > editStart ? mainRs.slice(editStart, editEnd) : '';
 const registryStart = mainRs.indexOf('fn routing_user_rule_lists');
-const registryEnd = mainRs.indexOf('fn routing_rule_target', registryStart);
+const registryEnd = mainRs.indexOf('fn mark_system_routing_rules', registryStart);
 const registryBody = registryStart >= 0 && registryEnd > registryStart ? mainRs.slice(registryStart, registryEnd) : '';
 const workbenchStart = appJs.indexOf('function renderRoutingRuleWorkbench');
 const workbenchEnd = appJs.indexOf('function renderRoutingSystemWorkbench', workbenchStart);
@@ -57,33 +59,33 @@ check('package exposes the stage 3 rule list management audit', pkg.scripts?.['a
 
 check(
   'backend stores active and disabled user rules without breaking old array registries',
-  registryBody.includes('if entry.is_array()') &&
+  routingStoreRs.includes('pub(crate) enabled: bool') &&
+    mainRs.includes('if entry.is_array()') &&
     registryBody.includes('"active"') &&
     registryBody.includes('"disabled"') &&
-    registryBody.includes('routing_disabled_user_rule_list') &&
-    registryBody.includes('write_routing_user_rule_lists'),
+    mainRs.includes('user_rule_record_from_legacy') &&
+    mainRs.includes('read_aegos_user_rule_store'),
   'active/disabled registry compatibility'
 );
 
 check(
   'backend can enable, disable, delete, edit, and reorder real user rules',
-  editBody.includes('"edit" | "delete" | "enable" | "disable" | "up" | "down"') &&
-    editBody.includes('"disable" =>') &&
-    editBody.includes('rules.remove(index)') &&
-    editBody.includes('"enable" =>') &&
-    editBody.includes('rules.insert(insert_at, yaml_str(next_rule.clone()))') &&
-    editBody.includes('rules.swap(index, user_indexes[target_position])') &&
-    editBody.includes('commit_profile_routing_config') &&
-    editBody.includes('sync_active_routing_user_rule_order'),
-  'real YAML mutation and deployment path'
+  routingDomainRs.includes('Edit,') && routingDomainRs.includes('Delete,') && routingDomainRs.includes('Enable,') && routingDomainRs.includes('Disable,') && routingDomainRs.includes('Up,') && routingDomainRs.includes('Down,') &&
+    editBody.includes('RoutingRuleAction::Delete') &&
+    editBody.includes('store.rules.remove') &&
+    editBody.includes('RoutingRuleAction::Enable | RoutingRuleAction::Disable') &&
+    editBody.includes('RoutingRuleAction::Up | RoutingRuleAction::Down') &&
+    editBody.includes('stage_routing_store_transaction') &&
+    editBody.includes('hot_reload_runtime_plan'),
+  'canonical rule-store mutation and deployment path'
 );
 
 check(
   'disabled rules are visible in the shared runtime snapshot but not treated as active config',
-  mainRs.includes('routing_disabled_user_rule_list(&state.app_data, &profile.id)') &&
+  mainRs.includes('store.rules.iter().filter(|rule| rule.scope.applies_to(&profile.id))') &&
     mainRs.includes('"enabled"') &&
-    mainRs.includes('"status".to_string(), json!("disabled")') &&
-    mainRs.includes('This user rule is disabled and is not in the running config.'),
+    mainRs.includes('"paused"') &&
+    mainRs.includes('规则已暂停，不会进入运行配置。'),
   'disabled rule snapshot'
 );
 

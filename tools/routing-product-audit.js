@@ -5,6 +5,7 @@ const root = process.cwd();
 const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
 const pkg = JSON.parse(read('package.json'));
 const mainRs = read('src-tauri/src/main.rs');
+const routingDomainRs = read('src-tauri/src/routing_domain.rs');
 const appJs = read('src/app.js');
 const stylesCss = read('src/styles.css');
 const releaseAudit = read('tools/release-audit.js');
@@ -20,10 +21,15 @@ const maturityGap = read('PRODUCT_MATURITY_GAP_REPORT.md');
 
 const failures = [];
 const pass = [];
-const applyStart = mainRs.indexOf('fn apply_routing_drafts(');
-const applyEnd = mainRs.indexOf('fn undo_last_routing_apply(', applyStart);
+const applyStart = mainRs.indexOf('fn apply_user_rule_store_drafts(');
+const applyEnd = mainRs.indexOf('fn apply_user_rule_store_edit(', applyStart);
 const applyRoutingDraftsBody = applyStart >= 0 && applyEnd > applyStart
   ? mainRs.slice(applyStart, applyEnd)
+  : '';
+const deployStart = mainRs.indexOf('fn deploy_profile_config(');
+const deployEnd = mainRs.indexOf('fn commit_profile_routing_config(', deployStart);
+const deployProfileConfigBody = deployStart >= 0 && deployEnd > deployStart
+  ? mainRs.slice(deployStart, deployEnd)
   : '';
 
 function check(name, ok, detail = '') {
@@ -62,35 +68,47 @@ check(
 );
 check(
   'draft writes are constrained to generated structured rules',
-  mainRs.includes('struct RoutingDraftInput') &&
+  routingDomainRs.includes('pub(crate) struct RoutingDraftInput') &&
+    routingDomainRs.includes('pub(crate) fn compile(') &&
+    routingDomainRs.includes('const ALLOWED_KINDS') &&
+    routingDomainRs.includes('target_exists(targets, &target)') &&
     mainRs.includes('fn normalize_routing_draft_rule') &&
-    mainRs.includes('allowed.contains(&kind.as_str())') &&
-    mainRs.includes('validate_routing_rule_part') &&
-    mainRs.includes('routing_rule_target_exists(targets, &target)'),
+    mainRs.includes('let compiled = draft.compile(targets)?;') &&
+    !mainRs.includes('struct RoutingDraftInput {') &&
+    !mainRs.includes('fn validate_routing_rule_part('),
   'structured draft validation'
 );
 check(
-  'routing apply preflights before atomic profile write',
-  applyRoutingDraftsBody.indexOf('config_pipeline::preflight_profile_source(source.clone(), &profile, &settings)') > -1 &&
-    applyRoutingDraftsBody.indexOf('config_pipeline::preflight_profile_source(source.clone(), &profile, &settings)') <
-      applyRoutingDraftsBody.indexOf('atomic_write_text_confined(&profile_path, &self.profile_dir, &next_raw)'),
-  'preflight before write'
+  'routing apply stages an atomic candidate before runtime preflight and verified promotion',
+  applyRoutingDraftsBody.includes('stage_routing_store_transaction(') &&
+    applyRoutingDraftsBody.includes('let plan = self.render_runtime_profile(&profile)?') &&
+    applyRoutingDraftsBody.includes('self.hot_reload_runtime_plan(&profile, &plan)?') &&
+    applyRoutingDraftsBody.includes('finish_routing_store_transaction(') &&
+    applyRoutingDraftsBody.indexOf('stage_routing_store_transaction(') < applyRoutingDraftsBody.indexOf('let plan = self.render_runtime_profile(&profile)?') &&
+    applyRoutingDraftsBody.indexOf('let plan = self.render_runtime_profile(&profile)?') < applyRoutingDraftsBody.indexOf('self.hot_reload_runtime_plan(&profile, &plan)?') &&
+    mainRs.includes('atomic_write_text_confined(&routing_store_rollback_path(app_data), app_data, &backup)?') &&
+    mainRs.includes('write_aegos_user_rule_store(app_data, candidate)') &&
+    !applyRoutingDraftsBody.includes('commit_profile_routing_config'),
+  'candidate snapshot -> runtime preflight -> hot reload -> verified transaction'
 );
 check(
   'routing apply stores rollback backup inside app data',
-  mainRs.includes('routing-last-apply-backup.yaml') &&
-    mainRs.includes('routing-last-apply-backup.json') &&
-    mainRs.includes('atomic_write_text_confined(&backup_path, &self.app_data, &previous_raw)') &&
-    mainRs.includes('remove_file_confined(&backup_path, &self.app_data)'),
+  mainRs.includes('aegos-user-rules.json') &&
+    mainRs.includes('routing-deployment-report.json') &&
+    mainRs.includes('atomic_write_text_confined(&path, app_data, &raw)') &&
+    applyRoutingDraftsBody.includes('let previous_store = store.clone()'),
   'app-data backup'
 );
 check(
-  'routing apply hot reload failure restores previous profile',
-  mainRs.includes('let restore_file =') &&
-    mainRs.includes('atomic_write_text_confined(&profile_path, &self.profile_dir, &previous_raw)') &&
-    mainRs.includes('Routing hot reload failed and config was rolled back') &&
-    mainRs.includes('rollback also failed'),
-  'hot reload rollback'
+  'routing apply failure restores both the canonical store and previous runtime',
+  applyRoutingDraftsBody.includes('self.hot_reload_profile(&profile).map(|_| ())') &&
+    applyRoutingDraftsBody.includes('rollback_routing_store_transaction(') &&
+    mainRs.includes('write_aegos_user_rule_store(app_data, previous)?') &&
+    mainRs.includes('"storeRestored": true') &&
+    mainRs.includes('"runtimeRestored": runtime_restored') &&
+    mainRs.includes('"status": "rolled-back"') &&
+    mainRs.includes('recover_interrupted_routing_store_transaction(app_data: &Path)'),
+  'store/runtime rollback plus startup recovery'
 );
 check(
   'frontend exposes verify, apply, and undo as clear user actions',
@@ -121,17 +139,18 @@ check(
   'routing apply result is visible and user rules are backed by snapshot metadata',
   appJs.includes('routingApplyStatus') &&
     appJs.includes('renderRoutingApplyStatus') &&
-    appJs.includes('data.lastApply') &&
+  appJs.includes('data.lastApply') &&
     appJs.includes('summary.userRuleCount') &&
-    mainRs.includes('fn routing_apply_metadata') &&
-    mainRs.includes('fn mark_last_applied_routing_rules') &&
+    mainRs.includes('fn read_aegos_user_rule_store') &&
+    mainRs.includes('"lastDeployment"') &&
     mainRs.includes('"source".to_string(), json!("user")') &&
     mainRs.includes('"lastApply"'),
   'apply status/user rule metadata'
 );
 check(
   'strategy groups are edited from node page while routing page stays a read-only chooser',
-  mainRs.includes('struct RoutingGroupEditInput') &&
+  routingDomainRs.includes('pub(crate) struct RoutingGroupEditInput') &&
+    routingDomainRs.includes('pub(crate) enum RoutingGroupAction') &&
     mainRs.includes('fn apply_routing_group_edit') &&
     mainRs.includes('"applyRoutingGroupEdit"') &&
     appJs.includes("runBackgroundJob('applyRoutingGroupEdit'") &&
@@ -148,8 +167,8 @@ check(
 );
 check(
   'routing page exposes editable Aegos user rules but keeps system rules read-only',
-  mainRs.includes('routing-user-rules.json') &&
-    mainRs.includes('fn apply_routing_rule_edit') &&
+  mainRs.includes('aegos-user-rules.json') &&
+    mainRs.includes('fn apply_user_rule_store_edit') &&
     mainRs.includes('fn mark_system_routing_rules') &&
     mainRs.includes('"editable".to_string(), json!(false)') &&
     appJs.includes('routingRuleForm') &&

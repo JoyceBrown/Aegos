@@ -60,6 +60,53 @@ fn issue(
 pub fn issue_from_failure(context: &str, classification: &str, reason: &str) -> AegosIssue {
     let context_lower = context.to_ascii_lowercase();
     let reason_lower = reason.to_ascii_lowercase();
+    if context_lower.contains("refreshoutboundip") {
+        if reason_lower.contains("requires an active or standby connection") {
+            return issue(
+                "AEG-IP-001",
+                "connection",
+                "连接后才能查询落地 IP",
+                "当前网络核心尚未运行，没有可用于查询的节点出口。",
+                "先连接节点，或开始一次节点测速后再查询。",
+                None,
+                None,
+            );
+        }
+        if reason_lower.contains("route sync")
+            || reason_lower.contains("not available in the outbound ip route")
+            || reason_lower.contains("proxy not exist")
+        {
+            return issue(
+                "AEG-IP-002",
+                "connection",
+                "当前节点出口同步失败",
+                "Aegos 没能把落地 IP 查询绑定到当前真实节点。",
+                "刷新节点列表并重新选择节点；问题仍存在时运行诊断。",
+                None,
+                None,
+            );
+        }
+        if reason_lower.contains("expired after node changed") {
+            return issue(
+                "AEG-IP-003",
+                "connection",
+                "节点已切换，请重新查询",
+                "查询期间当前节点发生变化，旧结果已被安全丢弃。",
+                "等待节点切换完成后再次查询落地 IP。",
+                None,
+                None,
+            );
+        }
+        return issue(
+            "AEG-IP-004",
+            "connection",
+            "暂时无法获取落地 IP",
+            "当前节点已选中，但多个出口查询服务均未返回有效 IP。",
+            "确认节点可以访问网络后重试；其他网站正常时稍后再查。",
+            None,
+            None,
+        );
+    }
     if context_lower.contains("profile") || context_lower.contains("subscription") {
         if reason_lower.contains("invalid-url") {
             return issue(
@@ -523,5 +570,27 @@ mod tests {
         let refused = issue_from_failure("node", "refused", "connection refused by peer");
         assert_eq!(refused.code, "AEG-NOD-004");
         assert!(!refused.public_message().contains("connection refused"));
+
+        let disconnected = issue_from_failure(
+            "refreshOutboundIp",
+            "unknown",
+            "Outbound IP requires an active or standby connection.",
+        );
+        assert_eq!(disconnected.code, "AEG-IP-001");
+        assert!(disconnected.public_message().contains("连接后才能查询落地 IP"));
+
+        let route_sync = issue_from_failure(
+            "refreshOutboundIp",
+            "controller-unavailable",
+            "Outbound IP route sync failed: proxy not exist",
+        );
+        assert_eq!(route_sync.code, "AEG-IP-002");
+
+        let stale = issue_from_failure(
+            "refreshOutboundIp",
+            "unknown",
+            "Outbound IP query expired after node changed",
+        );
+        assert_eq!(stale.code, "AEG-IP-003");
     }
 }

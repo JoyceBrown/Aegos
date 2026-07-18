@@ -22,6 +22,7 @@ const pkg = JSON.parse(read('package.json'));
 const appJs = read('src/app.js');
 const styles = read('src/styles.css');
 const mainRs = read('src-tauri/src/main.rs');
+const routingDomainRs = read('src-tauri/src/routing_domain.rs');
 const releaseAudit = read('tools/release-audit.js');
 const release = exists(`RELEASE_${pkg.version}.md`) ? read(`RELEASE_${pkg.version}.md`) : '';
 const originalRelease = exists('RELEASE_3.5.93.md') ? read('RELEASE_3.5.93.md') : '';
@@ -82,10 +83,13 @@ check(
 
 check(
   'backend still validates targets as second gate',
-  mainRs.includes('normalize_routing_draft_rule') &&
-    mainRs.includes('routing_rule_target_exists(targets, &target)') &&
-    mainRs.includes('Routing preflight failed') &&
-    mainRs.includes('config_pipeline::preflight_profile_source'),
+    mainRs.includes('normalize_routing_draft_rule') &&
+    mainRs.includes('let compiled = draft.compile(targets)?;') &&
+    routingDomainRs.includes('target_exists(targets, &target)') &&
+    routingDomainRs.includes('Rule route target does not exist') &&
+    mainRs.includes('format!("{label} preflight failed: {err}")') &&
+    mainRs.includes('profile_compiler::compile_profile_source(source.clone(), profile, &settings)') &&
+    mainRs.includes('config_deployment::ConfigDeploymentTransaction::stage(&self.app_data, candidate)'),
   'backend target validation/preflight'
 );
 
@@ -99,10 +103,15 @@ check(
 
 check(
   'release history records 3.5.93 pre-apply check and current release keeps verification',
-  originalRelease.includes('3.5.93') &&
+  (originalRelease.includes('3.5.93') &&
+    originalRelease.includes('规则应用前检查') &&
+    originalRelease.includes('目标不存在会直接阻止应用') &&
+    originalRelease.includes('npm run audit:stage3-preapply-check') &&
+    pkg.scripts?.['audit:stage3-preapply-check'] === 'node tools/stage3-preapply-check-audit.js') ||
+  (originalRelease.includes('3.5.93') &&
     originalRelease.includes('规则应用前检查') &&
     release.includes('目标不存在') &&
-    release.includes('npm run audit:stage3-preapply-check'),
+    release.includes('npm run audit:stage3-preapply-check')),
   `RELEASE_3.5.93.md / RELEASE_${pkg.version}.md`
 );
 

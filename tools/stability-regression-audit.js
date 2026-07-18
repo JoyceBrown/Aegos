@@ -67,7 +67,7 @@ check(
   'single-node speed command is also queued without blocking the clicked row',
   singleSpeedCommand.includes('mark_single_speed_test_preparing(&state.speed_test, &name, now_secs())') &&
     singleSpeedCommand.includes('thread::spawn(move ||') &&
-    singleSpeedCommand.includes('test_single_proxy_delay_for_run(name, Some(run_id))') &&
+    singleSpeedCommand.includes('test_single_proxy_delay_for_run(name, Some(run_id), app)') &&
     singleSpeedCommand.includes('"healthStatus": "testing"') &&
     !singleSpeedCommand.includes('state.core.lock().unwrap().test_single_proxy_delay('),
   'slow TUIC/AnyTLS/single-node probes must not freeze the row or page'

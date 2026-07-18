@@ -47,6 +47,8 @@ const routingAfterStatus = metric((report) => report.startup?.routingAfterStatus
 const visualNavP95 = metric((report) => report.visualFluidity?.visualNavP95FrameMs);
 const visualNavMax = metric((report) => report.visualFluidity?.visualNavMaxFrameMs);
 const layoutShift = metric((report) => report.visualFluidity?.unexpectedLayoutShift);
+const speedStreamP95 = metric((report) => report.speedStream?.p95FrameMs);
+const speedStreamMax = metric((report) => report.speedStream?.maxFrameMs);
 
 if (reports.length !== runCount) failures.push(`only ${reports.length}/${runCount} reports were collected`);
 if (statusContent.median > 250 || statusContent.worst > 350) failures.push(`startup status variability exceeded budget: ${JSON.stringify(statusContent)}`);
@@ -55,6 +57,7 @@ if (coldRoutingContent.median > 260 || coldRoutingContent.worst > 350) failures.
 if (routingAfterStatus.worst > 30) failures.push(`routing prefetch did not immediately follow status: ${JSON.stringify(routingAfterStatus)}`);
 if (visualNavP95.median > 35 || visualNavP95.worst > 50 || visualNavMax.worst > 100) failures.push(`visual navigation variability exceeded budget: p95=${JSON.stringify(visualNavP95)} max=${JSON.stringify(visualNavMax)}`);
 if (layoutShift.worst > 0.02) failures.push(`layout shift variability exceeded budget: ${JSON.stringify(layoutShift)}`);
+if (speedStreamP95.median > 50.1 || speedStreamP95.worst > 50.1 || speedStreamMax.worst > 100) failures.push(`speed stream variability exceeded budget: p95=${JSON.stringify(speedStreamP95)} max=${JSON.stringify(speedStreamMax)}`);
 
 const result = {
   ok: failures.length === 0,
@@ -68,7 +71,9 @@ const result = {
     routingAfterStatus,
     visualNavP95,
     visualNavMax,
-    layoutShift
+    layoutShift,
+    speedStreamP95,
+    speedStreamMax
   },
   generatedAt: new Date().toISOString()
 };

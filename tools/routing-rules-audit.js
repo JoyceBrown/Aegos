@@ -31,8 +31,8 @@ const releaseAudit = read('tools/release-audit.js');
 const routingStart = mainRs.indexOf('fn routing_snapshot');
 const routingEnd = mainRs.indexOf('#[tauri::command]', routingStart + 1);
 const routingBody = routingStart >= 0 ? mainRs.slice(routingStart, routingEnd > routingStart ? routingEnd : undefined) : '';
-const renderStart = appJs.indexOf('function renderRoutingSnapshot');
-const renderEnd = appJs.indexOf('async function refreshRoutingSnapshot', renderStart);
+const renderStart = appJs.indexOf('function renderRoutingAdvancedRuleRows');
+const renderEnd = appJs.indexOf('function renderRoutingSnapshot', renderStart);
 const renderBody = renderStart >= 0 ? appJs.slice(renderStart, renderEnd > renderStart ? renderEnd : undefined) : '';
 
 check('package version keeps 3.x routing foundation active', /^3\.\d+\.\d+$/.test(pkg.version), pkg.version);
@@ -40,7 +40,7 @@ check('routing rules audit is exposed as package script', pkg.scripts?.['audit:r
 check('backend parses profile rules into structured records', mainRs.includes('fn split_rule_segments') && mainRs.includes('fn parse_routing_rule_text') && mainRs.includes('fn routing_rules_for_profile') && mainRs.includes('"condition"') && mainRs.includes('"target"') && mainRs.includes('"options"'), 'rule parser functions');
 check('rule parser handles nested logical commas and no-resolve options', mainRs.includes('routing_rule_parser_structures_common_rules') && mainRs.includes('AND,((DOMAIN-SUFFIX,example.com),(NETWORK,TCP)),Proxy') && mainRs.includes('GEOIP,CN,DIRECT,no-resolve'), 'parser unit coverage');
 check('routing snapshot returns static rules without config writes', routingBody.includes('"rules": static_rules') && routingBody.includes('"ruleCount": rule_count') && routingBody.includes('routing_rules_for_profile(active_profile.as_ref())') && !routingBody.includes('atomic_write') && !routingBody.includes('PATCH'), 'read-only snapshot');
-check('routing frontend renders structured rules safely', renderBody.includes('const rawRules = Array.isArray(data.rules)') && renderBody.includes('item.condition') && renderBody.includes('routingTargetLabel(item.target)') && renderBody.includes('replaceChildrenSafe') && !renderBody.includes('innerHTML'), 'safe structured render');
+check('routing frontend renders structured rules safely', renderBody.includes('splitRoutingRules(Array.isArray(data.rules)') && renderBody.includes('item.condition') && renderBody.includes('routingTargetLabel(item.target)') && renderBody.includes('replaceChildrenSafe') && renderBody.includes('routingAdvancedRulePageSize') && !renderBody.includes('innerHTML'), 'safe paged structured render');
 check('routing table labels are normalized for user-facing rule fields', appJs.includes('normalizeRoutingStaticText') && appJs.includes('routingRuleHitCount') && appJs.includes('\\u7c7b\\u578b') && appJs.includes('\\u6761\\u4ef6') && appJs.includes('\\u76ee\\u6807') && appJs.includes('\\u72b6\\u6001'), 'runtime rule table labels');
 check('routing remains read-only with no mutation command', !mainRs.includes('save_routing_rule') && !mainRs.includes('update_routing_rule') && !appJs.includes('saveRoutingRule'), 'no rule mutation');
 check('release audit knows routing rules audit exists', releaseAudit.includes('routing rules audit script exists') && releaseAudit.includes('tools/routing-rules-audit.js'), 'release-audit');

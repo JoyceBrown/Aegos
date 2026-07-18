@@ -8,11 +8,14 @@ function readSource(...segments) {
 }
 
 const mainRs = readSource('src-tauri', 'src', 'main.rs');
+const coreDomainRs = readSource('src-tauri', 'src', 'core_domain.rs');
+const configDomainRs = readSource('src-tauri', 'src', 'config_domain.rs');
 const coreRuntimeRs = readSource('src-tauri', 'src', 'core_runtime.rs');
 const profileCompilerRs = readSource('src-tauri', 'src', 'profile_compiler.rs');
 const configPipelineRs = readSource('src-tauri', 'src', 'config_pipeline.rs');
 const taskRuntimeRs = readSource('src-tauri', 'src', 'task_runtime.rs');
 const speedRuntimeRs = readSource('src-tauri', 'src', 'speed_runtime.rs');
+const speedSchedulerRs = readSource('src-tauri', 'src', 'speed_scheduler.rs');
 const diagnosticsRuntimeRs = readSource('src-tauri', 'src', 'diagnostics_runtime.rs');
 const subscriptionRuntimeRs = readSource('src-tauri', 'src', 'subscription_runtime.rs');
 const configDeploymentRs = readSource('src-tauri', 'src', 'config_deployment.rs');
@@ -25,7 +28,7 @@ function check(name, ok, detail = '') {
 }
 
 const statusBody = mainRs.match(/fn status_from_observed_traffic\([\s\S]*?\) -> JsonValue \{([\s\S]*?)\n    \}/)?.[1] || '';
-const appStatusBody = mainRs.match(/fn app_status\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
+const appStatusBody = mainRs.match(/fn app_status\([^)]*\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 const commandSection = mainRs.slice(mainRs.indexOf('#[tauri::command]'));
 const speedStart = mainRs.indexOf('fn start_proxy_delay_test');
 const speedEnd = mainRs.indexOf('fn test_single_proxy_delay', speedStart);
@@ -36,10 +39,18 @@ const speedCommandBody = speedCommandStart >= 0 && speedCommandEnd > speedComman
 const singleSpeedCommandStart = mainRs.indexOf('fn test_single_proxy_delay(');
 const singleSpeedCommandEnd = mainRs.indexOf('#[tauri::command]', singleSpeedCommandStart + 1);
 const singleSpeedCommandBody = singleSpeedCommandStart >= 0 && singleSpeedCommandEnd > singleSpeedCommandStart ? mainRs.slice(singleSpeedCommandStart, singleSpeedCommandEnd) : '';
+const singleSpeedBackendStart = mainRs.indexOf('fn test_single_proxy_delay_for_run');
+const singleSpeedBackendEnd = mainRs.indexOf('fn probe_proxy_network', singleSpeedBackendStart);
+const singleSpeedBackendBody = singleSpeedBackendStart >= 0 && singleSpeedBackendEnd > singleSpeedBackendStart ? mainRs.slice(singleSpeedBackendStart, singleSpeedBackendEnd) : '';
 const activeConnectionCommandBody = mainRs.match(/fn active_connection_count\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 const connectionStatusSummaryBody = mainRs.match(/fn connection_status_summary\(&self\) -> JsonValue \{([\s\S]*?)\n    \}/)?.[1] || '';
 const connectionClosureBody = mainRs.match(/fn connection_closure\(&self\) -> JsonValue \{([\s\S]*?)\n    \}/)?.[1] || '';
 const outboundIpRefreshBody = mainRs.match(/fn refresh_outbound_ip_detached\(core: Arc<Mutex<CoreManager>>\) -> Result<String, String> \{([\s\S]*?)\n\}/)?.[1] || '';
+const publicProfileStart = mainRs.indexOf('fn public_profile(');
+const publicProfileEnd = mainRs.indexOf('fn is_fake_ip_address(', publicProfileStart);
+const publicProfileBody = publicProfileStart >= 0 && publicProfileEnd > publicProfileStart
+  ? mainRs.slice(publicProfileStart, publicProfileEnd)
+  : '';
 
 function hasControllerCall(method, timeout) {
   return new RegExp(`controller\\s*\\.\\s*${method}\\(\\s*${timeout}\\s*\\)`).test(mainRs);
@@ -62,6 +73,9 @@ check(
 check(
   'status traffic timeout stays short',
   appStatusBody.includes('status_traffic_snapshot_or_idle(observed_running, &previous_traffic)') &&
+    coreDomainRs.includes('pub struct TrafficSnapshot') &&
+    coreDomainRs.includes('pub fn traffic_snapshot_from_controller_line') &&
+    coreRuntimeRs.includes('Result<TrafficSnapshot, String>') &&
     coreRuntimeRs.includes('pub fn status_traffic_snapshot(&self)') &&
     coreRuntimeRs.includes('pub fn status_traffic_snapshot_or_idle(') &&
     coreRuntimeRs.includes('pub fn idle_traffic_snapshot()') &&
@@ -75,11 +89,19 @@ check(
   'outbound IP refresh ignores stale node results',
   mainRs.includes('outbound_ip_query_generation: u64') &&
     outboundIpRefreshBody.includes('outbound_ip_query_generation = core.outbound_ip_query_generation.saturating_add(1)') &&
-    outboundIpRefreshBody.includes('current_outbound_ip_proxy_name(&groups)') &&
-    outboundIpRefreshBody.includes('current_proxy != selected_proxy') &&
+    mainRs.includes('fn runtime_current_proxy_route(') &&
+    mainRs.includes('fn sync_outbound_ip_route(') &&
+    mainRs.includes('OUTBOUND_IP_RULE_PRIMARY_GROUPS') &&
+    mainRs.includes('OUTBOUND_IP_GLOBAL_PRIMARY_GROUPS') &&
+    coreDomainRs.includes('pub fn resolve_runtime_leaf(') &&
+    coreDomainRs.includes('pub fn group_contains_leaf(') &&
+    outboundIpRefreshBody.includes('let selected_proxy = sync_outbound_ip_route(&controller, &mode)?') &&
+    outboundIpRefreshBody.includes('core.settings.mode != mode') &&
+    outboundIpRefreshBody.includes('current_proxy.as_deref() != Some(selected_proxy.as_str())') &&
+    !outboundIpRefreshBody.includes('current_outbound_ip_proxy_name') &&
     outboundIpRefreshBody.includes('Outbound IP refresh result ignored because the selected node changed.') &&
     outboundIpRefreshBody.includes('Outbound IP query expired after node changed; retrying will use the current node.') &&
-    !/current_proxy != selected_proxy[\s\S]*?return Ok\(fallback\)/.test(outboundIpRefreshBody) &&
+    !/current_proxy\.as_deref\(\) != Some\(selected_proxy\.as_str\(\)\)[\s\S]*?return Ok\(fallback\)/.test(outboundIpRefreshBody) &&
     mainRs.includes('Unable to query outbound IP') &&
     !outboundIpRefreshBody.includes('鐠囧嘲') &&
     !mainRs.includes('閺冪姵纭堕懢宄板絿'),
@@ -102,7 +124,7 @@ check(
   'single-node speed-test command returns before slow core preparation',
   singleSpeedCommandBody.includes('mark_single_speed_test_preparing(&state.speed_test, &name, now_secs())') &&
     singleSpeedCommandBody.includes('thread::spawn(move ||') &&
-    singleSpeedCommandBody.includes('test_single_proxy_delay_for_run(name, Some(run_id))') &&
+    singleSpeedCommandBody.includes('test_single_proxy_delay_for_run(name, Some(run_id), app)') &&
     !singleSpeedCommandBody.includes('state.core.lock().unwrap().test_single_proxy_delay(name)'),
   'single-node speed buttons should not wait for standby core preparation or proxy-group assembly'
 );
@@ -122,34 +144,33 @@ check(
 );
 check(
   'disconnect protection allows speed tests without disabling protection',
-  mainRs.includes('fn build_speed_test_firewall_script') &&
-    mainRs.includes('fn speed_test_firewall_ports') &&
-    mainRs.includes('"name=$rulePrefix DNS UDP"') &&
-    mainRs.includes('"name=$rulePrefix DNS TCP"') &&
-    mainRs.includes('remoteport=$portList') &&
-    mainRs.includes('cleanup_speed_firewall') &&
-    /thread::spawn\(move \|\| \{[\s\S]*build_speed_test_firewall_script\(\s*true/.test(mainRs) &&
-    !/fn ensure_core_for_delay_test[\s\S]*refresh_kill_switch_rules_if_enabled\("speed test"\)/.test(mainRs),
-  'speed-test preparation opens a temporary node-port firewall window inside the background worker'
+  mainRs.includes('fn build_kill_switch_script') &&
+    mainRs.includes('core_runtime::firewall_program_paths') &&
+    !mainRs.includes('fn build_speed_test_firewall_script') &&
+    !speedTestBody.includes('run_powershell') &&
+    !singleSpeedBackendBody.includes('run_powershell') &&
+    !mainRs.includes('remoteport=$portList'),
+  'speed tests reuse verified Aegos/core program allow rules without broad temporary port rules'
 );
 check(
-  'TUIC delay path has lower concurrency',
+  'TUIC delay path has bounded protocol-aware concurrency',
   mainRs.includes('fn protocol_concurrency') &&
-    mainRs.includes('"tuic" => 6') &&
+    mainRs.includes('"tuic" => 10') &&
     mainRs.includes('speed_test_ordered_targets') &&
-    mainRs.includes('next_schedulable_target') &&
+    speedSchedulerRs.includes('family_limits') &&
+    speedSchedulerRs.includes('run_probe_wave') &&
     mainRs.includes('protocol_primary_timeout_ms'),
   'protocol-aware concurrency'
 );
 check(
   'modern URI airport protocols are parsed',
-  mainRs.includes('fn parse_vless_uri') &&
-    mainRs.includes('fn parse_hysteria2_uri') &&
-    mainRs.includes('fn parse_anytls_uri') &&
-    mainRs.includes('line.starts_with("vless://")') &&
-    mainRs.includes('line.starts_with("hysteria2://")') &&
-    mainRs.includes('line.starts_with("hy2://")') &&
-    mainRs.includes('line.starts_with("anytls://")') &&
+  subscriptionRuntimeRs.includes('fn parse_vless_uri') &&
+    subscriptionRuntimeRs.includes('fn parse_hysteria2_uri') &&
+    subscriptionRuntimeRs.includes('fn parse_anytls_uri') &&
+    subscriptionRuntimeRs.includes('Some("hysteria2" | "hy2")') &&
+    subscriptionRuntimeRs.includes('Some("vless")') &&
+    subscriptionRuntimeRs.includes('Some("anytls")') &&
+    !mainRs.includes('fn parse_vless_uri') &&
     mainRs.includes('parses_modern_uri_subscription_protocols'),
   'VLESS, Hysteria2/Hy2, and AnyTLS URI subscriptions'
 );
@@ -162,7 +183,7 @@ check(
     configPipelineRs.includes('pub(crate) fn harden_runtime_dns') &&
     configPipelineRs.includes('proxy-server-nameserver') &&
     configPipelineRs.includes('pub(crate) fn is_local_or_fake_nameserver') &&
-    mainRs.includes('config_pipeline::harden_runtime_dns(&mut config)') &&
+    configPipelineRs.includes('harden_runtime_dns(&mut config)') &&
     mainRs.includes('runtime_dns_is_isolated_from_local_fake_ip_resolvers'),
   'proxy server domains must not resolve through 127.0.0.1:1053 or 198.18/198.19 fake-ip DNS'
 );
@@ -182,10 +203,10 @@ check(
 );
 check(
   'airport metadata pseudo nodes are removed before runtime and speed tests',
-  mainRs.includes('fn is_subscription_metadata_node_name') &&
-    mainRs.includes('fn sanitize_subscription_metadata_nodes') &&
+  configDomainRs.includes('pub fn is_subscription_metadata_node_name') &&
+    configPipelineRs.includes('fn sanitize_subscription_metadata_nodes') &&
     mainRs.includes('subscription_metadata_nodes_are_removed_before_runtime_and_speed') &&
-    mainRs.includes('is_subscription_metadata_node_name(name)') &&
+    mainRs.includes('config_domain::is_subscription_metadata_node_name(name)') &&
     mainRs.includes('is_fake_ip_address(server)'),
   'Traffic/Expire plan rows must not become selectable or speed-tested nodes'
 );
@@ -195,6 +216,7 @@ check(
     configPipelineRs.includes('fn synthesize_default_proxy_groups_if_needed') &&
     configPipelineRs.includes('fn ensure_proxies_group_contains_all_nodes') &&
     configPipelineRs.includes('fn ensure_auto_select_group_contains_all_nodes') &&
+    configPipelineRs.includes('set_yaml(map, "lazy", YamlValue::Bool(true))') &&
     coreRuntimeRs.includes('pub const LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME') &&
     coreRuntimeRs.includes('name == LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME') &&
     configPipelineRs.includes('core_runtime::AEGOS_AUTO_SELECT_GROUP_NAME') &&
@@ -261,7 +283,7 @@ check(
     mainRs.includes('add_profile_url_detached') &&
     mainRs.includes('update_profile_detached') &&
     mainRs.includes('refresh_outbound_ip_detached') &&
-    mainRs.includes('download_profile_source_url_diagnostic(url)?') &&
+    mainRs.includes('subscription_runtime::download_source_url(url, AEGOS_SUBSCRIPTION_USER_AGENT)?') &&
     mainRs.includes('query_outbound_ip(mixed_port)') &&
     mainRs.includes('normalize_outbound_ip_response') &&
     mainRs.includes('checkip.amazonaws.com') &&
@@ -273,10 +295,10 @@ check(
   'smart-mode outbound IP lookup uses an internal current-node group',
   mainRs.includes('OUTBOUND_IP_RULE_DOMAINS') &&
     mainRs.includes('AEGOS_OUTBOUND_IP_GROUP') &&
-    mainRs.includes('fn upsert_outbound_ip_group') &&
+    configPipelineRs.includes('fn upsert_outbound_ip_group') &&
     mainRs.includes('fn sync_outbound_ip_group_selection') &&
-    mainRs.includes('fn insert_outbound_ip_rules') &&
-    mainRs.includes('DOMAIN,{domain},{target}') &&
+    configPipelineRs.includes('fn insert_outbound_ip_rules') &&
+    configPipelineRs.includes('DOMAIN,{domain},{target}') &&
     mainRs.includes('outbound_ip_lookup_rules_use_internal_current_node_group'),
   'internal IP lookup domains are routed through a hidden group synced to the current node'
 );
@@ -292,7 +314,9 @@ check(
     coreRuntimeRs.includes('profile: no active profile') &&
     mainRs.includes('Config generation failed: {err}') &&
     mainRs.includes('Core process spawn failed: {err}') &&
-    mainRs.includes('self.wait_for_controller()?') &&
+    mainRs.includes('if let Err(err) = self.wait_for_controller()') &&
+    mainRs.includes('self.terminate_core_process(core_runtime::TERMINATE_FAILED_STARTUP_MESSAGE)') &&
+    mainRs.includes('return Err(message);') &&
     coreRuntimeRs.includes('pub fn wait_until_ready') &&
     mainRs.includes('core_runtime::TERMINATE_FAILED_STARTUP_MESSAGE') &&
     coreRuntimeRs.includes('pub const CONTROLLER_READY_TIMEOUT_MESSAGE') &&
@@ -369,10 +393,14 @@ check(
   coreRuntimeRs.includes('pub fn active_connection_count(&self, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn active_connection_count_snapshot_or_idle(') &&
     coreRuntimeRs.includes('pub fn connections_snapshot(&self, timeout_ms: u64)') &&
-    coreRuntimeRs.includes('pub fn connections_snapshot_or_empty(&self, running: bool, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn connections_snapshot_or_empty(') &&
     coreRuntimeRs.includes('pub fn recent_rule_hits_snapshot(') &&
     coreRuntimeRs.includes('pub fn routing_recent_rule_hits_snapshot_or_empty(&self, running: bool)') &&
-    coreRuntimeRs.includes('pub fn recent_rule_hits_from_connections(') &&
+    coreDomainRs.includes('pub struct ConnectionSnapshot') &&
+    coreDomainRs.includes('pub fn connection_snapshots_from_controller') &&
+    coreDomainRs.includes('pub fn recent_rule_hits') &&
+    coreRuntimeRs.includes('Result<Vec<ConnectionSnapshot>, String>') &&
+    !coreRuntimeRs.includes('recent_rule_hits_from_connections') &&
     mainRs.includes('fn active_connection_count(state: State<AppState>)') &&
     mainRs.includes('active_connection_count,') &&
     mainRs.includes('controller.home_active_connection_count_snapshot_or_idle(running)') &&
@@ -419,18 +447,18 @@ check(
   'proxy group refresh and preview avoid holding the CoreManager mutex during controller/YAML work',
   mainRs.includes('fn assemble_proxy_groups_snapshot') &&
     mainRs.includes('controller: core_runtime::CoreController') &&
-    coreRuntimeRs.includes('pub fn ui_proxy_groups_snapshot_or_none(') &&
+    coreRuntimeRs.includes('pub fn proxy_catalog_snapshot_or_else') &&
     mainRs.includes('fn profile_proxy_groups_for_profile_snapshot') &&
     mainRs.includes('fn apply_speed_test_delays_from_state') &&
-    mainRs.includes('fn proxy_groups(state: State<AppState>)') &&
+    mainRs.includes("async fn proxy_groups(state: State<'_, AppState>)") &&
     mainRs.includes('assemble_proxy_groups_snapshot(') &&
     mainRs.includes('core.core_controller()') &&
-    mainRs.includes('core_runtime::normalize_proxy_groups_snapshot_defaults(&mut groups)') &&
-    mainRs.includes('core_runtime::apply_group_resolution_with_selected_map(&mut groups, &selected_map)') &&
-    mainRs.includes('core_runtime::annotate_manual_groups_with_names(&mut groups, &manual_names)') &&
-    coreRuntimeRs.includes('pub fn normalize_proxy_groups_snapshot_defaults(') &&
-    coreRuntimeRs.includes('pub fn apply_group_resolution_with_selected_map(') &&
-    coreRuntimeRs.includes('pub fn annotate_manual_groups_with_names(') &&
+    mainRs.includes('core_runtime::shape_proxy_catalog_model(') &&
+    coreDomainRs.includes('pub struct ProxyCatalog') &&
+    coreDomainRs.includes('pub fn ensure_default_groups') &&
+    coreDomainRs.includes('pub fn apply_selected_map') &&
+    coreDomainRs.includes('pub fn annotate_manual_nodes') &&
+    coreRuntimeRs.includes('pub fn shape_proxy_catalog_model(') &&
     coreRuntimeRs.includes('proxy_group_snapshot_defaults_are_shaped_inside_runtime_boundary') &&
     mainRs.includes('fn preview_profile_groups(state: State<AppState>, id: String)') &&
     mainRs.includes('profile_proxy_groups_for_profile_snapshot(') &&
@@ -439,6 +467,9 @@ check(
     !mainRs.includes('fn normalize_proxy_groups_snapshot_defaults') &&
     !mainRs.includes('fn apply_group_resolution_with_selected_map') &&
     !mainRs.includes('fn annotate_manual_groups_with_names') &&
+    !coreRuntimeRs.includes('pub fn normalize_proxy_groups_snapshot_defaults(') &&
+    !coreRuntimeRs.includes('pub fn apply_group_resolution_with_selected_map(') &&
+    !coreRuntimeRs.includes('pub fn annotate_manual_groups_with_names(') &&
     !mainRs.includes('state.core.lock().unwrap().proxy_groups()') &&
     !mainRs.includes('state.core.lock().unwrap().preview_profile_groups(&id)'),
   'node list refresh and subscription preview should snapshot core state, then do controller/file parsing outside the core lock'
@@ -446,30 +477,38 @@ check(
 
 check(
   'proxy controller APIs are typed and keep speed tests measurement-only',
-  coreRuntimeRs.includes('pub fn proxies_snapshot(&self, timeout_ms: u64)') &&
-    coreRuntimeRs.includes('pub fn proxy_groups_snapshot(') &&
-    coreRuntimeRs.includes('fn normalize_proxy_item') &&
+  coreRuntimeRs.includes('fn proxies_payload(&self, timeout_ms: u64)') &&
+    !coreRuntimeRs.includes('pub fn proxies_payload') &&
+    coreRuntimeRs.includes('fn proxy_groups_snapshot(') &&
+    !coreRuntimeRs.includes('pub fn proxy_groups_snapshot(') &&
+    coreRuntimeRs.includes('pub fn proxy_catalog_snapshot(') &&
+    coreDomainRs.includes('pub struct ProxyNodeSnapshot') &&
+    coreDomainRs.includes('pub struct ProxyGroupSnapshot') &&
+    coreDomainRs.includes('pub fn proxy_groups_from_controller') &&
+    coreRuntimeRs.includes('Result<Vec<ProxyGroupSnapshot>, String>') &&
+    !coreRuntimeRs.includes('fn normalize_proxy_item') &&
     coreRuntimeRs.includes('pub fn select_proxy(&self, group: &str, proxy: &str, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn apply_proxy_selection(&self, group: &str, proxy: &str)') &&
     coreRuntimeRs.includes('pub fn apply_proxy_selection_with_cleanup(') &&
     coreRuntimeRs.includes('self.apply_proxy_selection(group, proxy)?') &&
     coreRuntimeRs.includes('self.cleanup_stale_connections_after_selection();') &&
     coreRuntimeRs.includes('pub fn apply_auxiliary_proxy_selection(&self, group: &str, proxy: &str)') &&
-    coreRuntimeRs.includes('pub fn apply_auxiliary_proxy_selection_if_running(') &&
-    coreRuntimeRs.includes('Some(self.apply_auxiliary_proxy_selection(group, proxy))') &&
     coreRuntimeRs.includes('pub fn cleanup_stale_connections_after_selection(&self)') &&
     coreRuntimeRs.includes('pub const PROXY_SELECT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const AUXILIARY_PROXY_SELECT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const STALE_CONNECTION_CLEANUP_TIMEOUT_MS') &&
-    coreRuntimeRs.includes('pub fn ui_proxy_groups_snapshot(') &&
-    coreRuntimeRs.includes('pub fn ui_proxy_groups_snapshot_or_else') &&
+    coreRuntimeRs.includes('pub fn proxy_catalog_snapshot(') &&
+    coreRuntimeRs.includes('pub fn proxy_catalog_snapshot_or_else') &&
     coreRuntimeRs.includes('pub const PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub fn proxy_delay_with_client(') &&
+    coreDomainRs.includes('pub struct DelayProbeSnapshot') &&
+    coreDomainRs.includes('pub fn delay_probe_from_controller') &&
+    coreRuntimeRs.includes('Result<DelayProbeSnapshot, CoreControllerHttpFailure>') &&
     coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
     coreRuntimeRs.includes('pub fn classify_delay_http_failure(') &&
     coreRuntimeRs.includes('#[derive(Clone, Debug)]') &&
     coreRuntimeRs.includes('pub struct CoreController') &&
-    mainRs.includes('controller.ui_proxy_groups_snapshot_or_else(') &&
+    mainRs.includes('controller.proxy_catalog_snapshot_or_else(') &&
     mainRs.includes('&[AEGOS_OUTBOUND_IP_GROUP]') &&
     !mainRs.includes('.ui_proxy_groups_snapshot_or_none(running, &[AEGOS_OUTBOUND_IP_GROUP])') &&
     !mainRs.includes('fn controller_proxy_groups_snapshot') &&
@@ -485,8 +524,8 @@ check(
     !mainRs.includes('fn test_proxy_delay_with_retry(\n    client: &Client,\n    controller_port: u16,') &&
     mainRs.includes('.proxy_delay_result_with_client(client, name, test_url, timeout_ms)') &&
     !mainRs.includes('fn classify_delay_http_failure') &&
-    mainRs.includes('.apply_auxiliary_proxy_selection_if_running(') &&
-    !mainRs.includes('.apply_auxiliary_proxy_selection(AEGOS_OUTBOUND_IP_GROUP, &proxy)') &&
+    mainRs.includes('fn sync_outbound_ip_route(') &&
+    mainRs.includes('.apply_auxiliary_proxy_selection(AEGOS_OUTBOUND_IP_GROUP, &proxy)') &&
     mainRs.includes('.apply_proxy_selection_with_cleanup(group, proxy)') &&
     !mainRs.includes('.apply_proxy_selection(group, proxy)') &&
     !mainRs.includes('.cleanup_stale_connections_after_selection()') &&
@@ -502,7 +541,10 @@ check(
 
 check(
   'generic CoreManager controller escape hatch is removed',
-  coreRuntimeRs.includes('pub fn version_probe(&self, timeout_ms: u64)') &&
+  coreDomainRs.includes('pub struct RuntimeVersionSnapshot') &&
+    coreDomainRs.includes('pub fn runtime_version_from_controller') &&
+    coreRuntimeRs.includes('fn version_probe(&self, timeout_ms: u64) -> Result<RuntimeVersionSnapshot, String>') &&
+    !coreRuntimeRs.includes('pub fn version_probe') &&
     coreRuntimeRs.includes('pub fn runtime_reuse_ready(&self) -> bool') &&
     coreRuntimeRs.includes('self.version_probe(READY_REUSE_PROBE_TIMEOUT_MS).is_ok()') &&
     coreRuntimeRs.includes('pub fn wait_until_ready') &&
@@ -512,8 +554,9 @@ check(
     coreRuntimeRs.includes('pub const READY_CHECK_ATTEMPTS') &&
     coreRuntimeRs.includes('pub const READY_RETRY_INTERVAL_MS') &&
     coreRuntimeRs.includes('pub const RUNTIME_RESTART_SETTLE_MS') &&
-    coreRuntimeRs.includes('pub fn set_mode(&self, mode: &str, timeout_ms: u64)') &&
-    coreRuntimeRs.includes('pub fn apply_mode(&self, mode: &str)') &&
+    coreRuntimeRs.includes('fn set_mode(&self, mode: &str, timeout_ms: u64) -> Result<(), String>') &&
+    !coreRuntimeRs.includes('pub fn set_mode(&self') &&
+    coreRuntimeRs.includes('pub fn apply_mode(&self, mode: &str) -> Result<(), String>') &&
     coreRuntimeRs.includes('pub fn apply_mode_if_running(') &&
     coreRuntimeRs.includes('Some(self.apply_mode(mode))') &&
     coreRuntimeRs.includes('pub const MODE_APPLY_TIMEOUT_MS') &&
@@ -522,11 +565,18 @@ check(
     !mainRs.includes('core_runtime::READY_REUSE_PROBE_TIMEOUT_MS') &&
     mainRs.includes('core_runtime::RUNTIME_RESTART_SETTLE_MS') &&
     mainRs.includes('.apply_mode_if_running(self.process.is_some(), mode)') &&
+    mainRs.includes('let previous_mode = self.settings.mode.clone();') &&
+    mainRs.includes('Mode switch was not applied:') &&
+    mainRs.includes('runtime rollback also failed:') &&
     !mainRs.includes('self.core_controller().apply_mode(mode)') &&
     !mainRs.includes('self.core_controller().set_mode(mode, 3000)') &&
     !mainRs.includes('version_probe(900)') &&
     !mainRs.includes('version_probe(300)') &&
     !mainRs.includes('for _ in 0..24') &&
+    coreRuntimeRs.includes('fn request(') &&
+    !coreRuntimeRs.includes('pub fn request(') &&
+    coreRuntimeRs.includes('fn controller_request(') &&
+    !coreRuntimeRs.includes('pub fn controller_request') &&
     !mainRs.includes('fn controller(') &&
     !mainRs.includes('fn controller_request(') &&
     !mainRs.includes('self.controller('),
@@ -544,8 +594,8 @@ check(
 
 check(
   'runtime config preflight validates real launch config',
-  mainRs.includes('fn preflight_runtime_config') &&
-    mainRs.includes('core_runtime::preflight_runtime_config') &&
+  configPipelineRs.includes('core_runtime::preflight_runtime_config(') &&
+    configPipelineRs.includes('subscription_runtime::AEGOS_URI_PROTOCOLS') &&
     coreRuntimeRs.includes('pub struct RuntimeConfigPreflightInput') &&
     coreRuntimeRs.includes('pub fn preflight_runtime_config') &&
     coreRuntimeRs.includes('Config preflight failed: root YAML value must be an object') &&
@@ -555,8 +605,11 @@ check(
     coreRuntimeRs.includes('Config preflight failed: external-controller should end with') &&
     coreRuntimeRs.includes('runtime_config_preflight_validates_runtime_contract_inside_boundary') &&
     mainRs.includes('Config preflight passed') &&
-    configPipelineRs.includes('pub(crate) fn preflight_profile_source') &&
-    profileCompilerRs.includes('config_pipeline::preflight_profile_source(source, profile, settings)'),
+    configDomainRs.includes('pub struct RuntimeConfigReport') &&
+    configPipelineRs.includes('pub(crate) fn compile_runtime_catalog') &&
+    !configPipelineRs.includes('patch_config_with_settings') &&
+    profileCompilerRs.includes('pub(crate) struct RuntimeDeploymentPlan') &&
+    profileCompilerRs.includes('config_pipeline::compile_runtime_catalog('),
   'profile/config preflight'
 );
 
@@ -600,12 +653,15 @@ check(
     subscriptionRuntimeRs.includes('pub(crate) struct ProfileSourceSummary') &&
     subscriptionRuntimeRs.includes('pub(crate) struct ProfileSource') &&
     subscriptionRuntimeRs.includes('pub(crate) fn summarize_source(') &&
-    mainRs.includes('use subscription_runtime::{ProfileSource, ProfileSourceSummary};') &&
-    mainRs.includes('fn summarize_profile_source') &&
-    mainRs.includes('subscription_runtime::summarize_source(config, format, unsupported_lines)') &&
-    mainRs.includes('subscription download returned empty content') &&
-    mainRs.includes('config_pipeline::preflight_profile_source(source.config, &profile, &settings)') &&
-    mainRs.includes('let patched = runtime.config') &&
+    mainRs.includes('use subscription_runtime::ProfileSourceSummary;') &&
+    subscriptionRuntimeRs.includes('pub(crate) fn parse_source_text(') &&
+    subscriptionRuntimeRs.includes('pub(crate) fn download_source_url(') &&
+    subscriptionRuntimeRs.includes('subscription download returned empty content') &&
+    !mainRs.includes('fn summarize_profile_source') &&
+    !mainRs.includes('fn download_profile_source_url_diagnostic') &&
+    mainRs.includes('profile_compiler::compile_profile_source(source.config, &profile, &settings)') &&
+    mainRs.includes('plan.source_deployment_candidate(&profile_dir, &path, "Subscription import")') &&
+    mainRs.includes('plan.source_deployment_candidate(&profile_root, &profile_path, "Subscription update")') &&
     mainRs.includes('"runtime-preflight"') &&
     mainRs.includes('node_count') &&
     mainRs.includes('fn profile_file_summary') &&
@@ -617,14 +673,30 @@ check(
 );
 
 check(
+  'subscription status snapshots never re-read broken profile files',
+  publicProfileBody.includes('metadata_error: Option<&str>') &&
+    publicProfileBody.includes('metadata_error.map(sanitize_sensitive_text)') &&
+    !publicProfileBody.includes('profile_file_summary') &&
+    !publicProfileBody.includes('fs::read_to_string') &&
+    mainRs.includes('profile_metadata_errors: HashMap<String, String>') &&
+    mainRs.includes('profile_metadata_errors: core.profile_metadata_errors.clone()') &&
+    mainRs.includes('.profile_metadata_errors\n        .remove(&profile.id)') &&
+    mainRs.includes('self.profile_metadata_errors.remove(id)'),
+  'metadata repair reads once at startup; status, diagnostics, update, and delete use cached evidence'
+);
+
+check(
   'subscription import and update rollback on runtime failure',
-  mainRs.includes('Profile import applied but startup failed; rolled back') &&
-    mainRs.includes('Profile update applied but startup failed; restored previous subscription') &&
+  mainRs.includes('Profile import runtime apply failed; rolled back') &&
+    mainRs.includes('Profile update runtime apply failed; restored previous subscription') &&
     mainRs.includes('ConfigDeploymentTransaction::stage(') &&
     mainRs.includes('"Subscription import"') &&
     mainRs.includes('"Subscription update"') &&
-    mainRs.includes('deployment.rollback("subscription startup verification failed")') &&
-    mainRs.includes('deployment.rollback("subscription runtime restart failed")') &&
+    mainRs.includes('deployment.rollback_with_runtime(') &&
+    mainRs.includes('deployment.complete_verified(') &&
+    mainRs.includes('combine_restore_results(') &&
+    mainRs.includes('core.hot_reload_runtime_plan(&profile, &plan)') &&
+    mainRs.includes('runtime hot reload completed in {} ms without core restart') &&
     configDeploymentRs.includes('pub fn promote(') &&
     configDeploymentRs.includes('pub fn rollback(') &&
     configDeploymentRs.includes('pub fn recover_interrupted_deployments(') &&
@@ -649,13 +721,25 @@ check(
     coreRuntimeRs.includes('pub const CONFIG_FORCE_APPLY_ENDPOINT') &&
     coreRuntimeRs.includes('pub const CONFIG_FORCE_APPLY_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const CONFIG_APPLY_VERSION_PROBE_TIMEOUT_MS') &&
-    coreRuntimeRs.includes('pub fn apply_runtime_config_path(&self, path: &Path)') &&
-    coreRuntimeRs.includes('pub fn config_apply_version_probe(&self)') &&
+    coreRuntimeRs.includes('fn apply_runtime_config_path(&self, path: &Path) -> Result<(), String>') &&
+    !coreRuntimeRs.includes('pub fn apply_runtime_config_path') &&
+    coreRuntimeRs.includes('fn config_apply_version_probe(&self) -> Result<RuntimeVersionSnapshot, String>') &&
+    !coreRuntimeRs.includes('pub fn config_apply_version_probe') &&
+    coreRuntimeRs.includes('pub runtime_version: RuntimeVersionSnapshot') &&
+    coreRuntimeRs.includes('pub fn receipt_json(&self) -> JsonValue') &&
+    coreRuntimeRs.includes('runtime_apply_receipt_is_aegos_shaped') &&
+    !coreRuntimeRs.includes('pub controller_response: JsonValue') &&
+    !coreRuntimeRs.includes('pub version_probe: JsonValue') &&
     coreRuntimeRs.includes('controller.apply_runtime_config_path(&self.runtime_profile_path)') &&
     coreRuntimeRs.includes('controller.config_apply_version_probe()') &&
     !coreRuntimeRs.includes('controller.request("GET", "/version", None, 900)') &&
     mainRs.includes('CoreRuntimeApplyTransaction::new') &&
     mainRs.includes('apply_transaction.apply(&self.core_controller())') &&
+    mainRs.includes('let mut receipt = result.receipt_json();') &&
+    mainRs.includes('"applyElapsedMs".to_string()') &&
+    mainRs.includes('"versionProbeCount".to_string(), json!(1)') &&
+    mainRs.includes('let controller_ready = !was_running || reload.is_ok();') &&
+    !mainRs.includes('let controller_ready = !was_running || self.core_controller().runtime_reuse_ready();') &&
     mainRs.includes('Profile hot reload failed; falling back to restart') &&
     mainRs.includes('Profile switch preflight failed') &&
     mainRs.includes('let previous_profile_id = self.settings.active_profile_id.clone()') &&
@@ -668,10 +752,12 @@ check(
 check(
   'proxy state model keeps selected map and resolves group references',
   mainRs.includes('selected_proxy_map') &&
+    coreDomainRs.includes('pub struct ProxyCatalog') &&
+    coreDomainRs.includes('pub fn apply_selected_map') &&
     coreRuntimeRs.includes('pub fn resolve_group_leaf') &&
-    coreRuntimeRs.includes('pub fn apply_group_resolution_with_selected_map') &&
+    coreRuntimeRs.includes('pub fn shape_proxy_catalog_model') &&
     mainRs.includes('core_runtime::resolve_group_leaf(') &&
-    mainRs.includes('core_runtime::apply_group_resolution_with_selected_map(&mut groups, &selected_map)') &&
+    mainRs.includes('core_runtime::shape_proxy_catalog_model(') &&
     !mainRs.includes('fn resolve_group_leaf') &&
     !mainRs.includes('fn apply_group_resolution_with_selected_map') &&
     mainRs.includes('realProxyName') &&
@@ -684,38 +770,50 @@ check(
 
 check(
   'profile apply uses digest no-op strategy',
-  mainRs.includes('mod profile_compiler') &&
+    mainRs.includes('mod profile_compiler') &&
+    mainRs.includes('mod config_domain') &&
     mainRs.includes('mod config_pipeline') &&
+    configDomainRs.includes('pub struct ProfileCatalog') &&
+    configDomainRs.includes('pub struct ManualNodeConfig') &&
+    configPipelineRs.includes('pub(crate) fn compile_runtime_catalog') &&
     configPipelineRs.includes('pub(crate) fn patch_config') &&
     configPipelineRs.includes('pub(crate) fn patch_direct_profile') &&
-    configPipelineRs.includes('pub(crate) fn patch_profile_source') &&
-    configPipelineRs.includes('pub(crate) fn patch_speed_test_source') &&
-    configPipelineRs.includes('pub(crate) fn speed_test_firewall_ports_from_source') &&
-    configPipelineRs.includes('pub(crate) fn preflight_config') &&
-    configPipelineRs.includes('pub(crate) fn patch_and_preflight') &&
-    configPipelineRs.includes('pub(crate) fn preflight_profile_source') &&
-    profileCompilerRs.includes('pub(crate) struct RenderedProfile') &&
+    !configPipelineRs.includes('pub(crate) fn patch_profile_source') &&
+    !configPipelineRs.includes('pub(crate) fn patch_and_preflight') &&
+    !configPipelineRs.includes('pub(crate) fn preflight_profile_source') &&
+    profileCompilerRs.includes('pub(crate) struct RuntimeDeploymentPlan') &&
+    profileCompilerRs.includes('source_catalog: ProfileCatalog') &&
+    profileCompilerRs.includes('runtime_catalog: ProfileCatalog') &&
+    profileCompilerRs.includes('pub(crate) source_yaml: String') &&
+    profileCompilerRs.includes('pub(crate) runtime_yaml: String') &&
     profileCompilerRs.includes('pub(crate) fn compile_profile_file') &&
     profileCompilerRs.includes('pub(crate) fn compile_profile_source') &&
-    profileCompilerRs.includes('config_pipeline::preflight_profile_source(source, profile, settings)') &&
+    profileCompilerRs.includes('config_pipeline::compile_runtime_catalog(') &&
     !profileCompilerRs.includes('patch_config_with_settings') &&
     !profileCompilerRs.includes('preflight_runtime_config') &&
-    profileCompilerRs.includes('digest: sha256_text(&yaml)') &&
-    mainRs.includes('profile_compiler::compile_profile_file(profile, settings)') &&
-    mainRs.includes('config_pipeline::preflight_profile_source(source.config, &profile, &settings)') &&
-    mainRs.includes('config_pipeline::preflight_profile_source(source.clone(), &profile, &settings)') &&
-    mainRs.includes('config_pipeline::patch_profile_source(source, profile, &settings)') &&
+    profileCompilerRs.includes('source_digest: sha256_text(&source_yaml)') &&
+    profileCompilerRs.includes('runtime_digest: sha256_text(&runtime_yaml)') &&
+    mainRs.includes('fn render_runtime_profile_with_settings(') &&
+    mainRs.includes('apply_aegos_user_rule_overlay(&self.app_data, profile, &mut source)?') &&
+    mainRs.includes('profile_compiler::compile_profile_source(source, profile, settings)') &&
+    mainRs.includes('profile_compiler::compile_profile_source(source.config, &profile, &settings)') &&
+    mainRs.includes('self.hot_reload_runtime_plan(profile, &plan)') &&
     mainRs.includes('config_pipeline::patch_direct_profile(&self.settings)') &&
-    mainRs.includes('config_pipeline::speed_test_firewall_ports_from_source(') &&
-    !mainRs.includes('config_pipeline::patch_speed_test_source(') &&
+    !configPipelineRs.includes('pub(crate) fn patch_speed_test_source') &&
+    !configPipelineRs.includes('pub(crate) fn speed_test_firewall_ports_from_source') &&
     !mainRs.includes('proxy_ports_from_config') &&
-    !mainRs.includes('config_pipeline::patch_config(') &&
+    !mainRs.slice(0, mainRs.indexOf('#[cfg(test)]')).includes('config_pipeline::patch_config(') &&
     !mainRs.includes('config_pipeline::patch_and_preflight(') &&
     !mainRs.includes('config_pipeline::preflight_config(') &&
+    !mainRs.includes('fn patch_config_with_settings(') &&
+    !mainRs.includes('config_pipeline::preflight_profile_source(') &&
+    !mainRs.includes('config_pipeline::patch_profile_source(') &&
     !mainRs.includes('let patched = patch_config_with_settings(source, settings, Some(&profile.id))?') &&
     mainRs.includes('runtime_config_digest') &&
     mainRs.includes('Profile apply skipped; unchanged runtime config digest') &&
-    mainRs.includes('"skipped": true') &&
+    mainRs.includes('core_runtime::runtime_config_unchanged_result_json(') &&
+    coreRuntimeRs.includes('pub fn runtime_config_unchanged_result_json(') &&
+    coreRuntimeRs.includes('"skipped": true') &&
     mainRs.includes('runtime_config_digest_is_stable_until_settings_change'),
   'digest-based config apply skip'
 );
@@ -742,19 +840,20 @@ check(
 
 check(
   'subscription failures are classified with actionable diagnostics',
-  mainRs.includes('fn subscription_diagnostic') &&
-    mainRs.includes('download_profile_source_url_diagnostic') &&
-    mainRs.includes('parse_uri_subscription_source_diagnostic') &&
-    mainRs.includes('"unsupported-format"') &&
-    mainRs.includes('"unsupported-protocol"') &&
+  subscriptionRuntimeRs.includes('pub(crate) fn diagnostic(') &&
+    subscriptionRuntimeRs.includes('pub(crate) fn download_source_url(') &&
+    subscriptionRuntimeRs.includes('pub(crate) fn parse_uri_source(') &&
+    subscriptionRuntimeRs.includes('"unsupported-format"') &&
+    subscriptionRuntimeRs.includes('"unsupported-protocol"') &&
     mainRs.includes('"runtime-preflight"') &&
+    !mainRs.includes('fn subscription_diagnostic(') &&
     mainRs.includes('subscription_diagnostics_classify_unsupported_protocols'),
   'download, format, protocol, and runtime preflight diagnostics'
 );
 
 check(
   'protocol capability matrix rejects core-unsupported proxy types',
-  mainRs.includes('const AEGOS_URI_PROTOCOLS') &&
+  subscriptionRuntimeRs.includes('pub(crate) const AEGOS_URI_PROTOCOLS') &&
     !mainRs.includes('const MIHOMO_PROXY_TYPES') &&
     !mainRs.includes('fn mihomo_supports_proxy_type') &&
     !mainRs.includes('fn protocol_capability_summary') &&
@@ -786,13 +885,17 @@ check(
   'node switching preflights group and proxy before mutating selection',
   (() => {
     const body = mainRs.match(/fn change_proxy\(&mut self, group: &str, proxy: &str\) -> Result<bool, String> \{([\s\S]*?)\n    \}/)?.[1] || '';
-    return mainRs.includes('fn validate_proxy_selection_from_groups') &&
-      mainRs.includes('Node switch preflight failed') &&
+    return coreRuntimeRs.includes('pub struct ProxySelectionPreflight') &&
+      coreRuntimeRs.includes('pub fn validate_proxy_selection_from_groups') &&
+      coreRuntimeRs.includes('Node switch preflight failed') &&
+      !mainRs.includes('fn validate_proxy_selection_from_groups') &&
       mainRs.includes('Node switch preflight passed') &&
       mainRs.includes('node_switch_preflight_validates_group_and_proxy') &&
       body.includes('let groups = self.proxy_groups();') &&
-      body.includes('validate_proxy_selection_from_groups(&groups, group, proxy)?') &&
-      body.indexOf('validate_proxy_selection_from_groups') < body.indexOf('selected_proxy_map');
+      body.includes('core_runtime::validate_proxy_selection_from_groups(&groups, group, proxy)?') &&
+      body.includes('previous runtime node rollback also failed:') &&
+      body.includes('Node preference save failed:') &&
+      body.indexOf('apply_proxy_selection_with_cleanup(group, proxy)') < body.indexOf('selected_proxy_map\n            .insert');
   })(),
   'change_proxy validates current group/node snapshot first'
 );
@@ -829,7 +932,7 @@ check(
     ['timeout', 'dns', 'tls', 'auth', 'unsupported-protocol', 'port-conflict', 'controller-unavailable', 'config', 'network'].every((item) => coreRuntimeRs.includes(`"${item}"`)) &&
     coreRuntimeRs.includes('pub fn classified_error') &&
     coreRuntimeRs.includes('runtime_failure_reason_classifier_covers_common_connection_failures') &&
-    mainRs.includes('return Err(core_runtime::classified_error("Node switch", err));') &&
+    mainRs.includes('core_runtime::classified_error("Node switch", apply_error)') &&
     !mainRs.includes('fn classify_failure_reason') &&
     !mainRs.includes('fn classified_error'),
   'timeout/DNS/TLS/auth/controller/config/network classifications'

@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::{
     collections::HashMap,
@@ -13,13 +13,22 @@ pub type SpeedTestStore = Arc<Mutex<SpeedTestState>>;
 #[derive(Clone, Default)]
 pub struct SpeedTestState {
     pub run_id: u64,
+    pub revision: u64,
     pub running: bool,
+    pub phase: String,
     pub started_at: u64,
     pub updated_at: u64,
+    pub accepted_at_ms: u64,
+    pub prepared_at_ms: u64,
+    pub first_result_at_ms: u64,
+    pub fast_completed_at_ms: u64,
+    pub completed_at_ms: u64,
     pub total: usize,
     pub completed: usize,
     pub ok: usize,
     pub failed: usize,
+    pub refine_total: usize,
+    pub refine_completed: usize,
     pub delays: HashMap<String, i64>,
     pub health: HashMap<String, NodeHealth>,
     pub low_latency: Vec<String>,
@@ -27,7 +36,8 @@ pub struct SpeedTestState {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Default, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
 pub struct NodeHealth {
     pub name: String,
     pub protocol: String,
@@ -128,33 +138,16 @@ pub fn speed_confidence_summary(speed: &SpeedTestState, now: u64) -> JsonValue {
 }
 
 pub fn speed_result_signature(speed: &SpeedTestState) -> String {
-    let mut parts = speed
-        .health
-        .iter()
-        .map(|(name, item)| {
-            format!(
-                "{}:{}:{}:{}:{}:{}",
-                name,
-                item.last_delay,
-                item.last_failure_reason,
-                item.last_tested_at,
-                item.failure_streak,
-                item.confidence
-            )
-        })
-        .collect::<Vec<_>>();
-    for (name, delay) in &speed.delays {
-        parts.push(format!("{name}:{delay}"));
-    }
-    parts.sort();
     format!(
-        "{}:{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}:{}:{}",
         speed.run_id,
+        speed.revision,
         speed.running,
+        speed.phase,
         speed.completed,
         speed.ok,
         speed.failed,
-        parts.join("|")
+        speed.refine_completed
     )
 }
 
@@ -162,19 +155,66 @@ pub fn speed_test_snapshot(speed_test: &SpeedTestStore, now: u64) -> JsonValue {
     let speed = speed_test.lock().unwrap().clone();
     json!({
         "runId": speed.run_id,
+        "revision": speed.revision,
         "running": speed.running,
+        "phase": speed.phase,
         "startedAt": speed.started_at,
         "updatedAt": speed.updated_at,
+        "timing": {
+            "acceptedAtMs": speed.accepted_at_ms,
+            "preparedAtMs": speed.prepared_at_ms,
+            "firstResultAtMs": speed.first_result_at_ms,
+            "fastCompletedAtMs": speed.fast_completed_at_ms,
+            "completedAtMs": speed.completed_at_ms,
+            "prepareMs": speed.prepared_at_ms.saturating_sub(speed.accepted_at_ms),
+            "firstResultMs": speed.first_result_at_ms.saturating_sub(speed.accepted_at_ms),
+            "fastCompleteMs": speed.fast_completed_at_ms.saturating_sub(speed.accepted_at_ms),
+            "totalMs": speed.completed_at_ms.saturating_sub(speed.accepted_at_ms)
+        },
         "total": speed.total,
         "completed": speed.completed,
         "ok": speed.ok,
         "failed": speed.failed,
+        "refineTotal": speed.refine_total,
+        "refineCompleted": speed.refine_completed,
         "error": speed.error,
         "delays": speed.delays,
         "health": speed.health,
         "resultSignature": speed_result_signature(&speed),
         "confidence": speed_confidence_summary(&speed, now),
         "lowLatency": speed.low_latency,
+        "recommended": speed.recommended
+    })
+}
+
+pub fn speed_test_progress_snapshot(speed_test: &SpeedTestStore) -> JsonValue {
+    let speed = speed_test.lock().unwrap();
+    json!({
+        "runId": speed.run_id,
+        "revision": speed.revision,
+        "running": speed.running,
+        "phase": speed.phase,
+        "startedAt": speed.started_at,
+        "updatedAt": speed.updated_at,
+        "total": speed.total,
+        "completed": speed.completed,
+        "ok": speed.ok,
+        "failed": speed.failed,
+        "refineTotal": speed.refine_total,
+        "refineCompleted": speed.refine_completed,
+        "error": speed.error,
+        "timing": {
+            "acceptedAtMs": speed.accepted_at_ms,
+            "preparedAtMs": speed.prepared_at_ms,
+            "firstResultAtMs": speed.first_result_at_ms,
+            "fastCompletedAtMs": speed.fast_completed_at_ms,
+            "completedAtMs": speed.completed_at_ms,
+            "prepareMs": speed.prepared_at_ms.saturating_sub(speed.accepted_at_ms),
+            "firstResultMs": speed.first_result_at_ms.saturating_sub(speed.accepted_at_ms),
+            "fastCompleteMs": speed.fast_completed_at_ms.saturating_sub(speed.accepted_at_ms),
+            "totalMs": speed.completed_at_ms.saturating_sub(speed.accepted_at_ms)
+        },
+        "resultSignature": speed_result_signature(&speed),
         "recommended": speed.recommended
     })
 }
@@ -187,13 +227,22 @@ pub fn mark_speed_test_preparing(speed_test: &SpeedTestStore, now: u64) -> JsonV
             let run_id = speed.run_id.saturating_add(1);
             *speed = SpeedTestState {
                 run_id,
+                revision: speed.revision.saturating_add(1),
                 running: true,
+                phase: "preparing".to_string(),
                 started_at: now,
                 updated_at: now,
+                accepted_at_ms: epoch_millis(),
+                prepared_at_ms: 0,
+                first_result_at_ms: 0,
+                fast_completed_at_ms: 0,
+                completed_at_ms: 0,
                 total: 0,
                 completed: 0,
                 ok: 0,
                 failed: 0,
+                refine_total: 0,
+                refine_completed: 0,
                 delays: HashMap::new(),
                 health: previous_health,
                 low_latency: Vec::new(),
@@ -224,13 +273,22 @@ pub fn mark_single_speed_test_preparing(
         delays.insert(name.to_string(), 0);
         *speed = SpeedTestState {
             run_id,
+            revision: speed.revision.saturating_add(1),
             running: true,
+            phase: "preparing".to_string(),
             started_at: now,
             updated_at: now,
+            accepted_at_ms: epoch_millis(),
+            prepared_at_ms: 0,
+            first_result_at_ms: 0,
+            fast_completed_at_ms: 0,
+            completed_at_ms: 0,
             total: 1,
             completed: 0,
             ok: 0,
             failed: 0,
+            refine_total: 0,
+            refine_completed: 0,
             delays,
             health: previous_health,
             low_latency: Vec::new(),
@@ -254,7 +312,10 @@ pub fn fail_speed_test_if_current(
 ) {
     let mut speed = speed_test.lock().unwrap();
     if speed.run_id == run_id {
+        speed.revision = speed.revision.saturating_add(1);
         speed.running = false;
+        speed.phase = "failed".to_string();
+        speed.completed_at_ms = epoch_millis();
         speed.error = Some(message);
         speed.updated_at = now;
     }
@@ -275,12 +336,22 @@ pub fn reset_speed_test_state(
     };
     *speed = SpeedTestState {
         run_id,
+        revision: speed.revision.saturating_add(1),
         running: false,
+        phase: "cancelled".to_string(),
         updated_at: now,
+        completed_at_ms: epoch_millis(),
         health,
         error: Some(reason.to_string()),
         ..SpeedTestState::default()
     };
+}
+
+fn epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 #[cfg(test)]

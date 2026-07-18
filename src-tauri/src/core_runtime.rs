@@ -1,3 +1,10 @@
+use crate::config_domain::RuntimeConfigReport;
+use crate::core_domain::{
+    connection_snapshots_from_controller, delay_probe_from_controller,
+    proxy_groups_from_controller, recent_rule_hits, runtime_version_from_controller,
+    traffic_snapshot_from_controller_line, ConnectionSnapshot, DelayProbeSnapshot, ProxyCatalog,
+    ProxyGroupSnapshot, RuntimeVersionSnapshot, TrafficSnapshot,
+};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -164,7 +171,7 @@ pub fn status_surface_json(
     runtime_info: JsonValue,
     running: bool,
     traffic_takeover: bool,
-    traffic: JsonValue,
+    traffic: TrafficSnapshot,
     mode: &str,
     system_proxy: bool,
     mixed_port: u16,
@@ -282,8 +289,8 @@ pub fn network_availability_json(
     })
 }
 
-pub fn idle_traffic_snapshot() -> JsonValue {
-    json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 })
+pub fn idle_traffic_snapshot() -> TrafficSnapshot {
+    TrafficSnapshot::default()
 }
 
 pub fn connection_phase(
@@ -1130,7 +1137,7 @@ pub struct RuntimeConfigPreflightInput<'a> {
 pub fn preflight_runtime_config(
     config: &YamlValue,
     input: RuntimeConfigPreflightInput<'_>,
-) -> Result<JsonValue, String> {
+) -> Result<RuntimeConfigReport, String> {
     let root = config
         .as_mapping()
         .ok_or_else(|| "Config preflight failed: root YAML value must be an object".to_string())?;
@@ -1293,16 +1300,16 @@ pub fn preflight_runtime_config(
         ));
     }
 
-    Ok(json!({
-        "ok": true,
-        "profile": input.profile_name,
-        "proxies": proxies.len(),
-        "proxyGroups": proxy_groups.len(),
-        "rules": rules.len(),
-        "mixedPort": input.mixed_port,
-        "controllerPort": input.controller_port,
-        "protocolCapabilities": protocol_capabilities_json(input.uri_protocols)
-    }))
+    Ok(RuntimeConfigReport {
+        ok: true,
+        profile: input.profile_name.to_string(),
+        proxies: proxies.len(),
+        proxy_groups: proxy_groups.len(),
+        rules: rules.len(),
+        mixed_port: input.mixed_port,
+        controller_port: input.controller_port,
+        protocol_capabilities: protocol_capabilities_json(input.uri_protocols),
+    })
 }
 
 fn yaml_key(name: &str) -> YamlValue {
@@ -1364,7 +1371,7 @@ impl CoreController {
         }
     }
 
-    pub fn request(
+    fn request(
         &self,
         method: &str,
         endpoint: &str,
@@ -1381,7 +1388,7 @@ impl CoreController {
         )
     }
 
-    pub fn traffic_snapshot(&self, timeout_ms: u64) -> Result<JsonValue, String> {
+    pub fn traffic_snapshot(&self, timeout_ms: u64) -> Result<TrafficSnapshot, String> {
         let client = Client::builder()
             .no_proxy()
             .timeout(Duration::from_millis(timeout_ms))
@@ -1399,18 +1406,18 @@ impl CoreController {
         let mut reader = BufReader::new(res);
         let mut line = String::new();
         reader.read_line(&mut line).map_err(|err| err.to_string())?;
-        serde_json::from_str(line.trim()).map_err(|err| err.to_string())
+        traffic_snapshot_from_controller_line(&line)
     }
 
-    pub fn status_traffic_snapshot(&self) -> Result<JsonValue, String> {
+    pub fn status_traffic_snapshot(&self) -> Result<TrafficSnapshot, String> {
         self.traffic_snapshot(STATUS_TRAFFIC_TIMEOUT_MS)
     }
 
     pub fn status_traffic_snapshot_or_idle(
         &self,
         running: bool,
-        last_traffic: &JsonValue,
-    ) -> JsonValue {
+        last_traffic: &TrafficSnapshot,
+    ) -> TrafficSnapshot {
         if !running {
             return idle_traffic_snapshot();
         }
@@ -1418,100 +1425,47 @@ impl CoreController {
             .unwrap_or_else(|_| last_traffic.clone())
     }
 
-    pub fn proxies_snapshot(&self, timeout_ms: u64) -> Result<JsonValue, String> {
+    fn proxies_payload(&self, timeout_ms: u64) -> Result<JsonValue, String> {
         self.request("GET", "/proxies", None, timeout_ms)
     }
 
-    pub fn proxy_groups_snapshot(
+    fn proxy_groups_snapshot(
         &self,
         timeout_ms: u64,
         hidden_group_names: &[&str],
-    ) -> Result<JsonValue, String> {
-        let data = self.proxies_snapshot(timeout_ms)?;
-        let proxies = data
-            .get("proxies")
-            .and_then(|value| value.as_object())
-            .ok_or_else(|| "Controller proxies response missing proxies object".to_string())?;
-        let groups = proxies
-            .values()
-            .filter(|item| is_controller_proxy_group(item))
-            .filter(|item| {
-                let name = item
-                    .get("name")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("");
-                !hidden_group_names.iter().any(|hidden| name == *hidden)
-            })
-            .filter(|item| {
-                item.get("all")
-                    .and_then(|value| value.as_array())
-                    .map(|items| !items.is_empty())
-                    .unwrap_or(false)
-            })
-            .map(|group| {
-                let items = group
-                    .get("all")
-                    .and_then(|value| value.as_array())
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|name| {
-                        name.as_str().map(|name| {
-                            normalize_proxy_item(proxies.get(name).cloned().unwrap_or_else(|| {
-                                json!({
-                                    "name": name,
-                                    "type": "Unknown",
-                                    "alive": true,
-                                    "delay": -1
-                                })
-                            }))
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                json!({
-                    "name": group.get("name").cloned().unwrap_or(json!("")),
-                    "type": group.get("type").cloned().unwrap_or(json!("Selector")),
-                    "now": group.get("now").cloned().unwrap_or(json!("")),
-                    "items": items
-                })
-            })
-            .collect::<Vec<_>>();
-        Ok(json!(groups))
+    ) -> Result<Vec<ProxyGroupSnapshot>, String> {
+        let data = self.proxies_payload(timeout_ms)?;
+        proxy_groups_from_controller(&data, hidden_group_names)
     }
 
-    pub fn ui_proxy_groups_snapshot(
+    pub fn proxy_catalog_snapshot(
         &self,
         hidden_group_names: &[&str],
-    ) -> Result<JsonValue, String> {
+    ) -> Result<ProxyCatalog, String> {
         self.proxy_groups_snapshot(PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS, hidden_group_names)
+            .map(ProxyCatalog::new)
     }
 
-    pub fn ui_proxy_groups_snapshot_or_none(
-        &self,
-        running: bool,
-        hidden_group_names: &[&str],
-    ) -> Option<JsonValue> {
-        if !running {
-            return None;
-        }
-        self.ui_proxy_groups_snapshot(hidden_group_names).ok()
-    }
-
-    pub fn ui_proxy_groups_snapshot_or_else<F>(
+    pub fn proxy_catalog_snapshot_or_else<F>(
         &self,
         running: bool,
         hidden_group_names: &[&str],
         fallback: F,
-    ) -> JsonValue
+    ) -> ProxyCatalog
     where
-        F: FnOnce() -> JsonValue,
+        F: FnOnce() -> ProxyCatalog,
     {
-        self.ui_proxy_groups_snapshot_or_none(running, hidden_group_names)
-            .unwrap_or_else(fallback)
+        if running {
+            self.proxy_catalog_snapshot(hidden_group_names)
+                .unwrap_or_else(|_| fallback())
+        } else {
+            fallback()
+        }
     }
 
-    pub fn version_probe(&self, timeout_ms: u64) -> Result<JsonValue, String> {
-        self.request("GET", "/version", None, timeout_ms)
+    fn version_probe(&self, timeout_ms: u64) -> Result<RuntimeVersionSnapshot, String> {
+        let payload = self.request("GET", "/version", None, timeout_ms)?;
+        runtime_version_from_controller(&payload)
     }
 
     pub fn runtime_reuse_ready(&self) -> bool {
@@ -1534,24 +1488,21 @@ impl CoreController {
         Err(CONTROLLER_READY_TIMEOUT_MESSAGE.to_string())
     }
 
-    pub fn set_mode(&self, mode: &str, timeout_ms: u64) -> Result<JsonValue, String> {
+    fn set_mode(&self, mode: &str, timeout_ms: u64) -> Result<(), String> {
         self.request(
             "PATCH",
             "/configs",
             Some(json!({ "mode": mode })),
             timeout_ms,
-        )
+        )?;
+        Ok(())
     }
 
-    pub fn apply_mode(&self, mode: &str) -> Result<JsonValue, String> {
+    pub fn apply_mode(&self, mode: &str) -> Result<(), String> {
         self.set_mode(mode, MODE_APPLY_TIMEOUT_MS)
     }
 
-    pub fn apply_mode_if_running(
-        &self,
-        running: bool,
-        mode: &str,
-    ) -> Option<Result<JsonValue, String>> {
+    pub fn apply_mode_if_running(&self, running: bool, mode: &str) -> Option<Result<(), String>> {
         if running {
             Some(self.apply_mode(mode))
         } else {
@@ -1587,19 +1538,6 @@ impl CoreController {
         self.select_proxy(group, proxy, AUXILIARY_PROXY_SELECT_TIMEOUT_MS)
     }
 
-    pub fn apply_auxiliary_proxy_selection_if_running(
-        &self,
-        running: bool,
-        group: &str,
-        proxy: &str,
-    ) -> Option<Result<(), String>> {
-        if running {
-            Some(self.apply_auxiliary_proxy_selection(group, proxy))
-        } else {
-            None
-        }
-    }
-
     pub fn cleanup_stale_connections_after_selection(&self) {
         let _ = self.close_connections(STALE_CONNECTION_CLEANUP_TIMEOUT_MS);
     }
@@ -1610,7 +1548,7 @@ impl CoreController {
         name: &str,
         test_url: &str,
         timeout_ms: u64,
-    ) -> Result<JsonValue, CoreControllerHttpFailure> {
+    ) -> Result<DelayProbeSnapshot, CoreControllerHttpFailure> {
         let url = format!(
             "http://127.0.0.1:{}/proxies/{}/delay?timeout={}&url={}",
             self.controller_port,
@@ -1640,13 +1578,18 @@ impl CoreController {
                 body,
             });
         }
-        response
+        let payload = response
             .json::<JsonValue>()
             .map_err(|err| CoreControllerHttpFailure {
                 status: None,
                 body: String::new(),
                 message: err.to_string(),
-            })
+            })?;
+        delay_probe_from_controller(&payload).map_err(|message| CoreControllerHttpFailure {
+            status: None,
+            body: String::new(),
+            message,
+        })
     }
 
     pub fn proxy_delay_result_with_client(
@@ -1670,25 +1613,24 @@ impl CoreController {
         normalize_delay_probe_response(&data)
     }
 
-    pub fn connections_snapshot(&self, timeout_ms: u64) -> Result<JsonValue, String> {
-        self.request("GET", "/connections", None, timeout_ms)
-            .map(|data| {
-                data.get("connections")
-                    .cloned()
-                    .unwrap_or_else(|| json!([]))
-            })
+    pub fn connections_snapshot(&self, timeout_ms: u64) -> Result<Vec<ConnectionSnapshot>, String> {
+        let data = self.request("GET", "/connections", None, timeout_ms)?;
+        connection_snapshots_from_controller(&data, sanitize_runtime_display_text)
     }
 
-    pub fn connections_snapshot_or_empty(&self, running: bool, timeout_ms: u64) -> JsonValue {
+    pub fn connections_snapshot_or_empty(
+        &self,
+        running: bool,
+        timeout_ms: u64,
+    ) -> Vec<ConnectionSnapshot> {
         if !running {
-            return json!([]);
+            return Vec::new();
         }
-        self.connections_snapshot(timeout_ms)
-            .unwrap_or_else(|_| json!([]))
+        self.connections_snapshot(timeout_ms).unwrap_or_default()
     }
 
     pub fn ui_connections_snapshot_or_empty(&self, running: bool) -> JsonValue {
-        self.connections_snapshot_or_empty(running, CONNECTIONS_SNAPSHOT_TIMEOUT_MS)
+        json!(self.connections_snapshot_or_empty(running, CONNECTIONS_SNAPSHOT_TIMEOUT_MS))
     }
 
     pub fn recent_rule_hits_snapshot(
@@ -1697,7 +1639,18 @@ impl CoreController {
         limit: usize,
     ) -> Result<JsonValue, String> {
         let connections = self.connections_snapshot(timeout_ms)?;
-        Ok(recent_rule_hits_from_connections(&connections, limit))
+        let rows = recent_rule_hits(&connections, limit)
+            .into_iter()
+            .map(|(rule, count, route)| {
+                json!({
+                    "rule": rule,
+                    "route": route,
+                    "count": count,
+                    "note": "recent connection"
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(json!(rows))
     }
 
     pub fn routing_recent_rule_hits_snapshot_or_empty(&self, running: bool) -> JsonValue {
@@ -1709,12 +1662,8 @@ impl CoreController {
     }
 
     pub fn active_connection_count(&self, timeout_ms: u64) -> Result<usize, String> {
-        self.connections_snapshot(timeout_ms).map(|items| {
-            items
-                .as_array()
-                .map(|connections| connections.len())
-                .unwrap_or(0)
-        })
+        self.connections_snapshot(timeout_ms)
+            .map(|items| items.len())
     }
 
     pub fn active_connection_count_snapshot_or_idle(
@@ -1755,16 +1704,17 @@ impl CoreController {
         self.close_connections(CLOSE_ALL_CONNECTIONS_TIMEOUT_MS)
     }
 
-    pub fn apply_runtime_config_path(&self, path: &Path) -> Result<JsonValue, String> {
+    fn apply_runtime_config_path(&self, path: &Path) -> Result<(), String> {
         self.request(
             "PUT",
             CONFIG_FORCE_APPLY_ENDPOINT,
             Some(json!({ "path": path.to_string_lossy().to_string() })),
             CONFIG_FORCE_APPLY_TIMEOUT_MS,
-        )
+        )?;
+        Ok(())
     }
 
-    pub fn config_apply_version_probe(&self) -> Result<JsonValue, String> {
+    fn config_apply_version_probe(&self) -> Result<RuntimeVersionSnapshot, String> {
         self.version_probe(CONFIG_APPLY_VERSION_PROBE_TIMEOUT_MS)
     }
 }
@@ -1942,67 +1892,16 @@ fn classify_delay_failure_message(reason: &str) -> &'static str {
     }
 }
 
-fn normalize_delay_probe_response(data: &JsonValue) -> CoreDelayProbeResult {
-    let delay = data
-        .get("delay")
-        .and_then(|value| value.as_i64())
-        .unwrap_or(-1);
-    if delay >= 0 {
-        return CoreDelayProbeResult::ok(delay);
+fn normalize_delay_probe_response(data: &DelayProbeSnapshot) -> CoreDelayProbeResult {
+    if data.delay >= 0 {
+        return CoreDelayProbeResult::ok(data.delay);
     }
-    let reason = data
-        .get("message")
-        .or_else(|| data.get("error"))
-        .and_then(|value| value.as_str())
-        .map(classify_delay_failure_message)
-        .unwrap_or("timeout");
-    CoreDelayProbeResult::failed(reason)
-}
-
-pub fn recent_rule_hits_from_connections(connections: &JsonValue, limit: usize) -> JsonValue {
-    let mut rows: Vec<(String, usize, String)> = Vec::new();
-    let Some(items) = connections.as_array() else {
-        return json!([]);
+    let reason = if data.detail.trim().is_empty() {
+        "timeout"
+    } else {
+        classify_delay_failure_message(&data.detail)
     };
-    for item in items {
-        let rule = sanitize_runtime_display_text(
-            item.get("rule")
-                .and_then(|value| value.as_str())
-                .filter(|value| !value.is_empty())
-                .unwrap_or("MATCH"),
-        );
-        let chains = sanitize_runtime_display_text(
-            &item
-                .get("chains")
-                .and_then(|value| value.as_array())
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(|value| value.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" > ")
-                })
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "-".to_string()),
-        );
-        if let Some((_, count, _)) = rows.iter_mut().find(|(existing, _, _)| existing == &rule) {
-            *count += 1;
-            continue;
-        }
-        rows.push((rule, 1, chains));
-    }
-    json!(rows
-        .into_iter()
-        .take(limit)
-        .map(|(rule, count, chains)| {
-            json!({
-                "rule": rule,
-                "chains": chains,
-                "count": count,
-                "note": "recent connection"
-            })
-        })
-        .collect::<Vec<_>>())
+    CoreDelayProbeResult::failed(reason)
 }
 
 pub fn is_proxies_group_name(name: &str) -> bool {
@@ -2017,287 +1916,99 @@ pub fn is_aegos_auto_select_group_name(name: &str) -> bool {
         || name == LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME_V2
 }
 
-pub fn normalize_proxy_groups_snapshot_defaults(groups: &mut JsonValue) {
-    let Some(group_items) = groups.as_array_mut() else {
-        return;
-    };
-    if group_items.is_empty() {
-        return;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProxySelectionPreflight {
+    pub group: String,
+    pub proxy: String,
+    pub group_type: String,
+    pub real_proxy_name: String,
+    pub previous_proxy: String,
+}
+
+pub fn validate_proxy_selection_from_groups(
+    groups: &JsonValue,
+    group: &str,
+    proxy: &str,
+) -> Result<ProxySelectionPreflight, String> {
+    let group = group.trim();
+    let proxy = proxy.trim();
+    if group.is_empty() {
+        return Err("Node switch preflight failed: missing proxy group".to_string());
     }
-    let all_items = all_real_snapshot_items(group_items);
-    if all_items.is_empty() {
-        return;
+    if proxy.is_empty() {
+        return Err("Node switch preflight failed: missing proxy name".to_string());
     }
-    let first_name = all_items
-        .first()
-        .and_then(snapshot_proxy_item_name)
-        .unwrap_or("")
-        .to_string();
-    let has_proxies = group_items.iter().any(|group| {
-        group
-            .get("name")
-            .and_then(JsonValue::as_str)
-            .map(is_proxies_group_name)
-            .unwrap_or(false)
-    });
-    if !has_proxies {
-        group_items.insert(
-            0,
-            json!({
-                "name": "Proxies",
-                "type": "Selector",
-                "now": first_name,
-                "items": all_items.clone()
-            }),
-        );
-    }
-    let has_auto = group_items.iter().any(|group| {
-        group
-            .get("name")
-            .and_then(JsonValue::as_str)
-            .map(is_aegos_auto_select_group_name)
-            .unwrap_or(false)
-    });
-    if !has_auto && all_items.len() >= 2 {
-        let insert_index = group_items
+    let catalog = ProxyCatalog::from_product_json(groups)
+        .map_err(|err| format!("Node switch preflight failed: {err}"))?;
+    let Some(target_group) = catalog.groups().iter().find(|item| item.name == group) else {
+        let available = catalog
+            .groups()
             .iter()
-            .position(|group| {
-                group
-                    .get("name")
-                    .and_then(JsonValue::as_str)
-                    .map(is_proxies_group_name)
-                    .unwrap_or(false)
-            })
-            .map(|index| index.saturating_add(1))
-            .unwrap_or(0);
-        group_items.insert(
-            insert_index,
-            json!({
-                "name": AEGOS_AUTO_SELECT_GROUP_NAME,
-                "type": "URLTest",
-                "now": first_name,
-                "items": all_items
-            }),
-        );
+            .map(|item| item.name.as_str())
+            .take(8)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "Node switch preflight failed: group '{group}' was not found. Available groups: {available}"
+        ));
+    };
+    if target_group.items.is_empty() {
+        return Err(format!(
+            "Node switch preflight failed: group '{group}' has no node list"
+        ));
     }
+    let Some(target_proxy) = target_group.items.iter().find(|item| {
+        item.name == proxy || (!item.real_proxy_name.is_empty() && item.real_proxy_name == proxy)
+    }) else {
+        let available = target_group
+            .items
+            .iter()
+            .map(|item| item.name.as_str())
+            .take(8)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "Node switch preflight failed: proxy '{proxy}' is not in group '{group}'. Available nodes: {available}"
+        ));
+    };
+    Ok(ProxySelectionPreflight {
+        group: group.to_string(),
+        proxy: proxy.to_string(),
+        group_type: target_group.strategy_type.clone(),
+        real_proxy_name: if target_proxy.real_proxy_name.is_empty() {
+            target_proxy.name.clone()
+        } else {
+            target_proxy.real_proxy_name.clone()
+        },
+        previous_proxy: target_group.now.clone(),
+    })
 }
 
-pub fn apply_group_resolution_with_selected_map(
-    groups: &mut JsonValue,
+pub fn shape_proxy_catalog_model(
+    mut catalog: ProxyCatalog,
     selected_map: &HashMap<String, String>,
-) {
-    let Some(snapshot) = groups.as_array().cloned() else {
-        return;
-    };
-    let group_names = snapshot_group_names(&snapshot);
-    let Some(group_items) = groups.as_array_mut() else {
-        return;
-    };
-    for group in group_items {
-        let group_name = group
-            .get("name")
-            .and_then(JsonValue::as_str)
-            .unwrap_or("")
-            .to_string();
-        let selected = selected_map
-            .get(&group_name)
-            .cloned()
-            .unwrap_or_else(|| group_selected_name(group, selected_map));
-        if !selected.is_empty() {
-            if let Some(map) = group.as_object_mut() {
-                map.insert("now".to_string(), json!(selected));
-            }
-        }
-        if let Some(items) = group.get_mut("items").and_then(JsonValue::as_array_mut) {
-            for item in items {
-                let Some(name) = item
-                    .get("name")
-                    .and_then(JsonValue::as_str)
-                    .map(str::to_string)
-                else {
-                    continue;
-                };
-                if !group_names.contains(&name) {
-                    continue;
-                }
-                let leaf = resolve_group_leaf(&snapshot, selected_map, &name, 0);
-                if let Some(map) = item.as_object_mut() {
-                    map.insert("group".to_string(), json!(true));
-                    map.insert("type".to_string(), json!("Group"));
-                    map.insert("realProxyName".to_string(), json!(leaf));
-                }
-            }
-        }
-    }
+    manual_names: &HashSet<String>,
+) -> ProxyCatalog {
+    catalog.ensure_default_groups(
+        is_proxies_group_name,
+        is_aegos_auto_select_group_name,
+        AEGOS_AUTO_SELECT_GROUP_NAME,
+    );
+    catalog.apply_selected_map(selected_map);
+    catalog.annotate_manual_nodes(manual_names);
+    catalog
 }
 
-pub fn annotate_manual_groups_with_names(groups: &mut JsonValue, names: &HashSet<String>) {
-    if names.is_empty() {
-        return;
-    }
-    let Some(groups) = groups.as_array_mut() else {
-        return;
-    };
-    for group in groups {
-        let Some(items) = group.get_mut("items").and_then(JsonValue::as_array_mut) else {
-            continue;
-        };
-        for item in items {
-            let Some(name) = item.get("name").and_then(JsonValue::as_str) else {
-                continue;
-            };
-            if names.contains(name) {
-                if let Some(map) = item.as_object_mut() {
-                    map.insert("manual".to_string(), json!(true));
-                    map.insert("fixed".to_string(), json!(true));
-                    map.insert("static".to_string(), json!(true));
-                    map.insert("source".to_string(), json!("manual"));
-                }
-            }
-        }
-    }
-}
-
-fn snapshot_proxy_item_name(item: &JsonValue) -> Option<&str> {
-    item.get("realProxyName")
-        .or_else(|| item.get("name"))
-        .and_then(JsonValue::as_str)
-        .filter(|name| !name.trim().is_empty())
-}
-
-fn snapshot_group_names(groups: &[JsonValue]) -> HashSet<String> {
-    groups
-        .iter()
-        .filter_map(|group| group.get("name").and_then(JsonValue::as_str))
-        .map(str::to_string)
-        .collect()
-}
-
-fn is_builtin_snapshot_proxy_item(item: &JsonValue) -> bool {
-    let name = item
-        .get("name")
-        .and_then(JsonValue::as_str)
-        .unwrap_or("")
-        .to_ascii_uppercase();
-    let item_type = item
-        .get("type")
-        .or_else(|| item.get("protocol"))
-        .and_then(JsonValue::as_str)
-        .unwrap_or("")
-        .to_ascii_uppercase();
-    item.get("builtin")
-        .and_then(JsonValue::as_bool)
-        .unwrap_or(false)
-        || matches!(
-            name.as_str(),
-            "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS" | "COMPATIBLE"
-        )
-        || matches!(
-            item_type.as_str(),
-            "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS" | "COMPATIBLE"
-        )
-}
-
-fn collect_real_snapshot_items(
-    groups: &[JsonValue],
-    group: &JsonValue,
-    group_names: &HashSet<String>,
-    seen_groups: &mut HashSet<String>,
-    seen_nodes: &mut HashSet<String>,
-    out: &mut Vec<JsonValue>,
-) {
-    let group_name = group
-        .get("name")
-        .and_then(JsonValue::as_str)
-        .unwrap_or("")
-        .to_string();
-    if !group_name.is_empty() && !seen_groups.insert(group_name) {
-        return;
-    }
-    let Some(items) = group.get("items").and_then(JsonValue::as_array) else {
-        return;
-    };
-    for item in items {
-        let name = snapshot_proxy_item_name(item).unwrap_or("");
-        if group_names.contains(name) {
-            if let Some(next_group) = groups
-                .iter()
-                .find(|group| group.get("name").and_then(JsonValue::as_str) == Some(name))
-            {
-                collect_real_snapshot_items(
-                    groups,
-                    next_group,
-                    group_names,
-                    seen_groups,
-                    seen_nodes,
-                    out,
-                );
-            }
-            continue;
-        }
-        if name.is_empty() || is_builtin_snapshot_proxy_item(item) {
-            continue;
-        }
-        if seen_nodes.insert(name.to_string()) {
-            out.push(item.clone());
-        }
-    }
-}
-
-fn all_real_snapshot_items(groups: &[JsonValue]) -> Vec<JsonValue> {
-    let group_names = snapshot_group_names(groups);
-    let mut seen_groups = HashSet::new();
-    let mut seen_nodes = HashSet::new();
-    let mut out = Vec::new();
-    for group in groups {
-        collect_real_snapshot_items(
-            groups,
-            group,
-            &group_names,
-            &mut seen_groups,
-            &mut seen_nodes,
-            &mut out,
-        );
-    }
-    out
-}
-
-fn group_selected_name(group: &JsonValue, selected_map: &HashMap<String, String>) -> String {
-    let group_name = group.get("name").and_then(JsonValue::as_str).unwrap_or("");
-    selected_map
-        .get(group_name)
-        .filter(|value| !value.trim().is_empty())
-        .cloned()
-        .or_else(|| {
-            group
-                .get("now")
-                .and_then(JsonValue::as_str)
-                .filter(|value| !value.trim().is_empty())
-                .map(str::to_string)
-        })
-        .unwrap_or_default()
-}
-
+#[cfg(test)]
 pub fn resolve_group_leaf(
     groups: &[JsonValue],
     selected_map: &HashMap<String, String>,
     name: &str,
-    depth: usize,
+    _depth: usize,
 ) -> String {
-    if depth > 8 {
-        return name.to_string();
-    }
-    let Some(group) = groups
-        .iter()
-        .find(|group| group.get("name").and_then(JsonValue::as_str) == Some(name))
-    else {
-        return name.to_string();
-    };
-    let selected = group_selected_name(group, selected_map);
-    if selected.is_empty() || selected == name {
-        return name.to_string();
-    }
-    resolve_group_leaf(groups, selected_map, &selected, depth + 1)
+    ProxyCatalog::from_product_json(&JsonValue::Array(groups.to_vec()))
+        .map(|catalog| catalog.resolve_leaf(selected_map, name))
+        .unwrap_or_else(|_| name.to_string())
 }
 
 pub fn canonical_strategy_type(value: &str) -> String {
@@ -2452,39 +2163,6 @@ fn redact_runtime_key_value(mut value: String, key: &str) -> String {
     value
 }
 
-fn is_controller_proxy_group(item: &JsonValue) -> bool {
-    matches!(
-        item.get("type").and_then(|value| value.as_str()),
-        Some("Selector" | "URLTest" | "Fallback" | "LoadBalance" | "Relay")
-    )
-}
-
-fn proxy_delay(proxy: &JsonValue) -> i64 {
-    proxy
-        .get("delay")
-        .and_then(|value| value.as_i64())
-        .or_else(|| {
-            proxy
-                .get("history")
-                .and_then(|value| value.as_array())
-                .and_then(|items| items.last())
-                .and_then(|item| item.get("delay"))
-                .and_then(|value| value.as_i64())
-        })
-        .unwrap_or(-1)
-}
-
-fn normalize_proxy_item(mut proxy: JsonValue) -> JsonValue {
-    let delay = proxy_delay(&proxy);
-    if let Some(map) = proxy.as_object_mut() {
-        map.insert("delay".to_string(), json!(delay));
-        if !map.contains_key("alive") {
-            map.insert("alive".to_string(), json!(delay >= 0));
-        }
-    }
-    proxy
-}
-
 fn runtime_now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2504,7 +2182,7 @@ fn url_path_encode(input: &str) -> String {
         .collect()
 }
 
-pub fn controller_request(
+fn controller_request(
     controller_port: u16,
     secret: &str,
     method: &str,
@@ -2573,9 +2251,19 @@ pub struct CoreRuntimeApplyTransaction {
 
 #[derive(Clone, Debug)]
 pub struct CoreRuntimeApplyResult {
-    pub controller_response: JsonValue,
-    pub version_probe: JsonValue,
+    pub runtime_version: RuntimeVersionSnapshot,
     pub digest: String,
+}
+
+impl CoreRuntimeApplyResult {
+    pub fn receipt_json(&self) -> JsonValue {
+        json!({
+            "ok": true,
+            "applied": true,
+            "digest": self.digest,
+            "runtimeVersion": self.runtime_version.version
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -2906,26 +2594,6 @@ pub fn firewall_program_paths(paths: impl IntoIterator<Item = PathBuf>) -> Vec<S
         .collect()
 }
 
-pub fn speed_test_firewall_enabled(disconnect_protection_enabled: bool) -> bool {
-    disconnect_protection_enabled
-}
-
-pub fn speed_test_firewall_ports(disconnect_protection_enabled: bool, ports: &[u16]) -> Vec<u16> {
-    if disconnect_protection_enabled {
-        ports.to_vec()
-    } else {
-        Vec::new()
-    }
-}
-
-pub fn firewall_remote_port_list(ports: &[u16]) -> String {
-    ports
-        .iter()
-        .map(|port| port.to_string())
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
 pub fn windows_proxy_server(mixed_port: u16) -> String {
     format!("127.0.0.1:{mixed_port}")
 }
@@ -3030,12 +2698,10 @@ impl CoreRuntimeApplyTransaction {
     }
 
     pub fn apply(&self, controller: &CoreController) -> Result<CoreRuntimeApplyResult, String> {
-        let controller_response =
-            controller.apply_runtime_config_path(&self.runtime_profile_path)?;
-        let version_probe = controller.config_apply_version_probe()?;
+        controller.apply_runtime_config_path(&self.runtime_profile_path)?;
+        let runtime_version = controller.config_apply_version_probe()?;
         Ok(CoreRuntimeApplyResult {
-            controller_response,
-            version_probe,
+            runtime_version,
             digest: self.digest.clone(),
         })
     }
@@ -3187,34 +2853,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn controller_proxy_item_normalization_uses_latest_history_delay() {
-        let proxy = json!({
-            "name": "HK 01",
-            "type": "ss",
-            "history": [
-                { "delay": 120 },
-                { "delay": 42 }
-            ]
-        });
-        let normalized = normalize_proxy_item(proxy);
-        assert_eq!(
-            normalized.get("delay").and_then(JsonValue::as_i64),
-            Some(42)
-        );
-        assert_eq!(
-            normalized.get("alive").and_then(JsonValue::as_bool),
-            Some(true)
-        );
-    }
-
-    #[test]
-    fn controller_proxy_group_detection_stays_inside_runtime_boundary() {
-        assert!(is_controller_proxy_group(&json!({ "type": "Selector" })));
-        assert!(is_controller_proxy_group(&json!({ "type": "URLTest" })));
-        assert!(!is_controller_proxy_group(&json!({ "type": "ss" })));
-    }
-
-    #[test]
     fn runtime_protocol_capabilities_normalize_and_report_current_contract() {
         assert_eq!(normalize_proxy_type("hy2"), "hysteria2");
         assert_eq!(normalize_proxy_type("SOCKS"), "socks5");
@@ -3241,6 +2879,31 @@ mod tests {
                 .and_then(JsonValue::as_array)
                 .map(Vec::len),
             Some(SUPPORTED_PROXY_TYPES.len())
+        );
+    }
+
+    #[test]
+    fn runtime_apply_receipt_is_aegos_shaped() {
+        let result = CoreRuntimeApplyResult {
+            runtime_version: RuntimeVersionSnapshot {
+                version: "v1.19.28".to_string(),
+                meta: true,
+            },
+            digest: "abcdef123456".to_string(),
+        };
+        assert_eq!(
+            result
+                .receipt_json()
+                .get("runtimeVersion")
+                .and_then(JsonValue::as_str),
+            Some("v1.19.28")
+        );
+        assert_eq!(
+            result
+                .receipt_json()
+                .get("digest")
+                .and_then(JsonValue::as_str),
+            Some("abcdef123456")
         );
     }
 
@@ -3497,17 +3160,6 @@ mod tests {
         assert_eq!(speed.rule_prefix, "Aegos Kill Switch Speed Test Allow");
         assert_eq!(speed.state_file_name, FIREWALL_SPEED_TEST_MARKER_FILE);
         assert_eq!(
-            firewall_remote_port_list(&[443, 8443, 10015]),
-            "443,8443,10015"
-        );
-        assert_eq!(speed_test_firewall_enabled(true), true);
-        assert_eq!(speed_test_firewall_enabled(false), false);
-        assert_eq!(
-            speed_test_firewall_ports(true, &[443, 8443]),
-            vec![443, 8443]
-        );
-        assert!(speed_test_firewall_ports(false, &[443, 8443]).is_empty());
-        assert_eq!(
             powershell_single_quote_escape("Aegos' Core"),
             "Aegos'' Core"
         );
@@ -3673,19 +3325,13 @@ rules:
 
         let report = preflight_runtime_config(&config, test_preflight_input())
             .expect("runtime preflight should accept group-to-group references");
-        assert_eq!(report.get("proxies").and_then(JsonValue::as_u64), Some(1));
-        assert_eq!(
-            report.get("proxyGroups").and_then(JsonValue::as_u64),
-            Some(2)
-        );
-        assert_eq!(
-            report.get("mixedPort").and_then(JsonValue::as_u64),
-            Some(7891)
-        );
+        assert_eq!(report.proxies, 1);
+        assert_eq!(report.proxy_groups, 2);
+        assert_eq!(report.mixed_port, 7891);
         assert_eq!(
             report
-                .get("protocolCapabilities")
-                .and_then(|value| value.get("runtime"))
+                .protocol_capabilities
+                .get("runtime")
                 .and_then(|value| value.get("version"))
                 .and_then(JsonValue::as_str),
             Some(EXPECTED_VERSION)
@@ -3694,20 +3340,26 @@ rules:
 
     #[test]
     fn routing_recent_rule_hits_are_shaped_inside_runtime_boundary() {
-        let connections = json!([
-            {
+        let payload = json!({ "connections": [
+            { "id": "one", "metadata": {},
                 "rule": "DomainSuffix,example.com,Proxies?token=secret-value",
                 "chains": ["Proxies", "HK password=abc123"]
             },
-            {
+            { "id": "two", "metadata": {},
                 "rule": "DomainSuffix,example.com,Proxies?token=secret-value",
                 "chains": ["Different", "Chain"]
             },
-            {
+            { "id": "three", "metadata": {},
                 "chains": []
             }
-        ]);
-        let rows = recent_rule_hits_from_connections(&connections, 2);
+        ]});
+        let connections =
+            connection_snapshots_from_controller(&payload, sanitize_runtime_display_text)
+                .expect("connection domain snapshots");
+        let rows = json!(recent_rule_hits(&connections, 2)
+            .into_iter()
+            .map(|(rule, count, route)| json!({ "rule": rule, "count": count, "route": route }))
+            .collect::<Vec<_>>());
         let items = rows.as_array().expect("recent rows");
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].get("count").and_then(JsonValue::as_u64), Some(2));
@@ -3716,17 +3368,14 @@ rules:
             Some("DomainSuffix,example.com,Proxies?token=[redacted]")
         );
         assert_eq!(
-            items[0].get("chains").and_then(JsonValue::as_str),
+            items[0].get("route").and_then(JsonValue::as_str),
             Some("Proxies > HK password=[redacted]")
         );
         assert_eq!(
             items[1].get("rule").and_then(JsonValue::as_str),
             Some("MATCH")
         );
-        assert_eq!(
-            items[1].get("chains").and_then(JsonValue::as_str),
-            Some("-")
-        );
+        assert_eq!(items[1].get("route").and_then(JsonValue::as_str), Some("-"));
     }
 
     #[test]
@@ -3806,7 +3455,12 @@ rules:
                 ]
             }
         ]);
-        normalize_proxy_groups_snapshot_defaults(&mut groups);
+        groups = shape_proxy_catalog_model(
+            ProxyCatalog::from_product_json(&groups).expect("proxy catalog"),
+            &HashMap::new(),
+            &HashSet::new(),
+        )
+        .into_product_json();
         let rows = groups.as_array().expect("groups");
         assert_eq!(
             rows[0].get("name").and_then(JsonValue::as_str),
@@ -3852,10 +3506,19 @@ rules:
             "Node B"
         );
 
-        apply_group_resolution_with_selected_map(&mut groups, &selected);
+        groups = shape_proxy_catalog_model(
+            ProxyCatalog::from_product_json(&groups).expect("proxy catalog"),
+            &selected,
+            &HashSet::from(["Node B".to_string()]),
+        )
+        .into_product_json();
         let final_group_item = groups
             .as_array()
-            .and_then(|groups| groups.first())
+            .and_then(|groups| {
+                groups
+                    .iter()
+                    .find(|group| group.get("name").and_then(JsonValue::as_str) == Some("Final"))
+            })
             .and_then(|group| group.get("items"))
             .and_then(JsonValue::as_array)
             .and_then(|items| items.first())
@@ -3867,10 +3530,13 @@ rules:
             Some("Node B")
         );
 
-        annotate_manual_groups_with_names(&mut groups, &HashSet::from(["Node B".to_string()]));
         let manual_item = groups
             .as_array()
-            .and_then(|groups| groups.get(1))
+            .and_then(|groups| {
+                groups
+                    .iter()
+                    .find(|group| group.get("name").and_then(JsonValue::as_str) == Some("Auto"))
+            })
             .and_then(|group| group.get("items"))
             .and_then(JsonValue::as_array)
             .and_then(|items| items.get(1))
@@ -3947,11 +3613,17 @@ rules:
         assert_eq!(classify_delay_http_failure(404, ""), "node-not-found");
         assert_eq!(classify_delay_http_failure(503, "lookup failed"), "dns");
         assert_eq!(
-            normalize_delay_probe_response(&json!({ "delay": 78 })),
+            normalize_delay_probe_response(&DelayProbeSnapshot {
+                delay: 78,
+                detail: String::new(),
+            }),
             CoreDelayProbeResult::ok(78)
         );
         assert_eq!(
-            normalize_delay_probe_response(&json!({ "message": "tls handshake failed" })),
+            normalize_delay_probe_response(&DelayProbeSnapshot {
+                delay: -1,
+                detail: "tls handshake failed".to_string(),
+            }),
             CoreDelayProbeResult::failed("tls")
         );
     }
@@ -3999,7 +3671,12 @@ rules:
             json!({ "engine": ENGINE }),
             true,
             true,
-            json!({ "up": 1, "down": 2, "upTotal": 3, "downTotal": 4 }),
+            TrafficSnapshot {
+                up: 1,
+                down: 2,
+                up_total: 3,
+                down_total: 4,
+            },
             "rule",
             true,
             7891,
@@ -4019,6 +3696,18 @@ rules:
                 .pointer("/network/proxyEndpoint")
                 .and_then(JsonValue::as_str),
             Some("127.0.0.1:7891")
+        );
+        assert_eq!(
+            status
+                .pointer("/traffic/upTotal")
+                .and_then(JsonValue::as_u64),
+            Some(3)
+        );
+        assert_eq!(
+            status
+                .pointer("/traffic/downTotal")
+                .and_then(JsonValue::as_u64),
+            Some(4)
         );
         assert_eq!(
             status.get("runtime").and_then(JsonValue::as_str),
@@ -4063,7 +3752,7 @@ rules:
                 json!({ "engine": ENGINE }),
                 running,
                 takeover,
-                json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 }),
+                TrafficSnapshot::default(),
                 "rule",
                 system_proxy,
                 7891,
@@ -4865,10 +4554,9 @@ rules:
     #[test]
     fn controller_connection_idle_snapshots_are_runtime_shaped() {
         let controller = CoreController::new(0, "");
-        assert_eq!(
-            controller.connections_snapshot_or_empty(false, 1),
-            json!([])
-        );
+        assert!(controller
+            .connections_snapshot_or_empty(false, 1)
+            .is_empty());
         let snapshot = controller.active_connection_count_snapshot_or_idle(false, 1);
         assert_eq!(snapshot.get("count").and_then(JsonValue::as_u64), Some(0));
         assert!(
@@ -4883,7 +4571,12 @@ rules:
     #[test]
     fn controller_status_traffic_snapshot_uses_runtime_idle_and_fallback_contract() {
         let controller = CoreController::new(0, "");
-        let previous = json!({ "up": 7, "down": 8, "upTotal": 70, "downTotal": 80 });
+        let previous = TrafficSnapshot {
+            up: 7,
+            down: 8,
+            up_total: 70,
+            down_total: 80,
+        };
         assert_eq!(
             controller.status_traffic_snapshot_or_idle(false, &previous),
             idle_traffic_snapshot()
@@ -4920,26 +4613,18 @@ rules:
     }
 
     #[test]
-    fn controller_auxiliary_proxy_selection_running_guard_is_owned_by_runtime_boundary() {
-        let controller = CoreController::new(0, "");
-        assert!(controller
-            .apply_auxiliary_proxy_selection_if_running(false, "Aegos Landing IP", "HK 01")
-            .is_none());
-        assert!(controller
-            .apply_auxiliary_proxy_selection_if_running(true, "Aegos Landing IP", "HK 01")
-            .is_some_and(|result| result.is_err()));
-    }
-
-    #[test]
     fn controller_proxy_groups_snapshot_fallback_is_owned_by_runtime_boundary() {
         let controller = CoreController::new(0, "");
-        let fallback = json!([{ "name": "Proxies", "items": [{ "name": "HK 01" }] }]);
+        let fallback = ProxyCatalog::from_product_json(
+            &json!([{ "name": "Proxies", "items": [{ "name": "HK 01" }] }]),
+        )
+        .expect("fallback catalog");
         assert_eq!(
-            controller.ui_proxy_groups_snapshot_or_else(false, &[], || fallback.clone()),
+            controller.proxy_catalog_snapshot_or_else(false, &[], || fallback.clone()),
             fallback
         );
         assert_eq!(
-            controller.ui_proxy_groups_snapshot_or_else(true, &[], || fallback.clone()),
+            controller.proxy_catalog_snapshot_or_else(true, &[], || fallback.clone()),
             fallback
         );
     }

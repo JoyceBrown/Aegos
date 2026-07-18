@@ -1,20 +1,66 @@
 use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
 use sha2::{Digest, Sha256};
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
-use crate::{config_pipeline, Profile, Settings};
+use crate::{
+    config_deployment::ConfigDeploymentCandidate,
+    config_domain::{ProfileCatalog, RuntimeConfigReport},
+    config_pipeline, Profile, Settings,
+};
 
-pub(crate) struct RenderedProfile {
-    pub(crate) yaml: String,
-    pub(crate) digest: String,
-    pub(crate) report: JsonValue,
+pub(crate) struct RuntimeDeploymentPlan {
+    source_catalog: ProfileCatalog,
+    runtime_catalog: ProfileCatalog,
+    pub(crate) source_yaml: String,
+    pub(crate) runtime_yaml: String,
+    pub(crate) source_digest: String,
+    pub(crate) runtime_digest: String,
+    pub(crate) validation: RuntimeConfigReport,
+}
+
+impl RuntimeDeploymentPlan {
+    pub(crate) fn source_catalog(&self) -> &ProfileCatalog {
+        &self.source_catalog
+    }
+
+    pub(crate) fn runtime_catalog(&self) -> &ProfileCatalog {
+        &self.runtime_catalog
+    }
+
+    pub(crate) fn validation_json(&self) -> JsonValue {
+        self.validation.to_json()
+    }
+
+    pub(crate) fn source_deployment_candidate(
+        &self,
+        active_root: &Path,
+        active_path: &Path,
+        operation: impl Into<String>,
+    ) -> Result<ConfigDeploymentCandidate, String> {
+        let candidate = ConfigDeploymentCandidate::new(
+            active_root,
+            active_path,
+            operation,
+            &self.source_catalog.summary().profile_id,
+            self.source_yaml.clone(),
+        )?;
+        if candidate.digest() != self.source_digest {
+            return Err(
+                "Source deployment candidate digest does not match its compiled plan".to_string(),
+            );
+        }
+        Ok(candidate)
+    }
 }
 
 pub(crate) fn compile_profile_file(
     profile: &Profile,
     settings: &Settings,
-) -> Result<RenderedProfile, String> {
+) -> Result<RuntimeDeploymentPlan, String> {
     let path = PathBuf::from(&profile.path);
     let raw = fs::read_to_string(&path)
         .map_err(|err| format!("profile config read failed {}: {err}", path.display()))?;
@@ -27,13 +73,26 @@ pub(crate) fn compile_profile_source(
     source: YamlValue,
     profile: &Profile,
     settings: &Settings,
-) -> Result<RenderedProfile, String> {
-    let runtime = config_pipeline::preflight_profile_source(source, profile, settings)?;
-    let yaml = serde_yaml::to_string(&runtime.config).map_err(|err| err.to_string())?;
-    Ok(RenderedProfile {
-        digest: sha256_text(&yaml),
-        yaml,
-        report: runtime.report,
+) -> Result<RuntimeDeploymentPlan, String> {
+    let source_catalog =
+        ProfileCatalog::from_yaml(source, &profile.id, &profile.name, &profile.profile_type)?;
+    let source_yaml =
+        serde_yaml::to_string(source_catalog.config()).map_err(|err| err.to_string())?;
+    let runtime = config_pipeline::compile_runtime_catalog(
+        source_catalog.config().clone(),
+        profile,
+        settings,
+    )?;
+    let runtime_yaml =
+        serde_yaml::to_string(runtime.catalog.config()).map_err(|err| err.to_string())?;
+    Ok(RuntimeDeploymentPlan {
+        source_digest: sha256_text(&source_yaml),
+        runtime_digest: sha256_text(&runtime_yaml),
+        source_catalog,
+        runtime_catalog: runtime.catalog,
+        source_yaml,
+        runtime_yaml,
+        validation: runtime.validation,
     })
 }
 
@@ -86,4 +145,116 @@ fn sha256_text(text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::default_settings;
+
+    fn test_profile() -> Profile {
+        Profile {
+            id: "catalog-test".to_string(),
+            name: "Catalog Test".to_string(),
+            profile_type: "url".to_string(),
+            path: "catalog-test.yaml".to_string(),
+            source_url: None,
+            node_count: 1,
+            proxy_group_count: 1,
+            updated_at: "now".to_string(),
+            digest: String::new(),
+        }
+    }
+
+    #[test]
+    fn deployment_plan_separates_subscription_source_from_runtime_policy() {
+        let source: YamlValue = serde_yaml::from_str(
+            r#"
+proxies:
+  - name: HK 01
+    type: ss
+    server: hk.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: airport-secret
+proxy-groups:
+  - name: Airport
+    type: select
+    proxies: [HK 01, DIRECT]
+rules:
+  - MATCH,Airport
+"#,
+        )
+        .expect("source");
+        let mut settings = default_settings();
+        settings.secret = "aegos-controller-secret".to_string();
+        settings.tun_enabled = true;
+        let plan = compile_profile_source(source, &test_profile(), &settings)
+            .expect("runtime deployment plan");
+
+        assert!(plan.source_yaml.contains("airport-secret"));
+        assert!(!plan.source_yaml.contains("aegos-controller-secret"));
+        assert!(!plan.source_yaml.contains("external-controller"));
+        assert!(!plan.source_yaml.contains("Aegos Landing IP"));
+        assert!(plan.runtime_yaml.contains("aegos-controller-secret"));
+        assert!(plan.runtime_yaml.contains("external-controller"));
+        assert!(plan.runtime_yaml.contains("Aegos Landing IP"));
+        assert!(plan.runtime_yaml.contains("device: Aegos"));
+        assert_ne!(plan.source_digest, plan.runtime_digest);
+        assert_eq!(plan.source_catalog().summary().proxy_count, 1);
+        assert!(plan.runtime_catalog().summary().proxy_group_count >= 2);
+        assert_eq!(plan.validation.proxies, 1);
+
+        let summaries = format!(
+            "{} {}",
+            plan.source_catalog().summary_json(),
+            plan.runtime_catalog().summary_json()
+        );
+        assert!(!summaries.contains("airport-secret"));
+        assert!(!summaries.contains("hk.example.com"));
+        assert!(!summaries.contains("aegos-controller-secret"));
+    }
+
+    #[test]
+    fn deployment_plan_rejects_non_mapping_source_without_writing() {
+        let result = compile_profile_source(
+            YamlValue::Sequence(Vec::new()),
+            &test_profile(),
+            &default_settings(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn source_candidate_is_bound_to_the_compiled_source_digest_and_managed_path() {
+        let source: YamlValue = serde_yaml::from_str(
+            r#"
+proxies:
+  - name: Test
+    type: direct
+proxy-groups:
+  - name: Proxies
+    type: select
+    proxies: [Test, DIRECT]
+rules: ["MATCH,Proxies"]
+"#,
+        )
+        .expect("source");
+        let plan = compile_profile_source(source, &test_profile(), &default_settings())
+            .expect("runtime deployment plan");
+        let root = std::env::temp_dir();
+        let path = root.join("aegos-source-candidate-test.yaml");
+        let candidate = plan
+            .source_deployment_candidate(&root, &path, "test deployment")
+            .expect("source deployment candidate");
+        assert_eq!(candidate.digest(), plan.source_digest);
+
+        let outside = root
+            .parent()
+            .unwrap_or(root.as_path())
+            .join("aegos-source-candidate-outside.yaml");
+        assert!(plan
+            .source_deployment_candidate(&root, &outside, "outside deployment")
+            .is_err());
+    }
 }

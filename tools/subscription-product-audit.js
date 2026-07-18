@@ -10,6 +10,7 @@ const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 const subscriptionAudit = fs.readFileSync(path.join(root, 'tools', 'subscription-diagnostics-audit.js'), 'utf8');
 const nodeFlowAudit = fs.readFileSync(path.join(root, 'tools', 'node-flow-audit.js'), 'utf8');
 const interactionSmoke = fs.readFileSync(path.join(root, 'tools', 'interaction-smoke.js'), 'utf8');
+const subscriptionRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'subscription_runtime.rs'), 'utf8');
 
 const pass = [];
 const fail = [];
@@ -44,10 +45,11 @@ check('version is at least 3.4.14 subscription product checkpoint', semverAtLeas
 
 check(
   'subscription diagnostics remain actionable',
-  mainRs.includes('fn subscription_diagnostic') &&
-    mainRs.includes('unsupported-format') &&
-    mainRs.includes('unsupported-protocol') &&
+  subscriptionRuntimeRs.includes('pub(crate) fn diagnostic(') &&
+    subscriptionRuntimeRs.includes('unsupported-format') &&
+    subscriptionRuntimeRs.includes('unsupported-protocol') &&
     mainRs.includes('runtime-preflight') &&
+    !mainRs.includes('fn subscription_diagnostic(') &&
     subscriptionAudit.includes('subscription failure stages are classified') &&
     pkg.scripts?.['audit:subscription'] === 'node tools/subscription-diagnostics-audit.js',
   'download, parse, protocol, and runtime-preflight failures must explain the cause'
@@ -56,14 +58,42 @@ check(
 check(
   'import and update are transactional with rollback',
   addProfileBody.includes('previous_profile_id') &&
-    addProfileBody.includes('Profile import applied but startup failed; rolled back') &&
+    addProfileBody.includes('Profile import runtime apply failed; rolled back') &&
     addProfileBody.includes('ConfigDeploymentTransaction::stage') &&
-    addProfileBody.includes('deployment.rollback("subscription startup verification failed")') &&
+    addProfileBody.includes('deployment.rollback_with_runtime(') &&
+    addProfileBody.includes('deployment.complete_verified(') &&
+    addProfileBody.includes('combine_restore_results(') &&
+    addProfileBody.includes('core.hot_reload_runtime_plan(&profile, &plan)') &&
+    !addProfileBody.includes('restart_core_preserving_proxy(250)') &&
     updateProfileBody.includes('previous_profile') &&
-    updateProfileBody.includes('Profile update applied but startup failed; restored previous subscription') &&
+    updateProfileBody.includes('Profile update runtime apply failed; restored previous subscription') &&
     updateProfileBody.includes('ConfigDeploymentTransaction::stage') &&
-    updateProfileBody.includes('deployment.rollback("subscription runtime restart failed")'),
+    updateProfileBody.includes('deployment.rollback_with_runtime(') &&
+    updateProfileBody.includes('deployment.complete_verified(') &&
+    updateProfileBody.includes('combine_restore_results(') &&
+    updateProfileBody.includes('core.hot_reload_runtime_plan(&profile, &plan)') &&
+    !updateProfileBody.includes('restart_core_preserving_proxy(250)'),
   'bad subscriptions must not overwrite the last usable profile'
+);
+
+check(
+  'subscription update cannot apply a stale download after the profile changes',
+  (() => {
+    const downloadIndex = updateProfileBody.indexOf('subscription_runtime::download_source_url(&url, AEGOS_SUBSCRIPTION_USER_AGENT)?');
+    const operationIndex = updateProfileBody.indexOf('lock_operation_queue(&operations, "updateProfile apply")?');
+    const refreshIndex = updateProfileBody.indexOf('profile = core', operationIndex);
+    const identityIndex = updateProfileBody.indexOf('profile.source_url.as_deref() != Some(url.as_str())');
+    const snapshotIndex = updateProfileBody.indexOf('let previous_profile = profile.clone();');
+    return downloadIndex >= 0 &&
+      downloadIndex < operationIndex &&
+      operationIndex < refreshIndex &&
+      refreshIndex < identityIndex &&
+      identityIndex < snapshotIndex;
+  })() &&
+    updateProfileBody.indexOf('profile.source_url.as_deref() != Some(url.as_str())') <
+      updateProfileBody.indexOf('let previous_profile = profile.clone();') &&
+    updateProfileBody.includes('the downloaded result was discarded'),
+  'download remains non-blocking, while apply revalidates the current subscription identity and settings'
 );
 
 check(
@@ -90,8 +120,8 @@ check(
 check(
   'profile surfaces refresh through one shared path',
   refreshProfileBody.includes('await refreshStatus(true)') &&
-    refreshProfileBody.includes('await refreshNodes(true)') &&
-    refreshProfileBody.includes('renderProfiles()') &&
+    refreshProfileBody.includes('await refreshNodes(true, { delay: 32 })') &&
+    refreshProfileBody.includes('renderProfilesIfVisible()') &&
     refreshProfileBody.includes('refreshOutboundIpAfterNodeChange()') &&
     (appJs.match(/refreshProfileSurfaces\(\{ refreshOutboundIp: true \}\)/g) || []).length >= 5,
   'import, update, switch, and remove use the same status/node/profile refresh path'

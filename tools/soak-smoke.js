@@ -199,7 +199,7 @@ try {
           calls.push({ command, args, at: performance.now() });
           if (command === 'app_status') return status();
           if (command === 'proxy_groups') return groups();
-          if (command === 'connections') return trafficTakeover ? [{ id: '1', metadata: { host: 'example.com' }, rule: 'MATCH', chains: ['GLOBAL', nodes[0].name], upload: 1, download: 2 }] : [];
+          if (command === 'connections') return trafficTakeover ? [{ id: '1', target: 'example.com', rule: 'MATCH', route: ['GLOBAL', nodes[0].name], upload: 1, download: 2, process: 'browser.exe', network: 'tcp', protocol: 'HTTPS' }] : [];
           if (command === 'export_logs') return { path: 'C:\\\\Users\\\\JIE\\\\AppData\\\\Roaming\\\\Aegos\\\\diagnostics\\\\soak.txt', count: calls.length };
           if (command === 'start_proxy_delay_test') { speedRunning = true; speedPolls = 0; return { running: true, total: nodes.length, completed: 0, ok: 0, failed: 0 }; }
           if (command === 'speed_test_status') {

@@ -35,15 +35,15 @@ check(
 
 check(
   'ordinary node views show all matches while extreme lists remain bounded',
-  appJs.includes('nodeCandidateLimit') &&
-    appJs.includes('nodeRows.length < nodeCandidateLimit') &&
-    appJs.includes('const interactiveRender = largeList && (isForegroundHot() || isSpeedTestActive())') &&
-    appJs.includes('const nodeVisibleLimit = largeList ? visibleNodeLimit : Math.max(nodeInitialRenderLimit, nodeRows.length)') &&
-    appJs.includes('sortNodeRows(nodeRows).slice(0, nodeVisibleLimit)') &&
-    appJs.includes('nodeInitialRenderLimit = 36') &&
-    appJs.includes('nodeRenderLimit = 96') &&
-    appJs.includes('interactiveNodeRenderLimit'),
-  'ordinary subscriptions render every matching node; only extreme lists are capped'
+  appJs.includes('nodeDirectRenderLimit = 240') &&
+    appJs.includes('function nodeListSignature') &&
+    appJs.includes('function renderNodeVirtualWindow') &&
+    appJs.includes('nodeVirtualOverscan = 16') &&
+    appJs.includes('rows.length > nodeDirectRenderLimit') &&
+    appJs.includes('rows.slice(start, end).map') &&
+    appJs.includes('replaceChildrenSafe(container, rows.map((row) => renderNodeRow(row)))') &&
+    !appJs.includes('sortNodeRows(nodeRows).slice(0, nodeVisibleLimit)'),
+  'ordinary subscriptions render every matching node; extreme lists virtualize without truncating data'
 );
 
 check(
@@ -167,7 +167,8 @@ check(
 check(
   'deleting a strategy group safely migrates rules to Proxies instead of leaving broken targets',
   mainRs.includes('and Proxies is not available as fallback') &&
-    mainRs.includes('routing_rule_replace_target(raw, &validated_name, "Proxies")') &&
+    mainRs.includes('routing_domain::replace_rule_target(raw, &validated_name, "Proxies")') &&
+    mainRs.includes('routing_domain::replace_targets(&active_user_rules, &validated_name, "Proxies")') &&
     mainRs.includes('groups.remove(index)'),
   'delete preserves valid routing targets through the transactional backend path'
 );

@@ -89,19 +89,24 @@ check(
 );
 
 check(
-  'status controller and LAN probes execute outside the CoreManager lock',
+  'status controller and LAN probes stay off the CoreManager and UI critical paths',
   mainRs.includes('fn status_observation(') &&
     mainRs.includes('fn status_from_observed_traffic(') &&
     /let observed_traffic\s*=\s*controller\s*\.status_traffic_snapshot_or_idle/.test(mainRs) &&
-    mainRs.includes('let refreshed_lan_ip = refresh_lan_ip.then(primary_lan_ip)') &&
+    mainRs.includes('fn refresh_lan_ip_detached(') &&
+    mainRs.includes('refresh_lan_ip_detached(app.clone(), Arc::clone(&state.core))') &&
+    mainRs.includes('fn refresh_elevation_detached(app: AppHandle)') &&
+    mainRs.includes('thread::sleep(Duration::from_millis(1800))') &&
+    mainRs.includes('cached_process_elevated().unwrap_or(false)') &&
+    !mainRs.includes('let refreshed_lan_ip = refresh_lan_ip.then(primary_lan_ip)') &&
+    appJs.includes("listen('aegos-runtime-status'") &&
     mainRs.includes('core.status_from_observed_traffic('),
-  'slow controller or PowerShell reads cannot hold the global core mutex'
+  'slow controller or PowerShell reads cannot hold the global core mutex or delay first status paint'
 );
 
 check(
   'large static surfaces avoid continuous backdrop blur composition',
-  styles.includes('.side-card,\n.sidebar {') &&
-    styles.includes('backdrop-filter: none;'),
+  /\.panel,\r?\n\.side-card,\r?\n\.sidebar\s*\{[\s\S]*?backdrop-filter:\s*none;/.test(styles),
   'static panels use preblended surfaces; blur remains limited to transient overlays'
 );
 
@@ -121,29 +126,37 @@ check(
 );
 
 check(
-  'large node lists are cached, debounced, and rendered only on visible surfaces',
+  'large node lists are cached, frame-coalesced, and rendered only on visible surfaces',
   appJs.includes('nodeRowStaticCache') &&
     appJs.includes('function normalizeNodeItemCached') &&
     appJs.includes('nodeRowStaticCache.set(cacheKey, cached)') &&
     scheduleRowsRenderBody.includes('rowRenderSettleMs') &&
-    scheduleRowsRenderBody.includes('setTimeout(run') &&
+    scheduleRowsRenderBody.includes('requestAnimationFrame(run)') &&
+    scheduleRowsRenderBody.includes('if (delay > 16) rowRenderTimer = setTimeout(run, delay)') &&
     scheduleRowsRenderBody.includes('if (!options.force && !isNodeSurfaceActive()) return') &&
-    appJs.includes('const largeList = sourceItems.length > 1500') &&
-    appJs.includes('const largeNodeScanLimit = 120') &&
-    appJs.includes('const eagerNodeIndexLimit = 360') &&
     appJs.includes('function summaryRowsFromLatestGroup(limit = 160)') &&
-    appJs.includes('nodeCandidateLimit') &&
-    appJs.includes('nodeRows.length < nodeCandidateLimit') &&
-    appJs.includes('interactiveNodeRenderLimit') &&
-    appJs.includes('interactiveNodeCandidateLimit') &&
-    appJs.includes('const interactiveRender = largeList && (isForegroundHot() || isSpeedTestActive())') &&
-    appJs.includes('const visibleNodeLimit = interactiveRender ? interactiveNodeRenderLimit : nodeRenderLimit') &&
-    appJs.includes('const nodeVisibleLimit = largeList ? visibleNodeLimit : Math.max(nodeInitialRenderLimit, nodeRows.length)') &&
-    appJs.includes('sortNodeRows(nodeRows).slice(0, nodeVisibleLimit)') &&
+    appJs.includes('nodeDirectRenderLimit = 240') &&
+    appJs.includes('function renderNodeVirtualWindow') &&
+    appJs.includes('function scheduleNodeVirtualWindowRender') &&
+    appJs.includes('rows.length > nodeDirectRenderLimit') &&
+    appJs.includes('rows.slice(start, end).map') &&
+    appJs.includes("addEventListener('scroll', scheduleNodeVirtualWindowRender") &&
     appJs.includes('homeNodeRenderLimit') &&
     appJs.includes('function renderRows') &&
-    appJs.includes('matchingNodeCount = Math.max(matchingNodeCount, nodeRows.length + 1)'),
-  'node table work must stay bounded with many nodes'
+    perfSmoke.includes('allNodesReachable') &&
+    perfSmoke.includes('visibleRows > 100'),
+  'node table DOM must stay bounded while the complete matching collection remains scroll-reachable'
+);
+
+check(
+  'navigation and node rendering expose read-only timing evidence for real WebView2 probes',
+  appJs.includes('function recordUiPerformance') &&
+    appJs.includes('window.__aegosPerformanceSnapshot = uiPerformanceSnapshot') &&
+    appJs.includes("recordUiPerformance('navigation-request'") &&
+    appJs.includes("recordUiPerformance('navigation-painted'") &&
+    appJs.includes("recordUiPerformance('node-rows-rendered'") &&
+    appJs.includes("recordUiPerformance('invoke-finish'"),
+  'actual WebView2 timing must be observable without turning on a user-facing debug mode'
 );
 
 check(
@@ -152,7 +165,8 @@ check(
     testNodesBody.includes("invoke('start_proxy_delay_test'") &&
     !testNodesBody.includes('runForegroundAction') &&
     !testNodesBody.includes('foregroundBusy') &&
-    pollSpeedBody.includes('const changed = applySpeedStatusToNodes(status)') &&
+    pollSpeedBody.includes("speedEventReady ? 'speed_test_progress' : 'speed_test_status'") &&
+    pollSpeedBody.includes('applySpeedStatusToNodes(displayStatus') &&
     pollSpeedBody.includes('refreshVisibleNodesForSpeed(!status.running, changed)') &&
     appJs.includes('function applySpeedStatusToNodes') &&
     appJs.includes('updateVisibleNodeDelays(visibleChanges)'),
@@ -190,7 +204,7 @@ check(
   releaseAudit.includes('background refresh yields to foreground and background jobs') &&
     releaseAudit.includes('sidebar navigation is immediate and deferred-load') &&
     releaseAudit.includes('rapid sidebar navigation stress coverage exists') &&
-    releaseAudit.includes('large node lists are windowed, debounced, and row-cached') &&
+    releaseAudit.includes('large node lists are complete, virtualized, frame-coalesced, and row-cached') &&
     releaseAudit.includes('speed testing does not block sidebar page switching'),
   'global release gate must keep responsiveness from regressing'
 );

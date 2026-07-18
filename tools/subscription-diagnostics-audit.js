@@ -16,10 +16,10 @@ function check(name, ok, detail = '') {
 
 check(
   'subscription diagnostics helper exists',
-  mainRs.includes('fn subscription_diagnostic') &&
-    mainRs.includes('subscription_runtime::diagnostic(stage, reason, suggestion)') &&
+  subscriptionRuntimeRs.includes('pub(crate) fn diagnostic(') &&
     subscriptionRuntimeRs.includes('Open Logs or Diagnostics for details') &&
-    subscriptionRuntimeRs.includes('Subscription diagnostics [{stage}]'),
+    subscriptionRuntimeRs.includes('Subscription diagnostics [{stage}]') &&
+    !mainRs.includes('fn subscription_diagnostic('),
   'stable user-facing diagnostic format'
 );
 
@@ -36,52 +36,55 @@ check(
     'unsupported-format',
     'unsupported-protocol',
     'runtime-preflight',
-  ].every((stage) => mainRs.includes(`"${stage}"`)),
+  ].every((stage) =>
+    (stage === 'runtime-preflight' ? mainRs : subscriptionRuntimeRs).includes(`"${stage}"`)
+  ),
   'download, parse, protocol, and runtime-preflight stages'
 );
 
 check(
   'diagnostic download path is used by import and update',
-  (mainRs.match(/download_profile_source_url_diagnostic/g) || []).length >= 3 &&
+  (mainRs.match(/subscription_runtime::download_source_url/g) || []).length === 3 &&
     mainRs.includes('add_profile_url_detached') &&
     mainRs.includes('update_profile_detached') &&
-    !/fn add_profile_url_detached[\s\S]*download_profile_source_url\(url\)\?/.test(mainRs) &&
-    !/fn update_profile_detached[\s\S]*download_profile_source_url\(&url\)\?/.test(mainRs),
-  'detached subscription paths use diagnostic downloader'
+    subscriptionRuntimeRs.includes('pub(crate) fn download_source_url(') &&
+    subscriptionRuntimeRs.includes('parse_source_text(&text)') &&
+    !mainRs.includes('fn download_profile_source_url_diagnostic'),
+  'detached subscription paths call the domain-owned diagnostic downloader directly'
 );
 
 check(
   'subscription text normalization is shared and testable',
-  mainRs.includes('fn decoded_subscription_body') &&
-    mainRs.includes('subscription_runtime::decoded_body(text)') &&
-    subscriptionRuntimeRs.includes('pub(crate) fn decoded_body') &&
+  subscriptionRuntimeRs.includes('pub(crate) fn decoded_body') &&
     subscriptionRuntimeRs.includes("trim_start_matches('\\u{feff}')") &&
     subscriptionRuntimeRs.includes('decode_base64_text(raw).unwrap_or_else') &&
-    mainRs.includes('fn parse_profile_source_text_diagnostic') &&
-    mainRs.includes('download_profile_source_url_diagnostic') &&
-    mainRs.includes('parse_profile_source_text_diagnostic(&text)'),
+    subscriptionRuntimeRs.includes('pub(crate) fn parse_source_text(') &&
+    subscriptionRuntimeRs.includes('parse_source_text(&text)') &&
+    !mainRs.includes('fn decoded_subscription_body') &&
+    !mainRs.includes('fn parse_profile_source_text_diagnostic'),
   'downloaded text is normalized before YAML/URI parsing'
 );
 
 check(
   'airport metadata and comments are ignored in URI subscriptions',
-  mainRs.includes('fn is_ignorable_subscription_line') &&
-    mainRs.includes('subscription_runtime::is_ignorable_line(line)') &&
+  subscriptionRuntimeRs.includes('pub(crate) fn is_ignorable_line(') &&
     subscriptionRuntimeRs.includes('subscription-userinfo:') &&
     subscriptionRuntimeRs.includes('profile-title:') &&
     subscriptionRuntimeRs.includes('profile-update-interval:') &&
-    mainRs.includes('subscription_parser_ignores_metadata_comments_and_blank_lines'),
+    mainRs.includes('subscription_parser_ignores_metadata_comments_and_blank_lines') &&
+    !mainRs.includes('fn is_ignorable_subscription_line'),
   'comments/airport info lines do not count as unsupported proxy lines'
 );
 
 check(
   'unsupported URI protocols are detected before generic format failure',
-  mainRs.includes('fn unsupported_uri_schemes') &&
-    mainRs.includes('subscription_runtime::unsupported_uri_schemes(text, AEGOS_URI_PROTOCOLS)') &&
+  subscriptionRuntimeRs.includes('pub(crate) const AEGOS_URI_PROTOCOLS') &&
     subscriptionRuntimeRs.includes('pub(crate) fn unsupported_uri_schemes') &&
-    mainRs.includes('unsupported URI protocol(s)') &&
+    subscriptionRuntimeRs.includes('unsupported URI protocol(s)') &&
+    subscriptionRuntimeRs.includes('pub(crate) fn parse_uri_source(') &&
     mainRs.includes('ssr://example-one') &&
-    mainRs.includes('wireguard://example-two'),
+    mainRs.includes('wireguard://example-two') &&
+    !mainRs.includes('fn unsupported_uri_schemes'),
   'protocol-specific error path'
 );
 

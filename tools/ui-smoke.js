@@ -328,6 +328,47 @@ try {
   page = await openPage();
   await page.send('Page.enable');
   await page.send('Runtime.enable');
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    (() => {
+      const items = Array.from({ length: 18 }, (_, index) => ({
+        name: 'HK ' + String(index + 1).padStart(2, '0'),
+        realProxyName: 'HK ' + String(index + 1).padStart(2, '0'),
+        type: index % 3 === 0 ? 'tuic' : 'ss',
+        server: 'node-' + (index + 1) + '.example.com',
+        country: 'HK',
+        delay: 28 + index * 5,
+        alive: true,
+        favorite: index < 2,
+        fixed: false,
+        selected: index === 0,
+        lastTestedAt: Math.floor(Date.now() / 1000)
+      }));
+      const profile = { id: 'ui-smoke', name: 'UI Smoke', type: 'remote', profile_type: 'remote', updated_at: 'now', nodeCount: items.length, proxyGroupCount: 1 };
+      const status = () => ({
+        product: 'Aegos', appVersion: '3.6.35', running: false, coreReady: false,
+        trafficTakeover: false, standby: false, mode: 'rule', traffic: { up: 0, down: 0 }, logs: [],
+        activeProfile: profile,
+        network: { lanIp: '192.168.1.8', proxyEndpoint: '127.0.0.1:7891', outboundIp: '-', availability: { state: 'unverified', label: '未验证', detail: '尚未连接' } },
+        permissions: { isAdmin: true, requiresAdminFor: ['TUN', '断网保护'] },
+        protection: { label: '未开启' },
+        settings: { activeProfileId: profile.id, profiles: [profile], mixedPort: 7891, controllerPort: 19091, systemProxy: false, tunEnabled: false, startWithSystemProxy: true, dnsHijackEnabled: true, killSwitchEnabled: false, ipv6Enabled: false, allowLan: false, tunStack: 'mixed', logLevel: 'info', reliability: { auto: true, profileFailover: true, failureThreshold: 2, maxDelayMs: 800, candidateLimit: 24 } }
+      });
+      const invoke = async (command, args = {}) => {
+        if (command === 'app_status') return status();
+        if (command === 'proxy_groups' || command === 'preview_profile_groups') return [{ name: 'Proxies', type: 'select', now: items[0].name, items }];
+        if (command === 'routing_snapshot') return { mode: 'rule', groups: [{ name: 'Proxies', type: 'select', now: items[0].name, itemCount: items.length, automatic: false }], rules: [{ index: 1, kind: 'DOMAIN-SUFFIX', condition: 'example.com', target: 'Proxies', source: 'config', status: 'readonly', options: [] }], unboundUserRules: [], configRulePage: { profileId: profile.id, offset: 0, limit: 80, total: 1, hasMore: false }, summary: { groupCount: 1, userRuleCount: 0, systemRuleCount: 0, configRuleCount: 1, ruleCount: 1 } };
+        if (command === 'routing_rule_page') return { profileId: profile.id, offset: 0, limit: 80, total: 1, hasMore: false, items: [] };
+        if (command === 'active_connection_count') return { count: 0 };
+        if (command === 'environment_readiness') return { summary: { label: '环境可用', level: 'ok' }, checks: [] };
+        if (command === 'ipv6_dns_safety_snapshot') return { mode: 'auto', status: 'ipv4-fallback' };
+        return true;
+      };
+      window.__TAURI__ = {
+        core: { invoke },
+        event: { listen: async () => () => {} }
+      };
+    })();
+  ` });
   const reports = [
     await auditViewport(page, 1280, 820, 1),
     await auditViewport(page, 1280, 700, 1),

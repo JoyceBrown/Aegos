@@ -33,6 +33,7 @@ function sha256(file) {
 const packageJson = readJson('package.json');
 const tauri = readJson('src-tauri/tauri.conf.json');
 const mainRs = read('src-tauri/src/main.rs');
+const coreDomainRs = read('src-tauri/src/core_domain.rs');
 const coreRuntimeRs = read('src-tauri/src/core_runtime.rs');
 const configPipelineRs = read('src-tauri/src/config_pipeline.rs');
 const releaseAudit = read('tools/release-audit.js');
@@ -51,6 +52,11 @@ const setActiveProfileBody = mainRs.match(/fn set_active_profile\(&mut self, id:
 const removeProfileBody = mainRs.match(/fn remove_profile\(&mut self, id: &str\) -> Result<bool, String> \{([\s\S]*?)\n    fn save_manual_node/)?.[1] || '';
 const addProfileUrlDetachedBody = mainRs.match(/fn add_profile_url_detached\([\s\S]*?\) -> Result<Profile, String> \{([\s\S]*?)\nfn update_profile_detached/)?.[1] || '';
 const updateProfileDetachedBody = mainRs.match(/fn update_profile_detached\([\s\S]*?\) -> Result<Profile, String> \{([\s\S]*?)\nfn refresh_outbound_ip_detached/)?.[1] || '';
+const speedTestStart = mainRs.indexOf('fn start_proxy_delay_test_for_run');
+const speedTestEnd = mainRs.indexOf('fn probe_proxy_network', speedTestStart);
+const speedTestBody = speedTestStart >= 0 && speedTestEnd > speedTestStart
+  ? mainRs.slice(speedTestStart, speedTestEnd)
+  : '';
 
 function hasControllerCall(method, timeout) {
   return new RegExp(`controller\\s*\\.\\s*${method}\\(\\s*${timeout}\\s*\\)`).test(mainRs);
@@ -133,13 +139,23 @@ check(
   coreRuntimeRs.includes('pub struct CoreController') &&
     coreRuntimeRs.includes('#[derive(Clone, Debug)]') &&
     coreRuntimeRs.includes('pub struct CoreController') &&
-    coreRuntimeRs.includes('pub fn controller_request') &&
+    coreRuntimeRs.includes('fn controller_request(') &&
+    !coreRuntimeRs.includes('pub fn controller_request') &&
+    coreRuntimeRs.includes('fn request(') &&
+    !coreRuntimeRs.includes('pub fn request(') &&
     coreRuntimeRs.includes('pub fn traffic_snapshot(&self, timeout_ms: u64)') &&
+    coreDomainRs.includes('pub struct TrafficSnapshot') &&
+    coreDomainRs.includes('pub fn traffic_snapshot_from_controller_line') &&
+    coreRuntimeRs.includes('Result<TrafficSnapshot, String>') &&
     coreRuntimeRs.includes('pub fn connections_snapshot(&self, timeout_ms: u64)') &&
-    coreRuntimeRs.includes('pub fn connections_snapshot_or_empty(&self, running: bool, timeout_ms: u64)') &&
+    coreRuntimeRs.includes('pub fn connections_snapshot_or_empty(') &&
     coreRuntimeRs.includes('pub fn recent_rule_hits_snapshot(') &&
     coreRuntimeRs.includes('pub fn routing_recent_rule_hits_snapshot_or_empty(&self, running: bool)') &&
-    coreRuntimeRs.includes('pub fn recent_rule_hits_from_connections(') &&
+    coreDomainRs.includes('pub struct ConnectionSnapshot') &&
+    coreDomainRs.includes('pub fn connection_snapshots_from_controller') &&
+    coreDomainRs.includes('pub fn recent_rule_hits') &&
+    coreRuntimeRs.includes('Result<Vec<ConnectionSnapshot>, String>') &&
+    !coreRuntimeRs.includes('recent_rule_hits_from_connections') &&
     coreRuntimeRs.includes('pub fn active_connection_count(&self, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn active_connection_count_snapshot_or_idle(') &&
     coreRuntimeRs.includes('pub fn close_connection(&self, id: &str, timeout_ms: u64)') &&
@@ -191,30 +207,36 @@ check(
 );
 check(
   'Aegos routes proxy control APIs through typed CoreController methods',
-  coreRuntimeRs.includes('pub fn proxies_snapshot(&self, timeout_ms: u64)') &&
-    coreRuntimeRs.includes('pub fn proxy_groups_snapshot(') &&
-    coreRuntimeRs.includes('fn normalize_proxy_item') &&
+  coreRuntimeRs.includes('fn proxies_payload(&self, timeout_ms: u64)') &&
+    !coreRuntimeRs.includes('pub fn proxies_payload') &&
+    coreRuntimeRs.includes('fn proxy_groups_snapshot(') &&
+    !coreRuntimeRs.includes('pub fn proxy_groups_snapshot(') &&
+    coreDomainRs.includes('pub struct ProxyNodeSnapshot') &&
+    coreDomainRs.includes('pub struct ProxyGroupSnapshot') &&
+    coreDomainRs.includes('pub fn proxy_groups_from_controller') &&
+    coreRuntimeRs.includes('Result<Vec<ProxyGroupSnapshot>, String>') &&
+    !coreRuntimeRs.includes('fn normalize_proxy_item') &&
     coreRuntimeRs.includes('pub fn select_proxy(&self, group: &str, proxy: &str, timeout_ms: u64)') &&
     coreRuntimeRs.includes('pub fn apply_proxy_selection(&self, group: &str, proxy: &str)') &&
     coreRuntimeRs.includes('pub fn apply_proxy_selection_with_cleanup(') &&
     coreRuntimeRs.includes('self.apply_proxy_selection(group, proxy)?') &&
     coreRuntimeRs.includes('self.cleanup_stale_connections_after_selection();') &&
     coreRuntimeRs.includes('pub fn apply_auxiliary_proxy_selection(&self, group: &str, proxy: &str)') &&
-    coreRuntimeRs.includes('pub fn apply_auxiliary_proxy_selection_if_running(') &&
-    coreRuntimeRs.includes('Some(self.apply_auxiliary_proxy_selection(group, proxy))') &&
     coreRuntimeRs.includes('pub fn cleanup_stale_connections_after_selection(&self)') &&
     coreRuntimeRs.includes('pub const PROXY_SELECT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const AUXILIARY_PROXY_SELECT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const STALE_CONNECTION_CLEANUP_TIMEOUT_MS') &&
-    coreRuntimeRs.includes('pub fn ui_proxy_groups_snapshot(') &&
-    coreRuntimeRs.includes('pub fn ui_proxy_groups_snapshot_or_none(') &&
-    coreRuntimeRs.includes('pub fn ui_proxy_groups_snapshot_or_else') &&
+    coreRuntimeRs.includes('pub fn proxy_catalog_snapshot(') &&
+    coreRuntimeRs.includes('pub fn proxy_catalog_snapshot_or_else') &&
     coreRuntimeRs.includes('controller_proxy_groups_snapshot_fallback_is_owned_by_runtime_boundary') &&
     coreRuntimeRs.includes('pub const PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub fn proxy_delay_with_client(') &&
+    coreDomainRs.includes('pub struct DelayProbeSnapshot') &&
+    coreDomainRs.includes('pub fn delay_probe_from_controller') &&
+    coreRuntimeRs.includes('Result<DelayProbeSnapshot, CoreControllerHttpFailure>') &&
     coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
     coreRuntimeRs.includes('pub fn classify_delay_http_failure(') &&
-    mainRs.includes('controller.ui_proxy_groups_snapshot_or_else(') &&
+    mainRs.includes('controller.proxy_catalog_snapshot_or_else(') &&
     mainRs.includes('&[AEGOS_OUTBOUND_IP_GROUP]') &&
     mainRs.includes('controller: core_runtime::CoreController') &&
     mainRs.includes('core.core_controller()') &&
@@ -234,8 +256,9 @@ check(
     !mainRs.includes('fn test_proxy_delay_with_retry(\n    client: &Client,\n    controller_port: u16,') &&
     mainRs.includes('.proxy_delay_result_with_client(client, name, test_url, timeout_ms)') &&
     !mainRs.includes('fn classify_delay_http_failure') &&
-    mainRs.includes('.apply_auxiliary_proxy_selection_if_running(') &&
-    !mainRs.includes('.apply_auxiliary_proxy_selection(AEGOS_OUTBOUND_IP_GROUP, &proxy)') &&
+    mainRs.includes('fn sync_outbound_ip_route(') &&
+    mainRs.includes('.apply_auxiliary_proxy_selection(AEGOS_OUTBOUND_IP_GROUP, &proxy)') &&
+    !speedTestBody.includes('apply_auxiliary_proxy_selection(') &&
     mainRs.includes('.apply_proxy_selection_with_cleanup(group, proxy)') &&
     !mainRs.includes('.apply_proxy_selection(group, proxy)') &&
     !mainRs.includes('.cleanup_stale_connections_after_selection()') &&
@@ -248,20 +271,33 @@ check(
   'proxy groups, delay probes, and explicit node selection must stay behind core_runtime typed APIs',
 );
 check(
+  'Aegos owns node selection preflight and transactional rollback semantics',
+  coreRuntimeRs.includes('pub struct ProxySelectionPreflight') &&
+    coreRuntimeRs.includes('pub fn validate_proxy_selection_from_groups') &&
+    coreRuntimeRs.includes('Node switch preflight failed') &&
+    !mainRs.includes('fn validate_proxy_selection_from_groups') &&
+    mainRs.includes('core_runtime::validate_proxy_selection_from_groups(&groups, group, proxy)?') &&
+    mainRs.includes('previous runtime node rollback also failed:') &&
+    mainRs.includes('Node preference save failed:') &&
+    mainRs.indexOf('apply_proxy_selection_with_cleanup(group, proxy)') <
+      mainRs.indexOf('.selected_proxy_map\n            .insert(group.to_string(), proxy.to_string())'),
+  'node selection must apply, commit, and restore in a defined order',
+);
+check(
   'Aegos owns proxy-group snapshot shaping inside the core runtime boundary',
   coreRuntimeRs.includes('pub const AEGOS_AUTO_SELECT_GROUP_NAME') &&
-    coreRuntimeRs.includes('pub fn is_proxies_group_name(') &&
-    coreRuntimeRs.includes('pub fn is_aegos_auto_select_group_name(') &&
-    coreRuntimeRs.includes('pub fn normalize_proxy_groups_snapshot_defaults(') &&
-    coreRuntimeRs.includes('pub fn apply_group_resolution_with_selected_map(') &&
-    coreRuntimeRs.includes('pub fn annotate_manual_groups_with_names(') &&
-    coreRuntimeRs.includes('pub fn resolve_group_leaf(') &&
+  coreRuntimeRs.includes('pub fn is_proxies_group_name(') &&
+  coreRuntimeRs.includes('pub fn is_aegos_auto_select_group_name(') &&
+  coreDomainRs.includes('pub struct ProxyCatalog') &&
+  coreDomainRs.includes('pub fn ensure_default_groups') &&
+  coreDomainRs.includes('pub fn apply_selected_map') &&
+  coreDomainRs.includes('pub fn annotate_manual_nodes') &&
+  coreRuntimeRs.includes('pub fn shape_proxy_catalog_model(') &&
+  coreRuntimeRs.includes('pub fn resolve_group_leaf(') &&
     coreRuntimeRs.includes('proxy_group_snapshot_defaults_are_shaped_inside_runtime_boundary') &&
     coreRuntimeRs.includes('proxy_group_resolution_and_manual_flags_are_runtime_shaped') &&
-    mainRs.includes('core_runtime::normalize_proxy_groups_snapshot_defaults(&mut groups)') &&
-    mainRs.includes('core_runtime::apply_group_resolution_with_selected_map(&mut groups, &selected_map)') &&
-    mainRs.includes('core_runtime::annotate_manual_groups_with_names(&mut groups, &manual_names)') &&
-    mainRs.includes('core_runtime::resolve_group_leaf(') &&
+  mainRs.includes('core_runtime::shape_proxy_catalog_model(') &&
+  mainRs.includes('core_runtime::resolve_group_leaf(') &&
     configPipelineRs.includes('core_runtime::is_proxies_group_name') &&
     configPipelineRs.includes('core_runtime::is_aegos_auto_select_group_name') &&
     configPipelineRs.includes('core_runtime::AEGOS_AUTO_SELECT_GROUP_NAME') &&
@@ -274,12 +310,15 @@ check(
     !mainRs.includes('fn snapshot_proxy_item_name') &&
     !mainRs.includes('fn all_real_snapshot_items') &&
     !mainRs.includes('fn group_selected_name') &&
-    !mainRs.includes('fn resolve_group_leaf('),
+  !mainRs.includes('fn resolve_group_leaf('),
   'proxy-group default rows, group references, manual flags, and group-name aliases must not be rebuilt in main.rs',
 );
 check(
   'Aegos routes readiness and mode control through typed CoreController methods',
-  coreRuntimeRs.includes('pub fn version_probe(&self, timeout_ms: u64)') &&
+  coreDomainRs.includes('pub struct RuntimeVersionSnapshot') &&
+    coreDomainRs.includes('pub fn runtime_version_from_controller') &&
+    coreRuntimeRs.includes('fn version_probe(&self, timeout_ms: u64) -> Result<RuntimeVersionSnapshot, String>') &&
+    !coreRuntimeRs.includes('pub fn version_probe') &&
     coreRuntimeRs.includes('pub fn runtime_reuse_ready(&self) -> bool') &&
     coreRuntimeRs.includes('self.version_probe(READY_REUSE_PROBE_TIMEOUT_MS).is_ok()') &&
     coreRuntimeRs.includes('pub fn wait_until_ready') &&
@@ -289,8 +328,9 @@ check(
     coreRuntimeRs.includes('pub const READY_CHECK_ATTEMPTS') &&
     coreRuntimeRs.includes('pub const READY_RETRY_INTERVAL_MS') &&
     coreRuntimeRs.includes('pub const RUNTIME_RESTART_SETTLE_MS') &&
-    coreRuntimeRs.includes('pub fn set_mode(&self, mode: &str, timeout_ms: u64)') &&
-    coreRuntimeRs.includes('pub fn apply_mode(&self, mode: &str)') &&
+  coreRuntimeRs.includes('fn set_mode(&self, mode: &str, timeout_ms: u64) -> Result<(), String>') &&
+    !coreRuntimeRs.includes('pub fn set_mode(&self') &&
+    coreRuntimeRs.includes('pub fn apply_mode(&self, mode: &str) -> Result<(), String>') &&
     coreRuntimeRs.includes('pub fn apply_mode_if_running(') &&
     coreRuntimeRs.includes('Some(self.apply_mode(mode))') &&
     coreRuntimeRs.includes('pub const MODE_APPLY_TIMEOUT_MS') &&
@@ -299,6 +339,9 @@ check(
     !mainRs.includes('core_runtime::READY_REUSE_PROBE_TIMEOUT_MS') &&
     mainRs.includes('core_runtime::RUNTIME_RESTART_SETTLE_MS') &&
     mainRs.includes('.apply_mode_if_running(self.process.is_some(), mode)') &&
+    mainRs.includes('let previous_mode = self.settings.mode.clone();') &&
+    mainRs.includes('Mode switch was not applied:') &&
+    mainRs.includes('runtime rollback also failed:') &&
     !mainRs.includes('self.core_controller().apply_mode(mode)') &&
     !mainRs.includes('self.core_controller().set_mode(mode, 3000)') &&
     !mainRs.includes('version_probe(900)') &&
@@ -351,16 +394,29 @@ check(
     coreRuntimeRs.includes('pub const CONFIG_FORCE_APPLY_ENDPOINT') &&
     coreRuntimeRs.includes('pub const CONFIG_FORCE_APPLY_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const CONFIG_APPLY_VERSION_PROBE_TIMEOUT_MS') &&
-    coreRuntimeRs.includes('pub fn apply_runtime_config_path(&self, path: &Path)') &&
-    coreRuntimeRs.includes('pub fn config_apply_version_probe(&self)') &&
+    coreRuntimeRs.includes('fn apply_runtime_config_path(&self, path: &Path) -> Result<(), String>') &&
+    !coreRuntimeRs.includes('pub fn apply_runtime_config_path') &&
+    coreRuntimeRs.includes('fn config_apply_version_probe(&self) -> Result<RuntimeVersionSnapshot, String>') &&
+    !coreRuntimeRs.includes('pub fn config_apply_version_probe') &&
+    coreRuntimeRs.includes('pub runtime_version: RuntimeVersionSnapshot') &&
+    coreRuntimeRs.includes('pub fn receipt_json(&self) -> JsonValue') &&
+    coreRuntimeRs.includes('runtime_apply_receipt_is_aegos_shaped') &&
+    !coreRuntimeRs.includes('pub controller_response: JsonValue') &&
+    !coreRuntimeRs.includes('pub version_probe: JsonValue') &&
     coreRuntimeRs.includes('controller.apply_runtime_config_path(&self.runtime_profile_path)') &&
     coreRuntimeRs.includes('controller.config_apply_version_probe()') &&
     !coreRuntimeRs.includes('controller.request("GET", "/version", None, 900)') &&
     !coreRuntimeRs.includes('Some(json!({ "path": self.runtime_profile_path.to_string_lossy().to_string() })),\n            8000') &&
     mainRs.includes('CoreRuntimeApplyTransaction::new') &&
     mainRs.includes('apply_transaction.apply(&self.core_controller())') &&
+    hotReloadProfileBody.includes('let mut receipt = result.receipt_json();') &&
+    hotReloadProfileBody.includes('"versionProbeCount".to_string(), json!(1)') &&
+    hotReloadProfileBody.includes('json!("config-apply-version")') &&
+    !hotReloadProfileBody.includes('self.wait_for_controller()?') &&
+    mainRs.includes('let controller_ready = !was_running || reload.is_ok();') &&
+    !mainRs.includes('let controller_ready = !was_running || self.core_controller().runtime_reuse_ready();') &&
     !mainRs.includes('"/configs?force=true"'),
-  'runtime config apply must be owned by core_runtime instead of ad-hoc controller calls in main.rs',
+  'runtime config apply uses one post-apply version probe without duplicate readiness round trips',
 );
 check(
   'runtime config unchanged result shaping is owned by the core runtime boundary',
@@ -377,7 +433,7 @@ check(
   coreRuntimeRs.includes('pub fn classify_failure_reason') &&
     coreRuntimeRs.includes('pub fn classified_error') &&
     coreRuntimeRs.includes('runtime_failure_reason_classifier_covers_common_connection_failures') &&
-    mainRs.includes('core_runtime::classified_error("Node switch", err)') &&
+    mainRs.includes('core_runtime::classified_error("Node switch", apply_error)') &&
     mainRs.includes('core_runtime::classify_failure_reason(&entry.line)') &&
     !mainRs.includes('fn classify_failure_reason') &&
     !mainRs.includes('fn classified_error'),
@@ -429,10 +485,12 @@ check(
     setActiveProfileBody.includes('let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(') &&
     setActiveProfileBody.includes('self.start_from_restart_plan(rollback_plan)') &&
     removeProfileBody.includes('let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(') &&
-    removeProfileBody.includes('self.start_from_restart_plan(rollback_plan)?') &&
-    addProfileUrlDetachedBody.includes('let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(') &&
+    removeProfileBody.includes('if let Err(err) = self.start_from_restart_plan(rollback_plan)') &&
+    removeProfileBody.includes('self.settings = previous_settings') &&
+    removeProfileBody.includes('let runtime_restore = self.start()') &&
+    addProfileUrlDetachedBody.includes('core_runtime::CoreRuntimeRestartPlan::preserving_proxy(') &&
     addProfileUrlDetachedBody.includes('core.start_from_restart_plan(rollback_plan)') &&
-    updateProfileDetachedBody.includes('let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(') &&
+    updateProfileDetachedBody.includes('core_runtime::CoreRuntimeRestartPlan::preserving_proxy(') &&
     updateProfileDetachedBody.includes('core.start_from_restart_plan(rollback_plan)') &&
     !setActiveProfileBody.includes('let restore_takeover =') &&
     !removeProfileBody.includes('let restore_takeover =') &&
@@ -657,9 +715,6 @@ check(
     coreRuntimeRs.includes('pub struct CoreFirewallPolicyPlan') &&
     coreRuntimeRs.includes('pub fn disconnect_protection()') &&
     coreRuntimeRs.includes('pub fn speed_test()') &&
-    coreRuntimeRs.includes('pub fn speed_test_firewall_enabled') &&
-    coreRuntimeRs.includes('pub fn speed_test_firewall_ports') &&
-    coreRuntimeRs.includes('pub fn firewall_remote_port_list') &&
     coreRuntimeRs.includes('pub fn powershell_single_quote_escape') &&
     coreRuntimeRs.includes('pub fn powershell_string_array_literal') &&
     coreRuntimeRs.includes('pub fn normalize_windows_program_path_text') &&
@@ -668,9 +723,6 @@ check(
     coreRuntimeRs.includes('firewall_policy_contract_is_owned_by_runtime_boundary') &&
     mainRs.includes('CoreFirewallPolicyPlan::disconnect_protection') &&
     mainRs.includes('CoreFirewallPolicyPlan::speed_test') &&
-    mainRs.includes('core_runtime::speed_test_firewall_enabled') &&
-    mainRs.includes('core_runtime::speed_test_firewall_ports') &&
-    mainRs.includes('core_runtime::firewall_remote_port_list') &&
     mainRs.includes('core_runtime::firewall_program_paths') &&
     mainRs.includes('core_runtime::powershell_string_array_literal') &&
     !mainRs.includes('format!("{APP_NAME} Kill Switch') &&
@@ -678,6 +730,8 @@ check(
     !mainRs.includes('kill-switch-speed-test-rules.marker') &&
     !mainRs.includes('fn ps_escape') &&
     !mainRs.includes('fn firewall_program_path') &&
+    !mainRs.includes('fn build_speed_test_firewall_script') &&
+    !mainRs.includes('remoteport=$portList') &&
     !mainRs.includes('fn ps_array_literal') &&
     !mainRs.includes('fn ps_port_list'),
   'main.rs may execute firewall scripts, but group names, state files, program path shaping, and speed-test firewall policy belong to core_runtime',

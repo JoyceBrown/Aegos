@@ -42,7 +42,7 @@ const renderStart = appJs.indexOf('function renderRoutingSystemWorkbench');
 const renderEnd = appJs.indexOf('function renderRoutingGroupSummaryForRules', renderStart);
 const renderBody = renderStart >= 0 && renderEnd > renderStart ? appJs.slice(renderStart, renderEnd) : '';
 const markStart = mainRs.indexOf('fn mark_system_routing_rules');
-const markEnd = mainRs.indexOf('fn routing_rule_target_exists', markStart);
+const markEnd = mainRs.indexOf('fn routing_rules_for_profile', markStart);
 const markBody = markStart >= 0 && markEnd > markStart ? mainRs.slice(markStart, markEnd) : '';
 
 check('version keeps the 3.5.96+ system-rule explanation checkpoint active', versionAtLeast(pkg.version, '3.5.96'), pkg.version);

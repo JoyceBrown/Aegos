@@ -61,18 +61,19 @@ check(
   'background task model'
 );
 check(
-  'large visible lists stay bounded',
-  appJs.includes('nodeInitialRenderLimit = 36') &&
-    appJs.includes('nodeRenderLimit = 96') &&
-    appJs.includes('interactiveNodeRenderLimit = 24') &&
-    appJs.includes('interactiveNodeCandidateLimit = 48') &&
-    appJs.includes('const visibleNodeLimit = interactiveRender ? interactiveNodeRenderLimit : nodeRenderLimit') &&
-    appJs.includes('const nodeVisibleLimit = largeList ? visibleNodeLimit : Math.max(nodeInitialRenderLimit, nodeRows.length)') &&
+  'ordinary node lists are complete and extreme lists use reachable virtualization',
+  appJs.includes('nodeDirectRenderLimit = 240') &&
+    appJs.includes('function renderNodeVirtualWindow') &&
+    appJs.includes('rows.length > nodeDirectRenderLimit') &&
+    appJs.includes('rows.slice(start, end).map') &&
+    appJs.includes("nodeVirtualSpacer('node-virtual-spacer node-virtual-spacer-bottom'") &&
+    appJs.includes("addEventListener('scroll', scheduleNodeVirtualWindowRender") &&
     appJs.includes('homeNodeRenderLimit = 8') &&
     appJs.includes('logRenderLimit') &&
-    appJs.includes('const ruleRows = visibleRules.map') &&
+    interactionSmoke.includes('ordinary subscription did not render all 89 nodes') &&
+    perfSmoke.includes('virtual node list does not reach the final matching node') &&
     stylesCss.includes('scrollbar-gutter: stable'),
-  'bounded list rendering'
+  'all matches remain reachable without an unbounded DOM'
 );
 check(
   'button pending feedback does not disable controls or change fixed icon content',

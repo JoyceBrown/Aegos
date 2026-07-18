@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
+const coreDomainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'core_domain.rs'), 'utf8');
+const configPipelineRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'config_pipeline.rs'), 'utf8');
 const appJs = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
 const backendAudit = fs.readFileSync(path.join(root, 'tools', 'backend-audit.js'), 'utf8');
 const releaseAudit = fs.readFileSync(path.join(root, 'tools', 'release-audit.js'), 'utf8');
@@ -61,10 +63,15 @@ check(
   'smart/rule mode IP lookup routes through hidden current-node group',
   mainRs.includes('const AEGOS_OUTBOUND_IP_GROUP') &&
     mainRs.includes('const OUTBOUND_IP_RULE_DOMAINS') &&
-    mainRs.includes('fn upsert_outbound_ip_group') &&
-    mainRs.includes('fn sync_outbound_ip_group_selection') &&
-    mainRs.includes('fn insert_outbound_ip_rules') &&
-    mainRs.includes('DOMAIN,{domain},{target}') &&
+    configPipelineRs.includes('fn upsert_outbound_ip_group') &&
+    mainRs.includes('fn runtime_current_proxy_route') &&
+    mainRs.includes('fn sync_outbound_ip_route') &&
+    mainRs.includes('OUTBOUND_IP_RULE_PRIMARY_GROUPS') &&
+    mainRs.includes('OUTBOUND_IP_GLOBAL_PRIMARY_GROUPS') &&
+    coreDomainRs.includes('pub fn resolve_runtime_leaf') &&
+    coreDomainRs.includes('pub fn group_contains_leaf') &&
+    configPipelineRs.includes('fn insert_outbound_ip_rules') &&
+    configPipelineRs.includes('DOMAIN,{domain},{target}') &&
     ruleTestBody.includes('Aegos Landing IP') &&
     ruleTestBody.includes('Some("Node A")'),
   'internal IP-check domains use current selected node'
@@ -85,7 +92,10 @@ check(
 check(
   'detached backend job keeps cached value on temporary provider failure',
   detachedBody.includes('query_outbound_ip(mixed_port)') &&
-    detachedBody.includes('sync_outbound_ip_group_selection') &&
+    detachedBody.includes('sync_outbound_ip_route(&controller, &mode)') &&
+    detachedBody.includes('runtime_current_proxy_route(&controller, &mode)') &&
+    detachedBody.includes('core.settings.mode != mode') &&
+    !detachedBody.includes('current_outbound_ip_proxy_name') &&
     detachedBody.includes('outbound_ip_cache') &&
     detachedBody.includes('keeping cached value') &&
     mainRs.includes('Ok(fallback)') &&

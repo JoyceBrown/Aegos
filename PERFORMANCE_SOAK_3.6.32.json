@@ -1,9 +1,9 @@
 {
   "ok": true,
   "version": "3.6.32",
-  "generatedAt": "2026-07-16T13:03:21.693Z",
+  "generatedAt": "2026-07-17T03:23:58.152Z",
   "cycles": 16,
-  "commandCount": 279,
+  "commandCount": 296,
   "jobKinds": [
     "startCore",
     "refreshOutboundIp",
@@ -15,10 +15,10 @@
   "resourceSamples": [
     {
       "cycle": 0,
-      "elements": 755,
+      "elements": 754,
       "nodeRows": 6,
       "homeRows": 8,
-      "heap": 1277324,
+      "heap": 1288390,
       "timers": {
         "intervals": 6,
         "timeouts": 0
@@ -26,10 +26,10 @@
     },
     {
       "cycle": 4,
-      "elements": 912,
+      "elements": 911,
       "nodeRows": 8,
       "homeRows": 8,
-      "heap": 2329793,
+      "heap": 2495625,
       "timers": {
         "intervals": 6,
         "timeouts": 2
@@ -37,10 +37,10 @@
     },
     {
       "cycle": 8,
-      "elements": 912,
+      "elements": 911,
       "nodeRows": 8,
       "homeRows": 8,
-      "heap": 2383882,
+      "heap": 2202719,
       "timers": {
         "intervals": 6,
         "timeouts": 2
@@ -48,10 +48,10 @@
     },
     {
       "cycle": 12,
-      "elements": 912,
+      "elements": 911,
       "nodeRows": 8,
       "homeRows": 8,
-      "heap": 2123703,
+      "heap": 2523105,
       "timers": {
         "intervals": 6,
         "timeouts": 2
@@ -59,10 +59,10 @@
     },
     {
       "cycle": 16,
-      "elements": 912,
+      "elements": 911,
       "nodeRows": 8,
       "homeRows": 8,
-      "heap": 2158063,
+      "heap": 2328503,
       "timers": {
         "intervals": 6,
         "timeouts": 2
@@ -71,13 +71,13 @@
   ],
   "dom": {
     "before": {
-      "documents": 30,
-      "nodes": 1873,
+      "documents": 29,
+      "nodes": 1867,
       "jsEventListeners": 127
     },
     "after": {
-      "documents": 34,
-      "nodes": 2147,
+      "documents": 33,
+      "nodes": 2140,
       "jsEventListeners": 127
     }
   },

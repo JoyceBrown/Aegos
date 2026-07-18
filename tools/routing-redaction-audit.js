@@ -21,21 +21,23 @@ function check(name, ok, detail = '') {
 const pkg = readJson('package.json');
 const appJs = read('src/app.js');
 const mainRs = read('src-tauri/src/main.rs');
+const coreDomainRs = read('src-tauri/src/core_domain.rs');
+const coreRuntimeRs = read('src-tauri/src/core_runtime.rs');
 const releaseAudit = read('tools/release-audit.js');
 const securityAudit = read('tools/security-hotfix-audit.js');
 
 const routingStart = mainRs.indexOf('fn routing_snapshot');
 const routingEnd = mainRs.indexOf('#[tauri::command]', routingStart + 1);
 const routingBody = routingStart >= 0 ? mainRs.slice(routingStart, routingEnd > routingStart ? routingEnd : undefined) : '';
-const renderStart = appJs.indexOf('function renderRoutingSnapshot');
-const renderEnd = appJs.indexOf('async function refreshRoutingSnapshot', renderStart);
+const renderStart = appJs.indexOf('function renderRoutingAdvancedRuleRows');
+const renderEnd = appJs.indexOf('function renderRoutingSnapshot', renderStart);
 const renderBody = renderStart >= 0 ? appJs.slice(renderStart, renderEnd > renderStart ? renderEnd : undefined) : '';
 
 check('package version keeps 3.x routing redaction gate active', /^3\.\d+\.\d+$/.test(pkg.version), pkg.version);
-check('routing snapshot sanitizes recent rule names', routingBody.includes('let rule = sanitize_sensitive_text') && routingBody.includes('.get("rule")'), 'rule redaction');
-check('routing snapshot sanitizes recent chain names', routingBody.includes('let chains = sanitize_sensitive_text') && routingBody.includes('.get("chains")'), 'chain redaction');
+check('routing snapshot sanitizes recent rule names', coreDomainRs.includes('let rule = sanitize(text_field(item, "rule"))') && coreRuntimeRs.includes('recent_rule_hits(&connections, limit)'), 'rule redaction');
+check('routing snapshot sanitizes recent route names', coreDomainRs.includes('.get("chains")') && coreDomainRs.includes('.map(&sanitize)') && coreRuntimeRs.includes('"route": route'), 'route redaction');
 check(
-  'routing frontend renders recent rules through text nodes',
+  'routing frontend renders structured rules through text nodes',
   renderBody.includes('textContent: item.condition') &&
     renderBody.includes('routingTargetLabel(item.target)') &&
     renderBody.includes('routingStatusLabel(item)') &&

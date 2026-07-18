@@ -145,7 +145,10 @@ check(
     mainRs.includes('struct DiagnosticsSnapshot') &&
     mainRs.includes('fn take_diagnostics_snapshot(core: Arc<Mutex<CoreManager>>) -> DiagnosticsSnapshot') &&
     mainRs.includes('fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue') &&
-    mainRs.includes('config_pipeline::patch_profile_source(source, profile, &snapshot.settings)?') &&
+    mainRs.includes('let runtime_plan = snapshot') &&
+    mainRs.includes('profile_compiler::compile_profile_file(profile, &snapshot.settings)') &&
+    mainRs.includes('runtime_plan.as_ref().map(|runtime|') &&
+    mainRs.includes('runtime_dns_safety_report(plan.runtime_catalog().config())') &&
     mainRs.includes('read_windows_proxy_snapshot()') &&
     mainRs.includes('port_owner_detail(snapshot.settings.mixed_port)') &&
     diagnosticsJobBody.includes('diagnostics_detached(core.clone())') &&

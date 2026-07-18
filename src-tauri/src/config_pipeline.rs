@@ -1,15 +1,16 @@
 use std::collections::HashSet;
 
-use serde_json::Value as JsonValue;
 use serde_yaml::{Mapping, Value as YamlValue};
 
 use crate::{
-    core_runtime, patch_config_with_settings, preflight_runtime_config, Profile, Settings,
+    config_domain::{ManualNodeConfig, ProfileCatalog, RuntimeConfigReport},
+    core_runtime, subscription_runtime, Profile, Settings, AEGOS_OUTBOUND_IP_GROUP,
+    OUTBOUND_IP_RULE_DOMAINS,
 };
 
-pub(crate) struct RuntimePreflight {
-    pub(crate) config: YamlValue,
-    pub(crate) report: JsonValue,
+pub(crate) struct RuntimeConfigPlan {
+    pub(crate) catalog: ProfileCatalog,
+    pub(crate) validation: RuntimeConfigReport,
 }
 
 pub(crate) const AEGOS_DNS_LISTEN: &str = "127.0.0.1:1054";
@@ -19,12 +20,460 @@ const AEGOS_DIRECT_NAMESERVERS: [&str; 3] = [
     "tls://8.8.8.8:853",
 ];
 
+fn proxy_group_names(config: &Mapping) -> Vec<String> {
+    config
+        .get(yaml_key("proxy-groups"))
+        .and_then(|value| value.as_sequence())
+        .map(|groups| {
+            groups
+                .iter()
+                .filter_map(|group| {
+                    group
+                        .get(yaml_key("name"))
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn outbound_ip_primary_group_name(config: &Mapping, settings: &Settings) -> Option<String> {
+    let groups = proxy_group_names(config);
+    for preferred in ["GLOBAL", "Final", "Proxy", "Proxies"] {
+        if groups.iter().any(|name| name == preferred) {
+            return Some(preferred.to_string());
+        }
+    }
+    for selected_group in settings.selected_proxy_map.keys() {
+        if groups.iter().any(|name| name == selected_group) {
+            return Some(selected_group.clone());
+        }
+    }
+    groups.first().cloned()
+}
+
+fn yaml_group_selected_name(group: &YamlValue, settings: &Settings) -> String {
+    let Some(map) = group.as_mapping() else {
+        return String::new();
+    };
+    let group_name = map
+        .get(yaml_key("name"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    settings
+        .selected_proxy_map
+        .get(group_name)
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .or_else(|| {
+            map.get(yaml_key("now"))
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            map.get(yaml_key("proxies"))
+                .and_then(|value| value.as_sequence())
+                .and_then(|items| items.first())
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
+fn resolve_yaml_group_leaf(
+    groups: &[YamlValue],
+    settings: &Settings,
+    name: &str,
+    depth: usize,
+) -> String {
+    if depth > 8 {
+        return name.to_string();
+    }
+    let Some(group) = groups
+        .iter()
+        .find(|group| yaml_mapping_name(group) == Some(name))
+    else {
+        return name.to_string();
+    };
+    let selected = yaml_group_selected_name(group, settings);
+    if selected.is_empty() || selected == name {
+        return name.to_string();
+    }
+    resolve_yaml_group_leaf(groups, settings, &selected, depth + 1)
+}
+
+fn outbound_ip_selected_proxy(
+    config: &Mapping,
+    settings: &Settings,
+    proxy_names: &[String],
+) -> String {
+    let groups = config
+        .get(yaml_key("proxy-groups"))
+        .and_then(|value| value.as_sequence())
+        .cloned()
+        .unwrap_or_default();
+    let selected = outbound_ip_primary_group_name(config, settings)
+        .map(|group| resolve_yaml_group_leaf(&groups, settings, &group, 0))
+        .unwrap_or_default();
+    if selected == "DIRECT" || proxy_names.iter().any(|name| name == &selected) {
+        return selected;
+    }
+    proxy_names
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "DIRECT".to_string())
+}
+
+fn upsert_outbound_ip_group(config: &mut Mapping, settings: &Settings) -> String {
+    let proxy_names = proxy_node_names(config);
+    if proxy_names.is_empty() {
+        return "DIRECT".to_string();
+    }
+    let selected = outbound_ip_selected_proxy(config, settings, &proxy_names);
+    let mut ordered = Vec::new();
+    let mut seen = HashSet::new();
+    for name in std::iter::once(selected.clone())
+        .chain(proxy_names.into_iter())
+        .chain(std::iter::once("DIRECT".to_string()))
+    {
+        if seen.insert(name.clone()) {
+            ordered.push(YamlValue::String(name));
+        }
+    }
+    let mut group = Mapping::new();
+    set_yaml(&mut group, "name", yaml_str(AEGOS_OUTBOUND_IP_GROUP));
+    set_yaml(&mut group, "type", yaml_str("select"));
+    set_yaml(&mut group, "proxies", YamlValue::Sequence(ordered));
+    let mut groups = config
+        .get(yaml_key("proxy-groups"))
+        .and_then(|value| value.as_sequence())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|group| yaml_mapping_name(group) != Some(AEGOS_OUTBOUND_IP_GROUP))
+        .collect::<Vec<_>>();
+    groups.push(YamlValue::Mapping(group));
+    set_yaml(config, "proxy-groups", YamlValue::Sequence(groups));
+    AEGOS_OUTBOUND_IP_GROUP.to_string()
+}
+
+fn insert_outbound_ip_rules(config: &mut Mapping, settings: &Settings) {
+    let target = upsert_outbound_ip_group(config, settings);
+    let mut rules = config
+        .get(yaml_key("rules"))
+        .and_then(|value| value.as_sequence())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|rule| {
+            let text = rule.as_str().unwrap_or("");
+            !OUTBOUND_IP_RULE_DOMAINS
+                .iter()
+                .any(|domain| text.contains(domain))
+        })
+        .collect::<Vec<_>>();
+    let mut internal_rules = OUTBOUND_IP_RULE_DOMAINS
+        .iter()
+        .map(|domain| YamlValue::String(format!("DOMAIN,{domain},{target}")))
+        .collect::<Vec<_>>();
+    internal_rules.append(&mut rules);
+    set_yaml(config, "rules", YamlValue::Sequence(internal_rules));
+}
+
+fn sanitize_subscription_metadata_nodes(config: &mut Mapping) -> usize {
+    let mut removed = HashSet::new();
+    if let Some(YamlValue::Sequence(proxies)) = config.get_mut(yaml_key("proxies")) {
+        proxies.retain(|proxy| {
+            let keep = proxy
+                .as_mapping()
+                .and_then(|map| map.get(yaml_key("name")))
+                .and_then(|value| value.as_str())
+                .map(|name| !crate::config_domain::is_subscription_metadata_node_name(name))
+                .unwrap_or(true);
+            if !keep {
+                if let Some(name) = proxy
+                    .as_mapping()
+                    .and_then(|map| map.get(yaml_key("name")))
+                    .and_then(|value| value.as_str())
+                {
+                    removed.insert(name.to_string());
+                }
+            }
+            keep
+        });
+    }
+    if removed.is_empty() {
+        return 0;
+    }
+    if let Some(YamlValue::Sequence(groups)) = config.get_mut(yaml_key("proxy-groups")) {
+        for group in groups {
+            let Some(map) = group.as_mapping_mut() else {
+                continue;
+            };
+            if let Some(YamlValue::Sequence(items)) = map.get_mut(yaml_key("proxies")) {
+                items.retain(|item| {
+                    item.as_str()
+                        .map(|name| !removed.contains(name))
+                        .unwrap_or(true)
+                });
+            }
+        }
+    }
+    removed.len()
+}
+
+fn proxy_name(value: &YamlValue) -> Option<&str> {
+    value
+        .as_mapping()
+        .and_then(|map| map.get(yaml_key("name")))
+        .and_then(|value| value.as_str())
+}
+
+fn ensure_yaml_sequence<'a>(config: &'a mut Mapping, key: &str) -> &'a mut Vec<YamlValue> {
+    let value = config
+        .entry(yaml_key(key))
+        .or_insert_with(|| YamlValue::Sequence(Vec::new()));
+    if !matches!(value, YamlValue::Sequence(_)) {
+        *value = YamlValue::Sequence(Vec::new());
+    }
+    value.as_sequence_mut().expect("sequence")
+}
+
+fn insert_manual_node_into_config(
+    config: &mut Mapping,
+    node: &ManualNodeConfig,
+    original_name: Option<&str>,
+) -> Result<(), String> {
+    let name = node.name.as_str();
+    let original = original_name.unwrap_or(name);
+    let proxy = node.runtime_yaml()?;
+    {
+        let proxies = ensure_yaml_sequence(config, "proxies");
+        let existing_index = proxies
+            .iter()
+            .position(|item| proxy_name(item) == Some(original));
+        if proxies
+            .iter()
+            .enumerate()
+            .any(|(index, item)| proxy_name(item) == Some(name) && Some(index) != existing_index)
+        {
+            return Err(format!("固定节点名称已存在：{name}"));
+        }
+        if let Some(index) = existing_index {
+            proxies[index] = proxy;
+        } else {
+            proxies.push(proxy);
+        }
+    }
+
+    let groups = ensure_yaml_sequence(config, "proxy-groups");
+    if groups.is_empty() {
+        let mut group = Mapping::new();
+        set_yaml(&mut group, "name", yaml_str("GLOBAL"));
+        set_yaml(&mut group, "type", yaml_str("select"));
+        set_yaml(
+            &mut group,
+            "proxies",
+            YamlValue::Sequence(vec![yaml_str(name), yaml_str("DIRECT")]),
+        );
+        groups.push(YamlValue::Mapping(group));
+        return Ok(());
+    }
+
+    let mut target_index = 0usize;
+    for (index, group) in groups.iter().enumerate() {
+        let Some(map) = group.as_mapping() else {
+            continue;
+        };
+        let group_name = map
+            .get(yaml_key("name"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let group_type = map
+            .get(yaml_key("type"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if matches!(group_name, "GLOBAL" | "Proxies" | "Proxy")
+            || matches!(
+                group_type.as_str(),
+                "select" | "url-test" | "fallback" | "load-balance"
+            )
+        {
+            target_index = index;
+            break;
+        }
+    }
+
+    for group in groups.iter_mut() {
+        let Some(map) = group.as_mapping_mut() else {
+            continue;
+        };
+        let list = map
+            .entry(yaml_key("proxies"))
+            .or_insert_with(|| YamlValue::Sequence(Vec::new()));
+        if !matches!(list, YamlValue::Sequence(_)) {
+            *list = YamlValue::Sequence(Vec::new());
+        }
+        if let Some(list) = list.as_sequence_mut() {
+            for item in list.iter_mut() {
+                if item.as_str() == Some(original) {
+                    *item = yaml_str(name);
+                }
+            }
+        }
+    }
+
+    if let Some(map) = groups
+        .get_mut(target_index)
+        .and_then(|group| group.as_mapping_mut())
+    {
+        let list = map
+            .entry(yaml_key("proxies"))
+            .or_insert_with(|| YamlValue::Sequence(Vec::new()));
+        if let Some(list) = list.as_sequence_mut() {
+            if !list.iter().any(|item| item.as_str() == Some(name)) {
+                list.push(yaml_str(name));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_manual_nodes(
+    config: &mut Mapping,
+    settings: &Settings,
+    profile_id: &str,
+) -> Result<(), String> {
+    let Some(nodes) = settings.manual_nodes.get(profile_id) else {
+        return Ok(());
+    };
+    for node in nodes.values() {
+        insert_manual_node_into_config(config, node, None)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn patch_config(
     source: YamlValue,
     settings: &Settings,
     profile_id: Option<&str>,
 ) -> Result<YamlValue, String> {
-    patch_config_with_settings(source, settings, profile_id)
+    let mut config = match source {
+        YamlValue::Mapping(map) => map,
+        _ => Mapping::new(),
+    };
+    for key in [
+        "port",
+        "socks-port",
+        "redir-port",
+        "tproxy-port",
+        "mixed-port",
+    ] {
+        config.remove(yaml_key(key));
+    }
+    set_yaml(
+        &mut config,
+        "mixed-port",
+        YamlValue::Number(settings.mixed_port.into()),
+    );
+    set_yaml(
+        &mut config,
+        "allow-lan",
+        YamlValue::Bool(settings.allow_lan),
+    );
+    set_yaml(
+        &mut config,
+        "bind-address",
+        YamlValue::String(if settings.allow_lan { "*" } else { "127.0.0.1" }.to_string()),
+    );
+    set_yaml(
+        &mut config,
+        "mode",
+        YamlValue::String(settings.mode.clone()),
+    );
+    set_yaml(
+        &mut config,
+        "log-level",
+        YamlValue::String(settings.log_level.clone()),
+    );
+    set_yaml(
+        &mut config,
+        "external-controller",
+        YamlValue::String(format!("127.0.0.1:{}", settings.controller_port)),
+    );
+    set_yaml(
+        &mut config,
+        "secret",
+        YamlValue::String(settings.secret.clone()),
+    );
+    set_yaml(&mut config, "ipv6", YamlValue::Bool(settings.ipv6_enabled));
+    set_yaml(
+        &mut config,
+        "find-process-mode",
+        YamlValue::String("strict".to_string()),
+    );
+    set_yaml(&mut config, "unified-delay", YamlValue::Bool(true));
+    set_yaml(&mut config, "tcp-concurrent", YamlValue::Bool(true));
+    harden_runtime_dns(&mut config);
+    sanitize_subscription_metadata_nodes(&mut config);
+
+    if settings.tun_enabled {
+        let tun = config
+            .entry(yaml_key("tun"))
+            .or_insert_with(|| YamlValue::Mapping(Mapping::new()));
+        let tun_map = get_mapping_mut(tun);
+        set_yaml(tun_map, "enable", YamlValue::Bool(true));
+        set_yaml(
+            tun_map,
+            "stack",
+            YamlValue::String(settings.tun_stack.clone()),
+        );
+        set_yaml(tun_map, "auto-route", YamlValue::Bool(true));
+        set_yaml(tun_map, "auto-detect-interface", YamlValue::Bool(true));
+        set_yaml(tun_map, "device", YamlValue::String("Aegos".to_string()));
+        set_yaml(
+            tun_map,
+            "dns-hijack",
+            if settings.dns_hijack_enabled {
+                YamlValue::Sequence(vec![YamlValue::String("any:53".to_string())])
+            } else {
+                YamlValue::Sequence(Vec::new())
+            },
+        );
+    } else if let Some(tun) = config.get_mut(yaml_key("tun")) {
+        set_yaml(get_mapping_mut(tun), "enable", YamlValue::Bool(false));
+    }
+
+    if let Some(profile_id) = profile_id {
+        apply_manual_nodes(&mut config, settings, profile_id)?;
+    }
+
+    let proxy_name_strings = proxy_node_names(&config);
+    let proxy_names: Vec<YamlValue> = proxy_name_strings
+        .iter()
+        .map(|name| yaml_str(name))
+        .collect();
+    normalize_runtime_proxy_groups_for_display(&mut config);
+
+    if !matches!(config.get(yaml_key("rules")), Some(YamlValue::Sequence(items)) if !items.is_empty())
+    {
+        let target = if proxy_names.is_empty() {
+            "DIRECT"
+        } else {
+            "GLOBAL"
+        };
+        set_yaml(
+            &mut config,
+            "rules",
+            YamlValue::Sequence(vec![YamlValue::String(format!("MATCH,{target}"))]),
+        );
+    }
+    insert_outbound_ip_rules(&mut config, settings);
+    Ok(YamlValue::Mapping(config))
 }
 
 pub(crate) fn patch_direct_profile(settings: &Settings) -> Result<YamlValue, String> {
@@ -33,22 +482,6 @@ pub(crate) fn patch_direct_profile(settings: &Settings) -> Result<YamlValue, Str
         settings,
         Some("direct"),
     )
-}
-
-pub(crate) fn patch_profile_source(
-    source: YamlValue,
-    profile: &Profile,
-    settings: &Settings,
-) -> Result<YamlValue, String> {
-    patch_config(source, settings, Some(&profile.id))
-}
-
-pub(crate) fn patch_speed_test_source(
-    source: YamlValue,
-    profile: &Profile,
-    standby_settings: &Settings,
-) -> Result<YamlValue, String> {
-    patch_profile_source(source, profile, standby_settings)
 }
 
 fn yaml_key(key: &str) -> YamlValue {
@@ -83,12 +516,6 @@ fn get_mapping_mut(value: &mut YamlValue) -> &mut Mapping {
     value.as_mapping_mut().expect("mapping")
 }
 
-fn yaml_sequence<'a>(config: &'a YamlValue, key: &str) -> Option<&'a Vec<YamlValue>> {
-    config
-        .get(yaml_key(key))
-        .and_then(|value| value.as_sequence())
-}
-
 fn yaml_mapping_name(value: &YamlValue) -> Option<&str> {
     value
         .as_mapping()
@@ -114,6 +541,7 @@ fn url_test_proxy_group(name: &str, values: &[String]) -> YamlValue {
         yaml_str("https://www.gstatic.com/generate_204"),
     );
     set_yaml(&mut group, "interval", YamlValue::Number(300.into()));
+    set_yaml(&mut group, "lazy", YamlValue::Bool(true));
     set_yaml(&mut group, "proxies", yaml_string_values(values));
     YamlValue::Mapping(group)
 }
@@ -286,6 +714,7 @@ fn ensure_auto_select_group_contains_all_nodes(config: &mut Mapping, proxy_names
     set_yaml(map, "type", yaml_str("url-test"));
     set_yaml(map, "url", yaml_str("https://www.gstatic.com/generate_204"));
     set_yaml(map, "interval", YamlValue::Number(300.into()));
+    set_yaml(map, "lazy", YamlValue::Bool(true));
     set_yaml(map, "proxies", yaml_string_values(proxy_names));
 }
 
@@ -401,58 +830,44 @@ pub(crate) fn harden_runtime_dns(config: &mut Mapping) {
     );
 }
 
-pub(crate) fn speed_test_firewall_ports_from_source(
-    source: YamlValue,
-    profile: &Profile,
-    standby_settings: &Settings,
-) -> Result<Vec<u16>, String> {
-    let patched = patch_speed_test_source(source, profile, standby_settings)?;
-    let mut ports = HashSet::new();
-    for proxy in yaml_sequence(&patched, "proxies")
-        .into_iter()
-        .flat_map(|items| items.iter())
-    {
-        let Some(map) = proxy.as_mapping() else {
-            continue;
-        };
-        let Some(port) = map
-            .get(yaml_key("port"))
-            .and_then(|value| value.as_u64())
-            .and_then(|value| u16::try_from(value).ok())
-        else {
-            continue;
-        };
-        if port > 0 {
-            ports.insert(port);
-        }
-    }
-    let mut ports = ports.into_iter().collect::<Vec<_>>();
-    ports.sort_unstable();
-    Ok(ports)
-}
-
-pub(crate) fn preflight_config(
+fn preflight_config(
     config: &YamlValue,
     profile: &Profile,
     settings: &Settings,
-) -> Result<JsonValue, String> {
-    preflight_runtime_config(config, profile, settings)
+) -> Result<RuntimeConfigReport, String> {
+    core_runtime::preflight_runtime_config(
+        config,
+        core_runtime::RuntimeConfigPreflightInput {
+            profile_id: &profile.id,
+            profile_type: &profile.profile_type,
+            profile_name: &profile.name,
+            mixed_port: settings.mixed_port,
+            controller_port: settings.controller_port,
+            uri_protocols: subscription_runtime::AEGOS_URI_PROTOCOLS,
+        },
+    )
 }
 
-pub(crate) fn patch_and_preflight(
+pub(crate) fn compile_runtime_catalog(
     source: YamlValue,
     profile: &Profile,
     settings: &Settings,
-) -> Result<RuntimePreflight, String> {
+) -> Result<RuntimeConfigPlan, String> {
     let config = patch_config(source, settings, Some(&profile.id))?;
-    let report = preflight_config(&config, profile, settings)?;
-    Ok(RuntimePreflight { config, report })
-}
-
-pub(crate) fn preflight_profile_source(
-    source: YamlValue,
-    profile: &Profile,
-    settings: &Settings,
-) -> Result<RuntimePreflight, String> {
-    patch_and_preflight(source, profile, settings)
+    let catalog =
+        ProfileCatalog::from_yaml(config, &profile.id, &profile.name, &profile.profile_type)?;
+    let validation = preflight_config(catalog.config(), profile, settings)?;
+    if validation.proxies != catalog.proxies().len()
+        || validation.proxy_groups != catalog.groups().len()
+        || validation.rules != catalog.summary().rule_count
+    {
+        return Err(
+            "Runtime config plan validation counts do not match the Aegos profile catalog"
+                .to_string(),
+        );
+    }
+    Ok(RuntimeConfigPlan {
+        catalog,
+        validation,
+    })
 }

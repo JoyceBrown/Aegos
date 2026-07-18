@@ -66,7 +66,7 @@ check(
 check(
   'runtime gate keeps system takeover and firewall regressions visible',
   takeoverAudit.includes('Windows proxy takeover integrity has one shared diagnostic contract') &&
-    takeoverAudit.includes('speed tests can run under disconnect protection through scoped temporary allow rules') &&
+    takeoverAudit.includes('speed tests reuse disconnect protection program rules without broad port exceptions') &&
     coreRuntimeAudit.includes('disconnect protection firewall policy is owned by the core runtime boundary'),
   'proxy takeover/firewall'
 );

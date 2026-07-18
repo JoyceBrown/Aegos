@@ -32,6 +32,7 @@ function versionAtLeast(version, minimum) {
 
 const pkg = JSON.parse(read('package.json'));
 const appJs = read('src/app.js');
+const mainRs = read('src-tauri/src/main.rs');
 const styles = read('src/styles.css');
 const releaseAudit = read('tools/release-audit.js');
 const interactionSmoke = read('tools/interaction-smoke.js');
@@ -46,6 +47,9 @@ const testBody = testStart >= 0 && testEnd > testStart ? appJs.slice(testStart, 
 const matcherStart = appJs.indexOf('function routingRuleMatchesWebsite');
 const matcherEnd = appJs.indexOf('function renderRoutingDraftPreview', matcherStart);
 const matcherBody = matcherStart >= 0 && matcherEnd > matcherStart ? appJs.slice(matcherStart, matcherEnd) : '';
+const backendStart = mainRs.indexOf('fn test_routing_website');
+const backendEnd = mainRs.indexOf('fn routing_snapshot', backendStart);
+const backendBody = backendStart >= 0 && backendEnd > backendStart ? mainRs.slice(backendStart, backendEnd) : '';
 
 check('version keeps the 3.5.98+ rule test checkpoint active', versionAtLeast(pkg.version, '3.5.98'), pkg.version);
 check('package exposes the stage 3 rule test audit', pkg.scripts?.['audit:stage3-rule-test'] === 'node tools/stage3-rule-test-audit.js', 'npm run audit:stage3-rule-test');
@@ -64,25 +68,23 @@ check(
 
 check(
   'rule test matches website rules without backend mutation',
-  matcherBody.includes('normalizeWebsiteRuleInput') &&
-    matcherBody.includes('routingRuleMatchesWebsite') &&
-    matcherBody.includes("kind === 'DOMAIN'") &&
-    matcherBody.includes("kind === 'DOMAIN-SUFFIX'") &&
-    matcherBody.includes("kind === 'DOMAIN-KEYWORD'") &&
-    matcherBody.includes('existingRoutingRules()') &&
-    !matcherBody.includes('runBackgroundJob') &&
-    !matcherBody.includes('invoke(') &&
-    !matcherBody.includes('applyRoutingRuleEdit'),
-  'read-only front-end match'
+  testBody.includes("invoke('test_routing_website'") &&
+    !testBody.includes('runBackgroundJob') &&
+    backendBody.includes('routing_rule_matches_domain') &&
+    backendBody.includes('store.active_for_profile') &&
+    backendBody.includes('routing_config_rules_for_profile') &&
+    !backendBody.includes('write_') &&
+    !backendBody.includes('hot_reload'),
+  'read-only targeted backend match'
 );
 
 check(
   'rule test explains hit, miss, and system-protection cases in user language',
-  matcherBody.includes('暂未命中具体网站规则') &&
-    matcherBody.includes('将走') &&
-    matcherBody.includes('系统保护规则') &&
-    matcherBody.includes('用户规则优先') &&
-    matcherBody.includes('不会改配置、不切节点'),
+  testBody.includes('暂未命中可解释的网站规则') &&
+    testBody.includes('将走') &&
+    testBody.includes('系统保护规则') &&
+    testBody.includes('测试只读取当前配置，不会切节点或改变连接') &&
+    backendBody.includes('这是不可覆盖的系统检测规则'),
   'ordinary-user result copy'
 );
 
@@ -96,7 +98,7 @@ check(
 check(
   'interaction smoke covers a concrete rule test hit',
   interactionSmoke.includes('routingRuleTestInput') &&
-    interactionSmoke.includes('www.example.com') &&
+  interactionSmoke.includes("command === 'test_routing_website'") &&
     interactionSmoke.includes('routingRuleTestResult') &&
     interactionSmoke.includes('GLOBAL'),
   'interaction smoke rule test'

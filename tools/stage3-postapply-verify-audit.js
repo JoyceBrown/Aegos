@@ -22,10 +22,16 @@ const pkg = JSON.parse(read('package.json'));
 const appJs = read('src/app.js');
 const mainRs = read('src-tauri/src/main.rs');
 const releaseAudit = read('tools/release-audit.js');
-const release = exists(`RELEASE_${pkg.version}.md`) ? read(`RELEASE_${pkg.version}.md`) : '';
-const applyStart = mainRs.indexOf('fn apply_routing_drafts');
-const applyEnd = mainRs.indexOf('fn undo_last_routing_apply', applyStart);
+const checkpointRelease = exists('RELEASE_3.5.94.md') ? read('RELEASE_3.5.94.md') : '';
+const applyStart = mainRs.indexOf('fn apply_user_rule_store_drafts');
+const applyEnd = mainRs.indexOf('fn apply_user_rule_store_edit', applyStart);
 const applyBody = applyStart >= 0 && applyEnd > applyStart ? mainRs.slice(applyStart, applyEnd) : '';
+const deployStart = mainRs.indexOf('fn deploy_profile_config');
+const deployEnd = mainRs.indexOf('fn commit_profile_routing_config', deployStart);
+const deployBody = deployStart >= 0 && deployEnd > deployStart ? mainRs.slice(deployStart, deployEnd) : '';
+const hotReloadStart = mainRs.indexOf('fn hot_reload_runtime_plan');
+const hotReloadEnd = mainRs.indexOf('fn ensure_runtime_ports', hotReloadStart);
+const hotReloadBody = hotReloadStart >= 0 && hotReloadEnd > hotReloadStart ? mainRs.slice(hotReloadStart, hotReloadEnd) : '';
 const renderStart = appJs.indexOf('function renderRoutingApplyStatus');
 const renderEnd = appJs.indexOf('async function applyRoutingDrafts', renderStart);
 const renderBody = renderStart >= 0 && renderEnd > renderStart ? appJs.slice(renderStart, renderEnd) : '';
@@ -50,20 +56,25 @@ check('package exposes the stage 3 post-apply verification audit', pkg.scripts?.
 
 check(
   'backend verifies controller readiness after hot reload and rolls back on verification failure',
-  applyBody.includes('runtime_reuse_ready()') &&
-    applyBody.includes('controller_verified') &&
-    applyBody.includes('Routing verification failed after hot reload') &&
-    applyBody.includes('config was rolled back') &&
-    applyBody.includes('atomic_write_text_confined(&profile_path, &self.profile_dir, &previous_raw)'),
-  'controller verification with rollback'
+  applyBody.includes('self.render_runtime_profile(&profile)?') &&
+    applyBody.includes('self.hot_reload_runtime_plan(&profile, &plan)?') &&
+    applyBody.includes('rollback_routing_store_transaction(') &&
+    applyBody.includes('self.hot_reload_profile(&profile)') &&
+    hotReloadBody.includes('"versionProbeCount".to_string(), json!(1)') &&
+    hotReloadBody.includes('CoreRuntimeApplyTransaction::new') &&
+    hotReloadBody.includes('apply(&self.core_controller())?') &&
+    !hotReloadBody.includes('self.wait_for_controller()?'),
+  'one-probe controller verification, Aegos identity check, and file/runtime rollback'
 );
 
 check(
   'backend returns structured deployment validation report',
-  applyBody.includes('"deploymentValidation"') &&
-    applyBody.includes('"runtimePreflightOk"') &&
+  applyBody.includes('deployment.get("deploymentValidation")') &&
+    applyBody.includes('"deploymentValidation"') &&
+    applyBody.includes('"candidateValidated"') &&
     applyBody.includes('"hotReloadRan"') &&
     applyBody.includes('"controllerReady"') &&
+    applyBody.includes('"runtimeIdentity"') &&
     applyBody.includes('"rollbackReady"') &&
     applyBody.includes('"verifiedAt"'),
   'deploymentValidation response'
@@ -87,12 +98,12 @@ check(
 
 check(
   'release note records plan and verification for 3.5.94',
-  release.includes('3.5.94') &&
-    release.includes('规则应用后验证') &&
-    release.includes('目标不存在') &&
-    release.includes('部署验证') &&
-    release.includes('npm run audit:stage3-postapply-verify'),
-  `RELEASE_${pkg.version}.md`
+  checkpointRelease.includes('3.5.94') &&
+    checkpointRelease.includes('规则应用后验证') &&
+    checkpointRelease.includes('目标不存在') &&
+    checkpointRelease.includes('部署验证') &&
+    checkpointRelease.includes('npm run audit:stage3-postapply-verify'),
+  'RELEASE_3.5.94.md'
 );
 
 const result = { ok: fail.length === 0, failed: fail, passed: pass, generatedAt: new Date().toISOString() };

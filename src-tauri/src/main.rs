@@ -1,19 +1,32 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod config_deployment;
+mod config_domain;
 mod config_pipeline;
+mod core_domain;
 mod core_runtime;
 mod diagnostics_runtime;
 mod profile_compiler;
+mod routing_domain;
+mod routing_store;
 mod speed_runtime;
+mod speed_scheduler;
 mod subscription_runtime;
 mod system_takeover;
 mod task_runtime;
 
+#[cfg(test)]
 use base64::{engine::general_purpose, Engine as _};
+use config_domain::ManualNodeConfig;
+use core_domain::{ProxyCatalog, TrafficSnapshot};
 use diagnostics_runtime::{logs_export_document, LogEntry, LogStore};
 use rand::random;
 use reqwest::blocking::Client;
+use routing_domain::{
+    RoutingDraftInput, RoutingGroupAction, RoutingGroupEditInput, RoutingRuleAction,
+    RoutingRuleEditInput, UnboundRuleResolutionInput,
+};
+use routing_store::{UserRuleRecord, UserRuleScope, UserRuleStore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use serde_yaml::{Mapping, Value as YamlValue};
@@ -21,9 +34,10 @@ use sha2::{Digest, Sha256};
 use speed_runtime::{
     fail_speed_test_if_current, mark_single_speed_test_preparing, mark_speed_test_preparing,
     reset_speed_test_state as reset_speed_test_runtime_state, speed_result_confidence,
-    speed_test_run_is_current, speed_test_snapshot as speed_test_runtime_snapshot, NodeHealth,
-    SpeedTestState, SpeedTestStore,
+    speed_test_progress_snapshot, speed_test_run_is_current,
+    speed_test_snapshot as speed_test_runtime_snapshot, NodeHealth, SpeedTestState, SpeedTestStore,
 };
+use speed_scheduler::{run_probe_wave, ProbeOutcome, SchedulerPolicy};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
@@ -31,11 +45,14 @@ use std::{
     net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket},
     path::{Path, PathBuf},
     process::{Child, Command},
-    sync::{mpsc, Arc, Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use subscription_runtime::{ProfileSource, ProfileSourceSummary};
+use subscription_runtime::ProfileSourceSummary;
 use task_runtime::{
     finish_cancelled, finish_job, job_cancel_requested, job_status_snapshot, new_job_record,
     request_job_cancel, set_job_issue, set_job_state, JobStore,
@@ -48,12 +65,19 @@ use std::os::windows::process::CommandExt;
 const AEGOS_DEFAULT_MIXED_PORT: u16 = 7891;
 const AEGOS_DEFAULT_CONTROLLER_PORT: u16 = 19091;
 const AEGOS_OUTBOUND_IP_GROUP: &str = "Aegos Landing IP";
+const OUTBOUND_IP_RULE_PRIMARY_GROUPS: &[&str] = &["Final", "Proxy", "Proxies", "GLOBAL"];
+const OUTBOUND_IP_GLOBAL_PRIMARY_GROUPS: &[&str] = &["GLOBAL", "Proxies", "Proxy", "Final"];
+const AEGOS_SUBSCRIPTION_USER_AGENT: &str = concat!("Aegos/", env!("CARGO_PKG_VERSION"));
 const FLCLASH_STYLE_TEST_URL: &str = "https://www.gstatic.com/generate_204";
 const SPEED_TEST_EVENT: &str = "aegos-speed-test";
-const SPEED_GLOBAL_CONCURRENCY_INITIAL: usize = 24;
-const SPEED_GLOBAL_CONCURRENCY_MIN: usize = 12;
-const SPEED_GLOBAL_CONCURRENCY_MAX: usize = 40;
+const RUNTIME_STATUS_EVENT: &str = "aegos-runtime-status";
+const SPEED_GLOBAL_CONCURRENCY_INITIAL: usize = 48;
+const SPEED_GLOBAL_CONCURRENCY_MIN: usize = 24;
+const SPEED_GLOBAL_CONCURRENCY_MAX: usize = 64;
 const SPEED_ADAPTIVE_WINDOW: usize = 8;
+const SPEED_REFINE_CONCURRENCY_INITIAL: usize = 8;
+const SPEED_REFINE_CONCURRENCY_MIN: usize = 4;
+const SPEED_REFINE_CONCURRENCY_MAX: usize = 12;
 const OUTBOUND_IP_RULE_DOMAINS: &[&str] = &[
     "api.ipify.org",
     "api64.ipify.org",
@@ -62,17 +86,6 @@ const OUTBOUND_IP_RULE_DOMAINS: &[&str] = &[
     "ifconfig.me",
     "icanhazip.com",
 ];
-const AEGOS_URI_PROTOCOLS: &[&str] = &[
-    "ss",
-    "trojan",
-    "vmess",
-    "vless",
-    "hysteria2",
-    "hy2",
-    "anytls",
-    "tuic",
-];
-
 fn default_reliability_auto() -> bool {
     true
 }
@@ -110,24 +123,70 @@ struct Profile {
     digest: String,
 }
 
-fn subscription_diagnostic(stage: &str, reason: impl AsRef<str>, suggestion: &str) -> String {
-    subscription_runtime::diagnostic(stage, reason, suggestion)
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ProfileYamlFingerprint {
+    bytes: u64,
+    modified_nanos: u128,
 }
 
-fn is_ignorable_subscription_line(line: &str) -> bool {
-    subscription_runtime::is_ignorable_line(line)
+#[derive(Clone)]
+struct RoutingRulesProfileSnapshot {
+    rules: Vec<JsonValue>,
+    missing_targets: Vec<String>,
+    order_issues: Vec<JsonValue>,
 }
 
-fn decoded_subscription_body(text: &str) -> String {
-    subscription_runtime::decoded_body(text)
+#[derive(Clone)]
+struct CachedProfileYaml {
+    fingerprint: ProfileYamlFingerprint,
+    value: Arc<YamlValue>,
+    routing_rules: Option<RoutingRulesProfileSnapshot>,
 }
 
-fn unsupported_uri_schemes(text: &str) -> Vec<String> {
-    subscription_runtime::unsupported_uri_schemes(text, AEGOS_URI_PROTOCOLS)
+// Node and rules snapshots inspect the same subscription file. Keep one
+// verified, read-only parse per on-disk version so opening Rules does not
+// parse a large subscription a second time after Nodes already did so.
+static PROFILE_YAML_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedProfileYaml>>> = OnceLock::new();
+
+fn profile_yaml_fingerprint(path: &Path) -> Result<ProfileYamlFingerprint, String> {
+    let metadata = fs::metadata(path).map_err(|err| format!("profile metadata read failed: {err}"))?;
+    let modified_nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos())
+        .unwrap_or(0);
+    Ok(ProfileYamlFingerprint {
+        bytes: metadata.len(),
+        modified_nanos,
+    })
 }
 
-fn looks_like_clash_yaml(text: &str) -> bool {
-    subscription_runtime::looks_like_clash_yaml(text)
+fn cached_profile_yaml(path: &Path) -> Result<Arc<YamlValue>, String> {
+    let fingerprint = profile_yaml_fingerprint(path)?;
+    let cache = PROFILE_YAML_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(entries) = cache.lock() {
+        if let Some(entry) = entries.get(path) {
+            if entry.fingerprint == fingerprint {
+                return Ok(entry.value.clone());
+            }
+        }
+    }
+    let raw = fs::read_to_string(path).map_err(|err| format!("profile file read failed: {err}"))?;
+    let value: Arc<YamlValue> = Arc::new(
+        serde_yaml::from_str(&raw).map_err(|err| format!("profile YAML parse failed: {err}"))?,
+    );
+    if let Ok(mut entries) = cache.lock() {
+        entries.insert(
+            path.to_path_buf(),
+            CachedProfileYaml {
+                fingerprint,
+                value: value.clone(),
+                routing_rules: None,
+            },
+        );
+    }
+    Ok(value)
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -159,7 +218,7 @@ struct Settings {
     #[serde(default)]
     selected_proxy_map: HashMap<String, String>,
     #[serde(default)]
-    manual_nodes: HashMap<String, HashMap<String, JsonValue>>,
+    manual_nodes: HashMap<String, HashMap<String, ManualNodeConfig>>,
     profiles: Vec<Profile>,
 }
 
@@ -170,6 +229,14 @@ struct SpeedTestTarget {
     group_name: String,
     protocol: String,
     server: String,
+}
+
+#[derive(Clone)]
+struct SpeedTargetCatalog {
+    key: String,
+    profile_id: String,
+    targets: Vec<SpeedTestTarget>,
+    built_at_ms: u64,
 }
 
 #[derive(Clone)]
@@ -382,10 +449,9 @@ fn profile_proxy_groups_for_profile_snapshot(
     selected_map: &HashMap<String, String>,
     use_selected_map: bool,
 ) -> JsonValue {
-    let raw = fs::read_to_string(&profile.path).unwrap_or_default();
-    let config_value: YamlValue =
-        serde_yaml::from_str(&raw).unwrap_or_else(|_| YamlValue::Mapping(Mapping::new()));
-    let mut config = match config_value {
+    let config_value = cached_profile_yaml(Path::new(&profile.path))
+        .unwrap_or_else(|_| Arc::new(YamlValue::Mapping(Mapping::new())));
+    let mut config = match config_value.as_ref().clone() {
         YamlValue::Mapping(map) => map,
         _ => Mapping::new(),
     };
@@ -503,7 +569,7 @@ fn profile_proxy_groups_for_profile_snapshot(
     json!([{ "name": "GLOBAL", "type": "Selector", "now": now, "items": items }])
 }
 
-fn apply_speed_test_delays_from_state(groups: &mut JsonValue, speed: &SpeedTestState) {
+fn apply_speed_test_delays_from_state(catalog: &mut ProxyCatalog, speed: &SpeedTestState) {
     if speed.delays.is_empty() && speed.health.is_empty() {
         return;
     }
@@ -514,83 +580,44 @@ fn apply_speed_test_delays_from_state(groups: &mut JsonValue, speed: &SpeedTestS
         .and_then(|value| value.get("realProxyName"))
         .and_then(|value| value.as_str())
         .map(|value| value.to_string());
-    if let Some(group_items) = groups.as_array_mut() {
-        for group in group_items {
-            if let Some(items) = group
-                .get_mut("items")
-                .and_then(|items| items.as_array_mut())
-            {
-                for item in items {
-                    if let Some(name) = item
-                        .get("realProxyName")
-                        .or_else(|| item.get("name"))
-                        .and_then(|value| value.as_str())
-                        .map(|value| value.to_string())
-                    {
-                        if let Some(delay) = speed.delays.get(&name).copied() {
-                            if let Some(map) = item.as_object_mut() {
-                                map.insert("delay".to_string(), json!(delay));
-                                map.insert("alive".to_string(), json!(delay >= 0));
-                            }
-                        }
-                        if let Some(health) = speed.health.get(&name) {
-                            if let Some(map) = item.as_object_mut() {
-                                let confidence = speed_result_confidence(
-                                    health.last_delay,
-                                    health.failure_streak,
-                                    health.last_success_at,
-                                    health.last_tested_at,
-                                    health.cooldown_until,
-                                    now,
-                                );
-                                map.insert("healthStatus".to_string(), json!(health.status));
-                                map.insert("healthConfidence".to_string(), json!(confidence));
-                                map.insert(
-                                    "lastTestedAt".to_string(),
-                                    json!(health.last_tested_at),
-                                );
-                                map.insert(
-                                    "lastSuccessAt".to_string(),
-                                    json!(health.last_success_at),
-                                );
-                                map.insert(
-                                    "resultAgeSecs".to_string(),
-                                    json!(if health.last_success_at > 0 {
-                                        now.saturating_sub(health.last_success_at)
-                                    } else if health.last_tested_at > 0 {
-                                        now.saturating_sub(health.last_tested_at)
-                                    } else {
-                                        0
-                                    }),
-                                );
-                                map.insert("medianDelay".to_string(), json!(health.median_delay));
-                                map.insert("jitter".to_string(), json!(health.jitter));
-                                map.insert(
-                                    "failureStreak".to_string(),
-                                    json!(health.failure_streak),
-                                );
-                                map.insert(
-                                    "lastFailureReason".to_string(),
-                                    json!(health.last_failure_reason),
-                                );
-                                map.insert("healthScore".to_string(), json!(health.score));
-                                map.insert(
-                                    "cooldownUntil".to_string(),
-                                    json!(health.cooldown_until),
-                                );
-                                map.insert(
-                                    "recommended".to_string(),
-                                    json!(
-                                        recommended_name.as_deref() == Some(name.as_str())
-                                            && health.last_delay > 0
-                                            && health.last_delay < 100
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
+    for item in catalog.nodes_mut() {
+        let name = if item.real_proxy_name.is_empty() {
+            item.name.clone()
+        } else {
+            item.real_proxy_name.clone()
+        };
+        if let Some(delay) = speed.delays.get(&name).copied() {
+            item.delay = delay;
+            item.alive = delay >= 0;
+        }
+        if let Some(health) = speed.health.get(&name) {
+            item.health_status = health.status.clone();
+            item.health_confidence = speed_result_confidence(
+                health.last_delay,
+                health.failure_streak,
+                health.last_success_at,
+                health.last_tested_at,
+                health.cooldown_until,
+                now,
+            );
+            item.last_tested_at = health.last_tested_at;
+            item.last_success_at = health.last_success_at;
+            item.result_age_secs = if health.last_success_at > 0 {
+                now.saturating_sub(health.last_success_at)
+            } else if health.last_tested_at > 0 {
+                now.saturating_sub(health.last_tested_at)
+            } else {
+                0
+            };
+            item.median_delay = health.median_delay;
+            item.jitter = health.jitter;
+            item.failure_streak = health.failure_streak;
+            item.last_failure_reason = health.last_failure_reason.clone();
+            item.health_score = health.score;
+            item.cooldown_until = health.cooldown_until;
+            item.recommended = recommended_name.as_deref() == Some(name.as_str())
+                && health.last_delay > 0
+                && health.last_delay < 100;
         }
     }
 }
@@ -603,20 +630,29 @@ fn assemble_proxy_groups_snapshot(
     manual_names: HashSet<String>,
     speed: SpeedTestState,
 ) -> JsonValue {
-    let mut groups =
-        controller.ui_proxy_groups_snapshot_or_else(running, &[AEGOS_OUTBOUND_IP_GROUP], || {
+    let catalog =
+        controller.proxy_catalog_snapshot_or_else(running, &[AEGOS_OUTBOUND_IP_GROUP], || {
             active_profile
                 .as_ref()
                 .map(|profile| {
                     profile_proxy_groups_for_profile_snapshot(profile, &selected_map, true)
                 })
-                .unwrap_or_else(|| json!([]))
+                .as_ref()
+                .and_then(|groups| ProxyCatalog::from_product_json(groups).ok())
+                .unwrap_or_default()
         });
-    core_runtime::normalize_proxy_groups_snapshot_defaults(&mut groups);
-    core_runtime::apply_group_resolution_with_selected_map(&mut groups, &selected_map);
-    apply_speed_test_delays_from_state(&mut groups, &speed);
-    core_runtime::annotate_manual_groups_with_names(&mut groups, &manual_names);
-    groups
+    // While the core is running, Controller `now` values are the runtime truth.
+    // Persisted preferences are only an offline fallback and must not overwrite
+    // a node selected by an automatic or subscription-owned group.
+    let runtime_selected_map = HashMap::new();
+    let selected_map = if running {
+        &runtime_selected_map
+    } else {
+        &selected_map
+    };
+    let mut catalog = core_runtime::shape_proxy_catalog_model(catalog, selected_map, &manual_names);
+    apply_speed_test_delays_from_state(&mut catalog, &speed);
+    catalog.into_product_json()
 }
 
 #[derive(Clone, Copy)]
@@ -638,6 +674,7 @@ struct CoreManager {
     core_path: PathBuf,
     core_sha256: String,
     settings_path: PathBuf,
+    speed_health_path: PathBuf,
     proxy_snapshot_path: PathBuf,
     settings: Settings,
     process: Option<Child>,
@@ -645,8 +682,11 @@ struct CoreManager {
     runtime_config_digest: Option<String>,
     traffic_takeover: bool,
     logs: LogStore,
-    last_traffic: JsonValue,
+    last_traffic: TrafficSnapshot,
     speed_test: SpeedTestStore,
+    speed_target_catalog: Option<SpeedTargetCatalog>,
+    startup_timings_ms: Vec<(String, u64)>,
+    profile_metadata_errors: HashMap<String, String>,
     lan_ip_cache: String,
     lan_ip_checked_at: u64,
     outbound_ip_cache: String,
@@ -658,6 +698,7 @@ struct CoreManager {
 struct AppState {
     core: Arc<Mutex<CoreManager>>,
     speed_test: SpeedTestStore,
+    speed_prepare_running: Arc<AtomicBool>,
     logs: LogStore,
     app_data: PathBuf,
     jobs: JobStore,
@@ -667,13 +708,14 @@ struct AppState {
 #[derive(Clone)]
 struct DiagnosticsSnapshot {
     settings: Settings,
+    profile_metadata_errors: HashMap<String, String>,
     active_profile: Option<Profile>,
     core_path: PathBuf,
     runtime_info: JsonValue,
     proxy_snapshot_path: PathBuf,
     running: bool,
     traffic_takeover: bool,
-    last_traffic: JsonValue,
+    last_traffic: TrafficSnapshot,
     speed_test: SpeedTestState,
     lan_ip_cache: String,
     outbound_ip_cache: String,
@@ -681,36 +723,6 @@ struct DiagnosticsSnapshot {
     reliability_failures: u64,
     recent_logs: Vec<LogEntry>,
     status_logs: Vec<LogEntry>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-struct RoutingDraftInput {
-    kind: String,
-    condition: String,
-    target: String,
-    option: Option<String>,
-    label: Option<String>,
-    source: Option<String>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-struct RoutingGroupEditInput {
-    action: String,
-    name: Option<String>,
-    new_name: Option<String>,
-    group_type: Option<String>,
-    items: Option<Vec<String>>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-struct RoutingRuleEditInput {
-    action: String,
-    raw: Option<String>,
-    kind: Option<String>,
-    condition: Option<String>,
-    target: Option<String>,
-    option: Option<String>,
-    label: Option<String>,
 }
 
 fn now_iso() -> String {
@@ -723,6 +735,13 @@ fn now_secs() -> u64 {
         .unwrap_or_default()
         .as_secs();
     secs
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn hex_random(bytes: usize) -> String {
@@ -788,10 +807,98 @@ fn atomic_write_text_confined(path: &Path, root: &Path, content: &str) -> Result
             .map_err(|err| format!("atomic temp write failed {}: {err}", temp_path.display()))?;
         let _ = file.sync_all();
     }
-    fs::rename(&temp_path, path).map_err(|err| {
+    atomic_replace_file(&temp_path, path).map_err(|err| {
         let _ = fs::remove_file(&temp_path);
         format!("atomic replace failed {}: {err}", path.display())
     })
+}
+
+#[cfg(windows)]
+fn atomic_replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
+
+    #[link(name = "Kernel32")]
+    extern "system" {
+        fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
+    }
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+    let source = OsStr::new(source)
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let destination = OsStr::new(destination)
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let replaced = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn atomic_replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
+}
+
+type SpeedHealthCache = HashMap<String, HashMap<String, NodeHealth>>;
+static SPEED_HEALTH_CACHE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn load_speed_health_cache(path: &Path) -> SpeedHealthCache {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<SpeedHealthCache>(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn load_profile_speed_health(path: &Path, profile_id: &str) -> HashMap<String, NodeHealth> {
+    load_speed_health_cache(path)
+        .remove(profile_id)
+        .unwrap_or_default()
+}
+
+fn persist_profile_speed_health(
+    path: &Path,
+    app_data: &Path,
+    profile_id: &str,
+    health: &HashMap<String, NodeHealth>,
+) -> Result<(), String> {
+    let _guard = SPEED_HEALTH_CACHE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "Speed health cache lock is poisoned".to_string())?;
+    let mut cache = load_speed_health_cache(path);
+    cache.insert(profile_id.to_string(), health.clone());
+    if cache.len() > 16 {
+        let mut profiles = cache
+            .iter()
+            .map(|(id, items)| {
+                let newest = items
+                    .values()
+                    .map(|item| item.last_tested_at)
+                    .max()
+                    .unwrap_or(0);
+                (id.clone(), newest)
+            })
+            .collect::<Vec<_>>();
+        profiles.sort_by_key(|(_, newest)| *newest);
+        for (id, _) in profiles.into_iter().take(cache.len().saturating_sub(16)) {
+            cache.remove(&id);
+        }
+    }
+    let raw = serde_json::to_string(&cache)
+        .map_err(|err| format!("Speed health cache encode failed: {err}"))?;
+    atomic_write_text_confined(path, app_data, &raw)
 }
 
 fn remove_file_confined(path: &Path, root: &Path) -> Result<(), String> {
@@ -800,6 +907,26 @@ fn remove_file_confined(path: &Path, root: &Path) -> Result<(), String> {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(format!("remove file failed {}: {err}", path.display())),
+    }
+}
+
+fn restore_result_label(result: Result<(), String>) -> String {
+    result.err().unwrap_or_else(|| "completed".to_string())
+}
+
+fn combine_restore_results(
+    first_label: &str,
+    first: Result<(), String>,
+    second_label: &str,
+    second: Result<(), String>,
+) -> Result<(), String> {
+    match (first, second) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(first_err), Ok(())) => Err(format!("{first_label} failed: {first_err}")),
+        (Ok(()), Err(second_err)) => Err(format!("{second_label} failed: {second_err}")),
+        (Err(first_err), Err(second_err)) => Err(format!(
+            "{first_label} failed: {first_err}; {second_label} also failed: {second_err}"
+        )),
     }
 }
 
@@ -819,190 +946,6 @@ fn yaml_string_values(values: &[String]) -> YamlValue {
     YamlValue::Sequence(values.iter().map(|value| yaml_str(value)).collect())
 }
 
-fn yaml_num(value: u64) -> YamlValue {
-    YamlValue::Number(value.into())
-}
-
-fn proxy_group_names(config: &Mapping) -> Vec<String> {
-    config
-        .get(yaml_key("proxy-groups"))
-        .and_then(|value| value.as_sequence())
-        .map(|groups| {
-            groups
-                .iter()
-                .filter_map(|group| {
-                    group
-                        .get(yaml_key("name"))
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string)
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn proxy_node_names(config: &Mapping) -> Vec<String> {
-    config
-        .get(yaml_key("proxies"))
-        .and_then(|value| value.as_sequence())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    item.get(yaml_key("name"))
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string)
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn outbound_ip_primary_group_name(config: &Mapping, settings: &Settings) -> Option<String> {
-    let groups = proxy_group_names(config);
-    for preferred in ["GLOBAL", "Final", "Proxy", "Proxies"] {
-        if groups.iter().any(|name| name == preferred) {
-            return Some(preferred.to_string());
-        }
-    }
-    for selected_group in settings.selected_proxy_map.keys() {
-        if groups.iter().any(|name| name == selected_group) {
-            return Some(selected_group.clone());
-        }
-    }
-    groups.first().cloned()
-}
-
-fn yaml_group_selected_name(group: &YamlValue, settings: &Settings) -> String {
-    let Some(map) = group.as_mapping() else {
-        return String::new();
-    };
-    let group_name = map
-        .get(yaml_key("name"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    settings
-        .selected_proxy_map
-        .get(group_name)
-        .filter(|value| !value.trim().is_empty())
-        .cloned()
-        .or_else(|| {
-            map.get(yaml_key("now"))
-                .and_then(|value| value.as_str())
-                .filter(|value| !value.trim().is_empty())
-                .map(str::to_string)
-        })
-        .or_else(|| {
-            map.get(yaml_key("proxies"))
-                .and_then(|value| value.as_sequence())
-                .and_then(|items| items.first())
-                .and_then(|value| value.as_str())
-                .filter(|value| !value.trim().is_empty())
-                .map(str::to_string)
-        })
-        .unwrap_or_default()
-}
-
-fn resolve_yaml_group_leaf(
-    groups: &[YamlValue],
-    settings: &Settings,
-    name: &str,
-    depth: usize,
-) -> String {
-    if depth > 8 {
-        return name.to_string();
-    }
-    let Some(group) = groups
-        .iter()
-        .find(|group| yaml_mapping_name(group) == Some(name))
-    else {
-        return name.to_string();
-    };
-    let selected = yaml_group_selected_name(group, settings);
-    if selected.is_empty() || selected == name {
-        return name.to_string();
-    }
-    resolve_yaml_group_leaf(groups, settings, &selected, depth + 1)
-}
-
-fn outbound_ip_selected_proxy(
-    config: &Mapping,
-    settings: &Settings,
-    proxy_names: &[String],
-) -> String {
-    let groups = config
-        .get(yaml_key("proxy-groups"))
-        .and_then(|value| value.as_sequence())
-        .cloned()
-        .unwrap_or_default();
-    let selected = outbound_ip_primary_group_name(config, settings)
-        .map(|group| resolve_yaml_group_leaf(&groups, settings, &group, 0))
-        .unwrap_or_default();
-    if selected == "DIRECT" || proxy_names.iter().any(|name| name == &selected) {
-        return selected;
-    }
-    proxy_names
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "DIRECT".to_string())
-}
-
-fn upsert_outbound_ip_group(config: &mut Mapping, settings: &Settings) -> String {
-    let proxy_names = proxy_node_names(config);
-    if proxy_names.is_empty() {
-        return "DIRECT".to_string();
-    }
-    let selected = outbound_ip_selected_proxy(config, settings, &proxy_names);
-    let mut ordered = Vec::new();
-    let mut seen = HashSet::new();
-    for name in std::iter::once(selected.clone())
-        .chain(proxy_names.into_iter())
-        .chain(std::iter::once("DIRECT".to_string()))
-    {
-        if seen.insert(name.clone()) {
-            ordered.push(YamlValue::String(name));
-        }
-    }
-    let mut group = Mapping::new();
-    set_yaml(&mut group, "name", yaml_str(AEGOS_OUTBOUND_IP_GROUP));
-    set_yaml(&mut group, "type", yaml_str("select"));
-    set_yaml(&mut group, "proxies", YamlValue::Sequence(ordered));
-    let mut groups = config
-        .get(yaml_key("proxy-groups"))
-        .and_then(|value| value.as_sequence())
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|group| yaml_mapping_name(group) != Some(AEGOS_OUTBOUND_IP_GROUP))
-        .collect::<Vec<_>>();
-    groups.push(YamlValue::Mapping(group));
-    set_yaml(config, "proxy-groups", YamlValue::Sequence(groups));
-    AEGOS_OUTBOUND_IP_GROUP.to_string()
-}
-
-fn insert_outbound_ip_rules(config: &mut Mapping, settings: &Settings) {
-    let target = upsert_outbound_ip_group(config, settings);
-    let mut rules = config
-        .get(yaml_key("rules"))
-        .and_then(|value| value.as_sequence())
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|rule| {
-            let text = rule.as_str().unwrap_or("");
-            !OUTBOUND_IP_RULE_DOMAINS
-                .iter()
-                .any(|domain| text.contains(domain))
-        })
-        .collect::<Vec<_>>();
-    let mut internal_rules = OUTBOUND_IP_RULE_DOMAINS
-        .iter()
-        .map(|domain| YamlValue::String(format!("DOMAIN,{domain},{target}")))
-        .collect::<Vec<_>>();
-    internal_rules.append(&mut rules);
-    set_yaml(config, "rules", YamlValue::Sequence(internal_rules));
-}
-
 fn string_choice_from_value(
     value: &JsonValue,
     fallback: &str,
@@ -1014,24 +957,6 @@ fn string_choice_from_value(
         return Err(format!("{label} must be one of: {}", allowed.join(", ")));
     }
     Ok(text.to_string())
-}
-
-fn percent_decode(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(hex) = u8::from_str_radix(&input[i + 1..i + 3], 16) {
-                out.push(hex);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).to_string()
 }
 
 fn test_proxy_delay_request(
@@ -1074,14 +999,15 @@ fn protocol_family(protocol: &str) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn protocol_concurrency(protocol: &str) -> usize {
     match protocol_family(protocol) {
-        "tuic" => 6,
-        "hysteria" | "wireguard" => 8,
-        "ss-obfs" => 12,
-        "anytls" => 10,
-        "reality" | "vmess" | "trojan" | "ss" => 32,
-        _ => 20,
+        "tuic" => 10,
+        "hysteria" | "wireguard" => 12,
+        "ss-obfs" => 16,
+        "anytls" => 16,
+        "reality" | "vmess" | "trojan" | "ss" => 48,
+        _ => 32,
     }
 }
 
@@ -1095,9 +1021,11 @@ fn protocol_primary_timeout_ms(protocol: &str) -> u64 {
 
 fn protocol_fast_timeout_ms(protocol: &str) -> u64 {
     match protocol_family(protocol) {
-        "tuic" | "hysteria" | "wireguard" | "anytls" => 5000,
-        "reality" | "vmess" | "trojan" | "ss" | "ss-obfs" => 5000,
-        _ => 5000,
+        "tuic" | "hysteria" | "wireguard" => 3800,
+        "anytls" => 3200,
+        "ss-obfs" => 3000,
+        "reality" | "vmess" | "trojan" | "ss" => 2500,
+        _ => 2800,
     }
 }
 
@@ -1484,6 +1412,31 @@ fn update_node_health(
     health
 }
 
+fn refining_node_health(
+    previous: Option<&NodeHealth>,
+    name: &str,
+    protocol: &str,
+    reason: &str,
+    now: u64,
+) -> NodeHealth {
+    let mut health = previous.cloned().unwrap_or_default();
+    health.name = name.to_string();
+    health.protocol = protocol.to_string();
+    health.last_delay = -1;
+    health.last_tested_at = now;
+    health.status = "refining".to_string();
+    health.confidence = "testing".to_string();
+    health.last_failure_reason = format!(
+        "refining:{}",
+        if reason.trim().is_empty() {
+            "timeout"
+        } else {
+            reason.trim()
+        }
+    );
+    health
+}
+
 fn speed_test_ordered_targets(
     targets: Vec<SpeedTestTarget>,
     health: &HashMap<String, NodeHealth>,
@@ -1518,18 +1471,19 @@ fn speed_test_ordered_targets(
     VecDeque::from(ordered)
 }
 
+#[cfg(test)]
 fn next_schedulable_target(
     pending: &mut VecDeque<SpeedTestTarget>,
     active_by_family: &HashMap<&'static str, usize>,
 ) -> Option<SpeedTestTarget> {
     let index = pending.iter().position(|target| {
         let family = protocol_family(&target.protocol);
-        active_by_family.get(family).copied().unwrap_or(0)
-            < protocol_concurrency(&target.protocol)
+        active_by_family.get(family).copied().unwrap_or(0) < protocol_concurrency(&target.protocol)
     })?;
     pending.remove(index)
 }
 
+#[cfg(test)]
 fn adaptive_speed_concurrency(
     current: usize,
     completed: usize,
@@ -1547,6 +1501,41 @@ fn adaptive_speed_concurrency(
         (current + 4).min(SPEED_GLOBAL_CONCURRENCY_MAX)
     } else {
         current
+    }
+}
+
+fn speed_scheduler_policy(refining: bool) -> SchedulerPolicy {
+    let (initial, min, max) = if refining {
+        (
+            SPEED_REFINE_CONCURRENCY_INITIAL,
+            SPEED_REFINE_CONCURRENCY_MIN,
+            SPEED_REFINE_CONCURRENCY_MAX,
+        )
+    } else {
+        (
+            SPEED_GLOBAL_CONCURRENCY_INITIAL,
+            SPEED_GLOBAL_CONCURRENCY_MIN,
+            SPEED_GLOBAL_CONCURRENCY_MAX,
+        )
+    };
+    let divisor = if refining { 2 } else { 1 };
+    SchedulerPolicy {
+        initial_concurrency: initial,
+        min_concurrency: min,
+        max_concurrency: max,
+        adaptive_window: SPEED_ADAPTIVE_WINDOW,
+        family_limits: HashMap::from([
+            ("tuic".to_string(), (10 / divisor).max(2)),
+            ("hysteria".to_string(), (12 / divisor).max(2)),
+            ("wireguard".to_string(), (12 / divisor).max(2)),
+            ("anytls".to_string(), (16 / divisor).max(2)),
+            ("ss-obfs".to_string(), (16 / divisor).max(2)),
+            ("reality".to_string(), (48 / divisor).max(2)),
+            ("vmess".to_string(), (48 / divisor).max(2)),
+            ("trojan".to_string(), (48 / divisor).max(2)),
+            ("ss".to_string(), (48 / divisor).max(2)),
+            ("generic".to_string(), (32 / divisor).max(2)),
+        ]),
     }
 }
 
@@ -1682,7 +1671,7 @@ fn speed_test_preflight(targets: &[SpeedTestTarget]) -> Result<(), String> {
     }
     let metadata = targets
         .iter()
-        .find(|target| is_subscription_metadata_node_name(&target.name));
+        .find(|target| config_domain::is_subscription_metadata_node_name(&target.name));
     if let Some(target) = metadata {
         return Err(format!(
             "Speed test preflight failed [config]: subscription metadata row entered speed targets: {}",
@@ -1757,468 +1746,6 @@ fn test_proxy_delay_fast(
     test_proxy_delay_plan(client, controller, name, protocol, DelayProbeDepth::Fast)
 }
 
-fn b64_decode_text(input: &str) -> Option<String> {
-    let compact = input.trim().replace(['\r', '\n', ' '], "");
-    if compact.is_empty() {
-        return None;
-    }
-    let padded = match compact.len() % 4 {
-        2 => format!("{compact}=="),
-        3 => format!("{compact}="),
-        _ => compact,
-    };
-    general_purpose::STANDARD
-        .decode(&padded)
-        .or_else(|_| general_purpose::URL_SAFE.decode(&padded))
-        .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-}
-
-fn query_value(query: &str, key: &str) -> Option<String> {
-    query.split('&').find_map(|pair| {
-        let (k, v) = pair.split_once('=')?;
-        if k == key {
-            Some(percent_decode(v))
-        } else {
-            None
-        }
-    })
-}
-
-fn query_value_any(query: &str, keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|key| query_value(query, key))
-}
-
-fn uri_name(name_part: &str, fallback: impl Into<String>) -> String {
-    if name_part.is_empty() {
-        fallback.into()
-    } else {
-        percent_decode(name_part)
-    }
-}
-
-fn set_bool_query(map: &mut Mapping, key: &str, query: &str, params: &[&str]) {
-    if let Some(value) = query_value_any(query, params) {
-        set_yaml(map, key, YamlValue::Bool(truthy(&value)));
-    }
-}
-
-fn set_string_query(map: &mut Mapping, key: &str, query: &str, params: &[&str]) {
-    if let Some(value) = query_value_any(query, params).filter(|value| !value.is_empty()) {
-        set_yaml(map, key, yaml_str(value));
-    }
-}
-
-fn set_alpn_query(map: &mut Mapping, query: &str) {
-    if let Some(alpn) = query_value(query, "alpn").filter(|value| !value.is_empty()) {
-        set_yaml(
-            map,
-            "alpn",
-            YamlValue::Sequence(
-                alpn.split(',')
-                    .filter(|item| !item.is_empty())
-                    .map(|item| yaml_str(item.to_string()))
-                    .collect(),
-            ),
-        );
-    }
-}
-
-fn parse_plugin_option_pairs(value: &str) -> HashMap<String, String> {
-    value
-        .split(';')
-        .skip(1)
-        .filter_map(|part| {
-            let (key, value) = part.split_once('=')?;
-            let key = key.trim().to_ascii_lowercase();
-            if key.is_empty() {
-                return None;
-            }
-            Some((key, percent_decode(value.trim())))
-        })
-        .collect()
-}
-
-fn set_ss_plugin_query(map: &mut Mapping, query: &str) {
-    let Some(plugin_value) = query_value(query, "plugin").filter(|value| !value.trim().is_empty())
-    else {
-        return;
-    };
-    let plugin_name = plugin_value
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
-    let normalized_plugin = if plugin_name.contains("obfs") {
-        "obfs"
-    } else if plugin_name.contains("v2ray") {
-        "v2ray-plugin"
-    } else {
-        plugin_name.as_str()
-    };
-    if normalized_plugin.is_empty() {
-        return;
-    }
-    set_yaml(map, "plugin", yaml_str(normalized_plugin));
-
-    let mut option_pairs = parse_plugin_option_pairs(&plugin_value);
-    for key in ["obfs", "obfs-host", "host", "path", "mode", "tls"] {
-        if let Some(value) = query_value(query, key) {
-            option_pairs.insert(key.to_string(), value);
-        }
-    }
-
-    let mut opts = Mapping::new();
-    if normalized_plugin == "obfs" {
-        let mode = option_pairs
-            .get("obfs")
-            .or_else(|| option_pairs.get("mode"))
-            .map(String::as_str)
-            .unwrap_or("http");
-        set_yaml(&mut opts, "mode", yaml_str(mode));
-        if let Some(host) = option_pairs
-            .get("obfs-host")
-            .or_else(|| option_pairs.get("host"))
-            .filter(|value| !value.trim().is_empty())
-        {
-            set_yaml(&mut opts, "host", yaml_str(host));
-        }
-    } else {
-        for (key, value) in option_pairs {
-            if value.trim().is_empty() {
-                continue;
-            }
-            if key == "tls" {
-                set_yaml(&mut opts, "tls", YamlValue::Bool(truthy(&value)));
-            } else {
-                set_yaml(&mut opts, &key, yaml_str(value));
-            }
-        }
-    }
-    if !opts.is_empty() {
-        set_yaml(map, "plugin-opts", YamlValue::Mapping(opts));
-    }
-}
-
-fn parse_ss_uri(uri: &str, index: usize) -> Option<YamlValue> {
-    let raw = uri.strip_prefix("ss://")?;
-    let (body, name_part) = raw.split_once('#').unwrap_or((raw, ""));
-    let name = if name_part.is_empty() {
-        format!("SS {index}")
-    } else {
-        percent_decode(name_part)
-    };
-    let (body, query) = body.split_once('?').unwrap_or((body, ""));
-    let decoded = if body.contains('@') {
-        percent_decode(body)
-    } else {
-        b64_decode_text(body)?
-    };
-    let (auth, host_port) = decoded.rsplit_once('@')?;
-    let (method, password) = auth.split_once(':')?;
-    let (server, port) = host_port.rsplit_once(':')?;
-    let mut map = Mapping::new();
-    set_yaml(&mut map, "name", yaml_str(name));
-    set_yaml(&mut map, "type", yaml_str("ss"));
-    set_yaml(&mut map, "server", yaml_str(server));
-    set_yaml(&mut map, "port", yaml_num(port.parse().ok()?));
-    set_yaml(&mut map, "cipher", yaml_str(method));
-    set_yaml(&mut map, "password", yaml_str(password));
-    set_ss_plugin_query(&mut map, query);
-    Some(YamlValue::Mapping(map))
-}
-
-fn parse_trojan_uri(uri: &str, index: usize) -> Option<YamlValue> {
-    let raw = uri.strip_prefix("trojan://")?;
-    let (before_name, name_part) = raw.split_once('#').unwrap_or((raw, ""));
-    let (main, query) = before_name.split_once('?').unwrap_or((before_name, ""));
-    let (password, host_port) = main.split_once('@')?;
-    let (server, port) = host_port.rsplit_once(':')?;
-    let mut map = Mapping::new();
-    set_yaml(
-        &mut map,
-        "name",
-        yaml_str(if name_part.is_empty() {
-            format!("Trojan {index}")
-        } else {
-            percent_decode(name_part)
-        }),
-    );
-    set_yaml(&mut map, "type", yaml_str("trojan"));
-    set_yaml(&mut map, "server", yaml_str(server));
-    set_yaml(&mut map, "port", yaml_num(port.parse().ok()?));
-    set_yaml(&mut map, "password", yaml_str(percent_decode(password)));
-    if let Some(sni) = query_value(query, "sni").or_else(|| query_value(query, "peer")) {
-        set_yaml(&mut map, "sni", yaml_str(sni));
-    }
-    Some(YamlValue::Mapping(map))
-}
-
-fn parse_vmess_uri(uri: &str, index: usize) -> Option<YamlValue> {
-    let raw = uri.strip_prefix("vmess://")?;
-    let decoded = b64_decode_text(raw)?;
-    let data: JsonValue = serde_json::from_str(&decoded).ok()?;
-    let server = data.get("add")?.as_str()?;
-    let port = data.get("port")?.as_str()?.parse().ok()?;
-    let uuid = data.get("id")?.as_str()?;
-    let mut map = Mapping::new();
-    set_yaml(
-        &mut map,
-        "name",
-        yaml_str(
-            data.get("ps")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(percent_decode)
-                .unwrap_or_else(|| format!("VMess {index}")),
-        ),
-    );
-    set_yaml(&mut map, "type", yaml_str("vmess"));
-    set_yaml(&mut map, "server", yaml_str(server));
-    set_yaml(&mut map, "port", yaml_num(port));
-    set_yaml(&mut map, "uuid", yaml_str(uuid));
-    set_yaml(
-        &mut map,
-        "alterId",
-        yaml_num(
-            data.get("aid")
-                .and_then(|v| v.as_str())
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0),
-        ),
-    );
-    set_yaml(
-        &mut map,
-        "cipher",
-        yaml_str(data.get("scy").and_then(|v| v.as_str()).unwrap_or("auto")),
-    );
-    if matches!(data.get("tls").and_then(|v| v.as_str()), Some("tls")) {
-        set_yaml(&mut map, "tls", YamlValue::Bool(true));
-    }
-    if let Some(network) = data
-        .get("net")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
-        set_yaml(&mut map, "network", yaml_str(network));
-    }
-    Some(YamlValue::Mapping(map))
-}
-
-fn parse_vless_uri(uri: &str, index: usize) -> Option<YamlValue> {
-    let raw = uri.strip_prefix("vless://")?;
-    let (before_name, name_part) = raw.split_once('#').unwrap_or((raw, ""));
-    let (main, query) = before_name.split_once('?').unwrap_or((before_name, ""));
-    let (uuid, host_port) = main.split_once('@')?;
-    let (server, port) = host_port.rsplit_once(':')?;
-    let security = query_value(query, "security")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let network = query_value_any(query, &["type", "network"]).unwrap_or_else(|| "tcp".to_string());
-    let mut map = Mapping::new();
-    set_yaml(
-        &mut map,
-        "name",
-        yaml_str(uri_name(name_part, format!("VLESS {index}"))),
-    );
-    set_yaml(&mut map, "type", yaml_str("vless"));
-    set_yaml(&mut map, "server", yaml_str(percent_decode(server)));
-    set_yaml(&mut map, "port", yaml_num(port.parse().ok()?));
-    set_yaml(&mut map, "uuid", yaml_str(percent_decode(uuid)));
-    set_yaml(&mut map, "network", yaml_str(network.clone()));
-    set_yaml(&mut map, "udp", YamlValue::Bool(true));
-    set_string_query(&mut map, "flow", query, &["flow"]);
-    set_string_query(
-        &mut map,
-        "servername",
-        query,
-        &["sni", "servername", "peer"],
-    );
-    set_string_query(
-        &mut map,
-        "client-fingerprint",
-        query,
-        &["fp", "fingerprint"],
-    );
-    set_bool_query(
-        &mut map,
-        "skip-cert-verify",
-        query,
-        &["allowInsecure", "insecure", "skip-cert-verify"],
-    );
-    if matches!(security.as_str(), "tls" | "reality") {
-        set_yaml(&mut map, "tls", YamlValue::Bool(true));
-    }
-    if security == "reality" {
-        let mut reality = Mapping::new();
-        if let Some(public_key) = query_value_any(query, &["pbk", "public-key", "publicKey"]) {
-            set_yaml(&mut reality, "public-key", yaml_str(public_key));
-        }
-        if let Some(short_id) = query_value_any(query, &["sid", "short-id", "shortId"]) {
-            set_yaml(&mut reality, "short-id", yaml_str(short_id));
-        }
-        if !reality.is_empty() {
-            set_yaml(&mut map, "reality-opts", YamlValue::Mapping(reality));
-        }
-    }
-    if network == "ws" {
-        let mut ws_opts = Mapping::new();
-        if let Some(path) = query_value(query, "path") {
-            set_yaml(&mut ws_opts, "path", yaml_str(path));
-        }
-        if let Some(host) = query_value_any(query, &["host", "headers"]) {
-            let mut headers = Mapping::new();
-            set_yaml(&mut headers, "Host", yaml_str(host));
-            set_yaml(&mut ws_opts, "headers", YamlValue::Mapping(headers));
-        }
-        if !ws_opts.is_empty() {
-            set_yaml(&mut map, "ws-opts", YamlValue::Mapping(ws_opts));
-        }
-    }
-    if network == "grpc" {
-        let mut grpc_opts = Mapping::new();
-        if let Some(service_name) = query_value_any(query, &["serviceName", "service-name"]) {
-            set_yaml(&mut grpc_opts, "grpc-service-name", yaml_str(service_name));
-        }
-        if !grpc_opts.is_empty() {
-            set_yaml(&mut map, "grpc-opts", YamlValue::Mapping(grpc_opts));
-        }
-    }
-    Some(YamlValue::Mapping(map))
-}
-
-fn truthy(value: &str) -> bool {
-    matches!(
-        value.to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
-fn parse_hysteria2_uri(uri: &str, index: usize) -> Option<YamlValue> {
-    let raw = uri
-        .strip_prefix("hysteria2://")
-        .or_else(|| uri.strip_prefix("hy2://"))?;
-    let (before_name, name_part) = raw.split_once('#').unwrap_or((raw, ""));
-    let (main, query) = before_name.split_once('?').unwrap_or((before_name, ""));
-    let (password, host_port) = main.split_once('@')?;
-    let (server, port) = host_port.rsplit_once(':')?;
-    let mut map = Mapping::new();
-    set_yaml(
-        &mut map,
-        "name",
-        yaml_str(uri_name(name_part, format!("Hysteria2 {index}"))),
-    );
-    set_yaml(&mut map, "type", yaml_str("hysteria2"));
-    set_yaml(&mut map, "server", yaml_str(percent_decode(server)));
-    set_yaml(&mut map, "port", yaml_num(port.parse().ok()?));
-    set_yaml(&mut map, "password", yaml_str(percent_decode(password)));
-    set_string_query(&mut map, "sni", query, &["sni", "peer"]);
-    set_bool_query(
-        &mut map,
-        "skip-cert-verify",
-        query,
-        &["insecure", "allowInsecure", "skip-cert-verify"],
-    );
-    set_string_query(&mut map, "obfs", query, &["obfs"]);
-    set_string_query(
-        &mut map,
-        "obfs-password",
-        query,
-        &["obfs-password", "obfs_password", "obfsPassword"],
-    );
-    set_alpn_query(&mut map, query);
-    Some(YamlValue::Mapping(map))
-}
-
-fn parse_anytls_uri(uri: &str, index: usize) -> Option<YamlValue> {
-    let raw = uri.strip_prefix("anytls://")?;
-    let (before_name, name_part) = raw.split_once('#').unwrap_or((raw, ""));
-    let (main, query) = before_name.split_once('?').unwrap_or((before_name, ""));
-    let (password, host_port) = main.split_once('@')?;
-    let (server, port) = host_port.rsplit_once(':')?;
-    let mut map = Mapping::new();
-    set_yaml(
-        &mut map,
-        "name",
-        yaml_str(uri_name(name_part, format!("AnyTLS {index}"))),
-    );
-    set_yaml(&mut map, "type", yaml_str("anytls"));
-    set_yaml(&mut map, "server", yaml_str(percent_decode(server)));
-    set_yaml(&mut map, "port", yaml_num(port.parse().ok()?));
-    set_yaml(&mut map, "password", yaml_str(percent_decode(password)));
-    set_string_query(&mut map, "sni", query, &["sni", "servername", "peer"]);
-    set_string_query(
-        &mut map,
-        "client-fingerprint",
-        query,
-        &["fp", "fingerprint"],
-    );
-    set_bool_query(
-        &mut map,
-        "skip-cert-verify",
-        query,
-        &["insecure", "allowInsecure", "skip-cert-verify"],
-    );
-    set_alpn_query(&mut map, query);
-    Some(YamlValue::Mapping(map))
-}
-
-fn parse_tuic_uri(uri: &str, index: usize) -> Option<YamlValue> {
-    let raw = uri.strip_prefix("tuic://")?;
-    let (before_name, name_part) = raw.split_once('#').unwrap_or((raw, ""));
-    let (main, query) = before_name.split_once('?').unwrap_or((before_name, ""));
-    let (auth, host_port) = main.split_once('@')?;
-    let (uuid, password) = auth.split_once(':')?;
-    let (server, port) = host_port.rsplit_once(':')?;
-    let mut map = Mapping::new();
-    set_yaml(
-        &mut map,
-        "name",
-        yaml_str(if name_part.is_empty() {
-            format!("TUIC {index}")
-        } else {
-            percent_decode(name_part)
-        }),
-    );
-    set_yaml(&mut map, "type", yaml_str("tuic"));
-    set_yaml(&mut map, "server", yaml_str(server));
-    set_yaml(&mut map, "port", yaml_num(port.parse().ok()?));
-    set_yaml(&mut map, "uuid", yaml_str(percent_decode(uuid)));
-    set_yaml(&mut map, "password", yaml_str(percent_decode(password)));
-    if let Some(sni) = query_value(query, "sni") {
-        set_yaml(&mut map, "sni", yaml_str(sni));
-    }
-    set_alpn_query(&mut map, query);
-    if let Some(fp) = query_value(query, "fp") {
-        set_yaml(&mut map, "client-fingerprint", yaml_str(fp));
-    }
-    if let Some(cc) = query_value(query, "congestion_control") {
-        set_yaml(&mut map, "congestion-controller", yaml_str(cc));
-    }
-    if let Some(mode) = query_value(query, "udp_relay_mode") {
-        set_yaml(&mut map, "udp-relay-mode", yaml_str(mode));
-    }
-    if let Some(reduce_rtt) = query_value(query, "reduce_rtt") {
-        set_yaml(&mut map, "reduce-rtt", YamlValue::Bool(truthy(&reduce_rtt)));
-    }
-    if let Some(udp) = query_value(query, "udp") {
-        set_yaml(&mut map, "udp", YamlValue::Bool(truthy(&udp)));
-    }
-    if let Some(tfo) = query_value(query, "tfo") {
-        set_yaml(&mut map, "fast-open", YamlValue::Bool(truthy(&tfo)));
-    }
-    Some(YamlValue::Mapping(map))
-}
-
-fn summarize_profile_source(
-    config: &YamlValue,
-    format: &str,
-    unsupported_lines: usize,
-) -> Result<ProfileSourceSummary, String> {
-    subscription_runtime::summarize_source(config, format, unsupported_lines)
-}
-
 fn profile_file_summary(profile: &Profile) -> Result<ProfileSourceSummary, String> {
     let path = Path::new(&profile.path);
     if !path.exists() {
@@ -2227,7 +1754,7 @@ fn profile_file_summary(profile: &Profile) -> Result<ProfileSourceSummary, Strin
     let raw = fs::read_to_string(path).map_err(|err| format!("profile file read failed: {err}"))?;
     let config: YamlValue =
         serde_yaml::from_str(&raw).map_err(|err| format!("profile YAML parse failed: {err}"))?;
-    summarize_profile_source(&config, "profile-file", 0)
+    subscription_runtime::summarize_source(&config, "profile-file", 0)
 }
 
 fn should_repair_profile_metadata(profile: &Profile) -> bool {
@@ -2236,38 +1763,13 @@ fn should_repair_profile_metadata(profile: &Profile) -> bool {
         && (profile.node_count == 0 || profile.proxy_group_count == 0)
 }
 
-fn derived_profile_metadata(profile: &Profile) -> (usize, usize, &'static str, Option<String>) {
-    if !should_repair_profile_metadata(profile) {
-        return (
-            profile.node_count,
-            profile.proxy_group_count,
-            "stored",
-            None,
-        );
-    }
-    match profile_file_summary(profile) {
-        Ok(summary) => {
-            let status = if summary.proxies != profile.node_count
-                || summary.proxy_groups != profile.proxy_group_count
-            {
-                "repaired"
-            } else {
-                "stored"
-            };
-            (summary.proxies, summary.proxy_groups, status, None)
-        }
-        Err(err) => (
-            profile.node_count,
-            profile.proxy_group_count,
-            "stale",
-            Some(err),
-        ),
-    }
-}
-
-fn public_profile(profile: &Profile) -> JsonValue {
-    let (node_count, proxy_group_count, metadata_status, metadata_error) =
-        derived_profile_metadata(profile);
+fn public_profile(profile: &Profile, metadata_error: Option<&str>) -> JsonValue {
+    let metadata_status = if metadata_error.is_some() {
+        "stale"
+    } else {
+        "stored"
+    };
+    let metadata_error = metadata_error.map(sanitize_sensitive_text);
     let source_url = profile
         .source_url
         .as_ref()
@@ -2279,10 +1781,10 @@ fn public_profile(profile: &Profile) -> JsonValue {
         "profile_type": &profile.profile_type,
         "path": &profile.path,
         "source_url": source_url,
-        "node_count": node_count,
-        "nodeCount": node_count,
-        "proxy_group_count": proxy_group_count,
-        "proxyGroupCount": proxy_group_count,
+        "node_count": profile.node_count,
+        "nodeCount": profile.node_count,
+        "proxy_group_count": profile.proxy_group_count,
+        "proxyGroupCount": profile.proxy_group_count,
         "updated_at": &profile.updated_at,
         "digest": &profile.digest,
         "metadataStatus": metadata_status,
@@ -2290,506 +1792,28 @@ fn public_profile(profile: &Profile) -> JsonValue {
     })
 }
 
-fn parse_uri_subscription(text: &str) -> Option<YamlValue> {
-    let body = decoded_subscription_body(text);
-    let mut proxies = Vec::new();
-    for (index, line) in body
-        .lines()
-        .map(str::trim)
-        .filter(|line| !is_ignorable_subscription_line(line))
-        .enumerate()
-    {
-        let item = if line.starts_with("ss://") {
-            parse_ss_uri(line, index + 1)
-        } else if line.starts_with("trojan://") {
-            parse_trojan_uri(line, index + 1)
-        } else if line.starts_with("vmess://") {
-            parse_vmess_uri(line, index + 1)
-        } else if line.starts_with("vless://") {
-            parse_vless_uri(line, index + 1)
-        } else if line.starts_with("hysteria2://") || line.starts_with("hy2://") {
-            parse_hysteria2_uri(line, index + 1)
-        } else if line.starts_with("anytls://") {
-            parse_anytls_uri(line, index + 1)
-        } else if line.starts_with("tuic://") {
-            parse_tuic_uri(line, index + 1)
-        } else {
-            None
-        };
-        if let Some(proxy) = item {
-            proxies.push(proxy);
-        }
-    }
-    if proxies.is_empty() {
-        return None;
-    }
-    let mut root = Mapping::new();
-    set_yaml(&mut root, "proxies", YamlValue::Sequence(proxies));
-    Some(YamlValue::Mapping(root))
-}
-
-fn parse_uri_subscription_source_diagnostic(text: &str) -> Result<ProfileSource, String> {
-    let config = parse_uri_subscription(text).ok_or_else(|| {
-        let unsupported = unsupported_uri_schemes(text);
-        if unsupported.is_empty() {
-            subscription_diagnostic(
-                "unsupported-format",
-                "content is not Clash YAML and no supported proxy URI lines were found",
-                "use a Clash/Mihomo subscription, or URI lines for ss/vmess/vless/trojan/hysteria2/anytls/tuic",
-            )
-        } else {
-            subscription_diagnostic(
-                "unsupported-protocol",
-                format!("unsupported URI protocol(s): {}", unsupported.join(", ")),
-                "switch the subscription protocol to Clash/Mihomo, or import a protocol supported by the current bundled core",
-            )
-        }
-    })?;
-    let body = decoded_subscription_body(text);
-    let unsupported_lines = body
-        .lines()
-        .map(str::trim)
-        .filter(|line| !is_ignorable_subscription_line(line))
-        .filter(|line| {
-            !line.starts_with("ss://")
-                && !line.starts_with("trojan://")
-                && !line.starts_with("vmess://")
-                && !line.starts_with("vless://")
-                && !line.starts_with("hysteria2://")
-                && !line.starts_with("hy2://")
-                && !line.starts_with("anytls://")
-                && !line.starts_with("tuic://")
-        })
-        .count();
-    let summary = summarize_profile_source(&config, "uri", unsupported_lines).map_err(|err| {
-        subscription_diagnostic(
-            "empty-proxies",
-            err,
-            "check the subscription content and retry",
-        )
-    })?;
-    Ok(ProfileSource { config, summary })
-}
-
-fn parse_profile_source_text_diagnostic(text: &str) -> Result<ProfileSource, String> {
-    let source_text = decoded_subscription_body(text);
-    match serde_yaml::from_str::<YamlValue>(&source_text) {
-        Ok(YamlValue::Mapping(map)) => {
-            let config = YamlValue::Mapping(map);
-            let summary = summarize_profile_source(&config, "clash-yaml", 0).map_err(|err| {
-                subscription_diagnostic(
-                    "empty-proxies",
-                    err,
-                    "check whether the subscription contains usable proxy nodes",
-                )
-            })?;
-            Ok(ProfileSource { config, summary })
-        }
-        Ok(_) => parse_uri_subscription_source_diagnostic(&source_text),
-        Err(err) => {
-            if looks_like_clash_yaml(&source_text) {
-                return Err(subscription_diagnostic(
-                    "yaml-parse",
-                    format!("Clash YAML parse failed: {err}"),
-                    "open the subscription in the airport panel and choose a Clash/Mihomo format, then retry",
-                ));
-            }
-            parse_uri_subscription_source_diagnostic(&source_text)
-        }
-    }
-}
-
-fn download_profile_source_url_diagnostic(url: &str) -> Result<ProfileSource, String> {
-    let parsed = reqwest::Url::parse(url).map_err(|err| {
-        subscription_diagnostic(
-            "invalid-url",
-            format!("invalid subscription URL: {err}"),
-            "copy the full airport subscription URL again and make sure it starts with http:// or https://",
-        )
-    })?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(subscription_diagnostic(
-            "invalid-url",
-            format!("unsupported URL scheme: {}", parsed.scheme()),
-            "Aegos imports remote subscriptions through HTTP/HTTPS URLs; paste the airport subscription link instead of a local or custom scheme",
-        ));
-    }
-    let text = Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|err| {
-            subscription_diagnostic(
-                "download-client",
-                format!("download client init failed: {err}"),
-                "restart Aegos and retry; if it repeats, export logs for diagnosis",
-            )
-        })?
-        .get(url)
-        .header("User-Agent", format!("Aegos/{}", env!("CARGO_PKG_VERSION")))
-        .send()
-        .map_err(|err| {
-            subscription_diagnostic(
-                "download-failed",
-                format!("subscription download failed: {err}"),
-                "check system proxy/network reachability, then retry updating the subscription",
-            )
-        })?
-        .error_for_status()
-        .map_err(|err| {
-            subscription_diagnostic(
-                "http-status",
-                format!("subscription download failed: bad HTTP status: {err}"),
-                "check whether the subscription is expired, token is wrong, or the airport blocks this request",
-            )
-        })?
-        .text()
-        .map_err(|err| {
-            subscription_diagnostic(
-                "read-failed",
-                format!("subscription read failed: {err}"),
-                "retry once; if it repeats, the server may be returning malformed content",
-            )
-        })?;
-    if text.trim().is_empty() {
-        return Err(subscription_diagnostic(
-            "empty-content",
-            "subscription download returned empty content",
-            "check whether the subscription token is expired or the airport returned an empty plan",
-        ));
-    }
-    parse_profile_source_text_diagnostic(&text)
-}
-
 fn is_fake_ip_address(value: &str) -> bool {
     let text = value.trim();
     text.starts_with("198.18.") || text.starts_with("198.19.")
 }
 
-fn is_subscription_metadata_node_name(name: &str) -> bool {
-    let text = name.trim();
-    if text.is_empty() {
-        return true;
-    }
-    let lower = text.to_ascii_lowercase();
-    lower.starts_with("traffic:")
-        || lower.starts_with("expire:")
-        || lower.starts_with("expiry:")
-        || lower.starts_with("remaining:")
-        || lower.contains(" gb |")
-        || lower.contains("traffic:")
-        || lower.contains("expire:")
-        || text.contains("娴侀噺")
-        || text.contains("鍓╀綑")
-        || text.contains("鍒版湡")
-        || text.contains("杩囨湡")
-        || text.contains("濂楅")
-}
-
-fn sanitize_subscription_metadata_nodes(config: &mut Mapping) -> usize {
-    let mut removed = HashSet::new();
-    if let Some(YamlValue::Sequence(proxies)) = config.get_mut(yaml_key("proxies")) {
-        proxies.retain(|proxy| {
-            let keep = proxy
-                .as_mapping()
-                .and_then(|map| map.get(yaml_key("name")))
-                .and_then(|value| value.as_str())
-                .map(|name| !is_subscription_metadata_node_name(name))
-                .unwrap_or(true);
-            if !keep {
-                if let Some(name) = proxy
-                    .as_mapping()
-                    .and_then(|map| map.get(yaml_key("name")))
-                    .and_then(|value| value.as_str())
-                {
-                    removed.insert(name.to_string());
-                }
-            }
-            keep
-        });
-    }
-    if removed.is_empty() {
-        return 0;
-    }
-    if let Some(YamlValue::Sequence(groups)) = config.get_mut(yaml_key("proxy-groups")) {
-        for group in groups {
-            let Some(map) = group.as_mapping_mut() else {
-                continue;
-            };
-            if let Some(YamlValue::Sequence(items)) = map.get_mut(yaml_key("proxies")) {
-                items.retain(|item| {
-                    item.as_str()
-                        .map(|name| !removed.contains(name))
-                        .unwrap_or(true)
-                });
-            }
-        }
-    }
-    removed.len()
-}
-
-fn patch_config_with_settings(
-    source: YamlValue,
-    settings: &Settings,
-    profile_id: Option<&str>,
-) -> Result<YamlValue, String> {
-    let mut config = match source {
-        YamlValue::Mapping(map) => map,
-        _ => Mapping::new(),
-    };
-    for key in [
-        "port",
-        "socks-port",
-        "redir-port",
-        "tproxy-port",
-        "mixed-port",
-    ] {
-        config.remove(yaml_key(key));
-    }
-    set_yaml(
-        &mut config,
-        "mixed-port",
-        YamlValue::Number(settings.mixed_port.into()),
-    );
-    set_yaml(
-        &mut config,
-        "allow-lan",
-        YamlValue::Bool(settings.allow_lan),
-    );
-    set_yaml(
-        &mut config,
-        "bind-address",
-        YamlValue::String(if settings.allow_lan { "*" } else { "127.0.0.1" }.to_string()),
-    );
-    set_yaml(
-        &mut config,
-        "mode",
-        YamlValue::String(settings.mode.clone()),
-    );
-    set_yaml(
-        &mut config,
-        "log-level",
-        YamlValue::String(settings.log_level.clone()),
-    );
-    set_yaml(
-        &mut config,
-        "external-controller",
-        YamlValue::String(format!("127.0.0.1:{}", settings.controller_port)),
-    );
-    set_yaml(
-        &mut config,
-        "secret",
-        YamlValue::String(settings.secret.clone()),
-    );
-    set_yaml(&mut config, "ipv6", YamlValue::Bool(settings.ipv6_enabled));
-    set_yaml(
-        &mut config,
-        "find-process-mode",
-        YamlValue::String("strict".to_string()),
-    );
-    set_yaml(&mut config, "unified-delay", YamlValue::Bool(true));
-    set_yaml(&mut config, "tcp-concurrent", YamlValue::Bool(true));
-    config_pipeline::harden_runtime_dns(&mut config);
-    sanitize_subscription_metadata_nodes(&mut config);
-
-    if settings.tun_enabled {
-        let tun = config
-            .entry(yaml_key("tun"))
-            .or_insert_with(|| YamlValue::Mapping(Mapping::new()));
-        let tun_map = get_mapping_mut(tun);
-        set_yaml(tun_map, "enable", YamlValue::Bool(true));
-        set_yaml(
-            tun_map,
-            "stack",
-            YamlValue::String(settings.tun_stack.clone()),
-        );
-        set_yaml(tun_map, "auto-route", YamlValue::Bool(true));
-        set_yaml(tun_map, "auto-detect-interface", YamlValue::Bool(true));
-        set_yaml(tun_map, "device", YamlValue::String("Aegos".to_string()));
-        set_yaml(
-            tun_map,
-            "dns-hijack",
-            if settings.dns_hijack_enabled {
-                YamlValue::Sequence(vec![YamlValue::String("any:53".to_string())])
-            } else {
-                YamlValue::Sequence(Vec::new())
-            },
-        );
-    } else if let Some(tun) = config.get_mut(yaml_key("tun")) {
-        set_yaml(get_mapping_mut(tun), "enable", YamlValue::Bool(false));
-    }
-
-    if let Some(profile_id) = profile_id {
-        apply_manual_nodes(&mut config, settings, profile_id)?;
-    }
-
-    let proxy_name_strings = proxy_node_names(&config);
-    let proxy_names: Vec<YamlValue> = proxy_name_strings
-        .iter()
-        .map(|name| yaml_str(name))
-        .collect();
-    config_pipeline::normalize_runtime_proxy_groups_for_display(&mut config);
-
-    if !matches!(config.get(yaml_key("rules")), Some(YamlValue::Sequence(items)) if !items.is_empty())
-    {
-        let target = if proxy_names.is_empty() {
-            "DIRECT"
-        } else {
-            "GLOBAL"
-        };
-        set_yaml(
-            &mut config,
-            "rules",
-            YamlValue::Sequence(vec![YamlValue::String(format!("MATCH,{target}"))]),
-        );
-    }
-    insert_outbound_ip_rules(&mut config, settings);
-    Ok(YamlValue::Mapping(config))
-}
-
-fn normalize_manual_node(input: &JsonValue) -> Result<JsonValue, String> {
+fn normalize_manual_node(input: &JsonValue) -> Result<ManualNodeConfig, String> {
     let Some(map) = input.as_object() else {
         return Err("Manual node must be an object.".to_string());
     };
-    let name = map
-        .get("name")
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .trim();
-    let server = map
-        .get("server")
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .trim();
     let node_type = core_runtime::normalize_proxy_type(
         map.get("type")
             .and_then(|value| value.as_str())
             .unwrap_or("ss")
             .trim(),
     );
-    let port = map
-        .get("port")
-        .and_then(|value| value.as_u64())
-        .or_else(|| {
-            map.get("port")
-                .and_then(|value| value.as_str())
-                .and_then(|value| value.trim().parse::<u64>().ok())
-        });
-    let Some(port) = port else {
-        return Err("Manual node port is required.".to_string());
-    };
-    if name.is_empty() {
-        return Err("Manual node name is required.".to_string());
-    }
-    if server.is_empty() {
-        return Err("璇疯緭鍏ュ浐瀹氳妭鐐瑰湴鍧€".to_string());
-    }
-    if port == 0 || port > 65535 {
-        return Err("鍥哄畾鑺傜偣绔彛蹇呴』鍦?1-65535 涔嬮棿".to_string());
-    }
     if !core_runtime::supports_proxy_type(&node_type) {
         return Err(format!(
             "Unsupported manual node protocol: {node_type}; {}",
-            core_runtime::protocol_capability_summary(AEGOS_URI_PROTOCOLS)
+            core_runtime::protocol_capability_summary(subscription_runtime::AEGOS_URI_PROTOCOLS)
         ));
     }
-    if !matches!(
-        node_type.as_str(),
-        "ss" | "ssr"
-            | "vmess"
-            | "vless"
-            | "trojan"
-            | "socks5"
-            | "http"
-            | "hysteria"
-            | "hysteria2"
-            | "hy2"
-            | "anytls"
-            | "tuic"
-            | "snell"
-            | "wireguard"
-            | "ssh"
-            | "direct"
-            | "reject"
-    ) {
-        return Err(format!("鏆備笉鏀寔鐨勫浐瀹氳妭鐐瑰崗璁細{node_type}"));
-    }
-
-    let mut node = serde_json::Map::new();
-    node.insert("name".to_string(), json!(name));
-    node.insert("type".to_string(), json!(node_type));
-    node.insert("server".to_string(), json!(server));
-    node.insert("port".to_string(), json!(port));
-
-    for key in [
-        "password",
-        "cipher",
-        "uuid",
-        "alterId",
-        "username",
-        "servername",
-        "sni",
-        "network",
-        "flow",
-        "skip-cert-verify",
-        "client-fingerprint",
-        "obfs",
-        "obfs-password",
-    ] {
-        if let Some(value) = map.get(key) {
-            if !value
-                .as_str()
-                .map(|text| text.trim().is_empty())
-                .unwrap_or(false)
-            {
-                node.insert(key.to_string(), value.clone());
-            }
-        }
-    }
-    if let Some(value) = map.get("tls").and_then(|value| value.as_bool()) {
-        node.insert("tls".to_string(), json!(value));
-    }
-    node.insert(
-        "udp".to_string(),
-        json!(map
-            .get("udp")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(true)),
-    );
-    node.insert("manual".to_string(), json!(true));
-    node.insert("fixed".to_string(), json!(true));
-    node.insert("static".to_string(), json!(true));
-    node.insert("source".to_string(), json!("manual"));
-    Ok(JsonValue::Object(node))
-}
-
-fn manual_node_yaml(node: &JsonValue) -> Result<YamlValue, String> {
-    let mut clean = serde_json::Map::new();
-    let Some(map) = node.as_object() else {
-        return Err("鎵嬪姩鑺傜偣鏁版嵁鏃犳晥".to_string());
-    };
-    for (key, value) in map {
-        if matches!(
-            key.as_str(),
-            "manual"
-                | "fixed"
-                | "static"
-                | "residential"
-                | "source"
-                | "profileType"
-                | "originalName"
-        ) {
-            continue;
-        }
-        clean.insert(key.clone(), value.clone());
-    }
-    serde_yaml::to_value(JsonValue::Object(clean)).map_err(|err| err.to_string())
-}
-
-fn proxy_name(value: &YamlValue) -> Option<&str> {
-    value
-        .as_mapping()
-        .and_then(|map| map.get(yaml_key("name")))
-        .and_then(|value| value.as_str())
+    ManualNodeConfig::from_input(input, node_type)
 }
 
 fn ensure_yaml_sequence<'a>(config: &'a mut Mapping, key: &str) -> &'a mut Vec<YamlValue> {
@@ -2800,124 +1824,6 @@ fn ensure_yaml_sequence<'a>(config: &'a mut Mapping, key: &str) -> &'a mut Vec<Y
         *value = YamlValue::Sequence(Vec::new());
     }
     value.as_sequence_mut().expect("sequence")
-}
-
-fn insert_manual_node_into_config(
-    config: &mut Mapping,
-    node: &JsonValue,
-    original_name: Option<&str>,
-) -> Result<(), String> {
-    let name = node
-        .get("name")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| "鎵嬪姩鑺傜偣缂哄皯鍚嶇О".to_string())?;
-    let original = original_name.unwrap_or(name);
-    let proxy = manual_node_yaml(node)?;
-    {
-        let proxies = ensure_yaml_sequence(config, "proxies");
-        let existing_index = proxies
-            .iter()
-            .position(|item| proxy_name(item) == Some(original));
-        if proxies
-            .iter()
-            .enumerate()
-            .any(|(index, item)| proxy_name(item) == Some(name) && Some(index) != existing_index)
-        {
-            return Err(format!("鍥哄畾鑺傜偣鍚嶇О宸插瓨鍦細{name}"));
-        }
-        if let Some(index) = existing_index {
-            proxies[index] = proxy;
-        } else {
-            proxies.push(proxy);
-        }
-    }
-
-    let groups = ensure_yaml_sequence(config, "proxy-groups");
-    if groups.is_empty() {
-        let mut group = Mapping::new();
-        set_yaml(&mut group, "name", yaml_str("GLOBAL"));
-        set_yaml(&mut group, "type", yaml_str("select"));
-        set_yaml(
-            &mut group,
-            "proxies",
-            YamlValue::Sequence(vec![yaml_str(name), yaml_str("DIRECT")]),
-        );
-        groups.push(YamlValue::Mapping(group));
-        return Ok(());
-    }
-
-    let mut target_index = 0usize;
-    for (index, group) in groups.iter().enumerate() {
-        let Some(map) = group.as_mapping() else {
-            continue;
-        };
-        let group_name = map
-            .get(yaml_key("name"))
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        let group_type = map
-            .get(yaml_key("type"))
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .to_lowercase();
-        if matches!(group_name, "GLOBAL" | "Proxies" | "Proxy")
-            || matches!(
-                group_type.as_str(),
-                "select" | "url-test" | "fallback" | "load-balance"
-            )
-        {
-            target_index = index;
-            break;
-        }
-    }
-
-    for group in groups.iter_mut() {
-        let Some(map) = group.as_mapping_mut() else {
-            continue;
-        };
-        let list = map
-            .entry(yaml_key("proxies"))
-            .or_insert_with(|| YamlValue::Sequence(Vec::new()));
-        if !matches!(list, YamlValue::Sequence(_)) {
-            *list = YamlValue::Sequence(Vec::new());
-        }
-        if let Some(list) = list.as_sequence_mut() {
-            for item in list.iter_mut() {
-                if item.as_str() == Some(original) {
-                    *item = yaml_str(name);
-                }
-            }
-        }
-    }
-
-    if let Some(map) = groups
-        .get_mut(target_index)
-        .and_then(|group| group.as_mapping_mut())
-    {
-        let list = map
-            .entry(yaml_key("proxies"))
-            .or_insert_with(|| YamlValue::Sequence(Vec::new()));
-        if let Some(list) = list.as_sequence_mut() {
-            if !list.iter().any(|item| item.as_str() == Some(name)) {
-                list.push(yaml_str(name));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn apply_manual_nodes(
-    config: &mut Mapping,
-    settings: &Settings,
-    profile_id: &str,
-) -> Result<(), String> {
-    let Some(nodes) = settings.manual_nodes.get(profile_id) else {
-        return Ok(());
-    };
-    for node in nodes.values() {
-        insert_manual_node_into_config(config, node, None)?;
-    }
-    Ok(())
 }
 
 fn yaml_sequence<'a>(config: &'a YamlValue, key: &str) -> Option<&'a Vec<YamlValue>> {
@@ -2932,11 +1838,12 @@ fn yaml_mapping_name(item: &YamlValue) -> Option<&str> {
         .and_then(|value| value.as_str())
 }
 
+#[cfg(test)]
 fn preflight_runtime_config(
     config: &YamlValue,
     profile: &Profile,
     settings: &Settings,
-) -> Result<JsonValue, String> {
+) -> Result<config_domain::RuntimeConfigReport, String> {
     core_runtime::preflight_runtime_config(
         config,
         core_runtime::RuntimeConfigPreflightInput {
@@ -2945,7 +1852,7 @@ fn preflight_runtime_config(
             profile_name: &profile.name,
             mixed_port: settings.mixed_port,
             controller_port: settings.controller_port,
-            uri_protocols: AEGOS_URI_PROTOCOLS,
+            uri_protocols: subscription_runtime::AEGOS_URI_PROTOCOLS,
         },
     )
 }
@@ -2964,6 +1871,38 @@ fn normalize_outbound_ip_response(text: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn runtime_current_proxy_route(
+    controller: &core_runtime::CoreController,
+    mode: &str,
+) -> Result<(ProxyCatalog, String), String> {
+    let catalog = controller.proxy_catalog_snapshot(&[])?;
+    let primary_groups = if mode.eq_ignore_ascii_case("global") {
+        OUTBOUND_IP_GLOBAL_PRIMARY_GROUPS
+    } else {
+        OUTBOUND_IP_RULE_PRIMARY_GROUPS
+    };
+    let proxy = catalog
+        .resolve_runtime_leaf(primary_groups)
+        .ok_or_else(|| "Current runtime route does not resolve to a proxy node".to_string())?;
+    Ok((catalog, proxy))
+}
+
+fn sync_outbound_ip_route(
+    controller: &core_runtime::CoreController,
+    mode: &str,
+) -> Result<String, String> {
+    let (catalog, proxy) = runtime_current_proxy_route(controller, mode)?;
+    if !catalog.group_contains_leaf(AEGOS_OUTBOUND_IP_GROUP, &proxy) {
+        return Err(format!(
+            "Current runtime node '{proxy}' is not available in the outbound IP route"
+        ));
+    }
+    controller
+        .apply_auxiliary_proxy_selection(AEGOS_OUTBOUND_IP_GROUP, &proxy)
+        .map_err(|err| format!("Outbound IP route sync failed: {err}"))?;
+    Ok(proxy)
 }
 
 fn query_outbound_ip(mixed_port: u16) -> Result<String, String> {
@@ -3191,6 +2130,43 @@ mod tests {
         assert!(parse_usable_lan_ip("0.0.0.0").is_none());
         assert!(parse_usable_lan_ip("8.8.8.8").is_none());
         assert!(parse_usable_lan_ip("172.32.0.1").is_none());
+    }
+
+    #[test]
+    fn confined_atomic_write_replaces_an_existing_file() {
+        let root = std::env::temp_dir().join(format!("aegos-atomic-write-{}", hex_random(8)));
+        let path = root.join("speed-health.json");
+        ensure_dir(&root).expect("temporary root");
+
+        atomic_write_text_confined(&path, &root, "first").expect("first atomic write");
+        atomic_write_text_confined(&path, &root, "second").expect("replacement atomic write");
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("replacement content"),
+            "second"
+        );
+        assert_eq!(
+            fs::read_dir(&root)
+                .expect("temporary root listing")
+                .filter_map(Result::ok)
+                .count(),
+            1
+        );
+        fs::remove_dir_all(&root).expect("temporary root cleanup");
+    }
+
+    #[test]
+    fn combined_restore_error_keeps_both_failure_causes() {
+        let error = combine_restore_results(
+            "metadata restore",
+            Err("settings disk full".to_string()),
+            "runtime restore",
+            Err("controller unavailable".to_string()),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("metadata restore failed: settings disk full"));
+        assert!(error.contains("runtime restore also failed: controller unavailable"));
     }
 
     #[test]
@@ -3624,7 +2600,8 @@ rules:
     fn parses_base64_tuic_subscription() {
         let uri = "tuic://00000000-0000-4000-8000-000000000000:secret@example.com:443?sni=example.com&alpn=h3&congestion_control=bbr&udp_relay_mode=native&reduce_rtt=true#HK%20TUIC";
         let encoded = general_purpose::STANDARD.encode(uri);
-        let parsed = parse_uri_subscription(&encoded).expect("tuic subscription should parse");
+        let parsed = subscription_runtime::parse_uri_subscription(&encoded)
+            .expect("tuic subscription should parse");
         let proxies = parsed
             .as_mapping()
             .and_then(|root| root.get(yaml_key("proxies")))
@@ -3661,7 +2638,8 @@ rules:
             "hysteria2://secret@example.net:8443?sni=example.net&insecure=1&obfs=salamander&obfs-password=obfsSecret&alpn=h3#SG%20HY2",
             "anytls://password@example.org:443?sni=example.org&insecure=0&alpn=h2,h3#JP%20AnyTLS",
         ].join("\n");
-        let parsed = parse_uri_subscription(&text).expect("modern URI subscription should parse");
+        let parsed = subscription_runtime::parse_uri_subscription(&text)
+            .expect("modern URI subscription should parse");
         let proxies = parsed
             .as_mapping()
             .and_then(|root| root.get(yaml_key("proxies")))
@@ -3717,7 +2695,7 @@ rules:
     #[test]
     fn subscription_diagnostics_classify_unsupported_protocols() {
         let err =
-            parse_uri_subscription_source_diagnostic("ssr://example-one\nwireguard://example-two")
+            subscription_runtime::parse_uri_source("ssr://example-one\nwireguard://example-two")
                 .expect_err("unsupported protocols should be classified");
 
         assert!(err.contains("Subscription diagnostics [unsupported-protocol]"));
@@ -3728,7 +2706,7 @@ rules:
 
     #[test]
     fn subscription_diagnostics_classify_unsupported_format() {
-        let err = parse_uri_subscription_source_diagnostic("plain text without proxy uris")
+        let err = subscription_runtime::parse_uri_source("plain text without proxy uris")
             .expect_err("plain text should be classified");
 
         assert!(err.contains("Subscription diagnostics [unsupported-format]"));
@@ -3737,8 +2715,11 @@ rules:
 
     #[test]
     fn subscription_diagnostics_classify_invalid_url_scheme() {
-        let err = download_profile_source_url_diagnostic("ftp://example.com/sub")
-            .expect_err("non-http urls should be rejected before network access");
+        let err = subscription_runtime::download_source_url(
+            "ftp://example.com/sub",
+            AEGOS_SUBSCRIPTION_USER_AGENT,
+        )
+        .expect_err("non-http urls should be rejected before network access");
 
         assert!(err.contains("Subscription diagnostics [invalid-url]"));
         assert!(err.contains("unsupported URL scheme"));
@@ -3755,7 +2736,7 @@ trojan://password@example.com:443?sni=example.com#HK%20Trojan
 ; trailing comment
 "#;
         let source =
-            parse_uri_subscription_source_diagnostic(raw).expect("metadata-wrapped URI source");
+            subscription_runtime::parse_uri_source(raw).expect("metadata-wrapped URI source");
 
         assert_eq!(source.summary.proxies, 1);
         assert_eq!(source.summary.unsupported_lines, 0);
@@ -3769,7 +2750,7 @@ vless://00000000-0000-4000-8000-000000000000@example.com:443?security=reality&sn
 hysteria2://secret@example.net:8443?sni=example.net&insecure=1#SG%20HY2
 "#;
         let encoded = general_purpose::STANDARD.encode(raw);
-        let source = parse_profile_source_text_diagnostic(&encoded)
+        let source = subscription_runtime::parse_source_text(&encoded)
             .expect("base64 URI subscription should parse");
 
         assert_eq!(source.summary.format, "uri");
@@ -3780,7 +2761,7 @@ hysteria2://secret@example.net:8443?sni=example.net&insecure=1#SG%20HY2
     #[test]
     fn subscription_parser_accepts_bom_prefixed_clash_yaml() {
         let raw = "\u{feff}proxies:\n  - name: Node A\n    type: ss\n    server: example.com\n    port: 443\n    cipher: aes-128-gcm\n    password: secret\nproxy-groups:\n  - name: Proxy\n    type: select\n    proxies:\n      - Node A\nrules:\n  - MATCH,Proxy\n";
-        let source = parse_profile_source_text_diagnostic(raw)
+        let source = subscription_runtime::parse_source_text(raw)
             .expect("BOM-prefixed Clash YAML should parse");
 
         assert_eq!(source.summary.format, "clash-yaml");
@@ -3834,10 +2815,7 @@ rules:
 
         let report = preflight_runtime_config(&config, &profile, &settings)
             .expect("group-to-group references should pass preflight");
-        assert_eq!(
-            report.get("proxyGroups").and_then(JsonValue::as_u64),
-            Some(2)
-        );
+        assert_eq!(report.proxy_groups, 2);
     }
 
     #[test]
@@ -3940,15 +2918,12 @@ rules:
         }))
         .expect("hy2 manual node should be accepted");
 
-        assert_eq!(
-            node.get("type").and_then(JsonValue::as_str),
-            Some("hysteria2")
-        );
+        assert_eq!(node.protocol, "hysteria2");
         assert!(core_runtime::supports_proxy_type("anytls"));
-        assert!(
-            core_runtime::protocol_capability_summary(AEGOS_URI_PROTOCOLS)
-                .contains("Aegos URI parser")
-        );
+        assert!(core_runtime::protocol_capability_summary(
+            subscription_runtime::AEGOS_URI_PROTOCOLS
+        )
+        .contains("Aegos URI parser"));
     }
 
     #[test]
@@ -3958,10 +2933,10 @@ rules:
         let mixed_b64 = general_purpose::STANDARD.encode(mixed);
 
         let clash_source =
-            parse_profile_source_text_diagnostic(clash).expect("sanitized Clash fixture");
+            subscription_runtime::parse_source_text(clash).expect("sanitized Clash fixture");
         let mixed_source =
-            parse_profile_source_text_diagnostic(mixed).expect("sanitized mixed URI fixture");
-        let mixed_b64_source = parse_profile_source_text_diagnostic(&mixed_b64)
+            subscription_runtime::parse_source_text(mixed).expect("sanitized mixed URI fixture");
+        let mixed_b64_source = subscription_runtime::parse_source_text(&mixed_b64)
             .expect("sanitized base64 mixed URI fixture");
 
         assert_eq!(clash_source.summary.format, "clash-yaml");
@@ -3978,7 +2953,7 @@ rules:
     #[test]
     fn sanitized_subscription_fixture_reports_unsupported_protocols() {
         let unsupported = include_str!("../fixtures/subscriptions/unsupported-protocol.txt");
-        let err = parse_profile_source_text_diagnostic(unsupported)
+        let err = subscription_runtime::parse_source_text(unsupported)
             .expect_err("unsupported sanitized fixture should fail clearly");
 
         assert!(err.contains("Subscription diagnostics [unsupported-protocol]"));
@@ -4017,7 +2992,8 @@ rules:
         )
         .expect("source");
         let settings = default_settings();
-        let patched = patch_config_with_settings(source, &settings, Some("test")).expect("patch");
+        let patched =
+            config_pipeline::patch_config(source, &settings, Some("test")).expect("patch");
         let dns = patched
             .get(yaml_key("dns"))
             .and_then(YamlValue::as_mapping)
@@ -4059,7 +3035,7 @@ rules: ["MATCH,Proxies"]
         settings.tun_enabled = true;
         settings.dns_hijack_enabled = true;
         let patched =
-            patch_config_with_settings(source, &settings, Some("test")).expect("TUN candidate");
+            config_pipeline::patch_config(source, &settings, Some("test")).expect("TUN candidate");
         let tun = patched.get(yaml_key("tun")).expect("tun section");
         assert_eq!(
             tun.get(yaml_key("enable")).and_then(YamlValue::as_bool),
@@ -4143,7 +3119,8 @@ rules:
         )
         .expect("source");
         let settings = default_settings();
-        let patched = patch_config_with_settings(source, &settings, Some("test")).expect("patch");
+        let patched =
+            config_pipeline::patch_config(source, &settings, Some("test")).expect("patch");
         let proxy_names = yaml_sequence(&patched, "proxies")
             .expect("proxies")
             .iter()
@@ -4224,8 +3201,8 @@ rules:
 "#,
         )
         .expect("source");
-        let patched =
-            patch_config_with_settings(source, &default_settings(), Some("test")).expect("patch");
+        let patched = config_pipeline::patch_config(source, &default_settings(), Some("test"))
+            .expect("patch");
         let group_names = yaml_sequence(&patched, "proxy-groups")
             .expect("groups")
             .iter()
@@ -4233,6 +3210,15 @@ rules:
             .collect::<Vec<_>>();
         assert!(group_names.iter().any(|name| *name == "Proxies"));
         assert!(group_names.iter().any(|name| *name == "自动选择"));
+        let auto_group = yaml_sequence(&patched, "proxy-groups")
+            .expect("groups")
+            .iter()
+            .find(|group| yaml_mapping_name(group) == Some("自动选择"))
+            .expect("auto group");
+        assert_eq!(
+            auto_group.get(yaml_key("lazy")).and_then(YamlValue::as_bool),
+            Some(true)
+        );
         let proxies_group = yaml_sequence(&patched, "proxy-groups")
             .expect("groups")
             .iter()
@@ -4282,8 +3268,8 @@ rules:
 "#,
         )
         .expect("source");
-        let patched =
-            patch_config_with_settings(source, &default_settings(), Some("test")).expect("patch");
+        let patched = config_pipeline::patch_config(source, &default_settings(), Some("test"))
+            .expect("patch");
         let auto_groups = yaml_sequence(&patched, "proxy-groups")
             .expect("groups")
             .iter()
@@ -4291,6 +3277,15 @@ rules:
             .filter(|name| core_runtime::is_aegos_auto_select_group_name(name))
             .collect::<Vec<_>>();
         assert_eq!(auto_groups, vec!["自动选择"]);
+        let auto_group = yaml_sequence(&patched, "proxy-groups")
+            .expect("groups")
+            .iter()
+            .find(|group| yaml_mapping_name(group) == Some("自动选择"))
+            .expect("normalized auto group");
+        assert_eq!(
+            auto_group.get(yaml_key("lazy")).and_then(YamlValue::as_bool),
+            Some(true)
+        );
     }
 
     #[test]
@@ -4309,7 +3304,12 @@ rules:
                 "items": [{ "name": "SG 01", "type": "ss", "server": "sg.example.com" }]
             }
         ]);
-        core_runtime::normalize_proxy_groups_snapshot_defaults(&mut groups);
+        groups = core_runtime::shape_proxy_catalog_model(
+            ProxyCatalog::from_product_json(&groups).expect("proxy catalog"),
+            &HashMap::new(),
+            &HashSet::new(),
+        )
+        .into_product_json();
         let names = groups
             .as_array()
             .expect("groups")
@@ -4327,6 +3327,61 @@ rules:
             .map(Vec::len)
             .unwrap_or_default();
         assert_eq!(proxies_len, 2);
+    }
+
+    #[test]
+    fn proxy_catalog_speed_enrichment_preserves_one_product_contract() {
+        let mut catalog = core_runtime::shape_proxy_catalog_model(
+            ProxyCatalog::from_product_json(&json!([{
+                "name": "Proxies",
+                "type": "Selector",
+                "now": "HK 01",
+                "items": [{ "name": "HK 01", "type": "ss", "server": "hk.example.com" }]
+            }]))
+            .expect("proxy catalog"),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+        let now = now_secs();
+        let mut speed = SpeedTestState::default();
+        speed.delays.insert("HK 01".to_string(), 42);
+        speed.health.insert(
+            "HK 01".to_string(),
+            NodeHealth {
+                name: "HK 01".to_string(),
+                protocol: "ss".to_string(),
+                last_delay: 42,
+                median_delay: 45,
+                jitter: 3,
+                last_success_at: now,
+                last_tested_at: now,
+                status: "available".to_string(),
+                score: 48,
+                ..NodeHealth::default()
+            },
+        );
+        speed.recommended = Some(json!({ "realProxyName": "HK 01" }));
+
+        apply_speed_test_delays_from_state(&mut catalog, &speed);
+        let product = catalog.into_product_json();
+        let item = product.pointer("/0/items/0").expect("product node");
+        assert_eq!(item.get("delay").and_then(JsonValue::as_i64), Some(42));
+        assert_eq!(
+            item.get("healthStatus").and_then(JsonValue::as_str),
+            Some("available")
+        );
+        assert_eq!(
+            item.get("medianDelay").and_then(JsonValue::as_i64),
+            Some(45)
+        );
+        assert_eq!(
+            item.get("recommended").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            item.get("server").and_then(JsonValue::as_str),
+            Some("hk.example.com")
+        );
     }
 
     #[test]
@@ -4366,6 +3421,7 @@ rules:
             {
                 "name": "GLOBAL",
                 "type": "Selector",
+                "now": "Node A",
                 "items": [
                     { "name": "Node A", "type": "ss" },
                     { "name": "Auto", "type": "Group", "realProxyName": "Node B" }
@@ -4373,26 +3429,24 @@ rules:
             }
         ]);
 
-        let ok = validate_proxy_selection_from_groups(&groups, "GLOBAL", "Node A")
+        let ok = core_runtime::validate_proxy_selection_from_groups(&groups, "GLOBAL", "Node A")
             .expect("existing node should pass");
-        assert_eq!(
-            ok.get("realProxyName").and_then(JsonValue::as_str),
-            Some("Node A")
-        );
+        assert_eq!(ok.real_proxy_name, "Node A");
+        assert_eq!(ok.previous_proxy, "Node A");
 
-        let by_real = validate_proxy_selection_from_groups(&groups, "GLOBAL", "Node B")
-            .expect("real proxy alias should pass");
-        assert_eq!(
-            by_real.get("realProxyName").and_then(JsonValue::as_str),
-            Some("Node B")
-        );
+        let by_real =
+            core_runtime::validate_proxy_selection_from_groups(&groups, "GLOBAL", "Node B")
+                .expect("real proxy alias should pass");
+        assert_eq!(by_real.real_proxy_name, "Node B");
 
-        let missing_group = validate_proxy_selection_from_groups(&groups, "Missing", "Node A")
-            .expect_err("missing group should fail");
+        let missing_group =
+            core_runtime::validate_proxy_selection_from_groups(&groups, "Missing", "Node A")
+                .expect_err("missing group should fail");
         assert!(missing_group.contains("group 'Missing' was not found"));
 
-        let missing_proxy = validate_proxy_selection_from_groups(&groups, "GLOBAL", "Missing")
-            .expect_err("missing proxy should fail");
+        let missing_proxy =
+            core_runtime::validate_proxy_selection_from_groups(&groups, "GLOBAL", "Missing")
+                .expect_err("missing proxy should fail");
         assert!(missing_proxy.contains("proxy 'Missing' is not in group 'GLOBAL'"));
     }
 
@@ -4455,8 +3509,8 @@ rules:
         let mut settings = default_settings();
         settings.secret = "test".to_string();
         let first =
-            patch_config_with_settings(source.clone(), &settings, None).expect("first patch");
-        let second = patch_config_with_settings(source, &settings, None).expect("second patch");
+            config_pipeline::patch_config(source.clone(), &settings, None).expect("first patch");
+        let second = config_pipeline::patch_config(source, &settings, None).expect("second patch");
         assert_eq!(
             first
                 .get(yaml_key("unified-delay"))
@@ -4474,7 +3528,7 @@ rules:
         assert_eq!(sha256_text(&first_yaml), sha256_text(&second_yaml));
 
         settings.mode = "global".to_string();
-        let changed = patch_config_with_settings(first, &settings, None).expect("changed patch");
+        let changed = config_pipeline::patch_config(first, &settings, None).expect("changed patch");
         let changed_yaml = serde_yaml::to_string(&changed).expect("changed yaml");
         assert_ne!(sha256_text(&second_yaml), sha256_text(&changed_yaml));
     }
@@ -4506,7 +3560,8 @@ rules:
 "#,
         )
         .expect("source yaml");
-        let patched = patch_config_with_settings(source, &settings, Some("test")).expect("patch");
+        let patched =
+            config_pipeline::patch_config(source, &settings, Some("test")).expect("patch");
         let rules = yaml_sequence(&patched, "rules").expect("rules");
         assert_eq!(
             rules[0].as_str(),
@@ -4529,6 +3584,40 @@ rules:
             .and_then(|value| value.as_sequence())
             .expect("lookup proxies");
         assert_eq!(lookup_proxies[0].as_str(), Some("Node A"));
+        assert!(lookup_proxies.iter().any(|item| item.as_str() == Some("DIRECT")));
+    }
+
+    #[test]
+    fn outbound_ip_route_entry_is_mode_aware() {
+        let catalog = ProxyCatalog::from_product_json(&json!([
+            {
+                "name": "GLOBAL",
+                "type": "Selector",
+                "now": "DIRECT",
+                "items": [{ "name": "DIRECT", "type": "Direct" }]
+            },
+            {
+                "name": "Final",
+                "type": "Selector",
+                "now": "Proxies",
+                "items": [{ "name": "Proxies", "type": "Group", "group": true }]
+            },
+            {
+                "name": "Proxies",
+                "type": "Selector",
+                "now": "Node A",
+                "items": [{ "name": "Node A", "type": "ss" }]
+            }
+        ]))
+        .expect("catalog");
+        assert_eq!(
+            catalog.resolve_runtime_leaf(OUTBOUND_IP_RULE_PRIMARY_GROUPS),
+            Some("Node A".to_string())
+        );
+        assert_eq!(
+            catalog.resolve_runtime_leaf(OUTBOUND_IP_GLOBAL_PRIMARY_GROUPS),
+            Some("DIRECT".to_string())
+        );
     }
 
     #[test]
@@ -4699,7 +3788,7 @@ rules:
 
     #[test]
     fn log_sanitizer_redacts_subscription_and_node_secrets() {
-        let line = "update failed https://train.example/api/linkon?token=fixture-token-redacted&protocol=vless password: secret uuid=00000000-0000-4000-8000-000000000000 bearer abc.def trojan://pass@example.com:443 path C:\\Users\\JIE\\AppData\\Roaming\\com.codex.aegos\\settings.json lan 192.168.31.8 cgnat 100.64.1.2 public 8.8.8.8";
+        let line = "update failed https://train.example/api/linkon?token=fixture-token-redacted&protocol=vless password: secret uuid=00000000-0000-4000-8000-000000000000 bearer abc.def trojan://pass@example.com:443 path C:\\Users\\Example\\AppData\\Roaming\\com.codex.aegos\\settings.json lan 192.168.31.8 cgnat 100.64.1.2 public 8.8.8.8";
         let sanitized = sanitize_sensitive_text(line);
 
         assert!(sanitized.contains("token=[redacted]"));
@@ -4714,7 +3803,7 @@ rules:
         assert!(!sanitized.contains("fixture-token-redacted"));
         assert!(!sanitized.contains("00000000-0000-4000-8000-000000000000"));
         assert!(!sanitized.contains("abc.def"));
-        assert!(!sanitized.contains("C:\\Users\\JIE"));
+        assert!(!sanitized.contains("C:\\Users\\Example"));
         assert!(!sanitized.contains("192.168.31.8"));
         assert!(!sanitized.contains("100.64.1.2"));
     }
@@ -4749,7 +3838,7 @@ rules:
                 "at": "now",
                 "level": "error",
                 "category": "diagnostic",
-                "line": "https://train.example/api?token=top-secret password: hidden path C:\\Users\\JIE\\secret.txt lan 192.168.1.8"
+                "line": "https://train.example/api?token=top-secret password: hidden path C:\\Users\\Example\\secret.txt lan 192.168.1.8"
             }]
         });
 
@@ -4760,7 +3849,7 @@ rules:
         assert!(text.contains("[private-ip]"));
         assert!(!text.contains("top-secret"));
         assert!(!text.contains("password: hidden"));
-        assert!(!text.contains("C:\\Users\\JIE"));
+        assert!(!text.contains("C:\\Users\\Example"));
         assert!(!text.contains("192.168.1.8"));
     }
 
@@ -4823,11 +3912,11 @@ rules:
         assert_eq!(protocol_family("hy2"), "hysteria");
         assert_eq!(protocol_family("anytls"), "anytls");
         assert_eq!(protocol_family("ss-obfs"), "ss-obfs");
-        assert_eq!(protocol_concurrency("vless-reality"), 32);
-        assert_eq!(protocol_concurrency("hysteria2"), 8);
-        assert_eq!(protocol_concurrency("anytls"), 10);
-        assert_eq!(protocol_concurrency("tuic"), 6);
-        assert_eq!(protocol_concurrency("ss-obfs"), 12);
+        assert_eq!(protocol_concurrency("vless-reality"), 48);
+        assert_eq!(protocol_concurrency("hysteria2"), 12);
+        assert_eq!(protocol_concurrency("anytls"), 16);
+        assert_eq!(protocol_concurrency("tuic"), 10);
+        assert_eq!(protocol_concurrency("ss-obfs"), 16);
         assert_eq!(protocol_primary_timeout_ms("vless-reality"), 5000);
         assert_eq!(protocol_primary_timeout_ms("hysteria2"), 5000);
         assert_eq!(protocol_primary_timeout_ms("anytls"), 5000);
@@ -4838,7 +3927,7 @@ rules:
             fast_tuic_probes[0].url,
             "https://www.gstatic.com/generate_204"
         );
-        assert_eq!(fast_tuic_probes[0].timeout_ms, 5000);
+        assert_eq!(fast_tuic_probes[0].timeout_ms, 3800);
         let fast_anytls_probes = delay_probe_plan("anytls", DelayProbeDepth::Fast);
         assert_eq!(fast_anytls_probes.len(), 1);
         assert_eq!(
@@ -4852,13 +3941,13 @@ rules:
             .any(|probe| probe.url == "https://cp.cloudflare.com/generate_204"));
         assert!(tuic_probes.iter().all(|probe| probe.timeout_ms == 5000));
         let trojan_fast_probes = delay_probe_plan("trojan", DelayProbeDepth::Fast);
-        assert_eq!(trojan_fast_probes[0].timeout_ms, 5000);
+        assert_eq!(trojan_fast_probes[0].timeout_ms, 2500);
         let ss_obfs_fast_probes = delay_probe_plan("ss-obfs", DelayProbeDepth::Fast);
         assert_eq!(
             ss_obfs_fast_probes[0].url,
             "https://www.gstatic.com/generate_204"
         );
-        assert_eq!(ss_obfs_fast_probes[0].timeout_ms, 5000);
+        assert_eq!(ss_obfs_fast_probes[0].timeout_ms, 3000);
 
         let targets = vec![
             SpeedTestTarget {
@@ -4904,7 +3993,7 @@ rules:
     #[test]
     fn speed_scheduler_adapts_without_exceeding_safe_bounds() {
         assert_eq!(adaptive_speed_concurrency(24, 8, 0, 4_000), 28);
-        assert_eq!(adaptive_speed_concurrency(24, 8, 5, 20_000), 20);
+        assert_eq!(adaptive_speed_concurrency(24, 8, 5, 20_000), 24);
         assert_eq!(
             adaptive_speed_concurrency(SPEED_GLOBAL_CONCURRENCY_MAX, 8, 0, 2_000),
             SPEED_GLOBAL_CONCURRENCY_MAX
@@ -4941,7 +4030,7 @@ rules:
 
     #[test]
     fn ss_uri_preserves_obfs_plugin_options() {
-        let node = parse_ss_uri(
+        let node = subscription_runtime::parse_ss_uri(
             "ss://aes-128-gcm:secret@example.com:10015?plugin=obfs-local%3Bobfs%3Dhttp%3Bobfs-host%3Dedge.example.com#HK%20SS",
             1,
         )
@@ -5001,13 +4090,133 @@ rules:
         assert_eq!(best.get("proxy").and_then(JsonValue::as_str), Some("Fast"));
         assert_eq!(low_latency_names(&health, 100), vec!["Fast".to_string()]);
     }
-}
 
-fn get_mapping_mut(value: &mut YamlValue) -> &mut Mapping {
-    if !matches!(value, YamlValue::Mapping(_)) {
-        *value = YamlValue::Mapping(Mapping::new());
+    #[test]
+    fn legacy_user_rules_migrate_to_the_canonical_store() {
+        let root = std::env::temp_dir().join(format!("aegos-rule-migration-{}", hex_random(8)));
+        fs::create_dir_all(&root).expect("temp root");
+        write_routing_user_rules(
+            &root,
+            &json!({
+                "profile-one": {
+                    "active": ["DOMAIN-SUFFIX,example.com,Proxies"],
+                    "disabled": ["PROCESS-NAME,Telegram.exe,Proxies"]
+                }
+            }),
+        )
+        .expect("legacy registry");
+        let store = read_aegos_user_rule_store(&root);
+        assert_eq!(store.rules.len(), 2);
+        assert!(store.rules.iter().all(|rule| {
+            rule.scope.profile_id() == Some("profile-one") && rule.source == "legacy"
+        }));
+        assert!(aegos_user_rule_store_path(&root).exists());
+        let _ = fs::remove_dir_all(root);
     }
-    value.as_mapping_mut().expect("mapping")
+
+    #[test]
+    fn runtime_overlay_skips_missing_targets_without_modifying_subscription_source() {
+        let root = std::env::temp_dir().join(format!("aegos-rule-overlay-{}", hex_random(8)));
+        fs::create_dir_all(&root).expect("temp root");
+        let profile = Profile {
+            id: "profile-one".to_string(),
+            name: "Test".to_string(),
+            profile_type: "remote".to_string(),
+            path: root.join("profile.yaml").to_string_lossy().to_string(),
+            source_url: None,
+            node_count: 1,
+            proxy_group_count: 1,
+            updated_at: String::new(),
+            digest: String::new(),
+        };
+        let source_raw = r#"
+proxies:
+  - name: Node A
+    type: ss
+    server: node.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: Proxies
+    type: select
+    proxies: [Node A]
+rules:
+  - MATCH,Proxies
+"#;
+        fs::write(&profile.path, source_raw).expect("profile source");
+        let make_rule = |id: &str, condition: &str, target: &str, priority: u32| UserRuleRecord {
+            id: id.to_string(),
+            scope: UserRuleScope::Global,
+            kind: "DOMAIN-SUFFIX".to_string(),
+            condition: condition.to_string(),
+            target: target.to_string(),
+            option: None,
+            enabled: true,
+            priority,
+            label: String::new(),
+            source: "website".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        write_aegos_user_rule_store(
+            &root,
+            &UserRuleStore {
+                version: 1,
+                rules: vec![
+                    make_rule("valid", "example.com", "Proxies", 1),
+                    make_rule("missing", "missing.example", "Removed Group", 2),
+                ],
+            },
+        )
+        .expect("rule store");
+        let mut runtime: YamlValue = serde_yaml::from_str(source_raw).expect("runtime source");
+        apply_aegos_user_rule_overlay(&root, &profile, &mut runtime).expect("overlay");
+        let rules = yaml_sequence(&runtime, "rules").expect("runtime rules");
+        assert!(rules.iter().any(|rule| rule.as_str() == Some("DOMAIN-SUFFIX,example.com,Proxies")));
+        assert!(!rules.iter().any(|rule| rule.as_str().is_some_and(|raw| raw.contains("missing.example"))));
+        assert_eq!(fs::read_to_string(&profile.path).expect("source remains"), source_raw);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn interrupted_rule_store_transaction_restores_previous_store_on_startup() {
+        let root = std::env::temp_dir().join(format!("aegos-rule-transaction-{}", hex_random(8)));
+        fs::create_dir_all(&root).expect("temp root");
+        let previous = UserRuleStore::default();
+        let candidate = UserRuleStore {
+            version: 1,
+            rules: vec![UserRuleRecord {
+                id: "candidate".to_string(),
+                scope: UserRuleScope::Global,
+                kind: "DOMAIN-SUFFIX".to_string(),
+                condition: "example.com".to_string(),
+                target: "Proxies".to_string(),
+                option: None,
+                enabled: true,
+                priority: 1,
+                label: String::new(),
+                source: "website".to_string(),
+                created_at: String::new(),
+                updated_at: String::new(),
+            }],
+        };
+        stage_routing_store_transaction(&root, "test", "profile", &previous, &candidate)
+            .expect("stage");
+        assert_eq!(read_aegos_user_rule_store(&root).rules.len(), 1);
+        assert_eq!(
+            read_routing_deployment_report(&root).get("status").and_then(JsonValue::as_str),
+            Some("promoted")
+        );
+        assert!(recover_interrupted_routing_store_transaction(&root).expect("recover"));
+        assert!(read_aegos_user_rule_store(&root).rules.is_empty());
+        assert!(!routing_store_rollback_path(&root).exists());
+        assert_eq!(
+            read_routing_deployment_report(&root).get("status").and_then(JsonValue::as_str),
+            Some("recovered-after-interruption")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 }
 
 fn default_settings() -> Settings {
@@ -5129,7 +4338,7 @@ fn yaml_proxy_to_json(proxy: &YamlValue) -> Option<JsonValue> {
         .get(yaml_key("name"))
         .and_then(|value| value.as_str())
         .unwrap_or("Proxy");
-    if is_subscription_metadata_node_name(name) {
+    if config_domain::is_subscription_metadata_node_name(name) {
         return None;
     }
     let server = map
@@ -5170,67 +4379,6 @@ fn is_proxy_group_reference_item(item: &JsonValue) -> bool {
             .unwrap_or(false)
 }
 
-fn validate_proxy_selection_from_groups(
-    groups: &JsonValue,
-    group: &str,
-    proxy: &str,
-) -> Result<JsonValue, String> {
-    let group = group.trim();
-    let proxy = proxy.trim();
-    if group.is_empty() {
-        return Err("Node switch preflight failed: missing proxy group".to_string());
-    }
-    if proxy.is_empty() {
-        return Err("Node switch preflight failed: missing proxy name".to_string());
-    }
-    let groups = groups.as_array().ok_or_else(|| {
-        "Node switch preflight failed: proxy group list is unavailable".to_string()
-    })?;
-    let Some(target_group) = groups
-        .iter()
-        .find(|item| item.get("name").and_then(JsonValue::as_str) == Some(group))
-    else {
-        let available = groups
-            .iter()
-            .filter_map(|item| item.get("name").and_then(JsonValue::as_str))
-            .take(8)
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(format!(
-            "Node switch preflight failed: group '{group}' was not found. Available groups: {available}"
-        ));
-    };
-    let items = target_group
-        .get("items")
-        .and_then(JsonValue::as_array)
-        .ok_or_else(|| format!("Node switch preflight failed: group '{group}' has no node list"))?;
-    let Some(target_proxy) = items.iter().find(|item| {
-        item.get("name").and_then(JsonValue::as_str) == Some(proxy)
-            || item.get("realProxyName").and_then(JsonValue::as_str) == Some(proxy)
-    }) else {
-        let available = items
-            .iter()
-            .filter_map(|item| item.get("name").and_then(JsonValue::as_str))
-            .take(8)
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(format!(
-            "Node switch preflight failed: proxy '{proxy}' is not in group '{group}'. Available nodes: {available}"
-        ));
-    };
-    Ok(json!({
-        "ok": true,
-        "group": group,
-        "proxy": proxy,
-        "groupType": target_group.get("type").and_then(JsonValue::as_str).unwrap_or(""),
-        "realProxyName": target_proxy
-            .get("realProxyName")
-            .and_then(JsonValue::as_str)
-            .or_else(|| target_proxy.get("name").and_then(JsonValue::as_str))
-            .unwrap_or(proxy)
-    }))
-}
-
 fn run_powershell(script: &str) -> Result<String, String> {
     let wrapped_script = format!(
         "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;\n{script}"
@@ -5253,9 +4401,10 @@ fn run_powershell(script: &str) -> Result<String, String> {
     }
 }
 
+static IS_PROCESS_ELEVATED: OnceLock<bool> = OnceLock::new();
+
 fn is_process_elevated() -> bool {
-    static IS_ELEVATED: OnceLock<bool> = OnceLock::new();
-    *IS_ELEVATED.get_or_init(|| {
+    *IS_PROCESS_ELEVATED.get_or_init(|| {
         run_powershell(
             r#"
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -5265,6 +4414,10 @@ if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
         .map(|output| output.trim().eq_ignore_ascii_case("true"))
         .unwrap_or(false)
     })
+}
+
+fn cached_process_elevated() -> Option<bool> {
+    IS_PROCESS_ELEVATED.get().copied()
 }
 
 #[cfg(windows)]
@@ -5591,91 +4744,6 @@ if (Test-Path -LiteralPath $speedMarkerPath) {{ throw 'Speed test firewall marke
     }
 }
 
-fn build_speed_test_firewall_script(
-    enable: bool,
-    user_data: &Path,
-    core_path: &Path,
-    ports: &[u16],
-) -> String {
-    let plan = core_runtime::CoreFirewallPolicyPlan::speed_test();
-    let group = plan.group_name;
-    let exe = std::env::current_exe().unwrap_or_default();
-    let programs = core_runtime::firewall_program_paths([exe, core_path.to_path_buf()]);
-    let program_array = core_runtime::powershell_string_array_literal(&programs);
-    let port_list = core_runtime::firewall_remote_port_list(ports);
-    let marker = plan.state_path(user_data);
-    if enable {
-        format!(
-            r#"
-$ErrorActionPreference = 'Stop'
-$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{ throw 'Speed test firewall rules require administrator permission' }}
-$markerPath = '{}'
-$group = '{}'
-$rulePrefix = "$group Allow"
-$programs = {}
-$portList = '{}'
-function Invoke-AegosNetsh {{
-  $output = & netsh @args 2>&1
-  if ($LASTEXITCODE -ne 0) {{
-    $message = ($output | Out-String).Trim()
-    if (-not $message) {{ $message = "netsh failed with exit code $LASTEXITCODE" }}
-    throw $message
-  }}
-  return ($output | Out-String).Trim()
-}}
-New-Item -ItemType Directory -Path (Split-Path -Parent $markerPath) -Force | Out-Null
-try {{
-  Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-  if ($programs.Count -lt 1) {{ throw 'No Aegos executable paths are available for speed-test firewall allow rules' }}
-  $index = 1
-  foreach ($program in $programs) {{
-    if (-not (Test-Path -LiteralPath $program)) {{ throw "Speed-test firewall allow target missing: $program" }}
-    Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix Program $index" dir=out action=allow "program=$program" enable=yes profile=any | Out-Null
-    $index += 1
-  }}
-  Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix DNS UDP" dir=out action=allow protocol=UDP remoteport=53 enable=yes profile=any | Out-Null
-  Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix DNS TCP" dir=out action=allow protocol=TCP remoteport=53 enable=yes profile=any | Out-Null
-  if ($portList) {{
-    Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix Node TCP" dir=out action=allow protocol=TCP remoteport=$portList enable=yes profile=any | Out-Null
-    Invoke-AegosNetsh advfirewall firewall add rule "name=$rulePrefix Node UDP" dir=out action=allow protocol=UDP remoteport=$portList enable=yes profile=any | Out-Null
-  }}
-  $rules = @(Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Where-Object {{ $_.Direction -eq 'Outbound' -and $_.Action -eq 'Allow' -and $_.Enabled -eq 'True' }})
-  if ($rules.Count -lt 3) {{ throw 'Speed-test firewall did not create the required temporary allow rules' }}
-  Set-Content -LiteralPath $markerPath -Value (Get-Date).ToString('o') -Encoding UTF8
-}} catch {{
-  $failure = $_.Exception.Message
-  try {{
-    Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-    if (Test-Path -LiteralPath $markerPath) {{ Remove-Item -LiteralPath $markerPath -Force }}
-  }} catch {{}}
-  throw "Speed test firewall enable failed: $failure"
-}}
-"#,
-            core_runtime::powershell_single_quote_escape(marker.to_string_lossy()),
-            core_runtime::powershell_single_quote_escape(&group),
-            program_array,
-            core_runtime::powershell_single_quote_escape(port_list)
-        )
-    } else {
-        format!(
-            r#"
-$ErrorActionPreference = 'Stop'
-$group = '{}'
-$rulePrefix = "$group Allow"
-$markerPath = '{}'
-Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-if (Test-Path -LiteralPath $markerPath) {{ Remove-Item -LiteralPath $markerPath -Force }}
-$rules = @(Get-NetFirewallRule -DisplayName "$rulePrefix *" -ErrorAction SilentlyContinue)
-if ($rules.Count -gt 0) {{ throw 'Speed test firewall rules were not fully removed' }}
-if (Test-Path -LiteralPath $markerPath) {{ throw 'Speed test firewall marker was not removed' }}
-"#,
-            core_runtime::powershell_single_quote_escape(&group),
-            core_runtime::powershell_single_quote_escape(marker.to_string_lossy())
-        )
-    }
-}
-
 fn takeover_failure_message(
     transaction: system_takeover::SystemTakeoverTransaction,
     reason: impl Into<String>,
@@ -5925,6 +4993,7 @@ fn direct_connectivity_probe() -> Result<String, String> {
 
 impl CoreManager {
     fn new(app: &AppHandle) -> Result<Self, String> {
+        let startup_started = Instant::now();
         let app_data = app.path().app_data_dir().unwrap_or_else(|_| {
             std::env::current_dir()
                 .unwrap_or_default()
@@ -5939,12 +5008,18 @@ impl CoreManager {
         let home_dir = app_data.join("core-home");
         let profile_dir = app_data.join("profiles");
         let settings_path = app_data.join("settings.json");
+        let speed_health_path = app_data.join("speed-health.json");
         let proxy_snapshot_path = app_data.join("system-proxy-snapshot.json");
         ensure_dir(&home_dir)?;
         ensure_dir(&profile_dir)?;
+        let deployment_recovery_started = Instant::now();
         let recovered_deployments =
             config_deployment::recover_interrupted_deployments(&app_data, &profile_dir);
+        let recovered_routing_store = recover_interrupted_routing_store_transaction(&app_data)?;
+        let deployment_recovery_ms = deployment_recovery_started.elapsed().as_millis() as u64;
         let settings = load_settings(&settings_path);
+        let initial_speed_health =
+            load_profile_speed_health(&speed_health_path, &settings.active_profile_id);
         let mut manager = Self {
             app_data,
             home_dir,
@@ -5952,6 +5027,7 @@ impl CoreManager {
             core_path,
             core_sha256: String::new(),
             settings_path,
+            speed_health_path,
             proxy_snapshot_path,
             settings,
             process: None,
@@ -5959,8 +5035,14 @@ impl CoreManager {
             runtime_config_digest: None,
             traffic_takeover: false,
             logs: Arc::new(Mutex::new(Vec::new())),
-            last_traffic: json!({ "up": 0, "down": 0, "upTotal": 0, "downTotal": 0 }),
-            speed_test: Arc::new(Mutex::new(SpeedTestState::default())),
+            last_traffic: TrafficSnapshot::default(),
+            speed_test: Arc::new(Mutex::new(SpeedTestState {
+                health: initial_speed_health,
+                ..SpeedTestState::default()
+            })),
+            speed_target_catalog: None,
+            startup_timings_ms: vec![("deployment-recovery".to_string(), deployment_recovery_ms)],
+            profile_metadata_errors: HashMap::new(),
             lan_ip_cache: "-".to_string(),
             lan_ip_checked_at: 0,
             outbound_ip_cache: "-".to_string(),
@@ -5968,21 +5050,31 @@ impl CoreManager {
             outbound_ip_query_generation: 0,
             reliability_failures: 0,
         };
-        manager.core_sha256 = if manager.core_path.exists() {
-            sha256_file(&manager.core_path)
-        } else {
-            String::new()
-        };
+        let step_started = Instant::now();
         manager.recover_interrupted_system_takeover();
+        manager.startup_timings_ms.push(("takeover-recovery".to_string(), step_started.elapsed().as_millis() as u64));
+        let step_started = Instant::now();
         manager.ensure_direct_profile()?;
+        manager.startup_timings_ms.push(("direct-profile".to_string(), step_started.elapsed().as_millis() as u64));
+        let step_started = Instant::now();
         manager.repair_profile_metadata();
+        manager.startup_timings_ms.push(("profile-metadata".to_string(), step_started.elapsed().as_millis() as u64));
+        let step_started = Instant::now();
         manager.save_settings()?;
+        manager.startup_timings_ms.push(("settings-save".to_string(), step_started.elapsed().as_millis() as u64));
+        manager.startup_timings_ms.push(("total".to_string(), startup_started.elapsed().as_millis() as u64));
         for operation in recovered_deployments {
             manager.add_log(
                 format!(
                     "A previous {operation} deployment did not finish runtime verification and its previous configuration was restored."
                 ),
                 "warn",
+            );
+        }
+        if recovered_routing_store {
+            manager.add_log(
+                "A previous rule deployment was interrupted. The previous user-rule store was restored before startup.",
+                "warning",
             );
         }
         Ok(manager)
@@ -6129,14 +5221,14 @@ impl CoreManager {
     ) -> Result<config_deployment::ConfigDeploymentTransaction, String> {
         let candidate = serde_json::to_string_pretty(&self.settings)
             .map_err(|err| format!("{operation} settings serialization failed: {err}"))?;
-        config_deployment::ConfigDeploymentTransaction::stage(
-            &self.app_data,
+        let candidate = config_deployment::ConfigDeploymentCandidate::new(
             &self.app_data,
             &self.settings_path,
             operation,
             "settings",
-            &candidate,
-        )
+            candidate,
+        )?;
+        config_deployment::ConfigDeploymentTransaction::stage(&self.app_data, candidate)
     }
 
     fn save_system_proxy_snapshot(
@@ -6153,8 +5245,12 @@ impl CoreManager {
     }
 
     fn core_runtime_info(&self) -> JsonValue {
-        core_runtime::CoreRuntimeContract::default()
-            .identity_json(&self.core_runtime_paths(), &self.core_sha256)
+        let mut info = core_runtime::CoreRuntimeContract::default()
+            .identity_json(&self.core_runtime_paths(), &self.core_sha256);
+        if let Some(map) = info.as_object_mut() {
+            map.insert("startupTimingsMs".to_string(), json!(self.startup_timings_ms));
+        }
+        info
     }
 
     fn core_runtime_paths(&self) -> core_runtime::CoreRuntimePaths {
@@ -6215,7 +5311,8 @@ impl CoreManager {
             .active_profile()
             .ok_or_else(|| "TUN verification failed: no active profile".to_string())?;
         let rendered = self.render_runtime_profile(&profile)?;
-        let candidate = profile_compiler::verify_tun_candidate(&rendered.yaml, expected_enabled)?;
+        let candidate =
+            profile_compiler::verify_tun_candidate(&rendered.runtime_yaml, expected_enabled)?;
         if !require_runtime {
             return Ok(json!({
                 "candidate": candidate,
@@ -6288,6 +5385,7 @@ impl CoreManager {
     }
 
     fn repair_profile_metadata(&mut self) -> usize {
+        self.profile_metadata_errors.clear();
         let mut repaired = Vec::new();
         let mut failed = Vec::new();
         for profile in &mut self.settings.profiles {
@@ -6307,7 +5405,11 @@ impl CoreManager {
                         ));
                     }
                 }
-                Err(err) => failed.push(format!("{}: {err}", profile.name)),
+                Err(err) => {
+                    self.profile_metadata_errors
+                        .insert(profile.id.clone(), err.clone());
+                    failed.push(format!("{}: {err}", profile.name));
+                }
             }
         }
         for line in &repaired {
@@ -6386,24 +5488,21 @@ impl CoreManager {
         Self::validate_port_settings_snapshot(&candidate)
     }
 
-    fn rollback_settings_after_failure(
+    fn restore_settings_snapshot(
         &mut self,
         previous_settings: Settings,
         restart_previous_runtime: bool,
-        reason: String,
-    ) -> String {
-        self.add_log(
-            format!("Settings update failed; rolling back: {reason}"),
-            "error",
-        );
+    ) -> Result<(), String> {
+        let mut rollback_errors = Vec::new();
         if restart_previous_runtime && self.process.is_some() {
-            let _ = self.stop();
+            if let Err(err) = self.stop() {
+                rollback_errors.push(format!("stop current runtime failed: {err}"));
+            }
             thread::sleep(Duration::from_millis(
                 core_runtime::RUNTIME_RESTART_SETTLE_MS,
             ));
         }
         self.settings = previous_settings;
-        let mut rollback_errors = Vec::new();
         if let Err(err) = self.save_settings() {
             rollback_errors.push(format!("save failed: {err}"));
         }
@@ -6416,12 +5515,27 @@ impl CoreManager {
             }
         }
         if rollback_errors.is_empty() {
-            format!("{reason}; settings rolled back")
+            Ok(())
         } else {
-            format!(
-                "{reason}; settings rollback had errors: {}",
-                rollback_errors.join("; ")
-            )
+            Err(rollback_errors.join("; "))
+        }
+    }
+
+    fn rollback_settings_after_failure(
+        &mut self,
+        previous_settings: Settings,
+        restart_previous_runtime: bool,
+        reason: String,
+    ) -> String {
+        self.add_log(
+            format!("Settings update failed; rolling back: {reason}"),
+            "error",
+        );
+        match self.restore_settings_snapshot(previous_settings, restart_previous_runtime) {
+            Ok(()) => format!("{reason}; settings rolled back"),
+            Err(rollback_err) => {
+                format!("{reason}; settings rollback had errors: {rollback_err}")
+            }
         }
     }
 
@@ -6442,13 +5556,19 @@ impl CoreManager {
     }
 
     fn routing_apply_metadata(&self) -> Option<JsonValue> {
+        if let Some(metadata) = fs::read_to_string(routing_store_undo_path(&self.app_data))
+            .ok()
+            .and_then(|raw| serde_json::from_str::<JsonValue>(&raw).ok())
+        {
+            return Some(metadata);
+        }
         let (_, backup_meta_path) = self.routing_apply_backup_paths();
         fs::read_to_string(&backup_meta_path)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
     }
 
-    fn apply_routing_drafts(
+    fn apply_user_rule_store_drafts(
         &mut self,
         drafts: Vec<RoutingDraftInput>,
     ) -> Result<JsonValue, String> {
@@ -6462,104 +5582,534 @@ impl CoreManager {
             .active_profile()
             .ok_or_else(|| "No active profile; routing rules cannot be applied.".to_string())?;
         if profile.profile_type == "builtin" {
-            return Err(
-                "The built-in direct profile cannot be edited; import a subscription first."
-                    .to_string(),
-            );
+            return Err("The built-in direct profile cannot be edited; import a subscription first.".to_string());
         }
-        let profile_path = PathBuf::from(&profile.path);
-        let previous_raw = fs::read_to_string(&profile_path)
-            .map_err(|err| format!("鍒嗘祦瑙勫垯搴旂敤澶辫触锛氳鍙栧綋鍓嶉厤缃け璐ワ細{err}"))?;
-        let mut source: YamlValue = serde_yaml::from_str(&previous_raw).map_err(|err| {
-            format!("Routing apply failed: active profile YAML parse failed: {err}")
-        })?;
+        let raw = fs::read_to_string(&profile.path)
+            .map_err(|err| format!("Routing apply failed: profile read failed: {err}"))?;
+        let source: YamlValue = serde_yaml::from_str(&raw)
+            .map_err(|err| format!("Routing apply failed: active profile YAML parse failed: {err}"))?;
         let targets = routing_rule_target_catalog(&source);
-        let mut applied_rules = Vec::new();
-        let mut applied_details = Vec::new();
+        let mut store = read_aegos_user_rule_store(&self.app_data);
+        let previous_store = store.clone();
+        let mut applied = Vec::new();
         for draft in drafts {
-            let (rule, detail) = normalize_routing_draft_rule(&draft, &targets)?;
-            applied_rules.push(rule);
-            applied_details.push(detail);
-        }
-        let Some(config) = source.as_mapping_mut() else {
-            return Err("Routing apply failed: config root is not a YAML object.".to_string());
-        };
-        let rules = ensure_yaml_sequence(config, "rules");
-        for rule in &applied_rules {
-            let duplicate = rules
-                .iter()
-                .filter_map(YamlValue::as_str)
-                .any(|existing| existing.trim() == rule);
+            let scope = if draft.scope.as_deref() == Some("global") {
+                UserRuleScope::Global
+            } else {
+                UserRuleScope::Profile { profile_id: profile.id.clone() }
+            };
+            let (raw_rule, detail) = normalize_routing_draft_rule(&draft, &targets)?;
+            let matcher_kind = detail.get("kind").and_then(JsonValue::as_str).unwrap_or_default();
+            let matcher_condition = detail.get("condition").and_then(JsonValue::as_str).unwrap_or_default();
+            let duplicate = store.rules.iter().any(|rule| {
+                rule.scope == scope
+                    && rule.kind.eq_ignore_ascii_case(matcher_kind)
+                    && rule.condition.eq_ignore_ascii_case(matcher_condition)
+            });
             if duplicate {
-                return Err(format!("鍒嗘祦瑙勫垯宸插瓨鍦紝鏈噸澶嶅啓鍏ワ細{rule}"));
+                return Err(format!("当前作用范围内已有“{matcher_condition}”规则，请编辑原规则，不要重复添加。"));
             }
+            let now = now_iso();
+            let option = detail
+                .get("option")
+                .and_then(JsonValue::as_str)
+                .map(str::to_string);
+            store.rules.push(UserRuleRecord {
+                id: format!("usr-{:016x}", random::<u64>()),
+                scope,
+                kind: detail.get("kind").and_then(JsonValue::as_str).unwrap_or_default().to_string(),
+                condition: detail.get("condition").and_then(JsonValue::as_str).unwrap_or_default().to_string(),
+                target: detail.get("target").and_then(JsonValue::as_str).unwrap_or_default().to_string(),
+                option,
+                enabled: true,
+                priority: (store.rules.len() as u32).saturating_add(1),
+                label: detail.get("label").and_then(JsonValue::as_str).unwrap_or_default().to_string(),
+                source: draft.source.as_deref().unwrap_or("user").to_string(),
+                created_at: now.clone(),
+                updated_at: now,
+            });
+            applied.push(raw_rule);
         }
-        let insert_at = rules
-            .iter()
-            .position(|value| {
-                value
-                    .as_str()
-                    .map(|rule| rule.trim_start().to_ascii_uppercase().starts_with("MATCH,"))
-                    .unwrap_or(false)
-            })
-            .unwrap_or(rules.len());
-        for (offset, rule) in applied_rules.iter().enumerate() {
-            rules.insert(insert_at + offset, yaml_str(rule));
-        }
-        let settings = self.settings.clone();
-        let runtime =
-            config_pipeline::preflight_profile_source(source.clone(), &profile, &settings)
-                .map_err(|err| format!("Routing preflight failed: {err}"))?;
-        let runtime_preflight = runtime.report;
-        let deployment =
-            self.deploy_profile_config(&profile, &source, &previous_raw, "Routing drafts apply")?;
-        let (backup_path, backup_meta_path) = self.routing_apply_backup_paths();
-        atomic_write_text_confined(&backup_path, &self.app_data, &previous_raw)?;
-        let previous_digest = sha256_text(&previous_raw);
-        let next_digest = deployment
-            .get("digest")
-            .and_then(JsonValue::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let metadata = json!({
-            "profileId": profile.id,
-            "profileName": profile.name,
-            "createdAt": now_iso(),
-            "previousDigest": previous_digest,
-            "nextDigest": next_digest,
-            "appliedRules": applied_rules,
-            "appliedCount": applied_details.len()
-        });
-        atomic_write_text_confined(
-            &backup_meta_path,
+        store = store.normalized();
+        stage_routing_store_transaction(
             &self.app_data,
-            &serde_json::to_string_pretty(&metadata).map_err(|err| err.to_string())?,
+            "apply-drafts",
+            &profile.id,
+            &previous_store,
+            &store,
         )?;
+        let deployment = (|| -> Result<JsonValue, String> {
+            let plan = self.render_runtime_profile(&profile)?;
+            let was_running = self.process.is_some();
+            let reload = if was_running {
+                self.hot_reload_runtime_plan(&profile, &plan)?
+            } else {
+                json!({ "ok": true, "skipped": true, "reason": "core is not running" })
+            };
+            Ok(json!({
+                "runtimePreflight": plan.validation_json(),
+                "deploymentValidation": {
+                    "candidateValidated": true,
+                    "atomicPromotion": true,
+                    "hotReloadRan": was_running,
+                    "controllerReady": true,
+                    "runtimeIdentity": !was_running || self.runtime_profile_id.as_deref() == Some(profile.id.as_str()),
+                    "rollbackReady": true,
+                    "verifiedAt": now_iso(),
+                    "hotReload": reload
+                }
+            }))
+        })();
+        let deployment = match deployment {
+            Ok(value) => value,
+            Err(err) => {
+                let restore_runtime = if self.process.is_some() {
+                    self.hot_reload_profile(&profile).map(|_| ())
+                } else {
+                    Ok(())
+                };
+                let restore_store = rollback_routing_store_transaction(
+                    &self.app_data,
+                    "apply-drafts",
+                    &profile.id,
+                    &previous_store,
+                    &err,
+                    restore_runtime.is_ok(),
+                );
+                return Err(match (restore_store, restore_runtime) {
+                    (Ok(()), Ok(())) => format!("Routing rule apply failed and the previous rule set was restored: {err}"),
+                    (store_err, runtime_err) => format!(
+                        "Routing rule apply failed: {err}; rule-store rollback: {}; runtime rollback: {}",
+                        store_err.err().map(|value| value.to_string()).unwrap_or_else(|| "ok".to_string()),
+                        runtime_err.err().map(|value| value.to_string()).unwrap_or_else(|| "ok".to_string())
+                    )
+                });
+            }
+        };
+        finish_routing_store_transaction(
+            &self.app_data,
+            "apply-drafts",
+            &profile.id,
+            json!({ "profileName": profile.name, "ruleCount": applied.len() }),
+        )?;
+        write_routing_store_undo(&self.app_data, &profile, &previous_store, applied.len())?;
         self.add_log(
-            format!(
-                "Routing drafts applied: {} rule(s), profile {}, digest {}",
-                applied_details.len(),
-                sanitize_sensitive_text(&profile.name),
-                &next_digest[..12.min(next_digest.len())]
-            ),
+            format!("Aegos user rules applied: {} rule(s) for profile {}", applied.len(), profile.name),
             "info",
         );
-        add_routing_user_rules(&self.app_data, &profile.id, &applied_rules)?;
         Ok(json!({
             "ok": true,
             "profileId": profile.id,
             "profileName": profile.name,
-            "appliedCount": applied_details.len(),
-            "rules": applied_details,
-            "runtimePreflight": runtime_preflight,
-            "deploymentValidation": deployment.get("deploymentValidation").cloned().unwrap_or_else(|| json!({})),
-            "deploymentReport": deployment.get("deploymentReport").cloned().unwrap_or_else(|| json!({})),
+            "appliedCount": applied.len(),
+            "appliedRules": applied,
+            "ruleScope": "profile",
             "rollbackAvailable": true,
-            "nextStep": "Applied. You can undo the latest routing apply from the routing page."
+            "runtimePreflight": deployment.get("runtimePreflight").cloned().unwrap_or_else(|| json!({})),
+            "deploymentValidation": deployment.get("deploymentValidation").cloned().unwrap_or_else(|| json!({})),
+            "nextStep": "Rules were saved in Aegos and overlaid on the active subscription at runtime."
+        }))
+    }
+
+    fn apply_user_rule_store_edit(&mut self, edit: RoutingRuleEditInput) -> Result<JsonValue, String> {
+        let profile = self
+            .active_profile()
+            .ok_or_else(|| "No active profile; routing rules cannot be changed.".to_string())?;
+        if profile.profile_type == "builtin" {
+            return Err("The built-in direct profile cannot be edited; import a subscription first.".to_string());
+        }
+        let action = RoutingRuleAction::parse(&edit.action)?;
+        let rule_id = edit.rule_id.as_deref().unwrap_or_default().trim();
+        let raw = edit.raw.as_deref().unwrap_or_default().trim();
+        let mut store = read_aegos_user_rule_store(&self.app_data);
+        let previous_store = store.clone();
+        let is_current_scope = |rule: &UserRuleRecord| {
+            if !rule_id.is_empty() {
+                return rule.id == rule_id && rule.scope.applies_to(&profile.id);
+            }
+            rule.scope.applies_to(&profile.id) && rule.raw().trim() == raw
+        };
+        let position = store.rules.iter().position(is_current_scope);
+        if action.requires_existing_user_rule() && position.is_none() {
+            return Err("Only Aegos user rules can be managed here.".to_string());
+        }
+        let source_raw = fs::read_to_string(&profile.path)
+            .map_err(|err| format!("Routing rule edit failed: profile read failed: {err}"))?;
+        let source: YamlValue = serde_yaml::from_str(&source_raw)
+            .map_err(|err| format!("Routing rule edit failed: profile YAML parse failed: {err}"))?;
+        let targets = routing_rule_target_catalog(&source);
+        match action {
+            RoutingRuleAction::Add => {
+                let (_next_raw, detail) = normalize_routing_draft_rule(&edit.draft(), &targets)?;
+                let next_scope = if edit.scope.as_deref() == Some("global") {
+                    UserRuleScope::Global
+                } else {
+                    UserRuleScope::Profile { profile_id: profile.id.clone() }
+                };
+                if store.rules.iter().any(|rule| {
+                    rule.scope == next_scope
+                        && rule.kind.eq_ignore_ascii_case(detail.get("kind").and_then(JsonValue::as_str).unwrap_or_default())
+                        && rule.condition.eq_ignore_ascii_case(detail.get("condition").and_then(JsonValue::as_str).unwrap_or_default())
+                }) {
+                    return Err("当前作用范围内已有相同匹配条件，请编辑原规则。".to_string());
+                }
+                let now = now_iso();
+                store.rules.push(UserRuleRecord {
+                    id: format!("usr-{:016x}", random::<u64>()),
+                    scope: next_scope,
+                    kind: detail.get("kind").and_then(JsonValue::as_str).unwrap_or_default().to_string(),
+                    condition: detail.get("condition").and_then(JsonValue::as_str).unwrap_or_default().to_string(),
+                    target: detail.get("target").and_then(JsonValue::as_str).unwrap_or_default().to_string(),
+                    option: detail.get("option").and_then(JsonValue::as_str).map(str::to_string),
+                    enabled: true,
+                    priority: (store.rules.len() as u32).saturating_add(1),
+                    label: detail.get("label").and_then(JsonValue::as_str).unwrap_or_default().to_string(),
+                    source: edit.draft().source.unwrap_or_else(|| "user".to_string()),
+                    created_at: now.clone(),
+                    updated_at: now,
+                });
+            }
+            RoutingRuleAction::Edit => {
+                let (_next_raw, detail) = normalize_routing_draft_rule(&edit.draft(), &targets)?;
+                let next_scope = if edit.scope.as_deref() == Some("global") {
+                    UserRuleScope::Global
+                } else {
+                    UserRuleScope::Profile { profile_id: profile.id.clone() }
+                };
+                if store.rules.iter().enumerate().any(|(index, rule)| index != position.unwrap_or(usize::MAX)
+                    && rule.scope == next_scope
+                    && rule.kind.eq_ignore_ascii_case(detail.get("kind").and_then(JsonValue::as_str).unwrap_or_default())
+                    && rule.condition.eq_ignore_ascii_case(detail.get("condition").and_then(JsonValue::as_str).unwrap_or_default())) {
+                    return Err("当前作用范围内已有相同匹配条件，请编辑原规则。".to_string());
+                }
+                let rule = &mut store.rules[position.expect("checked above")];
+                rule.kind = detail.get("kind").and_then(JsonValue::as_str).unwrap_or_default().to_string();
+                rule.condition = detail.get("condition").and_then(JsonValue::as_str).unwrap_or_default().to_string();
+                rule.target = detail.get("target").and_then(JsonValue::as_str).unwrap_or_default().to_string();
+                rule.option = detail.get("option").and_then(JsonValue::as_str).map(str::to_string);
+                rule.label = detail.get("label").and_then(JsonValue::as_str).unwrap_or_default().to_string();
+                rule.source = edit.draft().source.unwrap_or_else(|| "user".to_string());
+                rule.scope = next_scope;
+                rule.updated_at = now_iso();
+            }
+            RoutingRuleAction::Delete => {
+                store.rules.remove(position.expect("checked above"));
+            }
+            RoutingRuleAction::Enable | RoutingRuleAction::Disable => {
+                let rule = &mut store.rules[position.expect("checked above")];
+                rule.enabled = action == RoutingRuleAction::Enable;
+                rule.updated_at = now_iso();
+            }
+            RoutingRuleAction::Up | RoutingRuleAction::Down => {
+                let index = position.expect("checked above");
+                let mut scoped = store.rules.iter().enumerate()
+                    .filter(|(_, rule)| rule.enabled && rule.scope.applies_to(&profile.id))
+                    .map(|(index, rule)| (index, rule.priority))
+                    .collect::<Vec<_>>();
+                scoped.sort_by_key(|(_, priority)| *priority);
+                let current = scoped.iter().position(|(candidate, _)| *candidate == index)
+                    .ok_or_else(|| "User rule order target was not found.".to_string())?;
+                let neighbor = if action == RoutingRuleAction::Up {
+                    current.checked_sub(1)
+                } else if current + 1 < scoped.len() {
+                    Some(current + 1)
+                } else {
+                    None
+                };
+                if let Some(neighbor) = neighbor {
+                    let other_index = scoped[neighbor].0;
+                    let current_priority = store.rules[index].priority;
+                    store.rules[index].priority = store.rules[other_index].priority;
+                    store.rules[other_index].priority = current_priority;
+                    store.rules[index].updated_at = now_iso();
+                    store.rules[other_index].updated_at = now_iso();
+                }
+            }
+        }
+        store = store.normalized();
+        stage_routing_store_transaction(
+            &self.app_data,
+            "edit-rule",
+            &profile.id,
+            &previous_store,
+            &store,
+        )?;
+        let deployment = self.render_runtime_profile(&profile).and_then(|plan| {
+            let was_running = self.process.is_some();
+            let reload = if was_running {
+                self.hot_reload_runtime_plan(&profile, &plan)?
+            } else {
+                json!({ "ok": true, "skipped": true, "reason": "core is not running" })
+            };
+            Ok(json!({ "runtimePreflight": plan.validation_json(), "hotReload": reload, "hotReloadRan": was_running }))
+        });
+        if let Err(err) = deployment {
+            let restore_runtime = if self.process.is_some() { self.hot_reload_profile(&profile).map(|_| ()) } else { Ok(()) };
+            let restore_store = rollback_routing_store_transaction(
+                &self.app_data,
+                "edit-rule",
+                &profile.id,
+                &previous_store,
+                &err,
+                restore_runtime.is_ok(),
+            );
+            return Err(format!(
+                "Routing rule change failed and rollback was attempted: {err}; store: {}; runtime: {}",
+                restore_store.err().unwrap_or_else(|| "ok".to_string()),
+                restore_runtime.err().unwrap_or_else(|| "ok".to_string())
+            ));
+        }
+        finish_routing_store_transaction(
+            &self.app_data,
+            "edit-rule",
+            &profile.id,
+            json!({ "action": action.as_str() }),
+        )?;
+        Ok(json!({
+            "ok": true,
+            "profileId": profile.id,
+            "action": action.as_str(),
+            "changed": true,
+            "deploymentValidation": { "candidateValidated": true, "atomicPromotion": true, "rollbackReady": true, "verifiedAt": now_iso() }
+        }))
+    }
+
+    fn resolve_unbound_user_rule(
+        &mut self,
+        input: UnboundRuleResolutionInput,
+    ) -> Result<JsonValue, String> {
+        let rule_id = input.rule_id.trim();
+        if rule_id.is_empty() {
+            return Err("缺少要处理的规则编号。".to_string());
+        }
+        let action = input.action.trim().to_ascii_lowercase();
+        if !matches!(action.as_str(), "rebind" | "global" | "delete") {
+            return Err("不支持的解绑规则操作。".to_string());
+        }
+        let mut store = read_aegos_user_rule_store(&self.app_data);
+        let previous_store = store.clone();
+        let position = store
+            .rules
+            .iter()
+            .position(|rule| rule.id == rule_id)
+            .ok_or_else(|| "这条规则已不存在，请刷新后重试。".to_string())?;
+        let known_profiles = self
+            .settings
+            .profiles
+            .iter()
+            .map(|profile| profile.id.as_str())
+            .collect::<HashSet<_>>();
+        let is_unbound = store.rules[position]
+            .scope
+            .profile_id()
+            .is_some_and(|profile_id| !known_profiles.contains(profile_id));
+        if !is_unbound {
+            return Err("这条规则仍绑定有效订阅，无需重新绑定。".to_string());
+        }
+
+        let mut runtime_profile = None;
+        let previous_scope = store.rules[position].scope.clone();
+        let previous_target = store.rules[position].target.clone();
+        if action == "delete" {
+            store.rules.remove(position);
+        } else {
+            let profile = self
+                .active_profile()
+                .ok_or_else(|| "请先启用一个订阅，再重新绑定规则。".to_string())?;
+            if profile.profile_type == "builtin" {
+                return Err("当前是内置直连配置，请先启用一个订阅。".to_string());
+            }
+            let raw = fs::read_to_string(&profile.path)
+                .map_err(|err| format!("读取当前订阅失败：{err}"))?;
+            let source: YamlValue = serde_yaml::from_str(&raw)
+                .map_err(|err| format!("当前订阅格式无效：{err}"))?;
+            let targets = routing_rule_target_catalog(&source);
+            let next_target = input
+                .target
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(previous_target.as_str());
+            if !routing_domain::target_exists(&targets, next_target) {
+                return Err(format!("当前订阅里没有“{next_target}”，请选择一个可用线路或节点。"));
+            }
+            let next_scope = if action == "global" {
+                UserRuleScope::Global
+            } else {
+                UserRuleScope::Profile {
+                    profile_id: profile.id.clone(),
+                }
+            };
+            let next_raw = {
+                let rule = &store.rules[position];
+                let mut candidate = rule.clone();
+                candidate.scope = next_scope.clone();
+                candidate.target = next_target.to_string();
+                candidate.raw()
+            };
+            if store.rules.iter().enumerate().any(|(index, rule)| {
+                index != position && rule.scope == next_scope && rule.raw() == next_raw
+            }) {
+                return Err("当前范围内已有相同规则，请删除重复项或选择其他线路。".to_string());
+            }
+            let rule = &mut store.rules[position];
+            rule.scope = next_scope;
+            rule.target = next_target.to_string();
+            rule.updated_at = now_iso();
+            runtime_profile = Some(profile);
+        }
+
+        store = store.normalized();
+        let transaction_profile_id = runtime_profile
+            .as_ref()
+            .map(|profile| profile.id.as_str())
+            .unwrap_or("");
+        stage_routing_store_transaction(
+            &self.app_data,
+            "resolve-unbound-rule",
+            transaction_profile_id,
+            &previous_store,
+            &store,
+        )?;
+        if let Some(profile) = runtime_profile.as_ref() {
+            let deployment = self.render_runtime_profile(profile).and_then(|plan| {
+                if self.process.is_some() {
+                    self.hot_reload_runtime_plan(profile, &plan)?;
+                }
+                Ok(plan.validation_json())
+            });
+            if let Err(err) = deployment {
+                let runtime_restore = if self.process.is_some() {
+                    self.hot_reload_profile(profile).map(|_| ())
+                } else {
+                    Ok(())
+                };
+                let store_restore = rollback_routing_store_transaction(
+                    &self.app_data,
+                    "resolve-unbound-rule",
+                    &profile.id,
+                    &previous_store,
+                    &err,
+                    runtime_restore.is_ok(),
+                );
+                return Err(format!(
+                    "规则重新绑定失败，已尝试恢复原状态：{err}；规则存储恢复：{}；运行配置恢复：{}",
+                    restore_result_label(store_restore),
+                    restore_result_label(runtime_restore)
+                ));
+            }
+        }
+        finish_routing_store_transaction(
+            &self.app_data,
+            "resolve-unbound-rule",
+            transaction_profile_id,
+            json!({ "ruleId": rule_id, "action": action }),
+        )?;
+        self.add_log(
+            format!(
+                "Unbound routing rule resolved: id {}, action {}, scope {:?} -> {:?}, target {} -> {}",
+                sanitize_sensitive_text(rule_id),
+                action,
+                previous_scope,
+                store.rules.iter().find(|rule| rule.id == rule_id).map(|rule| &rule.scope),
+                sanitize_sensitive_text(&previous_target),
+                sanitize_sensitive_text(
+                    store.rules.iter().find(|rule| rule.id == rule_id).map(|rule| rule.target.as_str()).unwrap_or("deleted")
+                )
+            ),
+            "info",
+        );
+        Ok(json!({
+            "ok": true,
+            "ruleId": rule_id,
+            "action": action,
+            "changed": true,
+            "runtimeUpdated": runtime_profile.is_some(),
+            "rollbackReady": true
         }))
     }
 
     fn undo_last_routing_apply(&mut self) -> Result<JsonValue, String> {
+        let user_store_undo = routing_store_undo_path(&self.app_data);
+        if user_store_undo.exists() {
+            let metadata: JsonValue = fs::read_to_string(&user_store_undo)
+                .map_err(|err| format!("读取规则撤销记录失败：{err}"))
+                .and_then(|raw| serde_json::from_str(&raw).map_err(|err| format!("规则撤销记录损坏：{err}")))?;
+            let profile_id = metadata
+                .get("profileId")
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| "规则撤销记录缺少订阅编号。".to_string())?;
+            if self.settings.active_profile_id != profile_id {
+                return Err("请先切回创建这些规则时使用的订阅，再执行撤销。".to_string());
+            }
+            let profile = self
+                .settings
+                .profiles
+                .iter()
+                .find(|profile| profile.id == profile_id)
+                .cloned()
+                .ok_or_else(|| "原订阅已删除，无法直接撤销；请在待绑定规则中处理。".to_string())?;
+            let previous_store: UserRuleStore = serde_json::from_value(
+                metadata.get("store").cloned().ok_or_else(|| "规则撤销记录缺少存储快照。".to_string())?,
+            )
+            .map_err(|err| format!("规则撤销快照无效：{err}"))?;
+            let current_store = read_aegos_user_rule_store(&self.app_data);
+            stage_routing_store_transaction(
+                &self.app_data,
+                "undo-rule-apply",
+                &profile.id,
+                &current_store,
+                &previous_store,
+            )?;
+            let deployment = self.render_runtime_profile(&profile).and_then(|plan| {
+                if self.process.is_some() {
+                    self.hot_reload_runtime_plan(&profile, &plan)?;
+                }
+                Ok(plan.validation_json())
+            });
+            let runtime_preflight = match deployment {
+                Ok(report) => report,
+                Err(err) => {
+                    let runtime_restore = if self.process.is_some() {
+                        self.hot_reload_profile(&profile).map(|_| ())
+                    } else {
+                        Ok(())
+                    };
+                    let store_restore = rollback_routing_store_transaction(
+                        &self.app_data,
+                        "undo-rule-apply",
+                        &profile.id,
+                        &current_store,
+                        &err,
+                        runtime_restore.is_ok(),
+                    );
+                    return Err(format!(
+                        "撤销失败，当前规则已恢复：{err}；规则恢复：{}；运行状态恢复：{}",
+                        restore_result_label(store_restore),
+                        restore_result_label(runtime_restore)
+                    ));
+                }
+            };
+            finish_routing_store_transaction(
+                &self.app_data,
+                "undo-rule-apply",
+                &profile.id,
+                json!({ "restoredRuleCount": previous_store.rules.len() }),
+            )?;
+            remove_file_confined(&user_store_undo, &self.app_data)?;
+            self.add_log(
+                format!("Latest Aegos user-rule apply undone for profile {}", sanitize_sensitive_text(&profile.name)),
+                "info",
+            );
+            return Ok(json!({
+                "ok": true,
+                "profileId": profile.id,
+                "profileName": profile.name,
+                "runtimePreflight": runtime_preflight,
+                "rollbackAvailable": false,
+                "nextStep": "最近一次批量添加的用户规则已撤销。"
+            }));
+        }
         let (backup_path, backup_meta_path) = self.routing_apply_backup_paths();
         let backup_raw = fs::read_to_string(&backup_path)
             .map_err(|_| "No routing apply record is available to undo.".to_string())?;
@@ -6586,13 +6136,11 @@ impl CoreManager {
             .ok_or_else(|| "Routing undo failed: original profile no longer exists.".to_string())?;
         let restored_config: YamlValue = serde_yaml::from_str(&backup_raw)
             .map_err(|err| format!("Routing undo failed: backup YAML parse failed: {err}"))?;
-        let settings = self.settings.clone();
-        let runtime =
-            config_pipeline::preflight_profile_source(restored_config.clone(), &profile, &settings)
-                .map_err(|err| format!("Routing undo preflight failed: {err}"))?;
-        let runtime_preflight = runtime.report;
-        let deployment =
-            self.deploy_profile_config(&profile, &restored_config, "", "Routing undo")?;
+        let deployment = self.deploy_profile_config(&profile, &restored_config, "Routing undo")?;
+        let runtime_preflight = deployment
+            .get("runtimePreflight")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         let _ = remove_file_confined(&backup_path, &self.app_data);
         let _ = remove_file_confined(&backup_meta_path, &self.app_data);
         self.add_log(
@@ -6619,32 +6167,31 @@ impl CoreManager {
         &mut self,
         profile: &Profile,
         source: &YamlValue,
-        _previous_raw: &str,
         label: &str,
     ) -> Result<JsonValue, String> {
         let settings = self.settings.clone();
-        let runtime = config_pipeline::preflight_profile_source(source.clone(), profile, &settings)
+        let source_plan = profile_compiler::compile_profile_source(source.clone(), profile, &settings)
             .map_err(|err| format!("{label} preflight failed: {err}"))?;
-        let runtime_preflight = runtime.report;
-        let next_raw = serde_yaml::to_string(source)
-            .map_err(|err| format!("{label} YAML serialization failed: {err}"))?;
+        let mut runtime_source = source.clone();
+        apply_aegos_user_rule_overlay(&self.app_data, profile, &mut runtime_source)
+            .map_err(|err| format!("{label} user-rule overlay failed: {err}"))?;
+        let runtime_plan = profile_compiler::compile_profile_source(runtime_source, profile, &settings)
+            .map_err(|err| format!("{label} runtime preflight failed: {err}"))?;
+        let runtime_preflight = runtime_plan.validation_json();
+        let next_raw = source_plan.source_yaml.clone();
         let profile_path = PathBuf::from(&profile.path);
-        let mut deployment = config_deployment::ConfigDeploymentTransaction::stage(
-            &self.app_data,
-            &self.profile_dir,
-            &profile_path,
-            label,
-            &profile.id,
-            &next_raw,
-        )?;
+        let candidate =
+            source_plan.source_deployment_candidate(&self.profile_dir, &profile_path, label)?;
+        let mut deployment =
+            config_deployment::ConfigDeploymentTransaction::stage(&self.app_data, candidate)?;
         deployment.promote()?;
         let was_running = self.process.is_some();
         let reload = if was_running {
-            self.hot_reload_profile(profile)
+            self.hot_reload_runtime_plan(profile, &runtime_plan)
         } else {
             Ok(json!({ "ok": true, "skipped": true, "reason": "core is not running" }))
         };
-        let controller_ready = !was_running || self.core_controller().runtime_reuse_ready();
+        let controller_ready = !was_running || reload.is_ok();
         let runtime_identity_ok = !was_running
             || (self.runtime_profile_id.as_deref() == Some(profile.id.as_str())
                 && self.runtime_config_digest.is_some());
@@ -6652,24 +6199,29 @@ impl CoreManager {
             Ok(value) if controller_ready && runtime_identity_ok => value,
             Ok(_) => {
                 let reason = "runtime identity or controller readiness verification failed";
-                let rollback_file = deployment.rollback(reason);
-                let rollback_runtime = if rollback_file.is_ok() && was_running {
-                    self.hot_reload_profile(profile).map(|_| ())
-                } else {
-                    rollback_file.map(|_| ())
-                };
+                let rollback_runtime = deployment.rollback_with_runtime(reason, || {
+                    if was_running {
+                        self.hot_reload_profile(profile).map(|_| ())
+                    } else {
+                        Ok(())
+                    }
+                });
                 return Err(match rollback_runtime {
                     Ok(_) => format!("{label} verification failed and configuration was rolled back: {reason}"),
                     Err(rollback_err) => format!("{label} verification failed: {reason}; rollback also failed: {rollback_err}"),
                 });
             }
             Err(err) => {
-                let rollback_file = deployment.rollback(format!("runtime apply failed: {err}"));
-                let rollback_runtime = if rollback_file.is_ok() && was_running {
-                    self.hot_reload_profile(profile).map(|_| ())
-                } else {
-                    rollback_file.map(|_| ())
-                };
+                let rollback_runtime = deployment.rollback_with_runtime(
+                    format!("runtime apply failed: {err}"),
+                    || {
+                        if was_running {
+                            self.hot_reload_profile(profile).map(|_| ())
+                        } else {
+                            Ok(())
+                        }
+                    },
+                );
                 return Err(match rollback_runtime {
                     Ok(_) => format!(
                         "{label} hot reload failed and configuration was rolled back: {err}"
@@ -6680,15 +6232,26 @@ impl CoreManager {
                 });
             }
         };
-        let deployment_report = deployment.complete(if was_running {
-            "Candidate promoted, Mihomo reloaded, controller and runtime identity verified."
-        } else {
-            "Candidate promoted and validated; runtime verification will occur when the core starts."
-        })?;
+        let deployment_report = deployment.complete_verified(
+            if was_running {
+                "Candidate promoted, Mihomo reloaded, controller and runtime identity verified."
+            } else {
+                "Candidate promoted and validated; runtime verification will occur when the core starts."
+            },
+            || {
+                if was_running {
+                    self.hot_reload_profile(profile).map(|_| ())
+                } else {
+                    Ok(())
+                }
+            },
+        )?;
         Ok(json!({
             "ok": true,
             "profileId": profile.id,
             "profileName": profile.name,
+            "sourceCatalog": source_plan.source_catalog().summary_json(),
+            "runtimeCatalog": runtime_plan.runtime_catalog().summary_json(),
             "runtimePreflight": runtime_preflight,
             "digest": sha256_text(&next_raw)
             ,"deploymentReport": deployment_report,
@@ -6709,10 +6272,39 @@ impl CoreManager {
         &mut self,
         profile: &Profile,
         source: &YamlValue,
-        previous_raw: &str,
         label: &str,
     ) -> Result<JsonValue, String> {
-        self.deploy_profile_config(profile, source, previous_raw, label)
+        self.deploy_profile_config(profile, source, label)
+    }
+
+    fn restore_routing_transaction(
+        &mut self,
+        profile: &Profile,
+        previous_source: &YamlValue,
+        previous_selected_map: &HashMap<String, String>,
+        previous_registry: &JsonValue,
+        config_changed: bool,
+        cause: &str,
+    ) -> String {
+        self.settings.selected_proxy_map = previous_selected_map.clone();
+        let settings_restore = self.save_settings();
+        let registry_restore = write_routing_user_rules(&self.app_data, previous_registry);
+        let config_restore = if config_changed {
+            self.commit_profile_routing_config(
+                profile,
+                previous_source,
+                "Routing transaction rollback",
+            )
+            .map(|_| ())
+        } else {
+            Ok(())
+        };
+        format!(
+            "{cause}; preference restore: {}; user-rule registry restore: {}; configuration restore: {}",
+            restore_result_label(settings_restore),
+            restore_result_label(registry_restore),
+            restore_result_label(config_restore)
+        )
     }
 
     fn active_editable_profile_and_config(
@@ -6738,9 +6330,20 @@ impl CoreManager {
         &mut self,
         edit: RoutingGroupEditInput,
     ) -> Result<JsonValue, String> {
-        let (profile, previous_raw, mut source) =
+        let (profile, _previous_raw, mut source) =
             self.active_editable_profile_and_config("Routing group edit")?;
-        let action = edit.action.trim().to_ascii_lowercase();
+        let previous_source = source.clone();
+        let previous_selected_map = self.settings.selected_proxy_map.clone();
+        let mut next_selected_map = previous_selected_map.clone();
+        let previous_registry = read_routing_user_rules(&self.app_data);
+        let previous_user_store = read_aegos_user_rule_store(&self.app_data);
+        let mut next_user_store = previous_user_store.clone();
+        let (active_user_rules, disabled_user_rules) =
+            routing_user_rule_lists(&self.app_data, &profile.id);
+        let mut next_active_user_rules = active_user_rules.clone();
+        let mut next_disabled_user_rules = disabled_user_rules.clone();
+        let action = RoutingGroupAction::parse(&edit.action)?;
+        let action_name = action.as_str();
         {
             let Some(config) = source.as_mapping_mut() else {
                 return Err(
@@ -6752,30 +6355,30 @@ impl CoreManager {
         let targets_before = routing_rule_target_catalog(&source);
         let name = edit.name.unwrap_or_default();
         let new_name = edit.new_name.unwrap_or_else(|| name.clone());
-        let validated_name = if action == "add" {
-            validate_routing_rule_part("strategy group name", &new_name, 80)?
+        let validated_name = if action == RoutingGroupAction::Add {
+            routing_domain::validate_name(&new_name)?
         } else {
-            validate_routing_rule_part("strategy group name", &name, 80)?
+            routing_domain::validate_name(&name)?
         };
-        let validated_new_name = validate_routing_rule_part("strategy group name", &new_name, 80)?;
+        let validated_new_name = routing_domain::validate_name(&new_name)?;
         if config_pipeline::is_internal_proxy_group_name(&validated_name)
             || config_pipeline::is_internal_proxy_group_name(&validated_new_name)
         {
             return Err("Routing group edit failed: internal groups cannot be edited".to_string());
         }
-        if action == "delete" && validated_name.eq_ignore_ascii_case("Proxies") {
+        if action == RoutingGroupAction::Delete && validated_name.eq_ignore_ascii_case("Proxies") {
             return Err(
                 "Routing group edit failed: Proxies is the main group and cannot be deleted"
                     .to_string(),
             );
         }
-        if action == "delete" {
+        if action == RoutingGroupAction::Delete {
             let blocking_rules = yaml_sequence(&source, "rules")
                 .into_iter()
                 .flat_map(|items| items.iter())
                 .filter_map(YamlValue::as_str)
                 .filter(|rule| {
-                    routing_rule_target(rule).as_deref() == Some(validated_name.as_str())
+                    routing_domain::rule_target(rule).as_deref() == Some(validated_name.as_str())
                 })
                 .take(3)
                 .count();
@@ -6794,8 +6397,8 @@ impl CoreManager {
             let group_index = groups
                 .iter()
                 .position(|group| yaml_mapping_name(group) == Some(validated_name.as_str()));
-            match action.as_str() {
-                "add" => {
+            match action {
+                RoutingGroupAction::Add => {
                     if groups
                         .iter()
                         .any(|group| yaml_mapping_name(group) == Some(validated_new_name.as_str()))
@@ -6804,11 +6407,11 @@ impl CoreManager {
                             "Routing group edit failed: group already exists: {validated_new_name}"
                         ));
                     }
-                    let members = validate_routing_group_members(
+                    let members = routing_domain::validate_group_members(
                         &edit.items.unwrap_or_default(),
                         &targets_before,
                     )?;
-                    let group_type = validate_routing_group_type(
+                    let group_type = routing_domain::validate_group_type(
                         edit.group_type.as_deref().unwrap_or("select"),
                     )?;
                     let mut group = Mapping::new();
@@ -6817,7 +6420,7 @@ impl CoreManager {
                     set_yaml(&mut group, "proxies", yaml_string_values(&members));
                     groups.push(YamlValue::Mapping(group));
                 }
-                "edit" => {
+                RoutingGroupAction::Edit => {
                     let Some(index) = group_index else {
                         return Err(format!(
                             "Routing group edit failed: group not found: {validated_name}"
@@ -6832,11 +6435,11 @@ impl CoreManager {
                             "Routing group edit failed: group already exists: {validated_new_name}"
                         ));
                     }
-                    let members = validate_routing_group_members(
+                    let members = routing_domain::validate_group_members(
                         &edit.items.unwrap_or_default(),
                         &targets_before,
                     )?;
-                    let group_type = validate_routing_group_type(
+                    let group_type = routing_domain::validate_group_type(
                         edit.group_type.as_deref().unwrap_or("select"),
                     )?;
                     let Some(map) = groups[index].as_mapping_mut() else {
@@ -6849,7 +6452,7 @@ impl CoreManager {
                     set_yaml(map, "proxies", yaml_string_values(&members));
                     renamed = validated_name != validated_new_name;
                 }
-                "delete" => {
+                RoutingGroupAction::Delete => {
                     let Some(index) = group_index else {
                         return Err(format!(
                             "Routing group edit failed: group not found: {validated_name}"
@@ -6857,331 +6460,160 @@ impl CoreManager {
                     };
                     groups.remove(index);
                 }
-                _ => return Err("Routing group edit failed: unsupported action".to_string()),
             }
         }
         if renamed {
+            for rule in next_user_store.rules.iter_mut().filter(|rule| {
+                rule.scope.profile_id() == Some(profile.id.as_str())
+                    && rule.target == validated_name
+            }) {
+                rule.target = validated_new_name.clone();
+                rule.updated_at = now_iso();
+            }
             if let Some(rules) = config
                 .get_mut(yaml_key("rules"))
                 .and_then(YamlValue::as_sequence_mut)
             {
                 for rule in rules {
                     if let Some(raw) = rule.as_str() {
-                        if let Some(next) =
-                            routing_rule_replace_target(raw, &validated_name, &validated_new_name)
-                        {
+                        if let Some(next) = routing_domain::replace_rule_target(
+                            raw,
+                            &validated_name,
+                            &validated_new_name,
+                        ) {
                             *rule = yaml_str(next);
                         }
                     }
                 }
             }
-            if let Some(value) = self.settings.selected_proxy_map.remove(&validated_name) {
-                self.settings
-                    .selected_proxy_map
-                    .insert(validated_new_name.clone(), value);
-                let _ = self.save_settings();
+            if let Some(value) = next_selected_map.remove(&validated_name) {
+                next_selected_map.insert(validated_new_name.clone(), value);
             }
-        }
-        if action == "delete" {
-            if let Some(rules) = config
-                .get_mut(yaml_key("rules"))
-                .and_then(YamlValue::as_sequence_mut)
-            {
-                for rule in rules {
-                    if let Some(raw) = rule.as_str() {
-                        if let Some(next) =
-                            routing_rule_replace_target(raw, &validated_name, "Proxies")
-                        {
-                            *rule = yaml_str(next);
-                        }
-                    }
-                }
-            }
-            self.settings.selected_proxy_map.remove(&validated_name);
-            let _ = self.save_settings();
-        }
-        let mut result = self.commit_profile_routing_config(
-            &profile,
-            &source,
-            &previous_raw,
-            "Routing group edit",
-        )?;
-        if let Some(map) = result.as_object_mut() {
-            map.insert("action".to_string(), json!(action));
-            map.insert("group".to_string(), json!(validated_new_name));
-        }
-        Ok(result)
-    }
-
-    fn apply_routing_rule_edit(&mut self, edit: RoutingRuleEditInput) -> Result<JsonValue, String> {
-        let (profile, previous_raw, mut source) =
-            self.active_editable_profile_and_config("Routing rule edit")?;
-        let action = edit.action.trim().to_ascii_lowercase();
-        let raw = edit.raw.unwrap_or_default();
-        let (active_user_rules, disabled_user_rules) =
-            routing_user_rule_lists(&self.app_data, &profile.id);
-        let active_user_rule_set = active_user_rules
-            .iter()
-            .map(String::as_str)
-            .collect::<HashSet<_>>();
-        let disabled_user_rule_set = disabled_user_rules
-            .iter()
-            .map(String::as_str)
-            .collect::<HashSet<_>>();
-        let known_user_rule = active_user_rule_set.contains(raw.trim())
-            || disabled_user_rule_set.contains(raw.trim());
-        if matches!(
-            action.as_str(),
-            "edit" | "delete" | "enable" | "disable" | "up" | "down"
-        ) && !known_user_rule
-        {
-            return Err(
-                "Routing rule edit failed: only Aegos user rules can be managed".to_string(),
+            next_active_user_rules = routing_domain::replace_targets(
+                &active_user_rules,
+                &validated_name,
+                &validated_new_name,
+            );
+            next_disabled_user_rules = routing_domain::replace_targets(
+                &disabled_user_rules,
+                &validated_name,
+                &validated_new_name,
             );
         }
-        let targets = routing_rule_target_catalog(&source);
-        let Some(config) = source.as_mapping_mut() else {
-            return Err("Routing rule edit failed: profile root is not a YAML object".to_string());
-        };
-        let rules = ensure_yaml_sequence(config, "rules");
-        let index = if action == "add" {
-            None
-        } else {
-            rules
-                .iter()
-                .position(|rule| rule.as_str().map(str::trim) == Some(raw.trim()))
-        };
-        let mut next_user_rule = None;
-        let mut commit_needed = true;
-        match action.as_str() {
-            "add" | "edit" => {
-                let draft = RoutingDraftInput {
-                    kind: edit.kind.unwrap_or_default(),
-                    condition: edit.condition.unwrap_or_default(),
-                    target: edit.target.unwrap_or_default(),
-                    option: edit.option,
-                    label: edit.label,
-                    source: Some("user".to_string()),
-                };
-                let (next_rule, _) = normalize_routing_draft_rule(&draft, &targets)?;
-                if rules
-                    .iter()
-                    .any(|rule| rule.as_str().map(str::trim) == Some(next_rule.as_str()))
-                    && raw.trim() != next_rule
-                {
-                    return Err(format!(
-                        "Routing rule edit failed: rule already exists: {next_rule}"
-                    ));
-                }
-                if action == "add" {
-                    let insert_at = rules
-                        .iter()
-                        .position(|value| {
-                            value
-                                .as_str()
-                                .map(|rule| {
-                                    rule.trim_start().to_ascii_uppercase().starts_with("MATCH,")
-                                })
-                                .unwrap_or(false)
-                        })
-                        .unwrap_or(rules.len());
-                    rules.insert(insert_at, yaml_str(next_rule.clone()));
-                } else {
-                    if let Some(index) = index {
-                        rules[index] = yaml_str(next_rule.clone());
-                    } else if disabled_user_rule_set.contains(raw.trim()) {
-                        commit_needed = false;
-                    } else {
-                        return Err("Routing rule edit failed: rule not found".to_string());
-                    }
-                }
-                next_user_rule = Some(next_rule);
-            }
-            "delete" => {
-                if let Some(index) = index {
-                    rules.remove(index);
-                } else {
-                    commit_needed = false;
-                }
-            }
-            "disable" => {
-                let Some(index) = index else {
-                    return Err("Routing rule edit failed: enabled rule not found".to_string());
-                };
-                rules.remove(index);
-            }
-            "enable" => {
-                if index.is_some() {
-                    commit_needed = false;
-                } else {
-                    let (next_rule, _) = normalize_routing_draft_rule(
-                        &RoutingDraftInput {
-                            kind: edit.kind.unwrap_or_default(),
-                            condition: edit.condition.unwrap_or_default(),
-                            target: edit.target.unwrap_or_default(),
-                            option: edit.option,
-                            label: edit.label,
-                            source: Some("user".to_string()),
-                        },
-                        &targets,
-                    )
-                    .or_else(|_| {
-                        let parsed = parse_routing_rule_text(1, raw.trim());
-                        let draft = RoutingDraftInput {
-                            kind: parsed
-                                .get("kind")
-                                .and_then(JsonValue::as_str)
-                                .unwrap_or("")
-                                .to_string(),
-                            condition: parsed
-                                .get("condition")
-                                .and_then(JsonValue::as_str)
-                                .unwrap_or("")
-                                .to_string(),
-                            target: parsed
-                                .get("target")
-                                .and_then(JsonValue::as_str)
-                                .unwrap_or("")
-                                .to_string(),
-                            option: parsed
-                                .get("options")
-                                .and_then(JsonValue::as_array)
-                                .and_then(|items| items.first())
-                                .and_then(JsonValue::as_str)
-                                .map(str::to_string),
-                            label: None,
-                            source: Some("user".to_string()),
-                        };
-                        normalize_routing_draft_rule(&draft, &targets)
-                    })?;
-                    if rules
-                        .iter()
-                        .any(|rule| rule.as_str().map(str::trim) == Some(next_rule.as_str()))
-                    {
-                        commit_needed = false;
-                    } else {
-                        let insert_at = rules
-                            .iter()
-                            .position(|value| {
-                                value
-                                    .as_str()
-                                    .map(|rule| {
-                                        rule.trim_start().to_ascii_uppercase().starts_with("MATCH,")
-                                    })
-                                    .unwrap_or(false)
-                            })
-                            .unwrap_or(rules.len());
-                        rules.insert(insert_at, yaml_str(next_rule.clone()));
-                    }
-                    next_user_rule = Some(next_rule);
-                }
-            }
-            "up" | "down" => {
-                let Some(index) = index else {
-                    return Err("Routing rule edit failed: enabled rule not found".to_string());
-                };
-                let mut user_indexes = rules
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, rule)| {
-                        let raw_rule = rule.as_str()?.trim();
-                        if active_user_rule_set.contains(raw_rule) {
-                            Some(idx)
-                        } else {
-                            None
+        if action == RoutingGroupAction::Delete {
+            if let Some(rules) = config
+                .get_mut(yaml_key("rules"))
+                .and_then(YamlValue::as_sequence_mut)
+            {
+                for rule in rules {
+                    if let Some(raw) = rule.as_str() {
+                        if let Some(next) =
+                            routing_domain::replace_rule_target(raw, &validated_name, "Proxies")
+                        {
+                            *rule = yaml_str(next);
                         }
-                    })
-                    .collect::<Vec<_>>();
-                user_indexes.sort_unstable();
-                let Some(position) = user_indexes.iter().position(|idx| *idx == index) else {
-                    return Err("Routing rule edit failed: rule order target not found".to_string());
-                };
-                let target_position = if action == "up" {
-                    position.checked_sub(1)
-                } else if position + 1 < user_indexes.len() {
-                    Some(position + 1)
-                } else {
-                    None
-                };
-                if let Some(target_position) = target_position {
-                    rules.swap(index, user_indexes[target_position]);
-                } else {
-                    commit_needed = false;
-                }
-            }
-            _ => return Err("Routing rule edit failed: unsupported action".to_string()),
-        }
-        let active_order_after = rules
-            .iter()
-            .filter_map(YamlValue::as_str)
-            .map(str::trim)
-            .filter(|rule| active_user_rule_set.contains(*rule))
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        let result = if commit_needed {
-            self.commit_profile_routing_config(
-                &profile,
-                &source,
-                &previous_raw,
-                "Routing rule edit",
-            )?
-        } else {
-            json!({
-                "profileId": profile.id.clone(),
-                "profileName": profile.name.clone(),
-                "action": action.clone(),
-                "changed": false,
-                "deploymentValidation": {
-                    "runtimePreflightOk": true,
-                    "hotReloadRan": false,
-                    "controllerReady": true,
-                    "rollbackReady": true,
-                    "verifiedAt": now_iso()
-                }
-            })
-        };
-        match action.as_str() {
-            "add" => replace_routing_user_rule(
-                &self.app_data,
-                &profile.id,
-                None,
-                next_user_rule.as_deref(),
-            )?,
-            "edit" => {
-                if disabled_user_rule_set.contains(raw.trim()) {
-                    if let Some(next_rule) = next_user_rule.as_deref() {
-                        replace_disabled_routing_user_rule(
-                            &self.app_data,
-                            &profile.id,
-                            raw.trim(),
-                            next_rule,
-                        )?
                     }
-                } else {
-                    replace_routing_user_rule(
-                        &self.app_data,
-                        &profile.id,
-                        Some(raw.trim()),
-                        next_user_rule.as_deref(),
-                    )?
                 }
             }
-            "delete" => {
-                replace_routing_user_rule(&self.app_data, &profile.id, Some(raw.trim()), None)?
+            next_selected_map.remove(&validated_name);
+            next_active_user_rules =
+                routing_domain::replace_targets(&active_user_rules, &validated_name, "Proxies");
+            next_disabled_user_rules =
+                routing_domain::replace_targets(&disabled_user_rules, &validated_name, "Proxies");
+        }
+        let user_store_changed = next_user_store.rules != previous_user_store.rules;
+        if user_store_changed {
+            stage_routing_store_transaction(
+                &self.app_data,
+                "edit-routing-group",
+                &profile.id,
+                &previous_user_store,
+                &next_user_store,
+            )?;
+        }
+        let mut result = match self.commit_profile_routing_config(&profile, &source, "Routing group edit") {
+            Ok(result) => result,
+            Err(err) => {
+                if user_store_changed {
+                    let _ = rollback_routing_store_transaction(
+                        &self.app_data,
+                        "edit-routing-group",
+                        &profile.id,
+                        &previous_user_store,
+                        &err,
+                        true,
+                    );
+                }
+                return Err(err);
             }
-            "disable" => {
-                set_routing_user_rule_enabled(&self.app_data, &profile.id, raw.trim(), false)?
+        };
+        if next_selected_map != previous_selected_map {
+            self.settings.selected_proxy_map = next_selected_map;
+            if let Err(settings_err) = self.save_settings() {
+                let detail = self.restore_routing_transaction(
+                    &profile,
+                    &previous_source,
+                    &previous_selected_map,
+                    &previous_registry,
+                    true,
+                    &format!("Routing group edit could not save node preferences: {settings_err}"),
+                );
+                if user_store_changed {
+                    let _ = rollback_routing_store_transaction(
+                        &self.app_data,
+                        "edit-routing-group",
+                        &profile.id,
+                        &previous_user_store,
+                        &settings_err.to_string(),
+                        true,
+                    );
+                }
+                return Err(detail);
             }
-            "enable" => {
-                let enabled_rule = next_user_rule.as_deref().unwrap_or(raw.trim());
-                set_routing_user_rule_enabled(&self.app_data, &profile.id, enabled_rule, true)?
-            }
-            "up" | "down" => sync_active_routing_user_rule_order(
+        }
+        if next_active_user_rules != active_user_rules
+            || next_disabled_user_rules != disabled_user_rules
+        {
+            if let Err(registry_err) = write_routing_user_rule_lists(
                 &self.app_data,
                 &profile.id,
-                &active_order_after,
-            )?,
-            _ => {}
+                &next_active_user_rules,
+                &next_disabled_user_rules,
+            ) {
+                let detail = self.restore_routing_transaction(
+                    &profile,
+                    &previous_source,
+                    &previous_selected_map,
+                    &previous_registry,
+                    true,
+                    &format!(
+                        "Routing group edit could not update user-rule ownership: {registry_err}"
+                    ),
+                );
+                if user_store_changed {
+                    let _ = rollback_routing_store_transaction(
+                        &self.app_data,
+                        "edit-routing-group",
+                        &profile.id,
+                        &previous_user_store,
+                        &registry_err.to_string(),
+                        true,
+                    );
+                }
+                return Err(detail);
+            }
+        }
+        if user_store_changed {
+            finish_routing_store_transaction(
+                &self.app_data,
+                "edit-routing-group",
+                &profile.id,
+                json!({ "action": action_name, "group": validated_new_name }),
+            )?;
+        }
+        if let Some(map) = result.as_object_mut() {
+            map.insert("action".to_string(), json!(action_name));
+            map.insert("group".to_string(), json!(validated_new_name));
         }
         Ok(result)
     }
@@ -7194,13 +6626,13 @@ impl CoreManager {
 
     fn preflight_profile_file(&self, profile: &Profile) -> Result<JsonValue, String> {
         self.render_runtime_profile(profile)
-            .map(|rendered| rendered.report)
+            .map(|rendered| rendered.validation_json())
     }
 
     fn render_runtime_profile(
         &self,
         profile: &Profile,
-    ) -> Result<profile_compiler::RenderedProfile, String> {
+    ) -> Result<profile_compiler::RuntimeDeploymentPlan, String> {
         self.render_runtime_profile_with_settings(profile, &self.settings)
     }
 
@@ -7208,49 +6640,41 @@ impl CoreManager {
         &self,
         profile: &Profile,
         settings: &Settings,
-    ) -> Result<profile_compiler::RenderedProfile, String> {
-        profile_compiler::compile_profile_file(profile, settings)
+    ) -> Result<profile_compiler::RuntimeDeploymentPlan, String> {
+        let raw = fs::read_to_string(&profile.path)
+            .map_err(|err| format!("profile config read failed {}: {err}", profile.path))?;
+        let mut source: YamlValue = serde_yaml::from_str(&raw)
+            .map_err(|err| format!("profile YAML parse failed {}: {err}", profile.path))?;
+        apply_aegos_user_rule_overlay(&self.app_data, profile, &mut source)?;
+        profile_compiler::compile_profile_source(source, profile, settings)
     }
 
     fn launch_runtime_yaml(
         &self,
-        rendered: &profile_compiler::RenderedProfile,
+        rendered: &profile_compiler::RuntimeDeploymentPlan,
     ) -> Result<core_runtime::CoreRuntimeProfile, String> {
         core_runtime::render_runtime_profile_yaml(
-            &rendered.yaml,
+            &rendered.runtime_yaml,
             detect_windows_primary_interface_name(),
         )
     }
 
-    fn patch_profile_file(&mut self, profile: &Profile) -> Result<String, String> {
-        let path = PathBuf::from(&profile.path);
-        let rendered = self.render_runtime_profile(profile)?;
-        let runtime_profile = self.launch_runtime_yaml(&rendered)?;
-        let current_digest = sha256_file(&path);
-        if current_digest != rendered.digest {
-            atomic_write_text_confined(&path, &self.profile_dir, &rendered.yaml)?;
-        }
+    fn write_runtime_deployment_plan(
+        &mut self,
+        plan: &profile_compiler::RuntimeDeploymentPlan,
+        label: &str,
+    ) -> Result<String, String> {
+        let runtime_profile = self.launch_runtime_yaml(plan)?;
         let runtime_write =
             core_runtime::write_runtime_profile(&self.core_runtime_paths(), &runtime_profile)?;
         self.add_log(
             format!(
-                "Config preflight passed: {} proxies, {} groups, digest {}{}{}, runtime {}",
-                rendered
-                    .report
-                    .get("proxies")
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or(0),
-                rendered
-                    .report
-                    .get("proxyGroups")
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or(0),
+                "{label}: {} proxies, {} groups, source {}, planned runtime {}, written runtime {}{}, file {}",
+                plan.runtime_catalog().summary().proxy_count,
+                plan.runtime_catalog().summary().proxy_group_count,
+                core_runtime::digest_prefix(&plan.source_digest),
+                core_runtime::digest_prefix(&plan.runtime_digest),
                 core_runtime::digest_prefix(&runtime_write.digest),
-                if current_digest == rendered.digest {
-                    " (unchanged)"
-                } else {
-                    ""
-                },
                 runtime_write
                     .outbound_interface
                     .as_ref()
@@ -7263,27 +6687,9 @@ impl CoreManager {
         Ok(runtime_write.digest)
     }
 
-    fn speed_test_firewall_ports(&self) -> Vec<u16> {
-        let mut ports = [80u16, 443u16].into_iter().collect::<HashSet<_>>();
-        if let Some(profile) = self.active_profile() {
-            let path = PathBuf::from(&profile.path);
-            if let Ok(raw) = fs::read_to_string(&path) {
-                if let Ok(source) = serde_yaml::from_str::<YamlValue>(&raw) {
-                    if let Ok(profile_ports) =
-                        config_pipeline::speed_test_firewall_ports_from_source(
-                            source,
-                            &profile,
-                            &self.standby_settings(),
-                        )
-                    {
-                        ports.extend(profile_ports);
-                    }
-                }
-            }
-        }
-        let mut ports = ports.into_iter().collect::<Vec<_>>();
-        ports.sort_unstable();
-        ports
+    fn patch_profile_file(&mut self, profile: &Profile) -> Result<String, String> {
+        let plan = self.render_runtime_profile(profile)?;
+        self.write_runtime_deployment_plan(&plan, "Config preflight passed; source preserved")
     }
 
     fn runtime_profile_path(&self) -> PathBuf {
@@ -7291,7 +6697,17 @@ impl CoreManager {
     }
 
     fn hot_reload_profile(&mut self, profile: &Profile) -> Result<JsonValue, String> {
-        let config_digest = self.patch_profile_file(profile)?;
+        let plan = self.render_runtime_profile(profile)?;
+        self.hot_reload_runtime_plan(profile, &plan)
+    }
+
+    fn hot_reload_runtime_plan(
+        &mut self,
+        profile: &Profile,
+        plan: &profile_compiler::RuntimeDeploymentPlan,
+    ) -> Result<JsonValue, String> {
+        let config_digest =
+            self.write_runtime_deployment_plan(plan, "Runtime deployment plan prepared")?;
         let same_runtime = self.runtime_profile_id.as_deref() == Some(profile.id.as_str())
             && self.runtime_config_digest.as_deref() == Some(config_digest.as_str());
         if same_runtime && self.core_controller().runtime_reuse_ready() {
@@ -7312,8 +6728,9 @@ impl CoreManager {
             config_digest.clone(),
         );
         self.add_log(apply_transaction.display_label(), "info");
+        let apply_started = Instant::now();
         let result = apply_transaction.apply(&self.core_controller())?;
-        self.wait_for_controller()?;
+        let apply_elapsed_ms = apply_started.elapsed().as_millis();
         self.runtime_profile_id = Some(profile.id.clone());
         self.runtime_config_digest = Some(result.digest.clone());
         if self.traffic_takeover
@@ -7327,17 +6744,26 @@ impl CoreManager {
             }
         }
         self.add_log(
-            core_runtime::hot_reload_success_message(
-                &profile.name,
-                &result.digest,
-                result
-                    .version_probe
-                    .get("version")
-                    .and_then(JsonValue::as_str),
+            format!(
+                "{}; verified in {apply_elapsed_ms} ms with one post-apply version probe",
+                core_runtime::hot_reload_success_message(
+                    &profile.name,
+                    &result.digest,
+                    Some(&result.runtime_version.version),
+                )
             ),
             "info",
         );
-        Ok(result.controller_response)
+        let mut receipt = result.receipt_json();
+        if let Some(map) = receipt.as_object_mut() {
+            map.insert("applyElapsedMs".to_string(), json!(apply_elapsed_ms));
+            map.insert("versionProbeCount".to_string(), json!(1));
+            map.insert(
+                "readinessEvidence".to_string(),
+                json!("config-apply-version"),
+            );
+        }
+        Ok(receipt)
     }
 
     fn ensure_runtime_ports(&mut self) -> Result<(), String> {
@@ -7415,16 +6841,8 @@ impl CoreManager {
         self.add_log(
             format!(
                 "Standby config preflight passed: {} proxies, {} groups, digest {}{}, runtime {}",
-                rendered
-                    .report
-                    .get("proxies")
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or(0),
-                rendered
-                    .report
-                    .get("proxyGroups")
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or(0),
+                rendered.validation.proxies,
+                rendered.validation.proxy_groups,
                 core_runtime::digest_prefix(&runtime_write.digest),
                 runtime_write
                     .outbound_interface
@@ -7496,8 +6914,23 @@ impl CoreManager {
                         "ok",
                         format!("TUN runtime verification passed: {report}"),
                     )?;
-                    transaction.complete(
+                    transaction.complete_verified(
                         "TUN controller, Windows adapter/routes, DNS safety and connectivity were verified.",
+                        || {
+                            let stop_result = self.stop().map(|_| ());
+                            let active_state_result = system_takeover::set_component_active(
+                                &self.app_data,
+                                "tun",
+                                false,
+                            )
+                            .map(|_| ());
+                            combine_restore_results(
+                                "TUN runtime stop",
+                                stop_result,
+                                "TUN recovery state cleanup",
+                                active_state_result,
+                            )
+                        },
                     )?;
                     Ok(result)
                 }
@@ -7530,7 +6963,7 @@ impl CoreManager {
         })?;
         let profile = self
             .active_profile()
-            .ok_or_else(|| "娌℃湁娲诲姩閰嶇疆".to_string())?;
+            .ok_or_else(|| "当前没有可用订阅，无法启动测速运行环境".to_string())?;
         let config_digest = self
             .prepare_runtime_profile(&profile, enable_takeover)
             .map_err(|err| {
@@ -7742,12 +7175,19 @@ impl CoreManager {
         })
     }
 
-    fn status_observation(&mut self) -> (bool, core_runtime::CoreController, JsonValue, bool) {
+    fn status_observation(
+        &mut self,
+    ) -> (bool, core_runtime::CoreController, TrafficSnapshot, bool) {
         if let Some(reason) = self.reap_exited_core() {
             self.add_log(reason, "warn");
         }
         let running = self.process.is_some();
         let refresh_lan_ip = now_secs().saturating_sub(self.lan_ip_checked_at) >= 45;
+        if refresh_lan_ip {
+            // Mark the attempt before releasing the lock so a slow Windows
+            // network query cannot create a thread per status heartbeat.
+            self.lan_ip_checked_at = now_secs();
+        }
         (
             running,
             self.core_controller(),
@@ -7759,8 +7199,8 @@ impl CoreManager {
     fn status_from_observed_traffic(
         &mut self,
         observed_running: bool,
-        observed_traffic: JsonValue,
-        refreshed_lan_ip: Option<String>,
+        observed_traffic: TrafficSnapshot,
+        is_admin: bool,
     ) -> JsonValue {
         let running = self.process.is_some();
         let traffic = if running == observed_running {
@@ -7770,10 +7210,6 @@ impl CoreManager {
                 .status_traffic_snapshot_or_idle(false, &self.last_traffic)
         };
         self.last_traffic = traffic.clone();
-        if let Some(lan_ip) = refreshed_lan_ip {
-            self.lan_ip_cache = lan_ip;
-            self.lan_ip_checked_at = now_secs();
-        }
         let lan_ip = self.lan_ip_cache.clone();
         core_runtime::status_surface_json(
             self.core_runtime_info(),
@@ -7785,7 +7221,7 @@ impl CoreManager {
             self.settings.mixed_port,
             &lan_ip,
             &self.cached_outbound_ip(),
-            is_process_elevated(),
+            is_admin,
             json!(self.active_profile()),
             self.speed_test_snapshot(),
             self.public_settings(),
@@ -7873,7 +7309,18 @@ impl CoreManager {
     }
 
     fn public_profiles(&self) -> Vec<JsonValue> {
-        self.settings.profiles.iter().map(public_profile).collect()
+        self.settings
+            .profiles
+            .iter()
+            .map(|profile| {
+                public_profile(
+                    profile,
+                    self.profile_metadata_errors
+                        .get(&profile.id)
+                        .map(String::as_str),
+                )
+            })
+            .collect()
     }
 
     fn protection_status(&self) -> JsonValue {
@@ -7977,11 +7424,36 @@ impl CoreManager {
                 });
             return Err(takeover_failure_message(transaction, reason, rollback));
         }
-        transaction.complete(if enable {
-            "Windows system proxy points to Aegos and the original complete proxy state remains recoverable."
-        } else {
-            "Windows system proxy no longer points to Aegos and the original complete proxy state was restored."
-        })?;
+        transaction.complete_verified(
+            if enable {
+                "Windows system proxy points to Aegos and the original complete proxy state remains recoverable."
+            } else {
+                "Windows system proxy no longer points to Aegos and the original complete proxy state was restored."
+            },
+            || {
+                self.settings = previous_settings.clone();
+                self.traffic_takeover = previous_takeover;
+                let previous_active = core_runtime::system_proxy_snapshot_points_to_aegos(
+                    &previous_os,
+                    self.settings.mixed_port,
+                );
+                let restore = self
+                    .restore_system_proxy_snapshot_verified(&previous_os)
+                    .and_then(|_| self.save_settings())
+                    .and_then(|_| {
+                        system_takeover::set_component_active(
+                            &self.app_data,
+                            "system-proxy",
+                            previous_active,
+                        )
+                        .map(|_| ())
+                    });
+                if restore.is_ok() && !previous_active {
+                    self.clear_system_proxy_snapshot();
+                }
+                restore
+            },
+        )?;
         if !enable {
             self.clear_system_proxy_snapshot();
         }
@@ -8057,11 +7529,31 @@ impl CoreManager {
             });
             return Err(takeover_failure_message(transaction, reason, rollback));
         }
-        transaction.complete(if enable {
-            "Disconnect protection is active and firewall enforcement was verified."
-        } else {
-            "Disconnect protection is inactive and no Aegos firewall artifacts remain."
-        })?;
+        transaction.complete_verified(
+            if enable {
+                "Disconnect protection is active and firewall enforcement was verified."
+            } else {
+                "Disconnect protection is inactive and no Aegos firewall artifacts remain."
+            },
+            || {
+                self.settings = previous_settings.clone();
+                run_powershell(&build_kill_switch_script(
+                    self.settings.kill_switch_enabled,
+                    &self.app_data,
+                    &self.core_path,
+                ))
+                .map(|_| ())
+                .and_then(|_| self.save_settings())
+                .and_then(|_| {
+                    system_takeover::set_component_active(
+                        &self.app_data,
+                        "firewall",
+                        self.settings.kill_switch_enabled,
+                    )
+                    .map(|_| ())
+                })
+            },
+        )?;
         Ok(enable)
     }
 
@@ -8317,11 +7809,31 @@ impl CoreManager {
         match operation {
             Ok(result) => {
                 if let Some(transaction) = tun_transaction {
-                    transaction.complete(if was_running {
-                        "TUN configuration, controller, Windows route/adapter evidence and connectivity were verified."
-                    } else {
-                        "TUN candidate configuration was verified; Windows takeover remains deferred until connection."
-                    })?;
+                    transaction.complete_verified(
+                        if was_running {
+                            "TUN configuration, controller, Windows route/adapter evidence and connectivity were verified."
+                        } else {
+                            "TUN candidate configuration was verified; Windows takeover remains deferred until connection."
+                        },
+                        || {
+                            let settings_restore = self.restore_settings_snapshot(
+                                previous_settings.clone(),
+                                was_running,
+                            );
+                            let active_state_restore = system_takeover::set_component_active(
+                                &self.app_data,
+                                "tun",
+                                previous_settings.tun_enabled && was_running,
+                            )
+                            .map(|_| ());
+                            combine_restore_results(
+                                "settings/runtime restore",
+                                settings_restore,
+                                "TUN recovery state restore",
+                                active_state_restore,
+                            )
+                        },
+                    )?;
                 }
                 Ok(result)
             }
@@ -8443,11 +7955,55 @@ impl CoreManager {
         match operation {
             Ok(result) => {
                 if let Some(transaction) = tun_transaction {
-                    transaction.complete(if was_running {
-                        "Batch settings applied; TUN runtime and Windows takeover were verified."
-                    } else {
-                        "Batch settings applied; TUN candidate is valid and takeover is deferred until connection."
-                    })?;
+                    transaction.complete_verified(
+                        if was_running {
+                            "Batch settings applied; TUN runtime and Windows takeover were verified."
+                        } else {
+                            "Batch settings applied; TUN candidate is valid and takeover is deferred until connection."
+                        },
+                        || {
+                            let firewall_restore = if kill_change {
+                                run_powershell(&build_kill_switch_script(
+                                    previous_settings.kill_switch_enabled,
+                                    &self.app_data,
+                                    &self.core_path,
+                                ))
+                                .map(|_| ())
+                                .and_then(|_| {
+                                    system_takeover::set_component_active(
+                                        &self.app_data,
+                                        "firewall",
+                                        previous_settings.kill_switch_enabled,
+                                    )
+                                    .map(|_| ())
+                                })
+                            } else {
+                                Ok(())
+                            };
+                            let settings_restore = self.restore_settings_snapshot(
+                                previous_settings.clone(),
+                                was_running,
+                            );
+                            let tun_state_restore = system_takeover::set_component_active(
+                                &self.app_data,
+                                "tun",
+                                previous_settings.tun_enabled && was_running,
+                            )
+                            .map(|_| ());
+                            let system_restore = combine_restore_results(
+                                "firewall restore",
+                                firewall_restore,
+                                "settings/runtime restore",
+                                settings_restore,
+                            );
+                            combine_restore_results(
+                                "batch system restore",
+                                system_restore,
+                                "TUN recovery state restore",
+                                tun_state_restore,
+                            )
+                        },
+                    )?;
                 }
                 Ok(result)
             }
@@ -8483,11 +8039,26 @@ impl CoreManager {
         if !["rule", "global", "direct"].contains(&mode) {
             return Err("Unsupported mode".to_string());
         }
+        let previous_mode = self.settings.mode.clone();
+        let controller = self.core_controller();
+        if let Some(result) = controller.apply_mode_if_running(self.process.is_some(), mode) {
+            result.map_err(|err| format!("Mode switch was not applied: {err}"))?;
+        }
         self.settings.mode = mode.to_string();
-        self.save_settings()?;
-        let _ = self
-            .core_controller()
-            .apply_mode_if_running(self.process.is_some(), mode);
+        if let Err(save_error) = self.save_settings() {
+            self.settings.mode = previous_mode.clone();
+            let rollback_error = controller
+                .apply_mode_if_running(self.process.is_some(), &previous_mode)
+                .and_then(Result::err);
+            return Err(match rollback_error {
+                Some(rollback_error) => format!(
+                    "Mode preference save failed: {save_error}; runtime rollback also failed: {rollback_error}"
+                ),
+                None => format!(
+                    "Mode preference save failed: {save_error}; previous runtime mode was restored"
+                ),
+            });
+        }
         Ok(mode.to_string())
     }
 
@@ -8536,7 +8107,7 @@ impl CoreManager {
                             if matches!(name, "DIRECT" | "REJECT" | "PASS" | "COMPATIBLE") {
                                 return None;
                             }
-                            if is_subscription_metadata_node_name(name) {
+                            if config_domain::is_subscription_metadata_node_name(name) {
                                 return None;
                             }
                             let protocol = item
@@ -8573,61 +8144,97 @@ impl CoreManager {
             .unwrap_or_default()
     }
 
-    fn current_outbound_ip_proxy_name(&self, groups: &JsonValue) -> Option<String> {
-        let snapshot = groups.as_array()?;
-        let group_names = snapshot
-            .iter()
-            .filter_map(|group| group.get("name").and_then(|value| value.as_str()))
-            .map(str::to_string)
-            .collect::<HashSet<_>>();
-        let primary = ["GLOBAL", "Final", "Proxy", "Proxies"]
-            .iter()
-            .find(|name| group_names.contains(**name))
-            .map(|name| (*name).to_string())
-            .or_else(|| {
-                self.settings
-                    .selected_proxy_map
-                    .keys()
-                    .find(|name| group_names.contains(*name))
-                    .cloned()
-            })
-            .or_else(|| {
-                snapshot
-                    .first()
-                    .and_then(|group| group.get("name"))
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string)
-            })?;
-        let leaf = core_runtime::resolve_group_leaf(
-            snapshot,
-            &self.settings.selected_proxy_map,
-            &primary,
-            0,
-        );
-        if leaf.trim().is_empty() || leaf == AEGOS_OUTBOUND_IP_GROUP {
-            return None;
-        }
-        Some(leaf)
+    fn speed_target_catalog_key(&self, profile: &Profile) -> String {
+        let metadata = fs::metadata(&profile.path).ok();
+        let length = metadata.as_ref().map(|item| item.len()).unwrap_or(0);
+        let modified_ms = metadata
+            .and_then(|item| item.modified().ok())
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        format!(
+            "{}:{}:{}:{}:{}",
+            profile.id,
+            profile.path,
+            length,
+            modified_ms,
+            self.runtime_config_digest.as_deref().unwrap_or("")
+        )
     }
 
-    fn sync_outbound_ip_group_selection(&mut self) -> Option<String> {
-        let groups = self.proxy_groups();
-        let proxy = self.current_outbound_ip_proxy_name(&groups)?;
-        if let Some(Err(err)) = self
-            .core_controller()
-            .apply_auxiliary_proxy_selection_if_running(
-                self.process.is_some(),
-                AEGOS_OUTBOUND_IP_GROUP,
-                &proxy,
-            )
-        {
-            self.add_log(
-                format!("Outbound IP lookup group sync failed: {err}"),
-                "warn",
-            );
-            return None;
+    fn speed_targets(&mut self) -> Result<Vec<SpeedTestTarget>, String> {
+        let profile = self
+            .active_profile()
+            .ok_or_else(|| "No active profile is available for speed testing".to_string())?;
+        let key = self.speed_target_catalog_key(&profile);
+        if let Some(catalog) = &self.speed_target_catalog {
+            if catalog.key == key && catalog.profile_id == profile.id {
+                return Ok(catalog.targets.clone());
+            }
         }
-        self.process.is_some().then_some(proxy)
+        let groups = self.proxy_groups();
+        let targets = Self::collect_proxy_targets(&groups);
+        speed_test_preflight(&targets)?;
+        self.speed_target_catalog = Some(SpeedTargetCatalog {
+            key,
+            profile_id: profile.id,
+            targets: targets.clone(),
+            built_at_ms: now_millis(),
+        });
+        Ok(targets)
+    }
+
+    fn prepare_speed_measurement_runtime(&mut self) -> Result<JsonValue, String> {
+        let started = Instant::now();
+        // This command runs after startup as an idle optimization. Starting or
+        // recovering the data plane here used to contend with status and page
+        // snapshots. A real speed-test still prepares the controller on demand.
+        if self.process.is_some() {
+            return Ok(json!({
+                "ok": true,
+                "deferred": true,
+                "reason": "runtime-active",
+                "profileId": self.settings.active_profile_id,
+                "targetCount": self.speed_target_catalog.as_ref().map(|item| item.targets.len()).unwrap_or(0),
+                "prepareMs": started.elapsed().as_millis() as u64,
+                "trafficTakeover": self.traffic_takeover
+            }));
+        }
+        let targets = self.speed_targets()?;
+        let catalog = self.speed_target_catalog.as_ref();
+        Ok(json!({
+            "ok": true,
+            "deferred": false,
+            "profileId": self.settings.active_profile_id,
+            "targetCount": targets.len(),
+            "catalogBuiltAtMs": catalog.map(|item| item.built_at_ms).unwrap_or(0),
+            "prepareMs": started.elapsed().as_millis() as u64,
+            "trafficTakeover": self.traffic_takeover
+        }))
+    }
+
+    fn current_outbound_ip_proxy_name(&self, groups: &JsonValue) -> Option<String> {
+        let primary_groups = if self.settings.mode.eq_ignore_ascii_case("global") {
+            OUTBOUND_IP_GLOBAL_PRIMARY_GROUPS
+        } else {
+            OUTBOUND_IP_RULE_PRIMARY_GROUPS
+        };
+        ProxyCatalog::from_product_json(groups)
+            .ok()?
+            .resolve_runtime_leaf(primary_groups)
+    }
+
+    fn sync_outbound_ip_group_selection(&mut self) -> Result<Option<String>, String> {
+        if self.process.is_none() {
+            return Ok(None);
+        }
+        match sync_outbound_ip_route(&self.core_controller(), &self.settings.mode) {
+            Ok(proxy) => Ok(Some(proxy)),
+            Err(err) => {
+                self.add_log(format!("Outbound IP lookup group sync failed: {err}"), "warn");
+                Err(err)
+            }
+        }
     }
 
     fn speed_test_snapshot(&self) -> JsonValue {
@@ -8705,6 +8312,7 @@ impl CoreManager {
         app: AppHandle,
         priority_names: Vec<String>,
     ) -> Result<JsonValue, String> {
+        let prepare_started = Instant::now();
         if let Err(err) = self.ensure_core_for_delay_test() {
             let message = format!("speed-test-prepare-failed: {err}");
             if let Some(run_id) = expected_run_id {
@@ -8722,20 +8330,12 @@ impl CoreManager {
                 return Ok(self.speed_test_snapshot());
             }
         }
-        let groups = self.proxy_groups();
-        let targets = Self::collect_proxy_targets(&groups);
-        if let Err(err) = speed_test_preflight(&targets) {
+        let targets = self.speed_targets().map_err(|err| {
             if let Some(run_id) = expected_run_id {
                 fail_speed_test_if_current(&self.speed_test, run_id, err.clone(), now_secs());
-            } else {
-                let mut speed = self.speed_test.lock().unwrap();
-                speed.running = false;
-                speed.error = Some(err.clone());
-                speed.updated_at = now_secs();
             }
-            self.add_log(err.clone(), "warn");
-            return Err(err);
-        }
+            err
+        })?;
         let total = targets.len();
         if total == 0 {
             return Ok(self.speed_test_snapshot());
@@ -8749,7 +8349,9 @@ impl CoreManager {
             &previous_health,
             &priority_names,
             now_secs(),
-        );
+        )
+        .into_iter()
+        .collect::<Vec<_>>();
         let profile_id = self.settings.active_profile_id.clone();
         let run_id;
         {
@@ -8767,94 +8369,60 @@ impl CoreManager {
                 run_id = speed.run_id.saturating_add(1);
             }
             let now = now_secs();
-            *speed = SpeedTestState {
-                run_id,
-                running: true,
-                started_at: now,
-                updated_at: now,
-                total,
-                completed: 0,
-                ok: 0,
-                failed: 0,
-                delays: HashMap::new(),
-                health: previous_health,
-                low_latency: Vec::new(),
-                recommended: None,
-                error: None,
-            };
+            speed.run_id = run_id;
+            speed.running = true;
+            speed.phase = "fast".to_string();
+            speed.revision = speed.revision.saturating_add(1);
+            speed.started_at = now;
+            speed.updated_at = now;
+            speed.prepared_at_ms = now_millis();
+            speed.first_result_at_ms = 0;
+            speed.fast_completed_at_ms = 0;
+            speed.completed_at_ms = 0;
+            speed.total = total;
+            speed.completed = 0;
+            speed.ok = 0;
+            speed.failed = 0;
+            speed.refine_total = 0;
+            speed.refine_completed = 0;
+            speed.delays.clear();
+            speed.health = previous_health;
+            speed.low_latency.clear();
+            speed.recommended = None;
+            speed.error = None;
         }
 
         emit_speed_test_event(
             &app,
             json!({
-                "kind": "started",
+                "kind": "prepared",
+                "runId": run_id,
                 "profileId": profile_id.clone(),
+                "prepareMs": prepare_started.elapsed().as_millis() as u64,
                 "status": self.speed_test_snapshot()
             }),
         );
 
-        let speed_firewall_enabled =
-            core_runtime::speed_test_firewall_enabled(self.settings.kill_switch_enabled);
-        let speed_firewall_ports = core_runtime::speed_test_firewall_ports(
-            speed_firewall_enabled,
-            &self.speed_test_firewall_ports(),
+        self.add_log(
+            format!(
+                "Speed test prepared: {total} nodes in {} ms",
+                prepare_started.elapsed().as_millis()
+            ),
+            "info",
         );
-        self.add_log(format!("Speed test started: {total} nodes"), "info");
-        let speed_firewall_app_data = self.app_data.clone();
-        let speed_firewall_core_path = self.core_path.clone();
+        let speed_health_path = self.speed_health_path.clone();
+        let speed_health_root = self.app_data.clone();
         thread::spawn(move || {
-            if speed_firewall_enabled {
-                if let Err(err) = run_powershell(&build_speed_test_firewall_script(
-                    true,
-                    &speed_firewall_app_data,
-                    &speed_firewall_core_path,
-                    &speed_firewall_ports,
-                )) {
-                    let message = format!("protection-blocked: {err}");
-                    {
-                        let mut speed = speed_test.lock().unwrap();
-                        if speed.run_id == run_id {
-                            speed.running = false;
-                            speed.error = Some(message);
-                            speed.updated_at = now_secs();
-                        }
-                    }
-                    emit_speed_test_event(
-                        &app,
-                        json!({
-                            "kind": "error",
-                            "profileId": profile_id,
-                            "status": speed_test_runtime_snapshot(&speed_test, now_secs())
-                        }),
-                    );
-                    return;
-                }
-            }
-            let cleanup_speed_firewall = || {
-                if speed_firewall_enabled {
-                    let _ = run_powershell(&build_speed_test_firewall_script(
-                        false,
-                        &speed_firewall_app_data,
-                        &speed_firewall_core_path,
-                        &speed_firewall_ports,
-                    ));
-                }
-            };
             let client = match Client::builder()
                 .no_proxy()
+                .pool_max_idle_per_host(SPEED_GLOBAL_CONCURRENCY_MAX)
+                .tcp_nodelay(true)
                 .timeout(Duration::from_millis(6500))
                 .build()
             {
-                Ok(client) => Arc::new(client),
+                Ok(client) => client,
                 Err(err) => {
-                    {
-                        let mut speed = speed_test.lock().unwrap();
-                        if speed.run_id == run_id {
-                            speed.running = false;
-                            speed.error = Some(err.to_string());
-                            speed.updated_at = now_secs();
-                        }
-                    }
+                    fail_speed_test_if_current(&speed_test, run_id, err.to_string(), now_secs());
                     emit_speed_test_event(
                         &app,
                         json!({
@@ -8863,160 +8431,322 @@ impl CoreManager {
                             "status": speed_test_runtime_snapshot(&speed_test, now_secs())
                         }),
                     );
-                    cleanup_speed_firewall();
                     return;
                 }
             };
-            let (tx, rx) = mpsc::channel();
-            let mut pending = pending;
-            let mut handles = Vec::with_capacity(total);
-            let mut active = 0usize;
-            let mut active_by_family: HashMap<&'static str, usize> = HashMap::new();
-            let mut concurrency = SPEED_GLOBAL_CONCURRENCY_INITIAL.min(total.max(1));
-            let mut window_completed = 0usize;
-            let mut window_failures = 0usize;
-            let mut window_elapsed_ms = 0u128;
+            let client = Arc::new(client);
+            let fast_controller = controller.clone();
+            let fast_client = client.clone();
+            let fast_probe = Arc::new(move |target: &SpeedTestTarget| {
+                test_proxy_delay_fast(
+                    &fast_client,
+                    &fast_controller,
+                    &target.name,
+                    &target.protocol,
+                )
+            });
+            let continue_store = speed_test.clone();
+            let event_store = speed_test.clone();
+            let event_app = app.clone();
+            let event_profile = profile_id.clone();
+            let mut refine_targets = Vec::<SpeedTestTarget>::new();
+            let fast_report = run_probe_wave(
+                pending,
+                speed_scheduler_policy(false),
+                fast_probe,
+                |target| protocol_family(&target.protocol).to_string(),
+                move || speed_test_run_is_current(&continue_store, run_id),
+                |outcome: ProbeOutcome<SpeedTestTarget, DelayTestResult>| {
+                    let ProbeOutcome {
+                        target,
+                        result,
+                        worker_id,
+                        queue_ms,
+                        probe_ms,
+                    } = outcome;
+                    let now = now_secs();
+                    let event_state = {
+                        let mut speed = event_store.lock().unwrap();
+                        if !speed.running || speed.run_id != run_id {
+                            None
+                        } else {
+                            if speed.first_result_at_ms == 0 {
+                                speed.first_result_at_ms = now_millis();
+                            }
+                            speed.completed += 1;
+                            let health = if result.delay > 0 {
+                                speed.ok += 1;
+                                update_node_health(
+                                    speed.health.get(&target.name),
+                                    &target.name,
+                                    &target.protocol,
+                                    result.delay,
+                                    &result.failure_reason,
+                                    now,
+                                )
+                            } else {
+                                speed.failed += 1;
+                                refine_targets.push(target.clone());
+                                refining_node_health(
+                                    speed.health.get(&target.name),
+                                    &target.name,
+                                    &target.protocol,
+                                    &result.failure_reason,
+                                    now,
+                                )
+                            };
+                            speed.delays.insert(target.name.clone(), result.delay);
+                            speed.health.insert(target.name.clone(), health.clone());
+                            speed.revision = speed.revision.saturating_add(1);
+                            speed.updated_at = now;
+                            Some((
+                                health,
+                                speed.completed,
+                                speed.total,
+                                speed.ok,
+                                speed.failed,
+                                speed
+                                    .first_result_at_ms
+                                    .saturating_sub(speed.accepted_at_ms),
+                            ))
+                        }
+                    };
+                    let Some((health, completed, total, ok, failed, first_result_ms)) = event_state
+                    else {
+                        return false;
+                    };
+                    emit_speed_test_event(
+                        &event_app,
+                        json!({
+                            "kind": "result",
+                            "phase": "fast",
+                            "runId": run_id,
+                            "profileId": event_profile.clone(),
+                            "name": target.name,
+                            "selectName": target.select_name,
+                            "protocol": target.protocol,
+                            "delay": result.delay,
+                            "failureReason": health.last_failure_reason.clone(),
+                            "probeMs": probe_ms,
+                            "queueMs": queue_ms,
+                            "workerId": worker_id,
+                            "firstResultMs": first_result_ms,
+                            "completed": completed,
+                            "total": total,
+                            "ok": ok,
+                            "failed": failed,
+                            "health": health
+                        }),
+                    );
+                    result.delay > 0
+                },
+            );
 
-            while !pending.is_empty() || active > 0 {
-                let is_current = {
-                    let speed = speed_test.lock().unwrap();
-                    speed.running && speed.run_id == run_id
-                };
-                if !is_current {
-                    cleanup_speed_firewall();
+            if fast_report.cancelled {
+                if speed_test_run_is_current(&speed_test, run_id) {
+                    fail_speed_test_if_current(
+                        &speed_test,
+                        run_id,
+                        "speed scheduler interrupted before the fast pass completed".to_string(),
+                        now_secs(),
+                    );
+                    emit_speed_test_event(
+                        &app,
+                        json!({
+                            "kind": "error",
+                            "runId": run_id,
+                            "profileId": profile_id.clone(),
+                            "status": speed_test_runtime_snapshot(&speed_test, now_secs())
+                        }),
+                    );
+                }
+                return;
+            }
+            if !speed_test_run_is_current(&speed_test, run_id) {
+                return;
+            }
+
+            let has_refine = !refine_targets.is_empty();
+            {
+                let now = now_secs();
+                let mut speed = speed_test.lock().unwrap();
+                if speed.run_id != run_id || !speed.running {
                     return;
                 }
-
-                while active < concurrency {
-                    let Some(target) = next_schedulable_target(&mut pending, &active_by_family)
-                    else {
-                        break;
-                    };
-                    let family = protocol_family(&target.protocol);
-                    *active_by_family.entry(family).or_insert(0) += 1;
-                    active += 1;
-                    let tx = tx.clone();
-                    let controller = controller.clone();
-                    let client = client.clone();
-                    handles.push(thread::spawn(move || {
-                        let started = Instant::now();
-                        let result = test_proxy_delay_fast(
-                            &client,
-                            &controller,
-                            &target.name,
-                            &target.protocol,
-                        );
-                        let _ = tx.send((target, result, started.elapsed().as_millis()));
-                    }));
-                }
-
-                if active == 0 {
-                    break;
-                }
-                let Ok((target, result, elapsed_ms)) = rx.recv() else {
-                    break;
+                speed.fast_completed_at_ms = now_millis();
+                speed.phase = if has_refine {
+                    "refining".to_string()
+                } else {
+                    "complete".to_string()
                 };
-                active = active.saturating_sub(1);
-                let family = protocol_family(&target.protocol);
-                if let Some(count) = active_by_family.get_mut(family) {
-                    *count = count.saturating_sub(1);
+                speed.refine_total = refine_targets.len();
+                speed.low_latency = low_latency_names(&speed.health, now);
+                speed.recommended = speed_recommendation(&targets, &speed.health, now);
+                speed.revision = speed.revision.saturating_add(1);
+                speed.updated_at = now;
+                if !has_refine {
+                    speed.running = false;
+                    speed.completed_at_ms = now_millis();
                 }
+            }
+            emit_speed_test_event(
+                &app,
+                json!({
+                    "kind": "fast-complete",
+                    "runId": run_id,
+                    "profileId": profile_id.clone(),
+                    "scheduler": fast_report,
+                    "status": speed_test_runtime_snapshot(&speed_test, now_secs())
+                }),
+            );
 
-                let now = now_secs();
-                let event_state = {
-                    let mut speed = speed_test.lock().unwrap();
-                    if !speed.running || speed.run_id != run_id {
-                        None
-                    } else {
-                        speed.completed += 1;
-                        if result.delay > 0 {
-                            speed.ok += 1;
-                        } else {
-                            speed.failed += 1;
-                        }
-                        speed.delays.insert(target.name.clone(), result.delay);
-                        let health = update_node_health(
-                            speed.health.get(&target.name),
-                            &target.name,
-                            &target.protocol,
-                            result.delay,
-                            &result.failure_reason,
-                            now,
+            if has_refine {
+                let refine_controller = controller.clone();
+                let refine_client = client.clone();
+                let refine_probe = Arc::new(move |target: &SpeedTestTarget| {
+                    test_proxy_delay_plan(
+                        &refine_client,
+                        &refine_controller,
+                        &target.name,
+                        &target.protocol,
+                        DelayProbeDepth::Full,
+                    )
+                });
+                let continue_store = speed_test.clone();
+                let event_store = speed_test.clone();
+                let event_app = app.clone();
+                let event_profile = profile_id.clone();
+                let refine_report = run_probe_wave(
+                    refine_targets,
+                    speed_scheduler_policy(true),
+                    refine_probe,
+                    |target| protocol_family(&target.protocol).to_string(),
+                    move || speed_test_run_is_current(&continue_store, run_id),
+                    |outcome: ProbeOutcome<SpeedTestTarget, DelayTestResult>| {
+                        let ProbeOutcome {
+                            target,
+                            result,
+                            worker_id,
+                            queue_ms,
+                            probe_ms,
+                        } = outcome;
+                        let now = now_secs();
+                        let event_state = {
+                            let mut speed = event_store.lock().unwrap();
+                            if !speed.running || speed.run_id != run_id {
+                                None
+                            } else {
+                                if result.delay > 0 {
+                                    speed.ok += 1;
+                                    speed.failed = speed.failed.saturating_sub(1);
+                                }
+                                let health = update_node_health(
+                                    speed.health.get(&target.name),
+                                    &target.name,
+                                    &target.protocol,
+                                    result.delay,
+                                    &result.failure_reason,
+                                    now,
+                                );
+                                speed.delays.insert(target.name.clone(), result.delay);
+                                speed.health.insert(target.name.clone(), health.clone());
+                                speed.refine_completed += 1;
+                                speed.revision = speed.revision.saturating_add(1);
+                                speed.updated_at = now;
+                                Some((
+                                    health,
+                                    speed.ok,
+                                    speed.failed,
+                                    speed.refine_completed,
+                                    speed.refine_total,
+                                ))
+                            }
+                        };
+                        let Some((health, ok, failed, refine_completed, refine_total)) =
+                            event_state
+                        else {
+                            return false;
+                        };
+                        emit_speed_test_event(
+                            &event_app,
+                            json!({
+                                "kind": "refined",
+                                "phase": "refining",
+                                "runId": run_id,
+                                "profileId": event_profile.clone(),
+                                "name": target.name,
+                                "selectName": target.select_name,
+                                "protocol": target.protocol,
+                                "delay": result.delay,
+                                "failureReason": result.failure_reason,
+                                "probeMs": probe_ms,
+                                "queueMs": queue_ms,
+                                "workerId": worker_id,
+                                "completed": total,
+                                "total": total,
+                                "ok": ok,
+                                "failed": failed,
+                                "refineCompleted": refine_completed,
+                                "refineTotal": refine_total,
+                                "health": health
+                            }),
                         );
-                        speed.health.insert(target.name.clone(), health.clone());
+                        result.delay > 0
+                    },
+                );
+                if refine_report.cancelled {
+                    if speed_test_run_is_current(&speed_test, run_id) {
+                        fail_speed_test_if_current(
+                            &speed_test,
+                            run_id,
+                            "speed scheduler interrupted during background refinement".to_string(),
+                            now_secs(),
+                        );
+                        emit_speed_test_event(
+                            &app,
+                            json!({
+                                "kind": "error",
+                                "runId": run_id,
+                                "profileId": profile_id.clone(),
+                                "status": speed_test_runtime_snapshot(&speed_test, now_secs())
+                            }),
+                        );
+                    }
+                    return;
+                }
+                if !speed_test_run_is_current(&speed_test, run_id) {
+                    return;
+                }
+                {
+                    let now = now_secs();
+                    let mut speed = speed_test.lock().unwrap();
+                    if speed.run_id == run_id {
+                        speed.running = false;
+                        speed.phase = "complete".to_string();
+                        speed.completed_at_ms = now_millis();
                         speed.low_latency = low_latency_names(&speed.health, now);
                         speed.recommended = speed_recommendation(&targets, &speed.health, now);
+                        speed.revision = speed.revision.saturating_add(1);
                         speed.updated_at = now;
-                        Some((
-                            health,
-                            speed.completed,
-                            speed.total,
-                            speed.ok,
-                            speed.failed,
-                        ))
                     }
-                };
-                let Some((health, completed, total, ok, failed)) = event_state else {
-                    cleanup_speed_firewall();
-                    return;
-                };
-
-                emit_speed_test_event(
-                    &app,
-                    json!({
-                        "kind": "result",
-                        "runId": run_id,
-                        "profileId": profile_id,
-                        "name": target.name,
-                        "selectName": target.select_name,
-                        "protocol": target.protocol,
-                        "delay": result.delay,
-                        "failureReason": result.failure_reason,
-                        "elapsedMs": elapsed_ms as u64,
-                        "completed": completed,
-                        "total": total,
-                        "ok": ok,
-                        "failed": failed,
-                        "health": health
-                    }),
-                );
-
-                window_completed += 1;
-                window_failures += usize::from(result.delay <= 0);
-                window_elapsed_ms += elapsed_ms;
-                if window_completed >= SPEED_ADAPTIVE_WINDOW {
-                    concurrency = adaptive_speed_concurrency(
-                        concurrency,
-                        window_completed,
-                        window_failures,
-                        window_elapsed_ms,
-                    )
-                    .min(total.max(1));
-                    window_completed = 0;
-                    window_failures = 0;
-                    window_elapsed_ms = 0;
-                }
-            }
-
-            for handle in handles {
-                let _ = handle.join();
-            }
-            {
-                let mut speed = speed_test.lock().unwrap();
-                if speed.run_id == run_id {
-                    speed.running = false;
-                    speed.updated_at = now_secs();
                 }
             }
             emit_speed_test_event(
                 &app,
                 json!({
                     "kind": "complete",
-                    "profileId": profile_id,
+                    "runId": run_id,
+                    "profileId": profile_id.clone(),
                     "status": speed_test_runtime_snapshot(&speed_test, now_secs())
                 }),
             );
-            cleanup_speed_firewall();
+            let health = speed_test.lock().unwrap().health.clone();
+            let _ = persist_profile_speed_health(
+                &speed_health_path,
+                &speed_health_root,
+                &profile_id,
+                &health,
+            );
         });
         Ok(self.speed_test_snapshot())
     }
@@ -9025,6 +8755,7 @@ impl CoreManager {
         &mut self,
         name: String,
         expected_run_id: Option<u64>,
+        app: AppHandle,
     ) -> Result<JsonValue, String> {
         if let Err(err) = self.ensure_core_for_delay_test() {
             if let Some(run_id) = expected_run_id {
@@ -9037,14 +8768,15 @@ impl CoreManager {
                 return Ok(self.speed_test_snapshot());
             }
         }
-        let groups = self.proxy_groups();
-        let targets = Self::collect_proxy_targets(&groups);
-        if let Err(err) = speed_test_preflight(&targets) {
-            if let Some(run_id) = expected_run_id {
-                fail_speed_test_if_current(&self.speed_test, run_id, err.clone(), now_secs());
+        let targets = match self.speed_targets() {
+            Ok(targets) => targets,
+            Err(err) => {
+                if let Some(run_id) = expected_run_id {
+                    fail_speed_test_if_current(&self.speed_test, run_id, err.clone(), now_secs());
+                }
+                return Err(err);
             }
-            return Err(err);
-        }
+        };
         let target = match targets
             .iter()
             .find(|target| target.name == name || target.select_name == name)
@@ -9067,14 +8799,10 @@ impl CoreManager {
         let controller = self.core_controller();
         let speed_test = self.speed_test.clone();
         let targets_for_recommendation = targets.clone();
-        let speed_firewall_enabled =
-            core_runtime::speed_test_firewall_enabled(self.settings.kill_switch_enabled);
-        let speed_firewall_ports = core_runtime::speed_test_firewall_ports(
-            speed_firewall_enabled,
-            &self.speed_test_firewall_ports(),
-        );
-        let speed_firewall_app_data = self.app_data.clone();
-        let speed_firewall_core_path = self.core_path.clone();
+        let speed_health_path = self.speed_health_path.clone();
+        let speed_health_root = self.app_data.clone();
+        let speed_health_profile = self.settings.active_profile_id.clone();
+        let event_profile = self.settings.active_profile_id.clone();
         let run_id;
         {
             let mut speed = speed_test.lock().unwrap();
@@ -9089,7 +8817,13 @@ impl CoreManager {
             }
             speed.run_id = run_id;
             speed.running = true;
+            speed.phase = "fast".to_string();
+            speed.revision = speed.revision.saturating_add(1);
             speed.started_at = now_secs();
+            speed.prepared_at_ms = now_millis();
+            speed.first_result_at_ms = 0;
+            speed.fast_completed_at_ms = 0;
+            speed.completed_at_ms = 0;
             speed.completed = 0;
             speed.total = 1;
             speed.ok = 0;
@@ -9103,52 +8837,6 @@ impl CoreManager {
         let queued_real_proxy = target.name.clone();
         let queued_protocol = target.protocol.clone();
         thread::spawn(move || {
-            let fail_single = |message: String| {
-                let now = now_secs();
-                let mut speed = speed_test.lock().unwrap();
-                if speed.run_id != run_id {
-                    return;
-                }
-                let health = update_node_health(
-                    speed.health.get(&target.name),
-                    &target.name,
-                    &target.protocol,
-                    -1,
-                    &message,
-                    now,
-                );
-                speed.delays.insert(target.name.clone(), -1);
-                speed.health.insert(target.name.clone(), health);
-                speed.failed = 1;
-                speed.completed = 1;
-                speed.running = false;
-                speed.error = Some(message);
-                speed.low_latency = low_latency_names(&speed.health, now);
-                speed.recommended =
-                    speed_recommendation(&targets_for_recommendation, &speed.health, now);
-                speed.updated_at = now;
-            };
-            if speed_firewall_enabled {
-                if let Err(err) = run_powershell(&build_speed_test_firewall_script(
-                    true,
-                    &speed_firewall_app_data,
-                    &speed_firewall_core_path,
-                    &speed_firewall_ports,
-                )) {
-                    fail_single(format!("protection-blocked: {err}"));
-                    return;
-                }
-            }
-            let cleanup_speed_firewall = || {
-                if speed_firewall_enabled {
-                    let _ = run_powershell(&build_speed_test_firewall_script(
-                        false,
-                        &speed_firewall_app_data,
-                        &speed_firewall_core_path,
-                        &speed_firewall_ports,
-                    ));
-                }
-            };
             let client = match Client::builder()
                 .no_proxy()
                 .timeout(Duration::from_millis(6500))
@@ -9156,47 +8844,101 @@ impl CoreManager {
             {
                 Ok(client) => client,
                 Err(err) => {
-                    fail_single(err.to_string());
-                    cleanup_speed_firewall();
+                    fail_speed_test_if_current(&speed_test, run_id, err.to_string(), now_secs());
+                    emit_speed_test_event(
+                        &app,
+                        json!({
+                            "kind": "error",
+                            "runId": run_id,
+                            "profileId": event_profile,
+                            "status": speed_test_runtime_snapshot(&speed_test, now_secs())
+                        }),
+                    );
                     return;
                 }
             };
             let result =
                 test_proxy_delay_with_retry(&client, &controller, &target.name, &target.protocol);
             let now = now_secs();
-            let mut speed = speed_test.lock().unwrap();
-            if speed.run_id == run_id {
-                let health = update_node_health(
-                    speed.health.get(&target.name),
-                    &target.name,
-                    &target.protocol,
-                    result.delay,
-                    &result.failure_reason,
-                    now,
-                );
-                speed.delays.insert(target.name.clone(), result.delay);
-                speed.health.insert(target.name.clone(), health);
-                speed.completed = 1;
-                if result.delay > 0 {
-                    speed.ok = 1;
-                    speed.failed = 0;
-                } else {
-                    speed.ok = 0;
-                    speed.failed = 1;
-                }
-                speed.running = false;
-                speed.error = if result.delay > 0 {
+            let event_state = {
+                let mut speed = speed_test.lock().unwrap();
+                if speed.run_id != run_id {
                     None
                 } else {
-                    Some(result.failure_reason.clone())
-                };
-                speed.low_latency = low_latency_names(&speed.health, now);
-                speed.recommended =
-                    speed_recommendation(&targets_for_recommendation, &speed.health, now);
-                speed.updated_at = now;
-            }
-            drop(speed);
-            cleanup_speed_firewall();
+                    speed.first_result_at_ms = now_millis();
+                    speed.fast_completed_at_ms = speed.first_result_at_ms;
+                    speed.completed_at_ms = speed.first_result_at_ms;
+                    let health = update_node_health(
+                        speed.health.get(&target.name),
+                        &target.name,
+                        &target.protocol,
+                        result.delay,
+                        &result.failure_reason,
+                        now,
+                    );
+                    speed.delays.insert(target.name.clone(), result.delay);
+                    speed.health.insert(target.name.clone(), health.clone());
+                    speed.completed = 1;
+                    if result.delay > 0 {
+                        speed.ok = 1;
+                        speed.failed = 0;
+                    } else {
+                        speed.ok = 0;
+                        speed.failed = 1;
+                    }
+                    speed.running = false;
+                    speed.phase = "complete".to_string();
+                    speed.error = if result.delay > 0 {
+                        None
+                    } else {
+                        Some(result.failure_reason.clone())
+                    };
+                    speed.low_latency = low_latency_names(&speed.health, now);
+                    speed.recommended =
+                        speed_recommendation(&targets_for_recommendation, &speed.health, now);
+                    speed.revision = speed.revision.saturating_add(1);
+                    speed.updated_at = now;
+                    Some((health, speed.ok, speed.failed))
+                }
+            };
+            let Some((health, ok, failed)) = event_state else {
+                return;
+            };
+            emit_speed_test_event(
+                &app,
+                json!({
+                    "kind": "result",
+                    "phase": "single",
+                    "runId": run_id,
+                    "profileId": event_profile.clone(),
+                    "name": target.name,
+                    "selectName": target.select_name,
+                    "protocol": target.protocol,
+                    "delay": result.delay,
+                    "failureReason": result.failure_reason,
+                    "completed": 1,
+                    "total": 1,
+                    "ok": ok,
+                    "failed": failed,
+                    "health": health
+                }),
+            );
+            emit_speed_test_event(
+                &app,
+                json!({
+                    "kind": "complete",
+                    "runId": run_id,
+                    "profileId": event_profile,
+                    "status": speed_test_runtime_snapshot(&speed_test, now_secs())
+                }),
+            );
+            let health = speed_test.lock().unwrap().health.clone();
+            let _ = persist_profile_speed_health(
+                &speed_health_path,
+                &speed_health_root,
+                &speed_health_profile,
+                &health,
+            );
         });
         Ok(json!({
             "ok": true,
@@ -9409,48 +9151,69 @@ impl CoreManager {
 
     fn change_proxy(&mut self, group: &str, proxy: &str) -> Result<bool, String> {
         let groups = self.proxy_groups();
-        let preflight = validate_proxy_selection_from_groups(&groups, group, proxy)?;
+        let preflight = core_runtime::validate_proxy_selection_from_groups(&groups, group, proxy)?;
         self.add_log(
             format!(
                 "Node switch preflight passed: {} -> {} ({})",
-                preflight
-                    .get("group")
-                    .and_then(JsonValue::as_str)
-                    .unwrap_or(group),
-                preflight
-                    .get("proxy")
-                    .and_then(JsonValue::as_str)
-                    .unwrap_or(proxy),
-                preflight
-                    .get("groupType")
-                    .and_then(JsonValue::as_str)
-                    .unwrap_or("")
+                preflight.group, preflight.proxy, preflight.group_type
             ),
             "info",
         );
-        let previous = self
+        let running = self.process.is_some();
+        let controller = self.core_controller();
+        if running {
+            if let Err(apply_error) = controller.apply_proxy_selection_with_cleanup(group, proxy) {
+                let rollback_error = if !preflight.previous_proxy.trim().is_empty()
+                    && preflight.previous_proxy != proxy
+                {
+                    controller
+                        .apply_proxy_selection_with_cleanup(group, &preflight.previous_proxy)
+                        .err()
+                } else {
+                    None
+                };
+                return Err(match rollback_error {
+                    Some(rollback_error) => format!(
+                        "{}; previous runtime node rollback also failed: {}",
+                        core_runtime::classified_error("Node switch", apply_error),
+                        rollback_error
+                    ),
+                    None => core_runtime::classified_error("Node switch", apply_error),
+                });
+            }
+        }
+        let previous_preference = self
             .settings
             .selected_proxy_map
             .insert(group.to_string(), proxy.to_string());
-        self.save_settings()?;
-        if self.process.is_some() {
-            if let Err(err) = self
-                .core_controller()
-                .apply_proxy_selection_with_cleanup(group, proxy)
-            {
-                match previous {
-                    Some(value) => {
-                        self.settings
-                            .selected_proxy_map
-                            .insert(group.to_string(), value);
-                    }
-                    None => {
-                        self.settings.selected_proxy_map.remove(group);
-                    }
+        if let Err(save_error) = self.save_settings() {
+            match previous_preference {
+                Some(value) => {
+                    self.settings
+                        .selected_proxy_map
+                        .insert(group.to_string(), value);
                 }
-                let _ = self.save_settings();
-                return Err(core_runtime::classified_error("Node switch", err));
+                None => {
+                    self.settings.selected_proxy_map.remove(group);
+                }
             }
+            let rollback_error = if running && !preflight.previous_proxy.trim().is_empty() {
+                controller
+                    .apply_proxy_selection_with_cleanup(group, &preflight.previous_proxy)
+                    .err()
+            } else {
+                None
+            };
+            return Err(match rollback_error {
+                Some(rollback_error) => format!(
+                    "Node preference save failed: {save_error}; runtime rollback also failed: {rollback_error}"
+                ),
+                None => format!(
+                    "Node preference save failed: {save_error}; previous selection was restored"
+                ),
+            });
+        }
+        if running {
             let _ = self.sync_outbound_ip_group_selection();
         }
         Ok(true)
@@ -9474,7 +9237,15 @@ impl CoreManager {
             "info",
         );
         if previous_profile_id != id {
+            let previous_health = self.speed_test.lock().unwrap().health.clone();
+            let _ = persist_profile_speed_health(
+                &self.speed_health_path,
+                &self.app_data,
+                &previous_profile_id,
+                &previous_health,
+            );
             self.reset_speed_test_state("profile switched; previous speed test cancelled", true);
+            self.speed_target_catalog = None;
         }
         self.preflight_profile_file(&profile).map_err(|err| {
             let message = format!(
@@ -9505,6 +9276,10 @@ impl CoreManager {
         }
         self.settings.active_profile_id = id.to_string();
         self.save_settings()?;
+        if previous_profile_id != id {
+            self.speed_test.lock().unwrap().health =
+                load_profile_speed_health(&self.speed_health_path, id);
+        }
         if was_running {
             let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(
                 self.settings.system_proxy,
@@ -9521,6 +9296,8 @@ impl CoreManager {
             if let Err(start_err) = apply_result {
                 let _ = self.stop();
                 self.settings.active_profile_id = previous_profile_id.clone();
+                self.speed_test.lock().unwrap().health =
+                    load_profile_speed_health(&self.speed_health_path, &previous_profile_id);
                 let save_result = self.save_settings();
                 let rollback_result = if save_result.is_ok() {
                     self.start_from_restart_plan(rollback_plan).map(|_| ())
@@ -9577,6 +9354,15 @@ impl CoreManager {
         if id == "direct" {
             return Err("鍐呯疆鐩磋繛閰嶇疆涓嶈兘鍒犻櫎".to_string());
         }
+        let removed_profile = self
+            .settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == id)
+            .cloned()
+            .ok_or_else(|| "订阅已不存在。".to_string())?;
+        let previous_settings = self.settings.clone();
+        let previous_legacy_registry = read_routing_user_rules(&self.app_data);
         let was_running = self.process.is_some();
         let was_active = self.settings.active_profile_id == id;
         let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(
@@ -9584,26 +9370,50 @@ impl CoreManager {
             self.traffic_takeover,
             core_runtime::RUNTIME_RESTART_SETTLE_MS,
         );
-        let remove_path = self
-            .settings
-            .profiles
-            .iter()
-            .find(|p| p.id == id)
-            .map(|profile| profile.path.clone());
+        // Migrate first, then remove only the old YAML-coupled ownership
+        // record. The canonical Aegos store keeps profile-scoped rules as
+        // inactive records so a user can rebind them after changing airport.
+        let _ = read_aegos_user_rule_store(&self.app_data);
+        remove_legacy_routing_user_rules_for_profile(&self.app_data, id)?;
         if was_running && was_active {
-            self.stop()?;
-        }
-        if let Some(path) = remove_path {
-            let _ = remove_file_confined(Path::new(&path), &self.profile_dir);
+            if let Err(err) = self.stop() {
+                let _ = write_routing_user_rules(&self.app_data, &previous_legacy_registry);
+                return Err(format!("删除订阅前无法安全停止当前连接：{err}"));
+            }
         }
         self.settings.profiles.retain(|p| p.id != id);
         if was_active {
             self.settings.active_profile_id = "direct".to_string();
         }
-        self.save_settings()?;
-        if was_running && was_active {
-            self.start_from_restart_plan(rollback_plan)?;
+        if let Err(err) = self.save_settings() {
+            self.settings = previous_settings;
+            let _ = write_routing_user_rules(&self.app_data, &previous_legacy_registry);
+            if was_running && was_active {
+                let _ = self.start();
+            }
+            return Err(format!("删除订阅失败，原状态已恢复：{err}"));
         }
+        if was_running && was_active {
+            if let Err(err) = self.start_from_restart_plan(rollback_plan) {
+                self.settings = previous_settings;
+                let settings_restore = self.save_settings();
+                let registry_restore = write_routing_user_rules(&self.app_data, &previous_legacy_registry);
+                let runtime_restore = self.start();
+                return Err(format!(
+                    "删除订阅后无法恢复网络，已回滚原订阅：{err}；设置恢复：{}；规则登记恢复：{}；连接恢复：{}",
+                    restore_result_label(settings_restore),
+                    restore_result_label(registry_restore),
+                    restore_result_label(runtime_restore.map(|_| ()))
+                ));
+            }
+        }
+        if let Err(err) = remove_file_confined(Path::new(&removed_profile.path), &self.profile_dir) {
+            self.add_log(
+                format!("Profile removed, but stale profile file cleanup failed: {err}"),
+                "warning",
+            );
+        }
+        self.profile_metadata_errors.remove(id);
         Ok(true)
     }
 
@@ -9613,9 +9423,10 @@ impl CoreManager {
             .ok_or_else(|| "Import or enable a profile before adding a fixed node.".to_string())?;
         let node = normalize_manual_node(&input)?;
         let name = node
+            .product_json()
             .get("name")
             .and_then(|value| value.as_str())
-            .ok_or_else(|| "鍥哄畾鑺傜偣缂哄皯鍚嶇О".to_string())?
+            .ok_or_else(|| "固定节点缺少名称".to_string())?
             .to_string();
         let original_name = input
             .get("originalName")
@@ -9644,15 +9455,15 @@ impl CoreManager {
             self.settings = previous_settings;
             return Err(format!("Fixed node candidate promotion failed: {err}"));
         }
-        if self.process.is_some() && self.settings.active_profile_id == profile.id {
+        let runtime_was_active =
+            self.process.is_some() && self.settings.active_profile_id == profile.id;
+        if runtime_was_active {
             if let Err(err) = self.hot_reload_profile(&profile) {
-                self.settings = previous_settings;
-                let rollback_settings = deployment.rollback("fixed node runtime reload failed");
-                let rollback_runtime = if rollback_settings.is_ok() {
-                    self.hot_reload_profile(&profile).map(|_| ())
-                } else {
-                    rollback_settings.map(|_| ())
-                };
+                self.settings = previous_settings.clone();
+                let rollback_runtime = deployment
+                    .rollback_with_runtime("fixed node runtime reload failed", || {
+                        self.hot_reload_profile(&profile).map(|_| ())
+                    });
                 let message =
                     match rollback_runtime {
                         Ok(_) => format!("Fixed node hot reload failed after save; settings and runtime were rolled back: {err}"),
@@ -9662,18 +9473,50 @@ impl CoreManager {
                 return Err(message);
             }
         }
-        let _ = deployment
-            .complete("Fixed node settings promoted and active runtime verification completed.")?;
+        let _ = deployment.complete_verified(
+            "Fixed node settings promoted and active runtime verification completed.",
+            || {
+                self.settings = previous_settings.clone();
+                if runtime_was_active {
+                    self.hot_reload_profile(&profile).map(|_| ())
+                } else {
+                    Ok(())
+                }
+            },
+        )?;
         self.add_log(
             format!("Manual fixed node saved: {} / {}", profile.name, name),
             "info",
         );
+        let product_node = node.product_json();
         Ok(json!({
-            "node": node,
+            "node": product_node,
             "profileId": profile.id,
             "settings": self.public_settings()
         }))
     }
+}
+
+fn refresh_lan_ip_detached(app: AppHandle, core: Arc<Mutex<CoreManager>>) {
+    thread::spawn(move || {
+        let lan_ip = primary_lan_ip();
+        if let Ok(mut core) = core.lock() {
+            core.lan_ip_cache = lan_ip.clone();
+            core.lan_ip_checked_at = now_secs();
+        }
+        let _ = app.emit(RUNTIME_STATUS_EVENT, json!({ "lanIp": lan_ip }));
+    });
+}
+
+fn refresh_elevation_detached(app: AppHandle) {
+    thread::spawn(move || {
+        // PowerShell cold start competes with the WebView2 first navigation.
+        // The initial snapshot uses the conservative non-admin state, then
+        // this authoritative value is published once the shell is idle.
+        thread::sleep(Duration::from_millis(1800));
+        let is_admin = is_process_elevated();
+        let _ = app.emit(RUNTIME_STATUS_EVENT, json!({ "isAdmin": is_admin }));
+    });
 }
 
 fn recent_node_logs_from_snapshot(logs: &LogStore, node: &str, limit: usize) -> Vec<LogEntry> {
@@ -9856,6 +9699,7 @@ fn take_diagnostics_snapshot(core: Arc<Mutex<CoreManager>>) -> DiagnosticsSnapsh
     let speed_test = core.speed_test.lock().unwrap().clone();
     DiagnosticsSnapshot {
         settings: core.settings.clone(),
+        profile_metadata_errors: core.profile_metadata_errors.clone(),
         active_profile: core.active_profile(),
         core_path: core.core_path.clone(),
         runtime_info: core.core_runtime_info(),
@@ -9909,7 +9753,15 @@ fn diagnostics_public_settings(snapshot: &DiagnosticsSnapshot) -> JsonValue {
             .settings
             .profiles
             .iter()
-            .map(public_profile)
+            .map(|profile| {
+                public_profile(
+                    profile,
+                    snapshot
+                        .profile_metadata_errors
+                        .get(&profile.id)
+                        .map(String::as_str),
+                )
+            })
             .collect::<Vec<_>>()),
         snapshot.settings.start_with_system_proxy,
         snapshot.settings.system_proxy,
@@ -9990,58 +9842,24 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
         .as_ref()
         .map(|path| path.exists())
         .unwrap_or(false);
-    let profile_preflight = snapshot
+    let runtime_plan = snapshot
         .active_profile
         .as_ref()
         .ok_or_else(|| "no active profile".to_string())
-        .and_then(|profile| {
-            let path = PathBuf::from(&profile.path);
-            let raw = fs::read_to_string(&path).map_err(|err| {
-                format!("Profile preflight read failed {}: {err}", path.display())
-            })?;
-            let source: YamlValue = serde_yaml::from_str(&raw).map_err(|err| {
-                format!(
-                    "Profile preflight YAML parse failed {}: {err}",
-                    path.display()
-                )
-            })?;
-            let runtime =
-                config_pipeline::preflight_profile_source(source, profile, &snapshot.settings)?;
-            Ok(format!(
-                "{} proxies, {} groups, {} rules",
-                runtime
-                    .report
-                    .get("proxies")
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or(0),
-                runtime
-                    .report
-                    .get("proxyGroups")
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or(0),
-                runtime
-                    .report
-                    .get("rules")
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or(0)
-            ))
-        });
+        .and_then(|profile| profile_compiler::compile_profile_file(profile, &snapshot.settings));
+    let profile_preflight = runtime_plan.as_ref().map(|runtime| {
+        format!(
+            "{} proxies, {} groups, {} rules",
+            runtime.validation.proxies, runtime.validation.proxy_groups, runtime.validation.rules
+        )
+    });
     let profile_preflight_ok = profile_preflight.is_ok();
-    let profile_preflight_detail = profile_preflight.unwrap_or_else(|err| err);
-    let runtime_dns_safety = snapshot
-        .active_profile
+    let profile_preflight_detail = profile_preflight.unwrap_or_else(|err| err.clone());
+    let runtime_dns_safety = runtime_plan
         .as_ref()
-        .ok_or_else(|| "no active profile".to_string())
-        .and_then(|profile| {
-            let path = PathBuf::from(&profile.path);
-            let raw = fs::read_to_string(&path)
-                .map_err(|err| format!("DNS preflight read failed {}: {err}", path.display()))?;
-            let source: YamlValue = serde_yaml::from_str(&raw).map_err(|err| {
-                format!("DNS preflight YAML parse failed {}: {err}", path.display())
-            })?;
-            let patched =
-                config_pipeline::patch_profile_source(source, profile, &snapshot.settings)?;
-            config_pipeline::runtime_dns_safety_report(&patched)
+        .map_err(Clone::clone)
+        .and_then(|plan| {
+            config_pipeline::runtime_dns_safety_report(plan.runtime_catalog().config())
         });
     let runtime_dns_safety_ok = runtime_dns_safety.is_ok();
     let runtime_dns_safety_detail = runtime_dns_safety.unwrap_or_else(|err| err);
@@ -10299,15 +10117,11 @@ fn add_profile_url_detached(
     url: &str,
 ) -> Result<Profile, String> {
     let parsed = reqwest::Url::parse(url).map_err(|err| err.to_string())?;
-    let (settings, profile_dir, app_data) = {
+    let (profile_dir, app_data) = {
         let core = core.lock().unwrap();
-        (
-            core.settings.clone(),
-            core.profile_dir.clone(),
-            core.app_data.clone(),
-        )
+        (core.profile_dir.clone(), core.app_data.clone())
     };
-    let source = download_profile_source_url_diagnostic(url)?;
+    let source = subscription_runtime::download_source_url(url, AEGOS_SUBSCRIPTION_USER_AGENT)?;
     let summary = source.summary.clone();
     let id = format!("url-{}", now_iso());
     let path = profile_dir.join(format!("{id}.yaml"));
@@ -10322,43 +10136,49 @@ fn add_profile_url_detached(
         updated_at: now_iso(),
         digest: String::new(),
     };
-    let runtime = config_pipeline::preflight_profile_source(source.config, &profile, &settings)
+    let _operation = lock_operation_queue(&operations, "addProfileUrl apply")?;
+    let settings = core.lock().unwrap().settings.clone();
+    let plan = profile_compiler::compile_profile_source(source.config, &profile, &settings)
         .map_err(|err| {
-            subscription_diagnostic(
+            subscription_runtime::diagnostic(
                 "runtime-preflight",
                 format!("runtime config preflight failed: {err}"),
                 "the subscription was downloaded, but the generated Mihomo config is not runnable; check unsupported node fields or malformed proxy groups",
             )
         })?;
-    let patched = runtime.config;
-    let candidate_yaml = serde_yaml::to_string(&patched).map_err(|err| err.to_string())?;
-    let mut deployment = config_deployment::ConfigDeploymentTransaction::stage(
-        &app_data,
-        &profile_dir,
-        &path,
-        "Subscription import",
-        &profile.id,
-        &candidate_yaml,
-    )?;
+    let candidate = plan.source_deployment_candidate(&profile_dir, &path, "Subscription import")?;
+    let mut deployment =
+        config_deployment::ConfigDeploymentTransaction::stage(&app_data, candidate)?;
     deployment.promote()?;
     profile.digest = sha256_file(&path);
+    let (was_running, previous_profile_id, previous_profile, rollback_plan) = {
+        let core = core.lock().unwrap();
+        (
+            core.process.is_some(),
+            core.settings.active_profile_id.clone(),
+            core.active_profile(),
+            core_runtime::CoreRuntimeRestartPlan::preserving_proxy(
+                core.settings.system_proxy,
+                core.traffic_takeover,
+                core_runtime::RUNTIME_RESTART_SETTLE_MS,
+            ),
+        )
+    };
     {
-        let _operation = lock_operation_queue(&operations, "addProfileUrl apply")?;
         let mut core = core.lock().unwrap();
-        let was_running = core.process.is_some();
-        let previous_profile_id = core.settings.active_profile_id.clone();
-        let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(
-            core.settings.system_proxy,
-            core.traffic_takeover,
-            core_runtime::RUNTIME_RESTART_SETTLE_MS,
-        );
         core.settings.profiles.push(profile.clone());
-        core.settings.active_profile_id = id;
+        core.settings.active_profile_id = id.clone();
         if let Err(err) = core.save_settings() {
             core.settings.profiles.retain(|item| item.id != profile.id);
-            core.settings.active_profile_id = previous_profile_id;
-            let _ = deployment.rollback("subscription metadata save failed");
-            return Err(err);
+            core.settings.active_profile_id = previous_profile_id.clone();
+            let rollback =
+                deployment.rollback_with_runtime("subscription metadata save failed", || Ok(()));
+            return Err(match rollback {
+                Ok(_) => err,
+                Err(rollback_err) => {
+                    format!("{err}; subscription file rollback also failed: {rollback_err}")
+                }
+            });
         }
         core.add_log(
             format!(
@@ -10373,30 +10193,86 @@ fn add_profile_url_detached(
             "info",
         );
         if was_running {
-            if let Err(start_err) = core.restart_core_preserving_proxy(250) {
-                let _ = core.stop();
+            let apply_started = Instant::now();
+            if let Err(apply_err) = core.hot_reload_runtime_plan(&profile, &plan) {
                 core.settings.profiles.retain(|item| item.id != profile.id);
                 core.settings.active_profile_id = previous_profile_id.clone();
-                let _ = deployment.rollback("subscription startup verification failed");
                 let save_result = core.save_settings();
-                let rollback_result = if save_result.is_ok() {
-                    core.start_from_restart_plan(rollback_plan).map(|_| ())
-                } else {
-                    save_result.map(|_| ())
-                };
+                let runtime_rollback = deployment.rollback_with_runtime(
+                    "subscription runtime hot reload failed",
+                    || match previous_profile.as_ref() {
+                        Some(previous) => core
+                            .hot_reload_profile(previous)
+                            .map(|_| ())
+                            .or_else(|hot_restore_err| {
+                                core.add_log(
+                                    format!(
+                                        "Subscription import hot rollback failed; restarting previous runtime: {hot_restore_err}"
+                                    ),
+                                    "warn",
+                                );
+                                let _ = core.stop();
+                                core.start_from_restart_plan(rollback_plan).map(|_| ())
+                            }),
+                        None => {
+                            let _ = core.stop();
+                            core.start_from_restart_plan(rollback_plan).map(|_| ())
+                        }
+                    },
+                );
+                let rollback_result = combine_restore_results(
+                    "subscription metadata restore",
+                    save_result,
+                    "configuration/runtime restore",
+                    runtime_rollback.map(|_| ()),
+                );
                 return Err(match rollback_result {
                     Ok(_) => format!(
-                        "Profile import applied but startup failed; rolled back to {previous_profile_id}: {start_err}"
+                        "Profile import runtime apply failed; rolled back to {previous_profile_id}: {apply_err}"
                     ),
                     Err(rollback_err) => format!(
-                        "Profile import startup failed: {start_err}; rollback to {previous_profile_id} also failed: {rollback_err}"
+                        "Profile import runtime apply failed: {apply_err}; rollback to {previous_profile_id} also failed: {rollback_err}"
                     ),
                 });
             }
+            core.add_log(
+                format!(
+                    "Subscription import runtime hot reload completed in {} ms without core restart; runtime {}",
+                    apply_started.elapsed().as_millis(),
+                    core_runtime::digest_prefix(&plan.runtime_digest)
+                ),
+                "info",
+            );
         }
     }
-    let _ = deployment.complete(
-        "Subscription candidate promoted and profile registration/runtime startup verified.",
+    let _ = deployment.complete_verified(
+        "Subscription candidate promoted and profile registration/runtime apply verified.",
+        || {
+            let mut core = core.lock().unwrap();
+            core.settings.profiles.retain(|item| item.id != profile.id);
+            core.settings.active_profile_id = previous_profile_id.clone();
+            let settings_restore = core.save_settings();
+            let runtime_restore = if was_running {
+                match previous_profile.as_ref() {
+                    Some(previous) => core.hot_reload_profile(previous).map(|_| ()).or_else(|_| {
+                        let _ = core.stop();
+                        core.start_from_restart_plan(rollback_plan).map(|_| ())
+                    }),
+                    None => {
+                        let _ = core.stop();
+                        core.start_from_restart_plan(rollback_plan).map(|_| ())
+                    }
+                }
+            } else {
+                Ok(())
+            };
+            combine_restore_results(
+                "subscription metadata restore",
+                settings_restore,
+                "runtime restore",
+                runtime_restore,
+            )
+        },
     )?;
     Ok(profile)
 }
@@ -10406,7 +10282,7 @@ fn update_profile_detached(
     operations: Arc<Mutex<()>>,
     id: &str,
 ) -> Result<Profile, String> {
-    let (mut profile, settings, app_data) = {
+    let (mut profile, app_data) = {
         let core = core.lock().unwrap();
         let profile = core
             .settings
@@ -10415,65 +10291,93 @@ fn update_profile_detached(
             .find(|p| p.id == id)
             .cloned()
             .ok_or_else(|| "Profile not found".to_string())?;
-        (profile, core.settings.clone(), core.app_data.clone())
+        (profile, core.app_data.clone())
     };
     let Some(url) = profile.source_url.clone() else {
         return Ok(profile);
     };
-    let source = download_profile_source_url_diagnostic(&url)?;
+    let source = subscription_runtime::download_source_url(&url, AEGOS_SUBSCRIPTION_USER_AGENT)?;
     let summary = source.summary.clone();
+    let _operation = lock_operation_queue(&operations, "updateProfile apply")?;
+    let settings = {
+        let core = core.lock().unwrap();
+        profile = core
+            .settings
+            .profiles
+            .iter()
+            .find(|candidate| candidate.id == id)
+            .cloned()
+            .ok_or_else(|| "Profile was removed before update apply".to_string())?;
+        core.settings.clone()
+    };
+    if profile.source_url.as_deref() != Some(url.as_str()) {
+        return Err(
+            "Subscription address changed while the update was downloading; the downloaded result was discarded. Retry the update for the current address."
+                .to_string(),
+        );
+    }
+    let previous_profile = profile.clone();
     profile.node_count = summary.proxies;
     profile.proxy_group_count = summary.proxy_groups;
-    let runtime = config_pipeline::preflight_profile_source(source.config, &profile, &settings)
+    let plan = profile_compiler::compile_profile_source(source.config, &profile, &settings)
         .map_err(|err| {
-            subscription_diagnostic(
+            subscription_runtime::diagnostic(
                 "runtime-preflight",
                 format!("runtime config preflight failed: {err}"),
                 "the subscription was downloaded, but the generated Mihomo config is not runnable; the previous subscription is kept",
             )
         })?;
-    let patched = runtime.config;
-    let previous_profile = profile.clone();
     let profile_path = PathBuf::from(&profile.path);
     let profile_root = profile_path
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| format!("Profile path has no parent: {}", profile_path.display()))?;
-    let candidate_yaml = serde_yaml::to_string(&patched).map_err(|err| err.to_string())?;
-    let mut deployment = config_deployment::ConfigDeploymentTransaction::stage(
-        &app_data,
-        &profile_root,
-        &profile_path,
-        "Subscription update",
-        &profile.id,
-        &candidate_yaml,
-    )?;
+    let candidate =
+        plan.source_deployment_candidate(&profile_root, &profile_path, "Subscription update")?;
+    let mut deployment =
+        config_deployment::ConfigDeploymentTransaction::stage(&app_data, candidate)?;
     deployment.promote()?;
     profile.updated_at = now_iso();
     profile.digest = sha256_file(&profile_path);
+    let (was_running, was_active, rollback_plan) = {
+        let core = core.lock().unwrap();
+        (
+            core.process.is_some(),
+            core.settings.active_profile_id == id,
+            core_runtime::CoreRuntimeRestartPlan::preserving_proxy(
+                core.settings.system_proxy,
+                core.traffic_takeover,
+                core_runtime::RUNTIME_RESTART_SETTLE_MS,
+            ),
+        )
+    };
     {
-        let _operation = lock_operation_queue(&operations, "updateProfile apply")?;
         let mut core = core.lock().unwrap();
-        let was_running = core.process.is_some();
-        let was_active = core.settings.active_profile_id == id;
-        let rollback_plan = core_runtime::CoreRuntimeRestartPlan::preserving_proxy(
-            core.settings.system_proxy,
-            core.traffic_takeover,
-            core_runtime::RUNTIME_RESTART_SETTLE_MS,
-        );
         let Some(stored) = core.settings.profiles.iter_mut().find(|p| p.id == id) else {
-            let _ = deployment.rollback("subscription disappeared before metadata update");
-            return Err("Profile was removed before update completed".to_string());
+            let rollback = deployment.rollback_with_runtime(
+                "subscription disappeared before metadata update",
+                || Ok(()),
+            );
+            return Err(match rollback {
+                Ok(_) => "Profile was removed before update completed".to_string(),
+                Err(rollback_err) => format!(
+                    "Profile was removed before update completed; subscription file rollback also failed: {rollback_err}"
+                ),
+            });
         };
         *stored = profile.clone();
         if let Err(err) = core.save_settings() {
-            let _ = deployment.rollback("subscription metadata save failed");
             if let Some(stored) = core.settings.profiles.iter_mut().find(|p| p.id == id) {
                 *stored = previous_profile.clone();
             }
-            return Err(format!(
-                "Profile update save failed; restored previous file: {err}"
-            ));
+            let rollback =
+                deployment.rollback_with_runtime("subscription metadata save failed", || Ok(()));
+            return Err(match rollback {
+                Ok(_) => format!("Profile update save failed; restored previous file: {err}"),
+                Err(rollback_err) => format!(
+                    "Profile update save failed: {err}; subscription file rollback also failed: {rollback_err}"
+                ),
+            });
         }
         core.add_log(
             format!(
@@ -10488,59 +10392,115 @@ fn update_profile_detached(
             "info",
         );
         if was_running && was_active {
-            if let Err(start_err) = core.restart_core_preserving_proxy(250) {
-                let _ = core.stop();
-                let _ = deployment.rollback("subscription runtime restart failed");
+            let apply_started = Instant::now();
+            if let Err(apply_err) = core.hot_reload_runtime_plan(&profile, &plan) {
                 if let Some(stored) = core.settings.profiles.iter_mut().find(|p| p.id == id) {
                     *stored = previous_profile.clone();
                 }
                 let save_result = core.save_settings();
-                let rollback_result = if save_result.is_ok() {
-                    core.start_from_restart_plan(rollback_plan).map(|_| ())
-                } else {
-                    save_result.map(|_| ())
-                };
+                let runtime_rollback = deployment.rollback_with_runtime(
+                    "subscription runtime hot reload failed",
+                    || core
+                        .hot_reload_profile(&previous_profile)
+                        .map(|_| ())
+                        .or_else(|hot_restore_err| {
+                            core.add_log(
+                                format!(
+                                    "Subscription update hot rollback failed; restarting previous runtime: {hot_restore_err}"
+                                ),
+                                "warn",
+                            );
+                            let _ = core.stop();
+                            core.start_from_restart_plan(rollback_plan).map(|_| ())
+                        }),
+                );
+                let rollback_result = combine_restore_results(
+                    "subscription metadata restore",
+                    save_result,
+                    "configuration/runtime restore",
+                    runtime_rollback.map(|_| ()),
+                );
                 return Err(match rollback_result {
                     Ok(_) => format!(
-                        "Profile update applied but startup failed; restored previous subscription: {start_err}"
+                        "Profile update runtime apply failed; restored previous subscription: {apply_err}"
                     ),
                     Err(rollback_err) => format!(
-                        "Profile update startup failed: {start_err}; restoring previous subscription also failed: {rollback_err}"
+                        "Profile update runtime apply failed: {apply_err}; restoring previous subscription also failed: {rollback_err}"
                     ),
                 });
             }
+            core.add_log(
+                format!(
+                    "Subscription update runtime hot reload completed in {} ms without core restart; runtime {}",
+                    apply_started.elapsed().as_millis(),
+                    core_runtime::digest_prefix(&plan.runtime_digest)
+                ),
+                "info",
+            );
         }
     }
-    let _ = deployment.complete(
-        "Subscription candidate promoted and profile metadata/runtime verification completed.",
+    let _ = deployment.complete_verified(
+        "Subscription candidate promoted and profile metadata/runtime apply verified.",
+        || {
+            let mut core = core.lock().unwrap();
+            if let Some(stored) = core.settings.profiles.iter_mut().find(|item| item.id == id) {
+                *stored = previous_profile.clone();
+            }
+            let settings_restore = core.save_settings();
+            let runtime_restore = if was_running && was_active {
+                core.hot_reload_profile(&previous_profile)
+                    .map(|_| ())
+                    .or_else(|_| {
+                        let _ = core.stop();
+                        core.start_from_restart_plan(rollback_plan).map(|_| ())
+                    })
+            } else {
+                Ok(())
+            };
+            combine_restore_results(
+                "subscription metadata restore",
+                settings_restore,
+                "runtime restore",
+                runtime_restore,
+            )
+        },
     )?;
+    core.lock()
+        .unwrap()
+        .profile_metadata_errors
+        .remove(&profile.id);
     Ok(profile)
 }
 
 fn refresh_outbound_ip_detached(core: Arc<Mutex<CoreManager>>) -> Result<String, String> {
-    let (mixed_port, query_generation, selected_proxy) = {
+    let (mixed_port, query_generation, profile_id, mode, controller) = {
         let mut core = core.lock().unwrap();
         if core.process.is_none() {
             core.outbound_ip_cache = "-".to_string();
             core.outbound_ip_checked_at = now_secs();
             core.outbound_ip_query_generation = core.outbound_ip_query_generation.saturating_add(1);
-            return Err("Core is not running; outbound IP cannot be queried.".to_string());
+            return Err("Outbound IP requires an active or standby connection.".to_string());
         }
-        let selected_proxy = core.sync_outbound_ip_group_selection();
         core.outbound_ip_query_generation = core.outbound_ip_query_generation.saturating_add(1);
         (
             core.settings.mixed_port,
             core.outbound_ip_query_generation,
-            selected_proxy,
+            core.settings.active_profile_id.clone(),
+            core.settings.mode.clone(),
+            core.core_controller(),
         )
     };
+    let selected_proxy = sync_outbound_ip_route(&controller, &mode)?;
     let ip = query_outbound_ip(mixed_port);
+    let current_proxy = runtime_current_proxy_route(&controller, &mode)
+        .ok()
+        .map(|(_, proxy)| proxy);
     let mut core = core.lock().unwrap();
-    let current_proxy = {
-        let groups = core.proxy_groups();
-        core.current_outbound_ip_proxy_name(&groups)
-    };
-    if core.outbound_ip_query_generation != query_generation || current_proxy != selected_proxy {
+    if core.outbound_ip_query_generation != query_generation
+        || core.settings.active_profile_id != profile_id
+        || core.settings.mode != mode
+        || current_proxy.as_deref() != Some(selected_proxy.as_str())
+    {
         core.add_log(
             "Outbound IP refresh result ignored because the selected node changed.",
             "info",
@@ -10675,6 +10635,7 @@ fn job_label(kind: &str) -> String {
         "undoRoutingApply" => "撤销分流规则",
         "applyRoutingGroupEdit" => "编辑策略组",
         "applyRoutingRuleEdit" => "编辑用户规则",
+        "resolveUnboundRoutingRule" => "处理待绑定规则",
         "exportDiagnostics" => "导出支持报告",
         _ => "后台任务",
     }
@@ -10723,6 +10684,7 @@ fn start_job(
             | "undoRoutingApply"
             | "applyRoutingGroupEdit"
             | "applyRoutingRuleEdit"
+            | "resolveUnboundRoutingRule"
             | "exportDiagnostics"
     ) {
         return Err(format!("Unsupported job kind: {kind}"));
@@ -10987,7 +10949,7 @@ fn start_job(
                     .map_err(|err| format!("Invalid routing drafts: {err}"))?;
                 set_job_state(&jobs, &id, "running", 1, 4, "正在预检分流规则");
                 let _operation = lock_operation_queue(&operations, "applyRoutingDrafts")?;
-                core.lock().unwrap().apply_routing_drafts(drafts)
+                core.lock().unwrap().apply_user_rule_store_drafts(drafts)
             })(),
             "undoRoutingApply" => (|| -> Result<JsonValue, String> {
                 set_job_state(&jobs, &id, "running", 1, 3, "正在撤销分流规则");
@@ -11006,7 +10968,14 @@ fn start_job(
                     .map_err(|err| format!("Invalid routing rule edit: {err}"))?;
                 set_job_state(&jobs, &id, "running", 1, 4, "正在保存用户规则");
                 let _operation = lock_operation_queue(&operations, "applyRoutingRuleEdit")?;
-                core.lock().unwrap().apply_routing_rule_edit(edit)
+                core.lock().unwrap().apply_user_rule_store_edit(edit)
+            })(),
+            "resolveUnboundRoutingRule" => (|| -> Result<JsonValue, String> {
+                let input = serde_json::from_value::<UnboundRuleResolutionInput>(payload.clone())
+                    .map_err(|err| format!("Invalid unbound rule resolution: {err}"))?;
+                set_job_state(&jobs, &id, "running", 1, 4, "正在处理待绑定规则");
+                let _operation = lock_operation_queue(&operations, "resolveUnboundRoutingRule")?;
+                core.lock().unwrap().resolve_unbound_user_rule(input)
             })(),
             _ => Err("Unsupported job kind".to_string()),
         };
@@ -11039,7 +11008,9 @@ fn cancel_job(state: State<AppState>, id: String) -> Result<JsonValue, String> {
 }
 
 #[tauri::command]
-fn app_status(state: State<AppState>) -> Result<JsonValue, String> {
+fn app_status(state: State<AppState>, app: AppHandle) -> Result<JsonValue, String> {
+    let command_started = Instant::now();
+    let first_lock_started = Instant::now();
     let (observed_running, controller, previous_traffic, refresh_lan_ip) = {
         let mut core = state
             .core
@@ -11047,14 +11018,40 @@ fn app_status(state: State<AppState>) -> Result<JsonValue, String> {
             .map_err(|_| "core state lock poisoned before status observation".to_string())?;
         core.status_observation()
     };
+    let first_lock_ms = first_lock_started.elapsed().as_millis() as u64;
+    let traffic_started = Instant::now();
     let observed_traffic =
         controller.status_traffic_snapshot_or_idle(observed_running, &previous_traffic);
-    let refreshed_lan_ip = refresh_lan_ip.then(primary_lan_ip);
+    let traffic_ms = traffic_started.elapsed().as_millis() as u64;
+    let final_lock_started = Instant::now();
     let mut core = state
         .core
         .lock()
         .map_err(|_| "core state lock poisoned after status observation".to_string())?;
-    Ok(core.status_from_observed_traffic(observed_running, observed_traffic, refreshed_lan_ip))
+    let is_admin = cached_process_elevated().unwrap_or(false);
+    let mut status = core.status_from_observed_traffic(observed_running, observed_traffic, is_admin);
+    let final_lock_ms = final_lock_started.elapsed().as_millis() as u64;
+    if let Some(map) = status.as_object_mut() {
+        map.insert(
+            "runtimeObservationMs".to_string(),
+            json!({
+                "firstLock": first_lock_ms,
+                "traffic": traffic_ms,
+                "finalLock": final_lock_ms,
+                "total": command_started.elapsed().as_millis() as u64
+            }),
+        );
+    }
+    drop(core);
+    // The LAN probe is intentionally started after publishing the status
+    // snapshot. On cold start it must not win the manager lock race.
+    if refresh_lan_ip {
+        refresh_lan_ip_detached(app.clone(), Arc::clone(&state.core));
+    }
+    if cached_process_elevated().is_none() {
+        refresh_elevation_detached(app);
+    }
+    Ok(status)
 }
 
 #[tauri::command]
@@ -11088,7 +11085,7 @@ fn relaunch_as_admin(app: AppHandle) -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn proxy_groups(state: State<AppState>) -> Result<JsonValue, String> {
+async fn proxy_groups(state: State<'_, AppState>) -> Result<JsonValue, String> {
     let (running, controller, active_profile, selected_map, manual_names, speed) = {
         let core = state.core.lock().unwrap();
         let active_profile = core.active_profile();
@@ -11107,14 +11104,18 @@ fn proxy_groups(state: State<AppState>) -> Result<JsonValue, String> {
             speed,
         )
     };
-    Ok(assemble_proxy_groups_snapshot(
-        running,
-        controller,
-        active_profile,
-        selected_map,
-        manual_names,
-        speed,
-    ))
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(assemble_proxy_groups_snapshot(
+            running,
+            controller,
+            active_profile,
+            selected_map,
+            manual_names,
+            speed,
+        ))
+    })
+    .await
+    .map_err(|err| format!("Proxy snapshot worker stopped: {err}"))?
 }
 
 #[tauri::command]
@@ -11286,12 +11287,19 @@ fn routing_diagnostics_report(
         traffic_takeover,
         selected_proxy_map_size,
     );
-    Ok(routing_diagnostics_report_from_parts(
+    let mut report = routing_diagnostics_report_from_parts(
         &profile,
         rule_validation,
         reload_preflight,
         rollback_plan,
-    ))
+    );
+    if let Some(map) = report.as_object_mut() {
+        map.insert(
+            "lastRoutingDeployment".to_string(),
+            read_routing_deployment_report(&state.app_data),
+        );
+    }
+    Ok(report)
 }
 
 #[tauri::command]
@@ -11314,13 +11322,38 @@ fn apply_routing_drafts(
     drafts: Vec<RoutingDraftInput>,
 ) -> Result<JsonValue, String> {
     let _operation = lock_operation_queue(&state.operations, "apply_routing_drafts command")?;
-    state.core.lock().unwrap().apply_routing_drafts(drafts)
+    state.core.lock().unwrap().apply_user_rule_store_drafts(drafts)
 }
 
 #[tauri::command]
 fn undo_last_routing_apply(state: State<AppState>) -> Result<JsonValue, String> {
     let _operation = lock_operation_queue(&state.operations, "undo_last_routing_apply command")?;
     state.core.lock().unwrap().undo_last_routing_apply()
+}
+
+#[tauri::command]
+fn prepare_speed_runtime(state: State<AppState>, app: AppHandle) -> Result<JsonValue, String> {
+    if state.speed_prepare_running.swap(true, Ordering::AcqRel) {
+        return Ok(json!({ "ok": true, "queued": false, "preparing": true }));
+    }
+    let core = state.core.clone();
+    let preparing = state.speed_prepare_running.clone();
+    thread::spawn(move || {
+        let result = core
+            .lock()
+            .map_err(|_| "Speed runtime lock is poisoned".to_string())
+            .and_then(|mut core| core.prepare_speed_measurement_runtime());
+        preparing.store(false, Ordering::Release);
+        match result {
+            Ok(status) => {
+                emit_speed_test_event(&app, json!({ "kind": "runtime-ready", "status": status }))
+            }
+            Err(error) => {
+                emit_speed_test_event(&app, json!({ "kind": "runtime-error", "error": error }))
+            }
+        }
+    });
+    Ok(json!({ "ok": true, "queued": true, "preparing": true }))
 }
 
 #[tauri::command]
@@ -11342,10 +11375,10 @@ fn start_proxy_delay_test(
     let speed_test = state.speed_test.clone();
     let priority_names = priority_names.unwrap_or_default();
     thread::spawn(move || {
-        let result = core
-            .lock()
-            .unwrap()
-            .start_proxy_delay_test_for_run(Some(run_id), app, priority_names);
+        let result =
+            core.lock()
+                .unwrap()
+                .start_proxy_delay_test_for_run(Some(run_id), app, priority_names);
         if let Err(err) = result {
             fail_speed_test_if_current(&speed_test, run_id, err, now_secs());
         }
@@ -11354,7 +11387,11 @@ fn start_proxy_delay_test(
 }
 
 #[tauri::command]
-fn test_single_proxy_delay(state: State<AppState>, name: String) -> Result<JsonValue, String> {
+fn test_single_proxy_delay(
+    state: State<AppState>,
+    app: AppHandle,
+    name: String,
+) -> Result<JsonValue, String> {
     let snapshot = mark_single_speed_test_preparing(&state.speed_test, &name, now_secs())?;
     let run_id = snapshot
         .get("runId")
@@ -11363,6 +11400,14 @@ fn test_single_proxy_delay(state: State<AppState>, name: String) -> Result<JsonV
     if run_id == 0 {
         return Ok(snapshot);
     }
+    emit_speed_test_event(
+        &app,
+        json!({
+            "kind": "started",
+            "runId": run_id,
+            "status": snapshot
+        }),
+    );
     let core = state.core.clone();
     let speed_test = state.speed_test.clone();
     let queued_name = name.clone();
@@ -11370,7 +11415,7 @@ fn test_single_proxy_delay(state: State<AppState>, name: String) -> Result<JsonV
         let result = core
             .lock()
             .unwrap()
-            .test_single_proxy_delay_for_run(name, Some(run_id));
+            .test_single_proxy_delay_for_run(name, Some(run_id), app);
         if let Err(err) = result {
             fail_speed_test_if_current(&speed_test, run_id, err, now_secs());
         }
@@ -11423,6 +11468,11 @@ fn node_diagnostics(state: State<AppState>, name: String) -> Result<JsonValue, S
 #[tauri::command]
 fn speed_test_status(state: State<AppState>) -> Result<JsonValue, String> {
     Ok(speed_test_runtime_snapshot(&state.speed_test, now_secs()))
+}
+
+#[tauri::command]
+fn speed_test_progress(state: State<AppState>) -> Result<JsonValue, String> {
+    Ok(speed_test_progress_snapshot(&state.speed_test))
 }
 
 #[tauri::command]
@@ -11480,14 +11530,8 @@ fn ipv6_dns_safety_snapshot(state: State<AppState>) -> Result<JsonValue, String>
         .as_ref()
         .ok_or_else(|| "no active profile".to_string())
         .and_then(|profile| {
-            let path = PathBuf::from(&profile.path);
-            let raw = fs::read_to_string(&path).map_err(|err| {
-                format!("Profile preflight read failed {}: {err}", path.display())
-            })?;
-            let source: YamlValue = serde_yaml::from_str(&raw)
-                .map_err(|err| format!("DNS safety YAML parse failed {}: {err}", path.display()))?;
-            let patched = config_pipeline::patch_profile_source(source, profile, &settings)?;
-            config_pipeline::runtime_dns_safety_report(&patched)
+            let plan = profile_compiler::compile_profile_file(profile, &settings)?;
+            config_pipeline::runtime_dns_safety_report(plan.runtime_catalog().config())
         });
     Ok(ipv6_dns_safety_from_parts(
         local,
@@ -11857,6 +11901,289 @@ fn routing_user_rules_path(app_data: &Path) -> PathBuf {
     app_data.join("routing-user-rules.json")
 }
 
+fn aegos_user_rule_store_path(app_data: &Path) -> PathBuf {
+    app_data.join("aegos-user-rules.json")
+}
+
+fn routing_deployment_report_path(app_data: &Path) -> PathBuf {
+    app_data.join("routing-deployment-report.json")
+}
+
+fn routing_store_rollback_path(app_data: &Path) -> PathBuf {
+    app_data.join("routing-user-rules.rollback.json")
+}
+
+fn routing_store_undo_path(app_data: &Path) -> PathBuf {
+    app_data.join("routing-user-rules.undo.json")
+}
+
+fn write_routing_store_undo(
+    app_data: &Path,
+    profile: &Profile,
+    previous: &UserRuleStore,
+    applied_count: usize,
+) -> Result<(), String> {
+    let raw = serde_json::to_string_pretty(&json!({
+        "profileId": profile.id,
+        "profileName": profile.name,
+        "appliedCount": applied_count,
+        "rollbackAvailable": true,
+        "createdAt": now_iso(),
+        "store": previous
+    }))
+    .map_err(|err| err.to_string())?;
+    atomic_write_text_confined(&routing_store_undo_path(app_data), app_data, &raw)
+}
+
+fn read_routing_deployment_report(app_data: &Path) -> JsonValue {
+    fs::read_to_string(routing_deployment_report_path(app_data))
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_else(|| json!({}))
+}
+
+fn write_routing_deployment_report(app_data: &Path, report: &JsonValue) -> Result<(), String> {
+    let raw = serde_json::to_string_pretty(report).map_err(|err| err.to_string())?;
+    atomic_write_text_confined(&routing_deployment_report_path(app_data), app_data, &raw)
+}
+
+fn stage_routing_store_transaction(
+    app_data: &Path,
+    operation: &str,
+    profile_id: &str,
+    previous: &UserRuleStore,
+    candidate: &UserRuleStore,
+) -> Result<(), String> {
+    let backup = serde_json::to_string_pretty(previous).map_err(|err| err.to_string())?;
+    atomic_write_text_confined(&routing_store_rollback_path(app_data), app_data, &backup)?;
+    write_routing_deployment_report(app_data, &json!({
+        "operation": operation,
+        "profileId": profile_id,
+        "status": "prepared",
+        "candidateValidated": false,
+        "rollbackReady": true,
+        "startedAt": now_iso()
+    }))?;
+    if let Err(err) = write_aegos_user_rule_store(app_data, candidate) {
+        let _ = write_routing_deployment_report(app_data, &json!({
+            "operation": operation,
+            "profileId": profile_id,
+            "status": "rolled-back",
+            "storeRestored": true,
+            "failure": sanitize_sensitive_text(&err),
+            "finishedAt": now_iso()
+        }));
+        let _ = remove_file_confined(&routing_store_rollback_path(app_data), app_data);
+        return Err(err);
+    }
+    write_routing_deployment_report(app_data, &json!({
+        "operation": operation,
+        "profileId": profile_id,
+        "status": "promoted",
+        "candidateValidated": true,
+        "rollbackReady": true,
+        "startedAt": now_iso()
+    }))
+}
+
+fn finish_routing_store_transaction(
+    app_data: &Path,
+    operation: &str,
+    profile_id: &str,
+    details: JsonValue,
+) -> Result<(), String> {
+    write_routing_deployment_report(app_data, &json!({
+        "operation": operation,
+        "profileId": profile_id,
+        "status": "verified",
+        "candidateValidated": true,
+        "runtimeVerified": true,
+        "rollbackReady": true,
+        "details": details,
+        "finishedAt": now_iso()
+    }))?;
+    remove_file_confined(&routing_store_rollback_path(app_data), app_data)
+}
+
+fn rollback_routing_store_transaction(
+    app_data: &Path,
+    operation: &str,
+    profile_id: &str,
+    previous: &UserRuleStore,
+    failure: &str,
+    runtime_restored: bool,
+) -> Result<(), String> {
+    write_aegos_user_rule_store(app_data, previous)?;
+    write_routing_deployment_report(app_data, &json!({
+        "operation": operation,
+        "profileId": profile_id,
+        "status": "rolled-back",
+        "storeRestored": true,
+        "runtimeRestored": runtime_restored,
+        "failure": sanitize_sensitive_text(failure),
+        "finishedAt": now_iso()
+    }))?;
+    remove_file_confined(&routing_store_rollback_path(app_data), app_data)
+}
+
+fn recover_interrupted_routing_store_transaction(app_data: &Path) -> Result<bool, String> {
+    let report = read_routing_deployment_report(app_data);
+    let status = report.get("status").and_then(JsonValue::as_str).unwrap_or("");
+    if !matches!(status, "prepared" | "promoted") {
+        return Ok(false);
+    }
+    let backup_path = routing_store_rollback_path(app_data);
+    let backup_raw = fs::read_to_string(&backup_path)
+        .map_err(|err| format!("规则事务未完成，但回滚快照不可用：{err}"))?;
+    let previous: UserRuleStore = serde_json::from_str(&backup_raw)
+        .map_err(|err| format!("规则回滚快照损坏：{err}"))?;
+    write_aegos_user_rule_store(app_data, &previous)?;
+    write_routing_deployment_report(app_data, &json!({
+        "operation": report.get("operation").cloned().unwrap_or_else(|| json!("unknown")),
+        "profileId": report.get("profileId").cloned().unwrap_or_else(|| json!("")),
+        "status": "recovered-after-interruption",
+        "storeRestored": true,
+        "runtimeRestoredOnNextStart": true,
+        "finishedAt": now_iso()
+    }))?;
+    remove_file_confined(&backup_path, app_data)?;
+    Ok(true)
+}
+
+fn user_rule_record_from_legacy(profile_id: &str, raw: &str, enabled: bool, priority: u32) -> Option<UserRuleRecord> {
+    let parsed = parse_routing_rule_text(0, raw);
+    let kind = parsed.get("kind")?.as_str()?.trim();
+    let condition = parsed.get("condition")?.as_str()?.trim();
+    let target = parsed.get("target")?.as_str()?.trim();
+    if kind.is_empty() || condition.is_empty() || target.is_empty() || target == "-" {
+        return None;
+    }
+    let option = parsed
+        .get("options")
+        .and_then(JsonValue::as_array)
+        .and_then(|items| items.first())
+        .and_then(JsonValue::as_str)
+        .map(str::to_string);
+    let fingerprint = sha256_text(&format!("{profile_id}\u{1f}{raw}"));
+    Some(UserRuleRecord {
+        id: format!("legacy-{}", &fingerprint[..16]),
+        scope: UserRuleScope::Profile {
+            profile_id: profile_id.to_string(),
+        },
+        kind: kind.to_string(),
+        condition: condition.to_string(),
+        target: target.to_string(),
+        option,
+        enabled,
+        priority,
+        label: String::new(),
+        source: "legacy".to_string(),
+        created_at: now_iso(),
+        updated_at: now_iso(),
+    })
+}
+
+fn read_aegos_user_rule_store(app_data: &Path) -> UserRuleStore {
+    let path = aegos_user_rule_store_path(app_data);
+    if let Some(store) = fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<UserRuleStore>(&raw).ok())
+    {
+        return store.normalized();
+    }
+    let legacy = read_routing_user_rules(app_data);
+    let mut rules = Vec::new();
+    let mut priority = 1_u32;
+    if let Some(profiles) = legacy.as_object() {
+        for (profile_id, entry) in profiles {
+            let (active, disabled) = if entry.is_array() {
+                (json_string_list(Some(entry)), Vec::new())
+            } else {
+                (json_string_list(entry.get("active")), json_string_list(entry.get("disabled")))
+            };
+            for raw in active {
+                if let Some(rule) = user_rule_record_from_legacy(profile_id, &raw, true, priority) {
+                    rules.push(rule);
+                    priority = priority.saturating_add(1);
+                }
+            }
+            for raw in disabled {
+                if let Some(rule) = user_rule_record_from_legacy(profile_id, &raw, false, priority) {
+                    rules.push(rule);
+                    priority = priority.saturating_add(1);
+                }
+            }
+        }
+    }
+    let store = UserRuleStore { version: 1, rules }.normalized();
+    if !store.rules.is_empty() {
+        let _ = write_aegos_user_rule_store(app_data, &store);
+    }
+    store
+}
+
+fn write_aegos_user_rule_store(app_data: &Path, store: &UserRuleStore) -> Result<(), String> {
+    let path = aegos_user_rule_store_path(app_data);
+    let raw = serde_json::to_string_pretty(&store.clone().normalized()).map_err(|err| err.to_string())?;
+    atomic_write_text_confined(&path, app_data, &raw)
+}
+
+fn apply_aegos_user_rule_overlay(
+    app_data: &Path,
+    profile: &Profile,
+    source: &mut YamlValue,
+) -> Result<(), String> {
+    let store = read_aegos_user_rule_store(app_data);
+    let active_rules = store.active_for_profile(&profile.id);
+    let legacy_rules = routing_user_rule_lists(app_data, &profile.id).0;
+    let legacy_set = legacy_rules
+        .iter()
+        .map(|rule| rule.trim())
+        .collect::<HashSet<_>>();
+    let targets = routing_rule_target_catalog(source);
+    let Some(config) = source.as_mapping_mut() else {
+        return Err("profile root is not a YAML object".to_string());
+    };
+    let rules = ensure_yaml_sequence(config, "rules");
+    // Migration compatibility: legacy Aegos rules were written into the
+    // subscription file. Remove only entries the old registry explicitly
+    // owned, then place the canonical rule-store overlay before MATCH.
+    rules.retain(|value| {
+        value
+            .as_str()
+            .map(|raw| !legacy_set.contains(raw.trim()))
+            .unwrap_or(true)
+    });
+    let existing = rules
+        .iter()
+        .filter_map(YamlValue::as_str)
+        .map(str::trim)
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    let insert_at = rules
+        .iter()
+        .position(|value| {
+            value
+                .as_str()
+                .map(|raw| raw.trim_start().to_ascii_uppercase().starts_with("MATCH,"))
+                .unwrap_or(false)
+        })
+        .unwrap_or(rules.len());
+    let overlay = active_rules
+        .into_iter()
+        // A removed subscription target must not break a future subscription
+        // update. Keep the intent in Aegos, but omit it from this runtime
+        // candidate until the user explicitly rebinds it.
+        .filter(|rule| routing_domain::target_exists(&targets, &rule.target))
+        .map(|rule| rule.raw())
+        .filter(|raw| !existing.contains(raw.trim()))
+        .collect::<Vec<_>>();
+    for (offset, raw) in overlay.iter().enumerate() {
+        rules.insert(insert_at + offset, yaml_str(raw));
+    }
+    Ok(())
+}
+
 fn json_string_list(value: Option<&JsonValue>) -> Vec<String> {
     let mut seen = HashSet::new();
     value
@@ -11880,6 +12207,15 @@ fn write_routing_user_rules(app_data: &Path, value: &JsonValue) -> Result<(), St
     let path = routing_user_rules_path(app_data);
     let raw = serde_json::to_string_pretty(value).map_err(|err| err.to_string())?;
     atomic_write_text_confined(&path, app_data, &raw)
+}
+
+fn remove_legacy_routing_user_rules_for_profile(app_data: &Path, profile_id: &str) -> Result<(), String> {
+    let mut registry = read_routing_user_rules(app_data);
+    let Some(map) = registry.as_object_mut() else {
+        return Ok(());
+    };
+    map.remove(profile_id);
+    write_routing_user_rules(app_data, &registry)
 }
 
 fn routing_user_rule_lists(app_data: &Path, profile_id: &str) -> (Vec<String>, Vec<String>) {
@@ -11939,205 +12275,6 @@ fn write_routing_user_rule_lists(
     write_routing_user_rules(app_data, &registry)
 }
 
-fn routing_user_rule_set(app_data: &Path, profile_id: &str) -> HashSet<String> {
-    let (active, _) = routing_user_rule_lists(app_data, profile_id);
-    active.into_iter().collect()
-}
-
-fn routing_disabled_user_rule_list(app_data: &Path, profile_id: &str) -> Vec<String> {
-    let (_, disabled) = routing_user_rule_lists(app_data, profile_id);
-    disabled
-}
-
-fn add_routing_user_rules(
-    app_data: &Path,
-    profile_id: &str,
-    rules: &[String],
-) -> Result<(), String> {
-    if rules.is_empty() {
-        return Ok(());
-    }
-    let (mut active, mut disabled) = routing_user_rule_lists(app_data, profile_id);
-    let mut seen = active.iter().cloned().collect::<HashSet<_>>();
-    for rule in rules {
-        let trimmed = rule.trim();
-        if !trimmed.is_empty() && seen.insert(trimmed.to_string()) {
-            active.push(trimmed.to_string());
-        }
-    }
-    let active_set = active.iter().map(String::as_str).collect::<HashSet<_>>();
-    disabled.retain(|rule| !active_set.contains(rule.as_str()));
-    write_routing_user_rule_lists(app_data, profile_id, &active, &disabled)
-}
-
-fn replace_routing_user_rule(
-    app_data: &Path,
-    profile_id: &str,
-    old_rule: Option<&str>,
-    new_rule: Option<&str>,
-) -> Result<(), String> {
-    let (mut active, mut disabled) = routing_user_rule_lists(app_data, profile_id);
-    if let Some(old_rule) = old_rule {
-        active.retain(|value| value.trim() != old_rule.trim());
-        disabled.retain(|value| value.trim() != old_rule.trim());
-    }
-    if let Some(new_rule) = new_rule.map(str::trim).filter(|value| !value.is_empty()) {
-        let exists = active.iter().any(|value| value.trim() == new_rule);
-        if !exists {
-            active.push(new_rule.to_string());
-        }
-    }
-    write_routing_user_rule_lists(app_data, profile_id, &active, &disabled)
-}
-
-fn set_routing_user_rule_enabled(
-    app_data: &Path,
-    profile_id: &str,
-    rule: &str,
-    enabled: bool,
-) -> Result<(), String> {
-    let (mut active, mut disabled) = routing_user_rule_lists(app_data, profile_id);
-    active.retain(|value| value.trim() != rule.trim());
-    disabled.retain(|value| value.trim() != rule.trim());
-    if enabled {
-        active.push(rule.trim().to_string());
-    } else {
-        disabled.push(rule.trim().to_string());
-    }
-    write_routing_user_rule_lists(app_data, profile_id, &active, &disabled)
-}
-
-fn replace_disabled_routing_user_rule(
-    app_data: &Path,
-    profile_id: &str,
-    old_rule: &str,
-    new_rule: &str,
-) -> Result<(), String> {
-    let (mut active, mut disabled) = routing_user_rule_lists(app_data, profile_id);
-    active.retain(|value| value.trim() != old_rule.trim());
-    disabled.retain(|value| value.trim() != old_rule.trim());
-    let next = new_rule.trim();
-    if !next.is_empty() && !disabled.iter().any(|value| value.trim() == next) {
-        disabled.push(next.to_string());
-    }
-    write_routing_user_rule_lists(app_data, profile_id, &active, &disabled)
-}
-
-fn sync_active_routing_user_rule_order(
-    app_data: &Path,
-    profile_id: &str,
-    ordered_rules: &[String],
-) -> Result<(), String> {
-    let (active, disabled) = routing_user_rule_lists(app_data, profile_id);
-    let active_set = active.iter().map(String::as_str).collect::<HashSet<_>>();
-    let mut ordered = ordered_rules
-        .iter()
-        .map(|rule| rule.trim())
-        .filter(|rule| active_set.contains(*rule))
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    for rule in active {
-        if !ordered.iter().any(|value| value == &rule) {
-            ordered.push(rule);
-        }
-    }
-    write_routing_user_rule_lists(app_data, profile_id, &ordered, &disabled)
-}
-
-fn routing_rule_target(rule: &str) -> Option<String> {
-    let mut parts = rule.split(',').map(str::trim);
-    let kind = parts.next()?.to_ascii_uppercase();
-    if matches!(kind.as_str(), "MATCH" | "FINAL") {
-        return parts.next().map(str::to_string);
-    }
-    parts.next()?;
-    parts.next().map(str::to_string)
-}
-
-fn routing_rule_replace_target(rule: &str, old_target: &str, new_target: &str) -> Option<String> {
-    let mut parts = rule
-        .split(',')
-        .map(|part| part.trim().to_string())
-        .collect::<Vec<_>>();
-    if parts.len() < 2 {
-        return None;
-    }
-    let target_index = if matches!(parts[0].to_ascii_uppercase().as_str(), "MATCH" | "FINAL") {
-        1
-    } else {
-        2
-    };
-    if parts.get(target_index).map(String::as_str) != Some(old_target) {
-        return None;
-    }
-    parts[target_index] = new_target.to_string();
-    Some(parts.join(","))
-}
-
-fn validate_routing_group_type(value: &str) -> Result<&'static str, String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "select" | "selector" => Ok("select"),
-        "url-test" | "urltest" => Ok("url-test"),
-        "fallback" => Ok("fallback"),
-        "load-balance" | "loadbalance" => Ok("load-balance"),
-        other => Err(format!("Unsupported strategy group type: {other}")),
-    }
-}
-
-fn validate_routing_group_members(
-    values: &[String],
-    targets: &HashSet<String>,
-) -> Result<Vec<String>, String> {
-    let mut members = Vec::new();
-    let mut seen = HashSet::new();
-    for value in values {
-        let member = validate_routing_rule_part("strategy group member", value, 180)?;
-        if !routing_rule_target_exists(targets, &member) {
-            return Err(format!("Strategy group member does not exist: {member}"));
-        }
-        if seen.insert(member.clone()) {
-            members.push(member);
-        }
-    }
-    if members.is_empty() {
-        return Err("Strategy group needs at least one node or group".to_string());
-    }
-    Ok(members)
-}
-
-fn mark_registered_user_routing_rules(rules: &mut [JsonValue], registry: &HashSet<String>) {
-    for item in rules {
-        let raw = item
-            .get("raw")
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .trim();
-        if raw.is_empty() || !registry.contains(raw) {
-            continue;
-        }
-        if let Some(map) = item.as_object_mut() {
-            map.insert("source".to_string(), json!("user"));
-            map.insert("editable".to_string(), json!(true));
-            map.insert("enabled".to_string(), json!(true));
-        }
-    }
-}
-
-fn mark_last_applied_routing_rules(rules: &mut [JsonValue], metadata: Option<&JsonValue>) {
-    let applied = metadata
-        .and_then(|value| value.get("appliedRules"))
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|value| value.as_str().map(|text| text.trim().to_string()))
-        .collect::<HashSet<_>>();
-    if applied.is_empty() {
-        return;
-    }
-    mark_registered_user_routing_rules(rules, &applied);
-}
-
 fn mark_system_routing_rules(rules: &mut [JsonValue]) {
     for item in rules {
         let target = item
@@ -12178,78 +12315,21 @@ fn mark_system_routing_rules(rules: &mut [JsonValue]) {
     }
 }
 
-fn routing_rule_target_exists(targets: &HashSet<String>, target: &str) -> bool {
-    targets.contains(target) || targets.contains(&target.to_ascii_uppercase())
-}
-
-fn validate_routing_rule_part(label: &str, value: &str, max_len: usize) -> Result<String, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err(format!("{label} cannot be empty."));
-    }
-    if trimmed.len() > max_len {
-        return Err(format!("{label} is too long. Shorten it and apply again."));
-    }
-    if trimmed.contains('\r')
-        || trimmed.contains('\n')
-        || trimmed.contains('\0')
-        || trimmed.contains(',')
-    {
-        return Err(format!("{label} contains unsupported characters."));
-    }
-    Ok(trimmed.to_string())
-}
-
 fn normalize_routing_draft_rule(
     draft: &RoutingDraftInput,
     targets: &HashSet<String>,
 ) -> Result<(String, JsonValue), String> {
-    let kind = draft.kind.trim().to_ascii_uppercase();
-    let allowed = [
-        "DOMAIN",
-        "DOMAIN-SUFFIX",
-        "DOMAIN-KEYWORD",
-        "PROCESS-NAME",
-        "PROCESS-PATH",
-        "GEOIP",
-        "GEOSITE",
-        "IP-CIDR",
-    ];
-    if !allowed.contains(&kind.as_str()) {
-        return Err(format!("Unsupported routing rule type: {kind}"));
-    }
-    let condition = validate_routing_rule_part("鍒嗘祦鏉′欢", &draft.condition, 220)?;
-    let target = validate_routing_rule_part("鍒嗘祦鐩爣", &draft.target, 140)?;
-    if !routing_rule_target_exists(targets, &target) {
-        return Err(format!("鍒嗘祦鐩爣涓嶅瓨鍦細{target}"));
-    }
-    let option = draft
-        .option
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    if let Some(option) = option {
-        if option != "no-resolve" {
-            return Err(format!("Unsupported routing rule option: {option}"));
-        }
-        if !matches!(kind.as_str(), "GEOIP" | "IP-CIDR") {
-            return Err("no-resolve only applies to GEOIP or IP-CIDR rules.".to_string());
-        }
-    }
-    let rule = if let Some(option) = option {
-        format!("{kind},{condition},{target},{option}")
-    } else {
-        format!("{kind},{condition},{target}")
-    };
+    let compiled = draft.compile(targets)?;
+    let rule = compiled.rule.clone();
     Ok((
         rule.clone(),
         json!({
-            "kind": kind,
-            "condition": sanitize_sensitive_text(&condition),
-            "target": sanitize_sensitive_text(&target),
-            "option": option,
-            "label": draft.label.as_deref().map(sanitize_sensitive_text).unwrap_or_else(|| rule.clone()),
-            "source": draft.source.as_deref().unwrap_or("draft"),
+            "kind": compiled.kind,
+            "condition": sanitize_sensitive_text(&compiled.condition),
+            "target": sanitize_sensitive_text(&compiled.target),
+            "option": compiled.option,
+            "label": sanitize_sensitive_text(&compiled.label),
+            "source": compiled.source,
             "rule": sanitize_sensitive_text(&rule),
             "status": "applied"
         }),
@@ -12269,7 +12349,7 @@ fn validate_routing_rule_targets(
             .unwrap_or("-")
             .to_string();
         let builtin = target != "-" && builtin_targets.contains(&target.to_ascii_uppercase());
-        let known = target != "-" && routing_rule_target_exists(targets, &target);
+        let known = target != "-" && routing_domain::target_exists(targets, &target);
         if let Some(map) = rule.as_object_mut() {
             map.insert("targetExists".to_string(), json!(known));
             map.insert(
@@ -12403,32 +12483,44 @@ fn routing_rules_for_profile(
         );
     };
     let path = Path::new(&profile.path);
-    let raw = match fs::read_to_string(path) {
-        Ok(raw) => raw,
-        Err(err) => {
-            return (
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Some(format!(
-                    "profile config read failed {}: {err}",
-                    path.display()
-                )),
-            );
-        }
-    };
-    let config: YamlValue = match serde_yaml::from_str(&raw) {
+    let config = match cached_profile_yaml(path) {
         Ok(config) => config,
         Err(err) => {
             return (
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
-                Some(format!("profile YAML parse failed: {err}")),
+                Some(format!("profile config read failed {}: {err}", path.display())),
             )
         }
     };
-    let mut rules = yaml_sequence(&config, "rules")
+    let fingerprint = match profile_yaml_fingerprint(path) {
+        Ok(fingerprint) => fingerprint,
+        Err(err) => {
+            return (
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Some(format!("profile config read failed {}: {err}", path.display())),
+            )
+        }
+    };
+    let cache = PROFILE_YAML_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(entries) = cache.lock() {
+        if let Some(snapshot) = entries
+            .get(path)
+            .filter(|entry| entry.fingerprint == fingerprint)
+            .and_then(|entry| entry.routing_rules.as_ref())
+        {
+            return (
+                snapshot.rules.clone(),
+                snapshot.missing_targets.clone(),
+                snapshot.order_issues.clone(),
+                None,
+            );
+        }
+    }
+    let mut rules = yaml_sequence(config.as_ref(), "rules")
         .map(|items| {
             items
                 .iter()
@@ -12437,9 +12529,22 @@ fn routing_rules_for_profile(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let targets = routing_rule_target_catalog(&config);
+    let targets = routing_rule_target_catalog(config.as_ref());
     let missing_targets = validate_routing_rule_targets(&mut rules, &targets);
     let order_issues = detect_routing_rule_order_issues(&mut rules);
+    let snapshot = RoutingRulesProfileSnapshot {
+        rules: rules.clone(),
+        missing_targets: missing_targets.clone(),
+        order_issues: order_issues.clone(),
+    };
+    if let Ok(mut entries) = cache.lock() {
+        if let Some(entry) = entries
+            .get_mut(path)
+            .filter(|entry| entry.fingerprint == fingerprint)
+        {
+            entry.routing_rules = Some(snapshot);
+        }
+    }
     (rules, missing_targets, order_issues, None)
 }
 
@@ -12685,9 +12790,174 @@ fn routing_assistant_gate_contract() -> JsonValue {
     })
 }
 
+fn routing_config_rules_for_profile(app_data: &Path, profile: Option<&Profile>) -> Vec<JsonValue> {
+    let (mut rules, _, _, _) = routing_rules_for_profile(profile);
+    if let Some(profile) = profile {
+        let (legacy_active, legacy_disabled) = routing_user_rule_lists(app_data, &profile.id);
+        let legacy = legacy_active
+            .iter()
+            .chain(legacy_disabled.iter())
+            .map(|raw| raw.trim())
+            .collect::<HashSet<_>>();
+        rules.retain(|item| {
+            item.get("raw")
+                .and_then(JsonValue::as_str)
+                .map(|raw| !legacy.contains(raw.trim()))
+                .unwrap_or(true)
+        });
+    }
+    mark_system_routing_rules(&mut rules);
+    rules
+        .into_iter()
+        .filter(|item| item.get("source").and_then(JsonValue::as_str) != Some("system"))
+        .collect()
+}
+
+fn routing_rule_matches_domain(item: &JsonValue, domain: &str) -> bool {
+    let kind = item
+        .get("kind")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    let condition = item
+        .get("condition")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    match kind.as_str() {
+        "DOMAIN" => domain == condition,
+        "DOMAIN-SUFFIX" => domain == condition || domain.ends_with(&format!(".{condition}")),
+        "DOMAIN-KEYWORD" => !condition.is_empty() && domain.contains(&condition),
+        "MATCH" => true,
+        _ => false,
+    }
+}
+
+#[tauri::command]
+fn routing_rule_page(
+    state: State<AppState>,
+    profile_id: String,
+    offset: usize,
+    limit: usize,
+) -> Result<JsonValue, String> {
+    let active_profile = {
+        let core = state.core.lock().unwrap();
+        if core.settings.active_profile_id != profile_id {
+            return Err("订阅已切换，这一页旧规则已取消加载。".to_string());
+        }
+        core.active_profile()
+    };
+    let rules = routing_config_rules_for_profile(&state.app_data, active_profile.as_ref());
+    let total = rules.len();
+    let safe_limit = limit.clamp(20, 200);
+    let safe_offset = offset.min(total);
+    let items = rules
+        .into_iter()
+        .skip(safe_offset)
+        .take(safe_limit)
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "profileId": profile_id,
+        "offset": safe_offset,
+        "limit": safe_limit,
+        "total": total,
+        "hasMore": safe_offset.saturating_add(items.len()) < total,
+        "items": items
+    }))
+}
+
+#[tauri::command]
+fn test_routing_website(state: State<AppState>, input: String) -> Result<JsonValue, String> {
+    let raw = input.trim();
+    if raw.is_empty() {
+        return Err("请输入要测试的网站。".to_string());
+    }
+    let candidate = if raw.contains("://") {
+        raw.to_string()
+    } else {
+        format!("https://{raw}")
+    };
+    let parsed = reqwest::Url::parse(&candidate).map_err(|_| "网站格式不正确，例如 youtube.com。".to_string())?;
+    let domain = parsed
+        .host_str()
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| "网站中没有可识别的域名。".to_string())?;
+    let profile = {
+        let core = state.core.lock().unwrap();
+        core.active_profile()
+    };
+    let Some(profile) = profile else {
+        return Err("当前没有可用订阅。".to_string());
+    };
+    const PROTECTED_DOMAINS: &[&str] = &[
+        "api.ipify.org",
+        "api6.ipify.org",
+        "checkip.amazonaws.com",
+        "ifconfig.me",
+        "icanhazip.com",
+        "ident.me",
+    ];
+    if PROTECTED_DOMAINS.contains(&domain.as_str()) {
+        return Ok(json!({
+            "domain": domain,
+            "matched": true,
+            "source": "system",
+            "target": AEGOS_OUTBOUND_IP_GROUP,
+            "kind": "SYSTEM",
+            "condition": "落地 IP 查询服务",
+            "explanation": "这是不可覆盖的系统检测规则，只用于确认当前节点出口。"
+        }));
+    }
+    let source = cached_profile_yaml(Path::new(&profile.path))?;
+    let targets = routing_rule_target_catalog(source.as_ref());
+    let store = read_aegos_user_rule_store(&state.app_data);
+    for rule in store.active_for_profile(&profile.id) {
+        if !routing_domain::target_exists(&targets, &rule.target) {
+            continue;
+        }
+        let item = parse_routing_rule_text(0, &rule.raw());
+        if routing_rule_matches_domain(&item, &domain) {
+            return Ok(json!({
+                "domain": domain,
+                "matched": true,
+                "source": "user",
+                "scope": if matches!(rule.scope, UserRuleScope::Global) { "global" } else { "profile" },
+                "ruleId": rule.id,
+                "target": rule.target,
+                "kind": rule.kind,
+                "condition": rule.condition,
+                "explanation": "命中 Aegos 用户规则；仅当前订阅规则优先于所有订阅规则。"
+            }));
+        }
+    }
+    let config_rules = routing_config_rules_for_profile(&state.app_data, Some(&profile));
+    if let Some(item) = config_rules.iter().find(|item| routing_rule_matches_domain(item, &domain)) {
+        return Ok(json!({
+            "domain": domain,
+            "matched": true,
+            "source": "subscription",
+            "target": item.get("target").cloned().unwrap_or_else(|| json!("-")),
+            "kind": item.get("kind").cloned().unwrap_or_else(|| json!("-")),
+            "condition": item.get("condition").cloned().unwrap_or_else(|| json!("-")),
+            "explanation": "未命中更具体的用户规则，按订阅规则处理。"
+        }));
+    }
+    Ok(json!({
+        "domain": domain,
+        "matched": false,
+        "source": "none",
+        "target": "-",
+        "explanation": "没有找到可解释的网站规则，流量将继续交给核心的其他规则判断。"
+    }))
+}
+
 #[tauri::command]
 fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
-    let (running, controller, mode, groups, active_profile, last_apply) = {
+    // This snapshot feeds an interactive page. Keep an observation record so a
+    // slow profile or controller can be diagnosed without guessing in the UI.
+    let observed_at = Instant::now();
+    let (running, controller, mode, groups, active_profile, profile_ids, last_apply) = {
         let core = state.core.lock().unwrap();
         (
             core.process.is_some(),
@@ -12695,42 +12965,96 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
             core.settings.mode.clone(),
             core.proxy_groups(),
             core.active_profile(),
+            core.settings.profiles.iter().map(|profile| profile.id.clone()).collect::<HashSet<_>>(),
             core.routing_apply_metadata(),
         )
     };
+    let core_snapshot_ms = observed_at.elapsed().as_millis() as u64;
     let group_rows =
         core_runtime::routing_group_rows(&groups, &[AEGOS_OUTBOUND_IP_GROUP, "GLOBAL"]);
+    let group_rows_ms = observed_at.elapsed().as_millis() as u64;
     let recent_rules = controller.routing_recent_rule_hits_snapshot_or_empty(running);
+    let recent_rules_ms = observed_at.elapsed().as_millis() as u64;
+    // Warm the shared profile parse before shaping rules. This makes the
+    // remaining timing explicitly represent rule validation and JSON shaping,
+    // rather than hiding a YAML parse inside that number.
+    if let Some(profile) = active_profile.as_ref() {
+        let _ = cached_profile_yaml(Path::new(&profile.path));
+    }
+    let active_rule_targets = active_profile
+        .as_ref()
+        .and_then(|profile| cached_profile_yaml(Path::new(&profile.path)).ok())
+        .map(|source| routing_rule_target_catalog(source.as_ref()))
+        .unwrap_or_default();
+    let profile_yaml_ms = observed_at.elapsed().as_millis() as u64;
     let (mut static_rules, missing_rule_targets, rule_order_issues, rule_error) =
         routing_rules_for_profile(active_profile.as_ref());
+    let profile_rules_ms = observed_at.elapsed().as_millis() as u64;
     if let Some(profile) = active_profile.as_ref() {
-        let registry = routing_user_rule_set(&state.app_data, &profile.id);
-        mark_registered_user_routing_rules(&mut static_rules, &registry);
-        let active_raw = static_rules
+        let (legacy_active, legacy_disabled) = routing_user_rule_lists(&state.app_data, &profile.id);
+        let legacy_rules = legacy_active
             .iter()
-            .filter_map(|item| item.get("raw").and_then(JsonValue::as_str))
-            .map(str::trim)
-            .map(str::to_string)
+            .chain(legacy_disabled.iter())
+            .map(|raw| raw.trim().to_string())
             .collect::<HashSet<_>>();
-        for raw in routing_disabled_user_rule_list(&state.app_data, &profile.id) {
-            if active_raw.contains(raw.trim()) {
-                continue;
-            }
-            let mut item = parse_routing_rule_text(0, &raw);
+        // Legacy Aegos rules live in the subscription YAML. They are removed
+        // from the product snapshot and represented by the canonical store.
+        static_rules.retain(|item| {
+            item.get("raw")
+                .and_then(JsonValue::as_str)
+                .map(|raw| !legacy_rules.contains(raw.trim()))
+                .unwrap_or(true)
+        });
+        let store = read_aegos_user_rule_store(&state.app_data);
+        for rule in store.rules.iter().filter(|rule| rule.scope.applies_to(&profile.id)) {
+            let target_available = routing_domain::target_exists(&active_rule_targets, &rule.target);
+            let status = if !rule.enabled {
+                "paused"
+            } else if target_available {
+                "available"
+            } else {
+                "needs-rebind"
+            };
+            let mut item = parse_routing_rule_text(0, &rule.raw());
             if let Some(map) = item.as_object_mut() {
                 map.insert("source".to_string(), json!("user"));
                 map.insert("editable".to_string(), json!(true));
-                map.insert("enabled".to_string(), json!(false));
-                map.insert("status".to_string(), json!("disabled"));
+                map.insert("ruleId".to_string(), json!(rule.id));
+                map.insert(
+                    "scope".to_string(),
+                    json!(if matches!(rule.scope, UserRuleScope::Global) { "global" } else { "profile" }),
+                );
+                map.insert("enabled".to_string(), json!(rule.enabled));
+                map.insert("priority".to_string(), json!(rule.priority));
+                map.insert("label".to_string(), json!(rule.label));
+                map.insert("ruleSource".to_string(), json!(rule.source));
+                map.insert(
+                    "priorityClass".to_string(),
+                    json!(match rule.kind.trim().to_ascii_uppercase().as_str() {
+                        "DOMAIN" | "DOMAIN-SUFFIX" | "DOMAIN-KEYWORD" | "PROCESS-NAME" | "PROCESS-PATH" | "IP-CIDR" => "explicit-user",
+                        "GEOSITE" | "GEOIP" => "user-scene",
+                        _ => "user-other",
+                    }),
+                );
+                map.insert("status".to_string(), json!(status));
+                map.insert("targetAvailable".to_string(), json!(target_available));
                 map.insert(
                     "note".to_string(),
-                    json!("This user rule is disabled and is not in the running config."),
+                    json!(if !rule.enabled {
+                        "规则已暂停，不会进入运行配置。"
+                    } else if target_available {
+                        "规则目标可用，会优先于订阅规则进入运行配置。"
+                    } else {
+                        "当前订阅中找不到目标线路，规则已保留但不会进入运行配置。"
+                    }),
                 );
             }
             static_rules.push(item);
         }
     }
-    mark_last_applied_routing_rules(&mut static_rules, last_apply.as_ref());
+    // Older apply receipts are informational only. Ownership is now defined
+    // by the Aegos rule store, not by a raw rule string in a profile backup.
+    let _ = last_apply;
     mark_system_routing_rules(&mut static_rules);
     if !static_rules.iter().any(|item| {
         item.get("source").and_then(JsonValue::as_str) == Some("system")
@@ -12768,6 +13092,36 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
         .filter(|item| item.get("source").and_then(JsonValue::as_str) == Some("system"))
         .count();
     let config_rule_count = rule_count.saturating_sub(user_rule_count + system_rule_count);
+    const INITIAL_CONFIG_RULE_LIMIT: usize = 80;
+    let mut included_config_rules = 0_usize;
+    static_rules.retain(|item| {
+        let source = item.get("source").and_then(JsonValue::as_str).unwrap_or("config");
+        if matches!(source, "user" | "system") {
+            return true;
+        }
+        let include = included_config_rules < INITIAL_CONFIG_RULE_LIMIT;
+        included_config_rules = included_config_rules.saturating_add(1);
+        include
+    });
+    let stored_user_rules = read_aegos_user_rule_store(&state.app_data);
+    let unbound_user_rules = stored_user_rules
+        .rules
+        .iter()
+        .filter(|rule| rule.scope.profile_id().is_some_and(|id| !profile_ids.contains(id)))
+        .map(|rule| json!({
+            "id": rule.id,
+            "label": rule.label,
+            "kind": rule.kind,
+            "condition": rule.condition,
+            "target": rule.target,
+            "scope": "profile",
+            "profileId": rule.scope.profile_id(),
+            "enabled": rule.enabled,
+            "status": "needs-rebind",
+            "reason": "原订阅已删除，规则会继续保留，但不会写入运行配置。",
+            "nextActions": ["rebind", "global", "delete"]
+        }))
+        .collect::<Vec<_>>();
     let missing_rule_target_count = missing_rule_targets.len();
     let rule_order_issue_count = rule_order_issues.len();
     Ok(json!({
@@ -12780,6 +13134,23 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
         "ruleOrderIssues": rule_order_issues,
         "recentRules": recent_rules,
         "lastApply": last_apply,
+        "lastDeployment": read_routing_deployment_report(&state.app_data),
+        "unboundUserRules": unbound_user_rules,
+        "configRulePage": {
+            "profileId": active_profile.as_ref().map(|profile| profile.id.as_str()).unwrap_or(""),
+            "offset": 0,
+            "limit": INITIAL_CONFIG_RULE_LIMIT,
+            "total": config_rule_count,
+            "hasMore": config_rule_count > INITIAL_CONFIG_RULE_LIMIT
+        },
+        "runtimeObservationMs": {
+            "coreSnapshot": core_snapshot_ms,
+            "groupRows": group_rows_ms.saturating_sub(core_snapshot_ms),
+            "recentRules": recent_rules_ms.saturating_sub(group_rows_ms),
+            "profileYaml": profile_yaml_ms.saturating_sub(recent_rules_ms),
+            "profileRules": profile_rules_ms.saturating_sub(profile_yaml_ms),
+            "total": observed_at.elapsed().as_millis() as u64
+        },
         "summary": {
             "groupCount": group_count,
             "autoGroupCount": auto_group_count,
@@ -12790,6 +13161,7 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
             "configRuleCount": config_rule_count,
             "missingRuleTargets": missing_rule_target_count,
             "ruleOrderIssues": rule_order_issue_count
+            ,"unboundUserRuleCount": stored_user_rules.rules.iter().filter(|rule| rule.scope.profile_id().is_some_and(|id| !profile_ids.contains(id))).count()
         }
     }))
 }
@@ -12843,6 +13215,44 @@ fn update_profile(state: State<AppState>, id: String) -> Result<Profile, String>
 fn set_active_profile(state: State<AppState>, id: String) -> Result<Profile, String> {
     let _operation = lock_operation_queue(&state.operations, "set_active_profile command")?;
     state.core.lock().unwrap().set_active_profile(&id)
+}
+
+#[tauri::command]
+fn profile_removal_impact(state: State<AppState>, id: String) -> Result<JsonValue, String> {
+    let (profile_name, is_active, exists) = {
+        let core = state.core.lock().unwrap();
+        let profile = core.settings.profiles.iter().find(|profile| profile.id == id);
+        (
+            profile.map(|profile| profile.name.clone()).unwrap_or_default(),
+            core.settings.active_profile_id == id,
+            profile.is_some(),
+        )
+    };
+    if !exists {
+        return Err("订阅已不存在，请刷新后重试。".to_string());
+    }
+    let store = read_aegos_user_rule_store(&state.app_data);
+    let scoped = store
+        .rules
+        .iter()
+        .filter(|rule| rule.scope.profile_id() == Some(id.as_str()))
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "profileId": id,
+        "profileName": profile_name,
+        "isActive": is_active,
+        "affectedRuleCount": scoped.len(),
+        "enabledRuleCount": scoped.iter().filter(|rule| rule.enabled).count(),
+        "rulesWillBeRetained": true,
+        "nextState": if scoped.is_empty() { "none" } else { "needs-rebind" },
+        "sampleRules": scoped.iter().take(5).map(|rule| json!({
+            "id": rule.id,
+            "label": rule.label,
+            "condition": rule.condition,
+            "target": rule.target,
+            "enabled": rule.enabled
+        })).collect::<Vec<_>>()
+    }))
 }
 
 #[tauri::command]
@@ -12905,13 +13315,27 @@ fn main() {
             let speed_test = core.speed_test.clone();
             let logs = core.logs.clone();
             let app_data = core.app_data.clone();
+            let core_state = Arc::new(Mutex::new(core));
             app.manage(AppState {
-                core: Arc::new(Mutex::new(core)),
+                core: core_state.clone(),
                 speed_test,
+                speed_prepare_running: Arc::new(AtomicBool::new(false)),
                 logs,
                 app_data,
                 jobs: Arc::new(Mutex::new(HashMap::new())),
                 operations: Arc::new(Mutex::new(())),
+            });
+            thread::spawn(move || {
+                // Integrity metadata is diagnostic information. Read the binary
+                // outside the state lock, then publish the completed value.
+                let path = core_state.lock().ok().map(|manager| manager.core_path.clone());
+                let Some(path) = path else { return; };
+                let checksum = if path.exists() { sha256_file(&path) } else { String::new() };
+                if let Ok(mut manager) = core_state.lock() {
+                    if manager.core_path == path {
+                        manager.core_sha256 = checksum;
+                    }
+                }
             });
             Ok(())
         })
@@ -12933,10 +13357,12 @@ fn main() {
             routing_assistant_gate,
             apply_routing_drafts,
             undo_last_routing_apply,
+            prepare_speed_runtime,
             start_proxy_delay_test,
             test_single_proxy_delay,
             node_diagnostics,
             speed_test_status,
+            speed_test_progress,
             cancel_proxy_delay_test,
             recover_network,
             refresh_outbound_ip,
@@ -12944,6 +13370,8 @@ fn main() {
             environment_readiness,
             select_best_proxy,
             connections,
+            routing_rule_page,
+            test_routing_website,
             routing_snapshot,
             active_connection_count,
             close_connection,
@@ -12951,6 +13379,7 @@ fn main() {
             add_profile_url,
             update_profile,
             set_active_profile,
+            profile_removal_impact,
             remove_profile,
             save_manual_node,
             diagnostics,

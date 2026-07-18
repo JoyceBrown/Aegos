@@ -26,7 +26,9 @@ const releaseAudit = read('tools/release-audit.js');
 check(
   'subscription runtime module is wired',
   mainRs.includes('mod subscription_runtime;') &&
-    mainRs.includes('use subscription_runtime::{ProfileSource, ProfileSourceSummary};'),
+    mainRs.includes('use subscription_runtime::ProfileSourceSummary;') &&
+    mainRs.includes('subscription_runtime::download_source_url(') &&
+    mainRs.includes('subscription_runtime::parse_source_text('),
   'main.rs imports subscription runtime boundary',
 );
 
@@ -46,8 +48,8 @@ check(
   subscriptionRuntimeRs.includes('pub(crate) fn diagnostic(') &&
     subscriptionRuntimeRs.includes('Subscription diagnostics [{stage}]') &&
     subscriptionRuntimeRs.includes('Open Logs or Diagnostics for details') &&
-    mainRs.includes('fn subscription_diagnostic') &&
-    mainRs.includes('subscription_runtime::diagnostic(stage, reason, suggestion)'),
+    mainRs.includes('subscription_runtime::diagnostic(') &&
+    !mainRs.includes('fn subscription_diagnostic('),
   'diagnostic copy boundary',
 );
 
@@ -55,8 +57,8 @@ check(
   'subscription source summary is owned by subscription_runtime',
   subscriptionRuntimeRs.includes('pub(crate) fn summarize_source(') &&
     subscriptionRuntimeRs.includes('"subscription contains no usable proxies"') &&
-    mainRs.includes('fn summarize_profile_source(') &&
-    mainRs.includes('subscription_runtime::summarize_source(config, format, unsupported_lines)'),
+    mainRs.includes('subscription_runtime::summarize_source(&config, "profile-file", 0)') &&
+    !mainRs.includes('fn summarize_profile_source('),
   'summary/counting boundary',
 );
 
@@ -67,11 +69,16 @@ check(
     subscriptionRuntimeRs.includes('pub(crate) fn unsupported_uri_schemes(') &&
     subscriptionRuntimeRs.includes('pub(crate) fn looks_like_clash_yaml(') &&
     subscriptionRuntimeRs.includes('fn decode_base64_text(') &&
-    mainRs.includes('subscription_runtime::is_ignorable_line(line)') &&
-    mainRs.includes('subscription_runtime::decoded_body(text)') &&
-    mainRs.includes('subscription_runtime::unsupported_uri_schemes(text, AEGOS_URI_PROTOCOLS)') &&
-    mainRs.includes('subscription_runtime::looks_like_clash_yaml(text)') &&
-    !mainRs.includes('fn is_supported_uri_scheme'),
+    subscriptionRuntimeRs.includes('pub(crate) fn parse_uri_subscription(') &&
+    subscriptionRuntimeRs.includes('pub(crate) fn parse_uri_source(') &&
+    subscriptionRuntimeRs.includes('pub(crate) fn parse_source_text(') &&
+    subscriptionRuntimeRs.includes('pub(crate) fn download_source_url(') &&
+    subscriptionRuntimeRs.includes('pub(crate) const AEGOS_URI_PROTOCOLS') &&
+    mainRs.includes('subscription_runtime::AEGOS_URI_PROTOCOLS') &&
+    !mainRs.includes('fn is_ignorable_subscription_line') &&
+    !mainRs.includes('fn decoded_subscription_body') &&
+    !mainRs.includes('fn parse_uri_subscription(') &&
+    !mainRs.includes('fn download_profile_source_url_diagnostic'),
   'BOM/base64/metadata/protocol filtering boundary',
 );
 

@@ -8,3 +8,21 @@ ui-smoke/
 *.bak
 npm-debug.log*
 resources/core/archive/*.exe
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.jks
+credentials.json
+settings.local.json
+
+# Editor and operating-system state
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,7 +1,7 @@
 # Aegos Mihomo API Contract
 
-Version: 2.9.53
-Updated: 2026-07-12
+Version: 3.6.33
+Updated: 2026-07-17
 
 Purpose: this document fixes the boundary between Aegos and mihomo. It defines which controller APIs Aegos may call, whether each call may change runtime state, how it must be wrapped, and which checks must guard future changes.
 
@@ -10,7 +10,7 @@ This is a contract, not a feature wish list. If code needs a mihomo API that is 
 ## 1. Non-Negotiable Rules
 
 - Delay tests are measurement-only in Aegos. They may update delay, health, recommendation, confidence, and failure reason. They must not switch the current node, change mode, enable system proxy, enable TUN, or take over traffic.
-- All controller calls must go through backend wrappers such as `controller_request` or `CoreManager::controller`. The frontend must not call mihomo controller URLs directly.
+- All controller calls must go through `CoreController`. Raw controller response fields must be normalized into Aegos domain types before they reach commands, product logic, or the frontend.
 - The controller must stay bound to `127.0.0.1` with a generated secret. `allow-lan` remains opt-in and must not be enabled by feature work.
 - Every call must have a timeout. UI-visible actions must remain cancellable or detached when they can be slow.
 - Errors must be classified before reaching the UI when the user needs a reason: timeout, DNS, TLS, auth, unsupported protocol, controller unavailable, node not found, config, protection blocked, network, unknown.
@@ -21,9 +21,10 @@ This is a contract, not a feature wish list. If code needs a mihomo API that is 
 
 Implementation:
 
-- `controller_request(controller_port, secret, method, endpoint, body, timeout_ms)`
-- `CoreManager::controller(method, endpoint, body, timeout_ms)`
-- `CoreManager::traffic_snapshot(timeout_ms)` for the streaming `/traffic` endpoint.
+- Private `CoreController::request` and `controller_request` transport functions for authenticated JSON requests. Product modules may not call either function; every endpoint requires a named typed `CoreController` method.
+- `CoreController::traffic_snapshot(timeout_ms)` for the streaming `/traffic` endpoint.
+- `connection_snapshots_from_controller(payload, sanitize)` as the only parser for raw `/connections` fields.
+- `ProxyCatalog` as the product-owned node/group model after `/proxies` normalization. Default groups, selected-map resolution, nested-group leaf resolution, and fixed-node metadata are applied once through this model; product code must not recreate those behaviors with independent JSON mutation helpers.
 
 Envelope requirements:
 
@@ -37,14 +38,14 @@ Envelope requirements:
 
 | API | Current use in Aegos | State effect | Timeout class | Allowed wrappers | Required guards |
 |---|---|---|---|---|---|
-| `GET /version` | core readiness check | read-only | 300-900 ms | `wait_for_controller`, `ensure_core_for_delay_test` | Must not block UI; failure means controller not ready. |
-| `GET /proxies` | proxy groups snapshot | read-only | about 1200 ms | `controller_proxy_groups_snapshot`, `assemble_proxy_groups_snapshot` | Hide strategy-group references from ordinary node lists; merge local speed cache only after snapshot. |
-| `GET /proxies/{name}/delay?timeout=&url=` | single proxy delay probe | measurement-only, should not select node | probe timeout, protocol-aware | `test_proxy_delay_request`, `test_proxy_delay_fast`, `test_proxy_delay_with_retry` | Must use encoded proxy name and URL; must not call `change_proxy`; must classify failed probes. |
+| `GET /version` | core readiness and post-deploy verification | read-only | 300-900 ms | private `CoreController::version_probe` through readiness/deployment methods | Response must normalize into `RuntimeVersionSnapshot` with a non-empty version; arbitrary successful JSON is not readiness evidence; must not block UI. |
+| `GET /proxies` | proxy groups snapshot | read-only | about 1200 ms | `CoreController::proxy_groups_snapshot`, `proxy_groups_from_controller`, `ProxyCatalog` | Raw records are normalized into `ProxyGroupSnapshot` and `ProxyNodeSnapshot`; history is reduced to the latest delay; internal/empty groups are filtered; unknown controller fields do not reach product logic. Product defaults, nested-group resolution, selected state, and fixed-node metadata are applied by `ProxyCatalog`. Merge local speed cache only after catalog shaping. |
+| `GET /proxies/{name}/delay?timeout=&url=` | single proxy delay probe | measurement-only, should not select node | probe timeout, protocol-aware | `CoreController::proxy_delay_result_with_client`, Aegos speed scheduler | Response fields are normalized into `DelayProbeSnapshot` before classification; malformed envelopes fail closed; encoded proxy name/URL are required; must never call node selection. |
 | `PUT /proxies/{group}` | user-initiated group selection | mutates selected proxy | 1500-5000 ms | `change_proxy`, `sync_outbound_ip_group_selection` | Only allowed for explicit user node switch or hidden landing-IP group sync; rollback selected map on failure. |
-| `PATCH /configs` with `{ "mode": ... }` | user-initiated mode switch | mutates runtime mode | about 3000 ms | `set_mode` | Only allowed for explicit mode change; unsupported modes rejected before call. |
-| `PATCH /configs?force=true` | hot reload runtime profile | mutates active runtime config | release/profile timeout | `hot_reload_profile` | Must follow preflight and atomic runtime config write; fallback restart if hot reload fails. |
-| `GET /traffic` | lightweight traffic snapshot | read-only streaming endpoint | 120 ms status heartbeat | `traffic_snapshot` | Read one line only; never use long streaming read on UI heartbeat. |
-| `GET /connections` | connections page and active count | read-only | 350-900 ms | `connections`, `active_connection_count` | Active count must stay lightweight; failures return empty count/list rather than blocking UI. |
+| `PATCH /configs` with `{ "mode": ... }` | user-initiated mode switch | mutates runtime mode | about 3000 ms | private transport plus `CoreController::apply_mode` | Only allowed for explicit mode change; unsupported modes are rejected; runtime apply must succeed before preference save, and save failure must restore the previous runtime mode. |
+| `PATCH /configs?force=true` | hot reload runtime profile | mutates active runtime config | release/profile timeout | `CoreRuntimeApplyTransaction` | Raw controller response is discarded; success requires a typed version probe and produces an Aegos deployment receipt; must follow preflight and atomic runtime config write, with restart/rollback on failure. |
+| `GET /traffic` | lightweight traffic snapshot | read-only streaming endpoint | 120 ms status heartbeat | `CoreController::traffic_snapshot` | Read one line only; normalize it into `TrafficSnapshot`; reject non-object envelopes; never carry raw JSON or use a long streaming read on UI heartbeat. |
+| `GET /connections` | connections page, active count, recent rule hits | read-only | 350-900 ms | `CoreController::connections_snapshot`, `active_connection_count`, `recent_rule_hits_snapshot` | Raw `metadata`, `destinationIP`, and `chains` are normalized once into `ConnectionSnapshot`; frontend and derived features may only consume Aegos fields. Failures return empty count/list rather than blocking UI. |
 | `DELETE /connections/{id}` | close one connection | mutates connection table only | about 2000 ms | `close_connection` | User action only; no config or proxy selection change. |
 | `DELETE /connections` | close all connections after switch or user action | mutates connection table only | 1500-3000 ms | `change_proxy`, `close_connections` | Safe after explicit node switch; must not be used as hidden reconnect loop. |
 | `GET /rules` | planned read-only routing page | read-only | TBD | future routing wrapper | Read-only first. No rule editing in 3.0. |
@@ -87,7 +88,7 @@ The only exception is hidden landing-IP group sync, which must remain separate f
 `PUT /proxies/{group}`:
 
 - Allowed only from explicit user node switch, explicit "switch to recommended" style action if reintroduced later, or hidden `Aegos Landing IP` group sync.
-- A failed call must restore `selected_proxy_map` and save settings.
+- Runtime selection is applied before preference commit. Apply failure leaves preferences unchanged; preference save failure restores the previous runtime node and in-memory selection, and rollback failure is surfaced.
 - The UI must not call this from speed-test success.
 
 `PATCH /configs`:
@@ -134,6 +135,7 @@ Before Aegos uses `/group/{name}/delay`:
 
 Current guards:
 
+- `npm run audit:core-domain`: raw connection JSON stays at the backend boundary; UI, counts, and rule hits use `ConnectionSnapshot`.
 - `npm run audit:speed`: speed tests update delay/health/recommendation only, exclude unsafe targets, remain non-blocking, and align with FlClash-style delay target behavior.
 - `npm run audit:security`: controller bind, secret, allow-lan, logs, speed measurement-only, firewall scoped rules.
 - `npm run audit:release`: controller, speed, traffic, connections, and release-level behavior.
@@ -146,7 +148,32 @@ Required future guards:
 - New read endpoints require timeout and UI non-blocking tests.
 - New measurement endpoints require "does not change current node" tests.
 
-## 8. Sources
+## 8. Configuration Ownership Contract
+
+Aegos owns the configuration lifecycle. Mihomo receives only a validated runtime artifact; it does not define how subscriptions, manual nodes, user rules, settings, or rollback state are stored.
+
+Required chain:
+
+`subscription source -> ProfileCatalog -> RuntimeDeploymentPlan -> ConfigDeploymentCandidate -> atomic promotion -> runtime apply and verification -> completion or rollback`
+
+Boundary rules:
+
+- `ProfileCatalog` is the only product model for subscription nodes, groups, and counts. Its public summaries contain names, protocol types, and counts only; they must not expose server addresses, passwords, UUIDs, controller secrets, or subscription tokens.
+- `RuntimeDeploymentPlan` binds the preserved subscription source and the generated runtime configuration to separate catalogs, YAML artifacts, and SHA-256 digests. A caller must not parse and compile the same source again during one deployment.
+- `config_pipeline` exclusively owns runtime mutation and preflight: port/controller policy, DNS and TUN shaping, airport metadata filtering, manual-node injection, default groups, internal outbound-IP rules, and the direct call into `core_runtime::preflight_runtime_config`. `main.rs` may request a compiled plan but must not rebuild these policies.
+- Subscription import and update persist `source_yaml`. Generated runtime fields must never be written back to a subscription source file. This includes Aegos ports, controller bind and secret, DNS policy, TUN policy, hidden groups, and internal rules.
+- Manual nodes are stored as `ManualNodeConfig`. UI-only metadata is added only at the product response boundary and is removed from runtime YAML.
+- `ConfigDeploymentCandidate` binds the confined active root/path, operation, profile identity, content, and digest before a transaction can be staged.
+- Promotion is atomic and confined to Aegos app-data/profile paths. Runtime apply must use the same preflighted plan, verify controller readiness and runtime identity, then complete the transaction. Failure restores the previous source and running state or records an explicit rollback failure.
+- Diagnostics and IPv6/DNS checks consume the same compiler path. They may inspect a generated runtime catalog but must not write source or runtime files.
+- The removed `patch_profile_source`, `patch_and_preflight`, `preflight_profile_source`, and `RenderedProfile` entry points are forbidden. Reintroducing a parallel config path requires a contract change and a migration that removes the superseded path.
+
+Enforcement:
+
+- `npm run audit:config-domain` guards source/runtime separation, typed models, single-plan routing deployment, diagnostics reuse, path-bound deployment candidates, and absence of legacy entry points.
+- Rust tests verify that generated controller/TUN/internal policy stays out of subscription source files and that summaries do not leak credentials or endpoints.
+
+## 9. Sources
 
 - Mihomo API documentation: `https://wiki.metacubex.one/en/api/`
 - Mihomo general configuration documentation: `https://wiki.metacubex.one/en/config/general/`

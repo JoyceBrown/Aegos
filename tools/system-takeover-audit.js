@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
 const coreRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'core_runtime.rs'), 'utf8');
+const systemTakeoverRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'system_takeover.rs'), 'utf8');
 const appJs = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
 const interactionSmoke = fs.readFileSync(path.join(root, 'tools', 'interaction-smoke.js'), 'utf8');
 const backendAudit = fs.readFileSync(path.join(root, 'tools', 'backend-audit.js'), 'utf8');
@@ -25,8 +26,7 @@ function sliceBetween(source, startNeedle, endNeedle) {
 }
 
 const proxyScriptBody = sliceBetween(mainRs, 'fn build_proxy_script', 'fn build_kill_switch_script');
-const killScriptBody = sliceBetween(mainRs, 'fn build_kill_switch_script', 'fn build_speed_test_firewall_script');
-const speedFirewallBody = sliceBetween(mainRs, 'fn build_speed_test_firewall_script', 'impl CoreManager');
+const killScriptBody = sliceBetween(mainRs, 'fn build_kill_switch_script', 'fn takeover_failure_message');
 const setSystemProxyBody = sliceBetween(mainRs, 'fn set_system_proxy', 'fn set_kill_switch');
 const settingsUpdateBody = sliceBetween(mainRs, 'fn update_settings', 'fn set_mode');
 const settingsRollbackBody = sliceBetween(mainRs, 'fn rollback_settings_after_failure', 'fn active_profile');
@@ -105,17 +105,15 @@ check(
 );
 
 check(
-  'speed tests can run under disconnect protection through scoped temporary allow rules',
-    speedFirewallBody.includes('Speed test firewall rules require administrator permission') &&
+  'speed tests reuse disconnect protection program rules without broad port exceptions',
+    killScriptBody.includes('foreach ($program in $programs)') &&
+    killScriptBody.includes('action=allow "program=$program"') &&
     coreRuntimeRs.includes('FIREWALL_SPEED_TEST_MARKER_FILE') &&
     mainRs.includes('CoreFirewallPolicyPlan::speed_test') &&
-    speedFirewallBody.includes('remoteport=$portList') &&
-    speedFirewallBody.includes('Speed test firewall enable failed') &&
-    speedFirewallBody.includes('Speed test firewall rules were not fully removed') &&
-    speedFirewallBody.includes('Speed-test firewall did not create the required temporary allow rules') &&
-    speedFirewallBody.includes('Speed test firewall marker was not removed') &&
-    mainRs.includes('cleanup_speed_firewall') &&
-    speedAudit.includes('disconnect protection speed-test allow rules open and clean up inside worker') &&
+    !mainRs.includes('fn build_speed_test_firewall_script') &&
+    !mainRs.includes('remoteport=$portList') &&
+    !mainRs.includes('cleanup_speed_firewall') &&
+    speedAudit.includes('disconnect protection uses verified program rules without a per-test firewall window') &&
     backendAudit.includes('disconnect protection allows speed tests without disabling protection'),
   '测速 should not require disabling protection or blocking the UI'
 );
@@ -139,6 +137,9 @@ check(
     settingsUpdateBody.includes('self.validate_settings_update_candidate(map)?') &&
     settingsUpdateBody.includes('previous_settings') &&
     settingsUpdateBody.includes('rollback_settings_after_failure') &&
+    settingsUpdateBody.includes('transaction.complete_verified(') &&
+    mainRs.includes('fn restore_settings_snapshot') &&
+    systemTakeoverRs.includes('pub fn complete_verified') &&
     settingsRollbackBody.includes('settings rolled back') &&
     backendAudit.includes('settings port updates validate before save and rollback on failure'),
   'bad TUN/protection/proxy changes must not leave half-applied settings'

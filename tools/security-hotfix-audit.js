@@ -4,8 +4,10 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
+const configPipelineRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'config_pipeline.rs'), 'utf8');
 const coreRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'core_runtime.rs'), 'utf8');
 const diagnosticsRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'diagnostics_runtime.rs'), 'utf8');
+const subscriptionRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'subscription_runtime.rs'), 'utf8');
 const appJs = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
 const tauri = JSON.parse(fs.readFileSync(path.join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'));
 const capabilities = fs.readFileSync(path.join(root, 'src-tauri', 'capabilities', 'default.json'), 'utf8');
@@ -30,8 +32,8 @@ function sliceBetween(source, startNeedle, endNeedle) {
 }
 
 const addLogBody = sliceBetween(mainRs, 'fn add_log', 'fn save_settings');
-const publicProfileBody = sliceBetween(mainRs, 'fn public_profile', 'fn parse_uri_subscription');
-const patchConfigBody = sliceBetween(mainRs, 'fn patch_config_with_settings', 'fn preflight_runtime_config');
+const publicProfileBody = sliceBetween(mainRs, 'fn public_profile', 'fn is_fake_ip_address');
+const patchConfigBody = sliceBetween(configPipelineRs, 'pub(crate) fn patch_config', 'pub(crate) fn patch_direct_profile');
 const setSystemProxyBody = sliceBetween(mainRs, 'fn set_system_proxy', 'fn set_kill_switch');
 const applyTakeoverBody = sliceBetween(mainRs, 'fn apply_takeover_after_core_ready', 'fn start(&mut self)');
 const stopBody = sliceBetween(mainRs, 'fn stop(&mut self)', 'fn shutdown_for_exit');
@@ -104,16 +106,16 @@ check(
 );
 
 check(
-  'disconnect protection speed-test firewall window is scoped and cleaned',
-  speedBody.includes('build_speed_test_firewall_script(') &&
-    speedBody.includes('cleanup_speed_firewall') &&
+  'disconnect protection speed tests do not open broad temporary firewall windows',
+  !speedBody.includes('run_powershell') &&
     coreRuntimeRs.includes('FIREWALL_SPEED_TEST_MARKER_FILE') &&
     mainRs.includes('CoreFirewallPolicyPlan::speed_test') &&
-    mainRs.includes('build_speed_test_firewall_script(') &&
-    mainRs.includes('remoteport=$portList') &&
+    mainRs.includes('core_runtime::firewall_program_paths') &&
+    !mainRs.includes('build_speed_test_firewall_script(') &&
+    !mainRs.includes('remoteport=$portList') &&
     backendAudit.includes('disconnect protection allows speed tests without disabling protection') &&
-    takeoverAudit.includes('speed tests can run under disconnect protection through scoped temporary allow rules'),
-  'temporary firewall rules must not outlive speed tests'
+    takeoverAudit.includes('speed tests reuse disconnect protection program rules without broad port exceptions'),
+  'speed tests must reuse verified program rules and never widen arbitrary node ports'
 );
 
 check(
@@ -165,9 +167,13 @@ check(
 
 check(
   'subscription and runtime preflight still guard malformed profiles',
-    mainRs.includes('parse_profile_source_text_diagnostic') &&
-    mainRs.includes('download_profile_source_url_diagnostic') &&
-    mainRs.includes('config_pipeline::preflight_profile_source(source.config, &profile, &settings)') &&
+  subscriptionRuntimeRs.includes('pub(crate) fn parse_source_text(') &&
+    subscriptionRuntimeRs.includes('pub(crate) fn download_source_url(') &&
+    mainRs.includes('subscription_runtime::download_source_url(') &&
+    !mainRs.includes('fn parse_profile_source_text_diagnostic') &&
+    mainRs.includes('profile_compiler::compile_profile_source(source.config, &profile, &settings)') &&
+    mainRs.includes('plan.source_deployment_candidate(&profile_dir, &path, "Subscription import")') &&
+    mainRs.includes('plan.source_deployment_candidate(&profile_root, &profile_path, "Subscription update")') &&
     mainRs.includes('Profile switch failed and rolled back') &&
     backendAudit.includes('subscription import/update validate before applying') &&
     backendAudit.includes('profile switch validates, hot-reloads, and rolls back on failure'),

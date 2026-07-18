@@ -21,6 +21,44 @@ pub struct ConfigDeploymentReport {
 }
 
 #[derive(Clone, Debug)]
+pub struct ConfigDeploymentCandidate {
+    active_root: PathBuf,
+    active_path: PathBuf,
+    operation: String,
+    profile_id: String,
+    content: String,
+    digest: String,
+}
+
+impl ConfigDeploymentCandidate {
+    pub fn new(
+        active_root: &Path,
+        active_path: &Path,
+        operation: impl Into<String>,
+        profile_id: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Result<Self, String> {
+        ensure_within(active_path, active_root)?;
+        let content = content.into();
+        if content.trim().is_empty() {
+            return Err("config deployment candidate content is empty".to_string());
+        }
+        Ok(Self {
+            active_root: active_root.to_path_buf(),
+            active_path: active_path.to_path_buf(),
+            operation: operation.into(),
+            profile_id: profile_id.into(),
+            digest: digest(&content),
+            content,
+        })
+    }
+
+    pub(crate) fn digest(&self) -> &str {
+        &self.digest
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct ConfigDeploymentTransaction {
     state_dir: PathBuf,
     active_root: PathBuf,
@@ -29,29 +67,32 @@ pub struct ConfigDeploymentTransaction {
     backup_path: PathBuf,
     journal_path: PathBuf,
     report: ConfigDeploymentReport,
+    #[cfg(test)]
+    injected_fault: Option<TestDeploymentFault>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TestDeploymentFault {
+    CompleteJournal,
+    RollbackActive,
+    RollbackJournal,
 }
 
 impl ConfigDeploymentTransaction {
-    pub fn stage(
-        state_root: &Path,
-        active_root: &Path,
-        active_path: &Path,
-        operation: impl Into<String>,
-        profile_id: impl Into<String>,
-        candidate: &str,
-    ) -> Result<Self, String> {
-        ensure_within(active_path, active_root)?;
+    pub fn stage(state_root: &Path, candidate: ConfigDeploymentCandidate) -> Result<Self, String> {
+        ensure_within(&candidate.active_path, &candidate.active_root)?;
         fs::create_dir_all(state_root)
             .map_err(|err| format!("config deployment state directory create failed: {err}"))?;
         let state_dir = state_root.join("config-deployments");
         fs::create_dir_all(&state_dir)
             .map_err(|err| format!("config deployment journal directory create failed: {err}"))?;
 
-        let previous = if active_path.exists() {
-            Some(fs::read_to_string(active_path).map_err(|err| {
+        let previous = if candidate.active_path.exists() {
+            Some(fs::read_to_string(&candidate.active_path).map_err(|err| {
                 format!(
                     "config deployment read active config failed {}: {err}",
-                    active_path.display()
+                    candidate.active_path.display()
                 )
             })?)
         } else {
@@ -62,19 +103,18 @@ impl ConfigDeploymentTransaction {
         let candidate_path = state_dir.join(format!("{id}.candidate"));
         let backup_path = state_dir.join(format!("{id}.backup"));
         let journal_path = state_dir.join(format!("{id}.json"));
-        let operation = operation.into();
         let mut report = ConfigDeploymentReport {
             id,
-            operation,
-            profile_id: profile_id.into(),
-            active_path: active_path.to_string_lossy().to_string(),
+            operation: candidate.operation,
+            profile_id: candidate.profile_id,
+            active_path: candidate.active_path.to_string_lossy().to_string(),
             previous_digest: previous.as_deref().map(digest),
-            candidate_digest: digest(candidate),
+            candidate_digest: candidate.digest,
             state: "staged".to_string(),
             created_at_ms: now,
             detail: "Candidate prepared; active configuration has not changed.".to_string(),
         };
-        atomic_write(&candidate_path, candidate)?;
+        atomic_write(&candidate_path, &candidate.content)?;
         let staged = fs::read_to_string(&candidate_path).map_err(|err| {
             format!("config deployment candidate verification read failed: {err}")
         })?;
@@ -90,12 +130,14 @@ impl ConfigDeploymentTransaction {
         write_report(&journal_path, &report)?;
         Ok(Self {
             state_dir,
-            active_root: active_root.to_path_buf(),
-            active_path: active_path.to_path_buf(),
+            active_root: candidate.active_root,
+            active_path: candidate.active_path,
             candidate_path,
             backup_path,
             journal_path,
             report,
+            #[cfg(test)]
+            injected_fault: None,
         })
     }
 
@@ -125,6 +167,8 @@ impl ConfigDeploymentTransaction {
     ) -> Result<ConfigDeploymentReport, String> {
         self.report.state = "verified".to_string();
         self.report.detail = detail.into();
+        #[cfg(test)]
+        self.fail_if_injected(TestDeploymentFault::CompleteJournal)?;
         write_report(&self.journal_path, &self.report)?;
         let _ = fs::remove_file(&self.candidate_path);
         self.prune_reports();
@@ -135,6 +179,8 @@ impl ConfigDeploymentTransaction {
         &mut self,
         detail: impl Into<String>,
     ) -> Result<ConfigDeploymentReport, String> {
+        #[cfg(test)]
+        self.fail_if_injected(TestDeploymentFault::RollbackActive)?;
         if self.backup_path.exists() {
             let previous = fs::read_to_string(&self.backup_path)
                 .map_err(|err| format!("config deployment rollback snapshot read failed: {err}"))?;
@@ -147,9 +193,78 @@ impl ConfigDeploymentTransaction {
         }
         self.report.state = "rolled-back".to_string();
         self.report.detail = detail.into();
+        #[cfg(test)]
+        self.fail_if_injected(TestDeploymentFault::RollbackJournal)?;
         write_report(&self.journal_path, &self.report)?;
         let _ = fs::remove_file(&self.candidate_path);
         Ok(self.report.clone())
+    }
+
+    pub fn rollback_with_runtime<F>(
+        &mut self,
+        detail: impl Into<String>,
+        restore_runtime: F,
+    ) -> Result<ConfigDeploymentReport, String>
+    where
+        F: FnOnce() -> Result<(), String>,
+    {
+        let config_restore = self.rollback(detail);
+        let runtime_restore = restore_runtime();
+        match (config_restore, runtime_restore) {
+            (Ok(report), Ok(())) => Ok(report),
+            (Err(config_err), Ok(())) => Err(format!(
+                "configuration rollback failed: {config_err}; runtime restore was still attempted and completed"
+            )),
+            (Ok(_), Err(runtime_err)) => Err(format!(
+                "configuration rollback completed; runtime restore failed: {runtime_err}"
+            )),
+            (Err(config_err), Err(runtime_err)) => Err(format!(
+                "configuration rollback failed: {config_err}; runtime restore also failed: {runtime_err}"
+            )),
+        }
+    }
+
+    pub fn complete_verified<F>(
+        &mut self,
+        detail: impl Into<String>,
+        restore_runtime: F,
+    ) -> Result<ConfigDeploymentReport, String>
+    where
+        F: FnOnce() -> Result<(), String>,
+    {
+        let detail = detail.into();
+        match self.complete(detail) {
+            Ok(report) => Ok(report),
+            Err(completion_err) => {
+                let rollback = self.rollback_with_runtime(
+                    format!("verified deployment finalization failed: {completion_err}"),
+                    restore_runtime,
+                );
+                Err(match rollback {
+                    Ok(_) => format!(
+                        "deployment finalization failed and configuration/runtime were rolled back: {completion_err}"
+                    ),
+                    Err(rollback_err) => format!(
+                        "deployment finalization failed: {completion_err}; rollback was incomplete: {rollback_err}"
+                    ),
+                })
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn inject_fault(&mut self, fault: TestDeploymentFault) {
+        self.injected_fault = Some(fault);
+    }
+
+    #[cfg(test)]
+    fn fail_if_injected(&mut self, fault: TestDeploymentFault) -> Result<(), String> {
+        if self.injected_fault == Some(fault) {
+            self.injected_fault = None;
+            Err(format!("injected deployment fault: {fault:?}"))
+        } else {
+            Ok(())
+        }
     }
 
     fn prune_reports(&self) {
@@ -336,15 +451,10 @@ mod tests {
         fs::create_dir_all(&profiles).unwrap();
         let active = profiles.join("active.yaml");
         atomic_write(&active, "old: true\n").unwrap();
-        let mut transaction = ConfigDeploymentTransaction::stage(
-            &root,
-            &profiles,
-            &active,
-            "rule apply",
-            "p1",
-            "new: true\n",
-        )
-        .unwrap();
+        let candidate =
+            ConfigDeploymentCandidate::new(&profiles, &active, "rule apply", "p1", "new: true\n")
+                .unwrap();
+        let mut transaction = ConfigDeploymentTransaction::stage(&root, candidate).unwrap();
         transaction.promote().unwrap();
         assert_eq!(fs::read_to_string(&active).unwrap(), "new: true\n");
         let report = transaction
@@ -365,18 +475,97 @@ mod tests {
         fs::create_dir_all(&profiles).unwrap();
         let active = profiles.join("active.yaml");
         atomic_write(&active, "old: true\n").unwrap();
-        let mut transaction = ConfigDeploymentTransaction::stage(
-            &root,
-            &profiles,
-            &active,
-            "rule apply",
-            "p1",
-            "new: true\n",
-        )
-        .unwrap();
+        let candidate =
+            ConfigDeploymentCandidate::new(&profiles, &active, "rule apply", "p1", "new: true\n")
+                .unwrap();
+        let mut transaction = ConfigDeploymentTransaction::stage(&root, candidate).unwrap();
         transaction.promote().unwrap();
         let report = transaction.rollback("runtime reload failed").unwrap();
         assert_eq!(report.state, "rolled-back");
+        assert_eq!(fs::read_to_string(&active).unwrap(), "old: true\n");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn completion_journal_failure_rolls_back_config_and_runtime() {
+        let root = temp_root("complete-fault");
+        let profiles = root.join("profiles");
+        fs::create_dir_all(&profiles).unwrap();
+        let active = profiles.join("active.yaml");
+        atomic_write(&active, "old: true\n").unwrap();
+        let candidate =
+            ConfigDeploymentCandidate::new(&profiles, &active, "rule apply", "p1", "new: true\n")
+                .unwrap();
+        let mut transaction = ConfigDeploymentTransaction::stage(&root, candidate).unwrap();
+        transaction.promote().unwrap();
+        transaction.inject_fault(TestDeploymentFault::CompleteJournal);
+        let runtime_restored = std::cell::Cell::new(false);
+
+        let error = transaction
+            .complete_verified("runtime verified", || {
+                runtime_restored.set(true);
+                Ok(())
+            })
+            .unwrap_err();
+
+        assert!(error.contains("finalization failed"));
+        assert!(runtime_restored.get());
+        assert_eq!(fs::read_to_string(&active).unwrap(), "old: true\n");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_restore_is_attempted_when_active_config_rollback_fails() {
+        let root = temp_root("rollback-active-fault");
+        let profiles = root.join("profiles");
+        fs::create_dir_all(&profiles).unwrap();
+        let active = profiles.join("active.yaml");
+        atomic_write(&active, "old: true\n").unwrap();
+        let candidate =
+            ConfigDeploymentCandidate::new(&profiles, &active, "rule apply", "p1", "new: true\n")
+                .unwrap();
+        let mut transaction = ConfigDeploymentTransaction::stage(&root, candidate).unwrap();
+        transaction.promote().unwrap();
+        transaction.inject_fault(TestDeploymentFault::RollbackActive);
+        let runtime_attempted = std::cell::Cell::new(false);
+
+        let error = transaction
+            .rollback_with_runtime("runtime apply failed", || {
+                runtime_attempted.set(true);
+                Ok(())
+            })
+            .unwrap_err();
+
+        assert!(error.contains("configuration rollback failed"));
+        assert!(runtime_attempted.get());
+        assert_eq!(fs::read_to_string(&active).unwrap(), "new: true\n");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_restore_is_attempted_when_rollback_journal_write_fails() {
+        let root = temp_root("rollback-journal-fault");
+        let profiles = root.join("profiles");
+        fs::create_dir_all(&profiles).unwrap();
+        let active = profiles.join("active.yaml");
+        atomic_write(&active, "old: true\n").unwrap();
+        let candidate =
+            ConfigDeploymentCandidate::new(&profiles, &active, "rule apply", "p1", "new: true\n")
+                .unwrap();
+        let mut transaction = ConfigDeploymentTransaction::stage(&root, candidate).unwrap();
+        transaction.promote().unwrap();
+        transaction.inject_fault(TestDeploymentFault::RollbackJournal);
+        let runtime_attempted = std::cell::Cell::new(false);
+
+        let error = transaction
+            .rollback_with_runtime("runtime apply failed", || {
+                runtime_attempted.set(true);
+                Ok(())
+            })
+            .unwrap_err();
+
+        assert!(error.contains("configuration rollback failed"));
+        assert!(runtime_attempted.get());
         assert_eq!(fs::read_to_string(&active).unwrap(), "old: true\n");
         let _ = fs::remove_dir_all(root);
     }
@@ -388,15 +577,10 @@ mod tests {
         fs::create_dir_all(&profiles).unwrap();
         let active = profiles.join("active.yaml");
         atomic_write(&active, "old: true\n").unwrap();
-        let mut transaction = ConfigDeploymentTransaction::stage(
-            &root,
-            &profiles,
-            &active,
-            "rule apply",
-            "p1",
-            "new: true\n",
-        )
-        .unwrap();
+        let candidate =
+            ConfigDeploymentCandidate::new(&profiles, &active, "rule apply", "p1", "new: true\n")
+                .unwrap();
+        let mut transaction = ConfigDeploymentTransaction::stage(&root, candidate).unwrap();
         transaction.promote().unwrap();
         drop(transaction);
         let recovered = recover_interrupted_deployments(&root, &profiles);
@@ -412,6 +596,18 @@ mod tests {
         fs::create_dir_all(&profiles).unwrap();
         assert!(ensure_within(&profiles.join("new.yaml"), &profiles).is_ok());
         assert!(ensure_within(&root.join("outside.yaml"), &profiles).is_err());
+        assert!(ConfigDeploymentCandidate::new(
+            &profiles,
+            &active_path_for_test(&profiles),
+            "empty",
+            "p1",
+            "  "
+        )
+        .is_err());
         let _ = fs::remove_dir_all(root);
+    }
+
+    fn active_path_for_test(root: &Path) -> PathBuf {
+        root.join("candidate.yaml")
     }
 }

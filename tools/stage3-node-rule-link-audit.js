@@ -63,7 +63,7 @@ check(
     appJs.includes("dataset: { nodeAction: 'edit'") &&
     appJs.includes("dataset: { nodeAction: 'route'") &&
     appJs.includes("dataset: { nodeAction: 'favorite'") &&
-    appJs.includes("ariaLabel: 'route website through node'") &&
+    appJs.includes("ariaLabel: '为网站使用此节点'") &&
     appJs.includes("icon('icon-routing')") &&
     indexHtml.includes('<span>规则</span><span>收藏</span>') &&
     styles.includes('repeat(4, 1fr)') &&
@@ -88,8 +88,9 @@ check(
     addBody.includes("action: 'add'") &&
     addBody.includes('target: groupName') &&
     addBody.includes('await refreshRoutingSnapshot()') &&
-    mainRs.includes('fn apply_routing_rule_edit') &&
-    mainRs.includes('commit_profile_routing_config'),
+    mainRs.includes('fn apply_user_rule_store_edit') &&
+    mainRs.includes('stage_routing_store_transaction') &&
+    mainRs.includes('hot_reload_runtime_plan'),
   'applyRoutingRuleEdit add path'
 );
 

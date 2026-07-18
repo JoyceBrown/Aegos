@@ -11,6 +11,7 @@ const css = read('src/styles.css');
 const main = read('src-tauri/src/main.rs');
 const core = read('src-tauri/src/core_runtime.rs');
 const diagnostics = read('src-tauri/src/diagnostics_runtime.rs');
+const subscription = read('src-tauri/src/subscription_runtime.rs');
 const tasks = read('src-tauri/src/task_runtime.rs');
 const interaction = read('tools/interaction-smoke.js');
 
@@ -101,7 +102,9 @@ check(
     .every((code) => diagnostics.includes(code)) &&
     main.includes('"subscription update"') &&
     main.includes('"issue": issue') &&
-    main.includes('download_profile_source_url_diagnostic'),
+    main.includes('subscription_runtime::download_source_url(') &&
+    subscription.includes('pub(crate) fn download_source_url(') &&
+    subscription.includes('pub(crate) fn parse_source_text('),
   'URL, download, authorization, format, protocol, and empty subscription failures are distinct'
 );
 

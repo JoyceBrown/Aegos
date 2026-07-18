@@ -8,9 +8,11 @@ function readText(...segments) {
 }
 
 const mainRs = readText('src-tauri', 'src', 'main.rs');
+const configDomainRs = readText('src-tauri', 'src', 'config_domain.rs');
 const coreRuntimeRs = readText('src-tauri', 'src', 'core_runtime.rs');
 const configPipelineRs = readText('src-tauri', 'src', 'config_pipeline.rs');
 const speedRuntimeRs = readText('src-tauri', 'src', 'speed_runtime.rs');
+const speedSchedulerRs = readText('src-tauri', 'src', 'speed_scheduler.rs');
 const appJs = readText('src', 'app.js');
 const indexHtml = readText('src', 'index.html');
 const backendAudit = readText('tools', 'backend-audit.js');
@@ -33,7 +35,7 @@ function bodyBetween(source, startNeedle, endNeedle) {
 const testNodesBody = appJs.match(/async function testNodes\([^)]*\) \{([\s\S]*?)\n\}/)?.[1] || '';
 const speedBody = bodyBetween(mainRs, 'fn start_proxy_delay_test_for_run', 'fn test_single_proxy_delay_for_run');
 const singleBody = bodyBetween(mainRs, 'fn test_single_proxy_delay_for_run', 'fn probe_proxy_network');
-const singleCommandBody = mainRs.match(/fn test_single_proxy_delay\(state: State<AppState>, name: String\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
+const singleCommandBody = bodyBetween(mainRs, 'fn test_single_proxy_delay(', '#[tauri::command]\nfn node_diagnostics');
 const ensureBody = bodyBetween(mainRs, 'fn ensure_core_for_delay_test', 'fn start_proxy_delay_test');
 const profileSwitchBody = bodyBetween(mainRs, 'fn set_active_profile', 'fn rename_profile');
 
@@ -63,6 +65,8 @@ check(
     singleCommandBody.includes('"queued": true') &&
     singleBody.includes('speed.delays.insert') &&
     singleBody.includes('speed_recommendation(&targets_for_recommendation') &&
+    singleBody.includes('"kind": "result"') &&
+    singleBody.includes('"kind": "complete"') &&
     !singleBody.includes('change_proxy') &&
     !singleBody.includes('select_best_proxy'),
   'single test queues background deep retry and only updates one node health'
@@ -102,23 +106,15 @@ check(
 );
 
 check(
-  'disconnect protection speed-test allow rules open and clean up inside worker',
-  speedBody.includes('build_speed_test_firewall_script(') &&
-    singleBody.includes('build_speed_test_firewall_script(') &&
-    speedBody.includes('true,') &&
-    singleBody.includes('true,') &&
-    speedBody.includes('cleanup_speed_firewall') &&
-    singleBody.includes('cleanup_speed_firewall') &&
-    speedBody.includes('false,') &&
-    singleBody.includes('false,') &&
-    singleBody.includes('fail_single(format!("protection-blocked: {err}"))') &&
-    singleBody.includes('cleanup_speed_firewall();') &&
-    speedBody.includes('protection-blocked: {err}') &&
-    mainRs.includes('Speed test firewall enable failed') &&
-    mainRs.includes('Speed test firewall rules were not fully removed') &&
-    mainRs.includes('Speed test firewall marker was not removed') &&
-    mainRs.includes('remoteport=$portList'),
-  'temporary firewall window is scoped to active batch and single-node speed workers'
+  'disconnect protection uses verified program rules without a per-test firewall window',
+  mainRs.includes('build_kill_switch_script') &&
+    mainRs.includes('core_runtime::firewall_program_paths') &&
+    mainRs.includes('foreach ($program in $programs)') &&
+    !mainRs.includes('fn build_speed_test_firewall_script') &&
+    !speedBody.includes('run_powershell') &&
+    !singleBody.includes('run_powershell') &&
+    !mainRs.includes('remoteport=$portList'),
+  'speed tests reuse the core program allow rule and never broaden node ports'
 );
 
 check(
@@ -148,8 +144,9 @@ check(
 
 check(
   'failed speed tests keep a visible structured reason',
-  mainRs.includes('last_failure_reason') &&
-    mainRs.includes('lastFailureReason') &&
+  speedRuntimeRs.includes('last_failure_reason') &&
+    appJs.includes('lastFailureReason') &&
+    appJs.includes('last_failure_reason') &&
     mainRs.includes('DelayTestResult') &&
     coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
     coreRuntimeRs.includes('pub fn classify_delay_http_failure') &&
@@ -175,16 +172,17 @@ check(
   'speed preflight fails fast on unsafe targets',
   mainRs.includes('fn speed_test_preflight') &&
     mainRs.includes('dns-fake-ip') &&
-    mainRs.includes('if let Err(err) = speed_test_preflight(&targets)') &&
+    mainRs.includes('speed_test_preflight(&targets)?') &&
+    speedBody.includes('self.speed_targets()') &&
     mainRs.includes('speed_test_preflight_blocks_fake_ip_targets'),
   'fake-ip and metadata targets should fail before slow batch probing'
 );
 
 check(
   'speed-test targets exclude airport metadata and fake-ip nodes',
-  mainRs.includes('fn is_subscription_metadata_node_name') &&
-    mainRs.includes('fn sanitize_subscription_metadata_nodes') &&
-    mainRs.includes('is_subscription_metadata_node_name(name)') &&
+  configDomainRs.includes('pub fn is_subscription_metadata_node_name') &&
+    configPipelineRs.includes('fn sanitize_subscription_metadata_nodes') &&
+    mainRs.includes('config_domain::is_subscription_metadata_node_name(name)') &&
     mainRs.includes('fn is_fake_ip_address') &&
     mainRs.includes('subscription_metadata_nodes_are_removed_before_runtime_and_speed'),
   'Traffic/Expire rows and 198.18/198.19 fake-ip targets must never enter speed testing'
@@ -227,9 +225,11 @@ check(
     mainRs.includes('protocol_concurrency("tuic")') &&
     mainRs.includes('protocol_concurrency("hysteria2")') &&
     mainRs.includes('protocol_scheduler_handles_reality_hysteria2_and_tuic_explicitly') &&
-    mainRs.includes('"tuic" => 6') &&
-    mainRs.includes('"hysteria" | "wireguard" => 8') &&
-    mainRs.includes('adaptive_speed_concurrency') &&
+    mainRs.includes('"tuic" => 10') &&
+    mainRs.includes('"hysteria" | "wireguard" => 12') &&
+    speedSchedulerRs.includes('fn adaptive_concurrency') &&
+    speedSchedulerRs.includes('family_limits') &&
+    speedBody.includes('run_probe_wave') &&
     mainRs.includes('SPEED_GLOBAL_CONCURRENCY_MAX') &&
     mainRs.includes('text.contains("reality")'),
   'TUIC/Reality/Hysteria2 have tested scheduler branches'
@@ -245,12 +245,12 @@ check(
     mainRs.includes('const FLCLASH_STYLE_TEST_URL') &&
     mainRs.includes('https://www.gstatic.com/generate_204') &&
     mainRs.includes('assert_eq!(fast_tuic_probes.len(), 1)') &&
-    mainRs.includes('assert_eq!(fast_tuic_probes[0].timeout_ms, 5000)') &&
+    mainRs.includes('assert_eq!(fast_tuic_probes[0].timeout_ms, 3800)') &&
     mainRs.includes('"https://www.gstatic.com/generate_204"') &&
     mainRs.includes('assert!(tuic_probes.iter().all(|probe| probe.timeout_ms == 5000))') &&
     mainRs.includes('"https://cp.cloudflare.com/generate_204"') &&
-    mainRs.includes('set_yaml(&mut config, "unified-delay", YamlValue::Bool(true))') &&
-    mainRs.includes('set_yaml(&mut config, "tcp-concurrent", YamlValue::Bool(true))'),
+    configPipelineRs.includes('set_yaml(&mut config, "unified-delay", YamlValue::Bool(true))') &&
+    configPipelineRs.includes('set_yaml(&mut config, "tcp-concurrent", YamlValue::Bool(true))'),
   'batch uses FlClash-style single URL; full probe is kept for single-node diagnostics'
 );
 

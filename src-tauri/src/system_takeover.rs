@@ -75,6 +75,8 @@ pub struct SystemTakeoverTransaction {
     root: PathBuf,
     path: PathBuf,
     journal: TakeoverJournal,
+    #[cfg(test)]
+    fail_next_complete_persist: bool,
 }
 
 impl SystemTakeoverTransaction {
@@ -107,6 +109,8 @@ impl SystemTakeoverTransaction {
                 finished_at_ms: None,
                 steps: Vec::new(),
             },
+            #[cfg(test)]
+            fail_next_complete_persist: false,
         };
         transaction.step(
             "transaction",
@@ -145,7 +149,67 @@ impl SystemTakeoverTransaction {
         });
         self.journal.status = "verified".to_string();
         self.journal.finished_at_ms = Some(now_ms());
-        self.persist()?;
+        self.persist_complete()?;
+        prune_reports(&self.root);
+        Ok(self.journal)
+    }
+
+    pub fn complete_verified<F>(
+        mut self,
+        detail: impl Into<String>,
+        rollback: F,
+    ) -> Result<TakeoverJournal, String>
+    where
+        F: FnOnce() -> Result<(), String>,
+    {
+        self.journal.steps.push(TakeoverStep {
+            component: "transaction".to_string(),
+            action: "verify".to_string(),
+            state: "ok".to_string(),
+            detail: detail.into(),
+            at_ms: now_ms(),
+        });
+        self.journal.status = "verified".to_string();
+        self.journal.finished_at_ms = Some(now_ms());
+        if let Err(completion_err) = self.persist_complete() {
+            let rollback_result = rollback();
+            let rollback_ok = rollback_result.is_ok();
+            self.journal.steps.push(TakeoverStep {
+                component: "transaction".to_string(),
+                action: "rollback".to_string(),
+                state: if rollback_ok { "ok" } else { "error" }.to_string(),
+                detail: match rollback_result.as_ref() {
+                    Ok(()) => format!(
+                        "Completion journal failed and the previous Windows network state was restored: {completion_err}"
+                    ),
+                    Err(rollback_err) => format!(
+                        "Completion journal failed: {completion_err}; Windows network rollback also failed: {rollback_err}"
+                    ),
+                },
+                at_ms: now_ms(),
+            });
+            self.journal.status = if rollback_ok {
+                "rolled-back".to_string()
+            } else {
+                "recovery-required".to_string()
+            };
+            self.journal.finished_at_ms = rollback_ok.then(now_ms);
+            let recovery_journal = self.persist();
+            return Err(match (rollback_result, recovery_journal) {
+                (Ok(()), Ok(())) => format!(
+                    "system takeover completion journal failed and the operation was rolled back: {completion_err}"
+                ),
+                (Err(rollback_err), Ok(())) => format!(
+                    "system takeover completion journal failed: {completion_err}; rollback also failed: {rollback_err}"
+                ),
+                (Ok(()), Err(journal_err)) => format!(
+                    "system takeover completion journal failed: {completion_err}; rollback completed but recovery journal failed: {journal_err}"
+                ),
+                (Err(rollback_err), Err(journal_err)) => format!(
+                    "system takeover completion journal failed: {completion_err}; rollback failed: {rollback_err}; recovery journal failed: {journal_err}"
+                ),
+            });
+        }
         prune_reports(&self.root);
         Ok(self.journal)
     }
@@ -177,6 +241,20 @@ impl SystemTakeoverTransaction {
         let raw = serde_json::to_string_pretty(&self.journal)
             .map_err(|err| format!("system takeover journal serialization failed: {err}"))?;
         atomic_write(&self.path, &raw)
+    }
+
+    fn persist_complete(&mut self) -> Result<(), String> {
+        #[cfg(test)]
+        if self.fail_next_complete_persist {
+            self.fail_next_complete_persist = false;
+            return Err("injected system takeover completion journal failure".to_string());
+        }
+        self.persist()
+    }
+
+    #[cfg(test)]
+    fn inject_complete_persist_failure(&mut self) {
+        self.fail_next_complete_persist = true;
     }
 }
 
@@ -349,6 +427,53 @@ mod tests {
         let report = transaction.fail("Windows rejected restore", false).unwrap();
         assert_eq!(report.status, "recovery-required");
         assert_eq!(interrupted_transactions(&root).len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn completion_journal_failure_runs_rollback_and_finishes_terminal() {
+        let root = temp_root("complete-fault-rollback-ok");
+        let mut transaction =
+            SystemTakeoverTransaction::begin(&root, "enable proxy", "system-proxy", true).unwrap();
+        transaction
+            .step("system-proxy", "apply", "ok", "registry updated")
+            .unwrap();
+        transaction.inject_complete_persist_failure();
+        let rollback_called = std::cell::Cell::new(false);
+
+        let error = transaction
+            .complete_verified("registry state verified", || {
+                rollback_called.set(true);
+                Ok(())
+            })
+            .unwrap_err();
+
+        assert!(rollback_called.get());
+        assert!(error.contains("operation was rolled back"));
+        assert!(interrupted_transactions(&root).is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn completion_journal_and_rollback_failure_remain_recoverable() {
+        let root = temp_root("complete-fault-rollback-failed");
+        let mut transaction =
+            SystemTakeoverTransaction::begin(&root, "enable firewall", "firewall", true).unwrap();
+        transaction
+            .step("firewall", "apply", "ok", "rules updated")
+            .unwrap();
+        transaction.inject_complete_persist_failure();
+
+        let error = transaction
+            .complete_verified("firewall state verified", || {
+                Err("Windows rejected firewall restore".to_string())
+            })
+            .unwrap_err();
+
+        assert!(error.contains("rollback also failed"));
+        let pending = interrupted_transactions(&root);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].1.status, "recovery-required");
         let _ = fs::remove_dir_all(root);
     }
 
