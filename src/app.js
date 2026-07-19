@@ -5477,7 +5477,9 @@ function ensureRoutingAssistantUi() {
     attrs: { type: 'button' }
   }, [
     el('b', { textContent: title }),
-    el('small', { textContent: detail })
+    // Keep the extra explanation available to assistive technology without
+    // making the primary route picker read like a manual.
+    el('small', { className: 'sr-only', textContent: detail })
   ]);
   const panelHeader = (title, detail) => el('div', { className: 'routing-panel-title' }, [
     el('b', { textContent: title }),
@@ -5494,13 +5496,11 @@ function ensureRoutingAssistantUi() {
   }, [
     el('div', { className: 'routing-assistant-head' }, [
       el('div', {}, [
-        el('h3', { textContent: '\u6dfb\u52a0\u7f51\u7ad9\u6216\u5e94\u7528\u89c4\u5219' }),
-        el('p', { textContent: '\u9009\u4e00\u4e2a\u5165\u53e3\uff0c\u5148\u751f\u6210\u672a\u751f\u6548\u8349\u7a3f\uff0c\u518d\u9a8c\u8bc1\uff0c\u6700\u540e\u7531\u4f60\u786e\u8ba4\u5e94\u7528\u3002' })
+        el('h3', { textContent: '\u5206\u6d41\u89c4\u5219' }),
+        el('p', { textContent: '\u4e3a\u7f51\u7ad9\u6216\u5e94\u7528\u6307\u5b9a\u7ebf\u8def' })
       ]),
       el('div', { className: 'routing-safety-strip' }, [
-        el('span', { textContent: '\u9884\u89c8\u4e0d\u6539\u914d\u7f6e' }),
-        el('span', { textContent: '\u9a8c\u8bc1\u4e0d\u5207\u8282\u70b9' }),
-        el('span', { textContent: '\u5e94\u7528\u53ef\u64a4\u9500' })
+        el('span', { textContent: '\u5148\u9884\u89c8\uff0c\u53ef\u64a4\u9500\uff0c\u4e0d\u5f71\u54cd\u5f53\u524d\u8fde\u63a5' })
       ])
     ]),
     el('div', { className: 'routing-builder' }, [
@@ -5509,12 +5509,11 @@ function ensureRoutingAssistantUi() {
         kindButton('app', '\u5e94\u7528\u89c4\u5219', '\u9009\u62e9 Telegram.exe \u8fd9\u7c7b\u7a0b\u5e8f'),
         kindButton('system', '\u7cfb\u7edf\u89c4\u5219', '\u67e5\u770b Aegos \u81ea\u52a8\u7ef4\u62a4\u7684\u89c4\u5219')
       ]),
-      el('section', { className: 'routing-builder-panel is-active', id: 'routingPanelWebsite', dataset: { routingPanel: 'website' } }, [
-        panelHeader('\u7f51\u7ad9\u89c4\u5219\u5411\u5bfc', '\u7c98\u8d34\u57df\u540d\u6216\u5b8c\u6574\u7f51\u5740\uff0c\u9009\u62e9\u5b83\u8981\u8d70\u7684\u7ebf\u8def\uff0cAegos \u53ea\u751f\u6210\u672a\u751f\u6548\u8349\u7a3f\u3002'),
+      el('section', { className: 'routing-builder-panel is-active', id: 'routingPanelWebsite', dataset: { routingPanel: 'website' }, attrs: { 'aria-label': '\u7f51\u7ad9\u89c4\u5219\u5411\u5bfc' } }, [
+        panelHeader('\u7f51\u7ad9\u89c4\u5219', '\u7c98\u8d34\u57df\u540d\u6216\u94fe\u63a5\uff0c\u9009\u62e9\u7ebf\u8def'),
         el('label', { className: 'routing-field' }, [
           el('span', { textContent: '\u76ee\u6807\u7f51\u7ad9' }),
           el('input', { id: 'routingWebsiteInput', attrs: { placeholder: 'youtube.com 或 https://www.youtube.com/watch?v=...', autocomplete: 'off', spellcheck: 'false' } }),
-          el('small', { textContent: '\u53ef\u4ee5\u7c98\u8d34\u5b8c\u6574\u94fe\u63a5\uff0cAegos \u4f1a\u81ea\u52a8\u63d0\u53d6\u57df\u540d\u3002' })
         ]),
         el('div', { className: 'routing-service-presets', attrs: { 'aria-label': '常用服务规则' } }, [
           el('span', { textContent: '常用服务' }),
@@ -5533,12 +5532,12 @@ function ensureRoutingAssistantUi() {
         ]),
         el('p', { id: 'routingDraftPreview', className: 'routing-draft-preview', textContent: '\u8f93\u5165\u7f51\u7ad9\u540e\uff0c\u8fd9\u91cc\u4f1a\u544a\u8bc9\u4f60\u5b83\u5c06\u8d70\u54ea\u6761\u7ebf\u8def\u3002' })
       ]),
-      el('section', { className: 'routing-builder-panel', id: 'routingPanelApp', dataset: { routingPanel: 'app' } }, [
-        panelHeader('\u5e94\u7528\u89c4\u5219\u5411\u5bfc', '\u8f93\u5165\u5e94\u7528\u540d\u6216 .exe \u8def\u5f84\uff0cAegos \u4f1a\u5224\u65ad\u662f\u6309\u5e94\u7528\u540d\u8fd8\u662f\u8def\u5f84\u5339\u914d\u3002'),
+      el('section', { className: 'routing-builder-panel', id: 'routingPanelApp', dataset: { routingPanel: 'app' }, attrs: { 'aria-label': '\u5e94\u7528\u89c4\u5219\u5411\u5bfc' } }, [
+        panelHeader('\u5e94\u7528\u89c4\u5219', '\u8f93\u5165\u8fdb\u7a0b\u540d\u6216 .exe \u8def\u5f84'),
         el('label', { className: 'routing-field' }, [
           el('span', { textContent: '\u76ee\u6807\u5e94\u7528' }),
           el('input', { id: 'routingAppInput', attrs: { placeholder: 'Telegram.exe 或 C:\\Program Files\\App\\app.exe', autocomplete: 'off', spellcheck: 'false' } }),
-          el('small', { textContent: '\u4e0d\u5fc5\u77e5\u9053\u8fdb\u7a0b\u89c4\u5219\uff1b\u8f93\u5165 Telegram \u4e5f\u4f1a\u81ea\u52a8\u8865\u6210 Telegram.exe\u3002' })
+          el('small', { className: 'sr-only', textContent: '\u4e0d\u5fc5\u77e5\u9053\u8fdb\u7a0b\u89c4\u5219\uff1b\u8f93\u5165 Telegram \u4e5f\u4f1a\u81ea\u52a8\u8865\u6210 Telegram.exe\u3002' })
         ]),
         el('div', { className: 'routing-draft-form' }, [
           el('label', { className: 'routing-field' }, [
@@ -5566,7 +5565,7 @@ function ensureRoutingAssistantUi() {
       el('div', { className: 'routing-draft-head' }, [
         el('div', {}, [
           el('b', { textContent: '\u8349\u7a3f\u4e0e\u9a8c\u8bc1' }),
-          el('small', { id: 'routingDraftListHint', textContent: '\u8349\u7a3f\u672a\u5e94\u7528\u524d\u4e0d\u4f1a\u6539\u914d\u7f6e\uff1b\u5e94\u7528\u524d\u4f1a\u5148\u9884\u68c0\uff0c\u5931\u8d25\u4f1a\u56de\u6eda\u3002' })
+          el('small', { id: 'routingDraftListHint', textContent: '\u672a\u5e94\u7528\u7684\u53d8\u66f4' })
         ])
       ]),
       el('div', { id: 'routingDraftList', className: 'routing-draft-list' }, []),
@@ -5578,11 +5577,11 @@ function ensureRoutingAssistantUi() {
         el('button', { id: 'undoRoutingApplyBtn', className: 'ghost compact', attrs: { type: 'button' }, textContent: '\u64a4\u9500\u6700\u8fd1\u5e94\u7528' })
       ])
     ]),
-    el('section', { id: 'routingRuleTestCard', className: 'routing-draft-card routing-test-card' }, [
-      el('div', { className: 'routing-draft-head' }, [
+    el('details', { id: 'routingRuleTestCard', className: 'routing-draft-card routing-test-card' }, [
+      el('summary', { className: 'routing-draft-head routing-test-summary' }, [
         el('div', {}, [
-          el('b', { textContent: '规则测试' }),
-          el('small', { textContent: '输入网站，立即查看当前规则会让它走哪里；只读测试，不改配置、不切节点。' })
+          el('b', { textContent: '测试已有规则' }),
+          el('small', { textContent: '可选：查看网站会走哪条线路' })
         ])
       ]),
       el('div', { className: 'routing-draft-form wide routing-test-form' }, [
