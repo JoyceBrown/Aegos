@@ -133,7 +133,7 @@ check(
   '3.6.x route'
 );
 check('canonical roadmap has no conflicting 3.3 manual-node route', !/3\.3\.[0-9][^\n]*(manual node|Manual node|Fixed node|protocol field|URI import)/.test(canonicalRoadmap), 'no 3.3 manual-node conflict');
-check('core API contract records current mihomo controller envelope', ['controller_request', 'CoreManager::controller', '127.0.0.1', 'bearer auth', 'no_proxy'].every((text) => coreApiContract.includes(text)), 'controller envelope');
+check('core API contract records current mihomo controller envelope', ['CoreController::request', 'controller_request', '127.0.0.1', 'bearer auth', 'no_proxy'].every((text) => coreApiContract.includes(text)), 'controller envelope');
 check('core API contract classifies read, measurement, and mutating APIs', ['GET /proxies', 'GET /proxies/{name}/delay', 'PUT /proxies/{group}', 'PATCH /configs', 'GET /traffic', 'GET /connections', 'DELETE /connections'].every((text) => coreApiContract.includes(text)), 'API matrix');
 check('core API contract forbids speed-test proxy switching', ['Delay tests are measurement-only', 'Forbidden in this path', 'PUT /proxies/{group}', 'selected proxy map mutation'].every((text) => coreApiContract.includes(text)), 'measurement-only contract');
 check('core API contract gates dangerous group delay semantics', coreApiContract.includes('GET /group/{name}/delay') && coreApiContract.includes('clear fixed selection') && coreApiContract.includes('Prefer `/proxies/{name}/delay`'), 'group delay gate');

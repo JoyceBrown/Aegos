@@ -28,6 +28,9 @@ const refreshUiBody = appJs.match(/async function refreshOutboundIpAfterNodeChan
 const detachedBody = sliceBetween(mainRs, 'fn refresh_outbound_ip_detached', 'fn job_label');
 const queryBody = sliceBetween(mainRs, 'fn query_outbound_ip', '#[cfg(test)]');
 const ruleTestBody = sliceBetween(mainRs, 'fn outbound_ip_lookup_rules_use_internal_current_node_group', 'fn running_switch_preflight_accepts_two_local_profiles');
+const detachedIdentityIndex = detachedBody.indexOf('if !outbound_ip_query_is_current(');
+const detachedStaleReturnIndex = detachedBody.indexOf('Outbound IP query expired after node changed; retrying will use the current node.');
+const detachedFallbackIndex = detachedBody.indexOf('let fallback = core.outbound_ip_cache.trim().to_string()');
 
 check(
   'UI sequences outbound IP requests and ignores stale results',
@@ -94,7 +97,11 @@ check(
   detachedBody.includes('query_outbound_ip(mixed_port)') &&
     detachedBody.includes('sync_outbound_ip_route(&controller, &mode)') &&
     detachedBody.includes('runtime_current_proxy_route(&controller, &mode)') &&
-    detachedBody.includes('core.settings.mode != mode') &&
+    mainRs.includes('fn outbound_ip_query_is_current(') &&
+    mainRs.includes('fn outbound_ip_query_identity_rejects_stale_contexts()') &&
+    detachedIdentityIndex >= 0 &&
+    detachedStaleReturnIndex > detachedIdentityIndex &&
+    detachedFallbackIndex > detachedStaleReturnIndex &&
     !detachedBody.includes('current_outbound_ip_proxy_name') &&
     detachedBody.includes('outbound_ip_cache') &&
     detachedBody.includes('keeping cached value') &&

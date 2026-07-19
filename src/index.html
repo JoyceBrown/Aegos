@@ -19,7 +19,7 @@
         <div class="brand-mark"><img class="brand-logo" src="assets/brand/aegos-mark-64.png" alt=""></div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v3.6.35</span>
+          <span id="appVersionLabel" class="brand-version">v3.6.40</span>
         </div>
       </section>
 
@@ -323,6 +323,9 @@
                   <label class="switch-row"><span><b>连接后自动接管</b><small>连接成功后开启系统代理</small></span><input id="startProxyToggle" type="checkbox"></label>
                   <label class="switch-row"><span><b>TUN 模式</b><small>接管不使用系统代理的应用</small></span><input id="tunToggle" type="checkbox"></label>
                   <label class="switch-row"><span><b>DNS 防泄漏</b><small>阻止 DNS 绕过当前代理</small></span><input id="dnsToggle" type="checkbox"></label>
+                  <label class="input-row"><span><b>DNS 模式</b><small id="dnsModeHint">自动使用 Aegos 的加密 DNS；TUN 下建议安全接管。</small></span><select id="dnsModeSelect"><option value="auto">自动（推荐）</option><option value="secure">安全接管</option><option value="system">系统 DNS（兼容）</option><option value="custom">自定义加密 DNS</option></select></label>
+                  <label id="dnsCustomNameserversRow" class="input-row" hidden><span><b>自定义解析器</b><small>以逗号分隔；仅允许 https:// 或 tls:// 地址。</small></span><input id="dnsCustomNameserversInput" type="text" autocomplete="off" placeholder="https://dns.example/dns-query, tls://dns.example:853"></label>
+                  <button id="saveDnsModeBtn" type="button" class="secondary-btn">保存 DNS 设置</button>
                   <label class="switch-row"><span><b>断网保护</b><small>代理异常时阻止流量直接联网</small></span><input id="killToggle" type="checkbox"></label>
                   <label class="switch-row"><span><b>允许局域网设备使用</b><small>向同一局域网开放代理端口</small></span><input id="allowLanToggle" type="checkbox"></label>
                   <label class="switch-row"><span><b>IPv6</b><small>当前由 Aegos 自动管理</small></span><input id="ipv6Toggle" type="checkbox"></label>
@@ -438,12 +441,22 @@
         <label><span>协议</span><select id="nodeEditTypeSelect"><option value="ss">SS</option><option value="trojan">Trojan</option><option value="vmess">VMess</option><option value="vless">VLESS</option><option value="socks5">SOCKS5</option><option value="http">HTTP</option><option value="hysteria2">Hysteria2</option><option value="anytls">AnyTLS</option><option value="tuic">TUIC</option></select></label>
         <label><span>地址</span><input id="nodeEditServerInput" required placeholder="example.com"></label>
         <label><span>端口</span><input id="nodeEditPortInput" required type="number" min="1" max="65535" placeholder="443"></label>
-        <label><span>密码 / UUID</span><input id="nodeEditSecretInput" placeholder="password or uuid"></label>
+        <label><span id="nodeEditSecretLabel">密码 / UUID</span><input id="nodeEditSecretInput" placeholder="password or uuid"></label>
+        <label id="nodeEditTuicPasswordRow" hidden><span>TUIC 密码</span><input id="nodeEditTuicPasswordInput" type="password" autocomplete="new-password" placeholder="TUIC password"></label>
         <label><span>加密</span><input id="nodeEditCipherInput" placeholder="aes-128-gcm / auto"></label>
+        <label><span>SNI / ServerName</span><input id="nodeEditSniInput" placeholder="example.com"></label>
+        <label><span>流控 / Flow</span><input id="nodeEditFlowInput" placeholder="xtls-rprx-vision"></label>
+        <label><span>客户端指纹</span><input id="nodeEditFingerprintInput" placeholder="chrome"></label>
+        <label><span>Reality 公钥</span><input id="nodeEditRealityPublicKeyInput" placeholder="public key"></label>
+        <label><span>Reality Short ID</span><input id="nodeEditRealityShortIdInput" placeholder="abcd"></label>
+        <label><span>混淆</span><input id="nodeEditObfsInput" placeholder="salamander"></label>
+        <label><span>混淆密码</span><input id="nodeEditObfsPasswordInput" placeholder="optional"></label>
       </div>
+      <p id="nodeEditProtocolHint" class="muted editor-protocol-hint"></p>
       <div class="editor-options">
         <label><input id="nodeEditTlsToggle" type="checkbox">TLS</label>
         <label><input id="nodeEditUdpToggle" type="checkbox" checked>UDP</label>
+        <label><input id="nodeEditSkipCertToggle" type="checkbox">跳过证书验证</label>
       </div>
       <footer>
         <button id="cancelNodeEditorBtn" type="button" class="ghost">取消</button>

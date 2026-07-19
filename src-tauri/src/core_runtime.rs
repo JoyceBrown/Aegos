@@ -865,6 +865,8 @@ pub fn public_settings_surface_json(
     tun_enabled: bool,
     tun_stack: &str,
     dns_hijack_enabled: bool,
+    dns_mode: &str,
+    dns_custom_nameservers: JsonValue,
     ipv6_enabled: bool,
     allow_lan: bool,
     log_level: &str,
@@ -892,6 +894,8 @@ pub fn public_settings_surface_json(
         "tunEnabled": tun_enabled,
         "tunStack": tun_stack,
         "dnsHijackEnabled": dns_hijack_enabled,
+        "dnsMode": dns_mode,
+        "dnsCustomNameservers": dns_custom_nameservers,
         "ipv6Enabled": ipv6_enabled,
         "allowLan": allow_lan,
         "logLevel": log_level,
@@ -2594,6 +2598,41 @@ pub fn firewall_program_paths(paths: impl IntoIterator<Item = PathBuf>) -> Vec<S
         .collect()
 }
 
+pub fn orphaned_core_cleanup_script(core_path: &Path) -> String {
+    let expected_path = normalize_windows_program_path_text(
+        &fs::canonicalize(core_path)
+            .unwrap_or_else(|_| core_path.to_path_buf())
+            .to_string_lossy(),
+    );
+    let expected_literal = powershell_single_quoted_literal(expected_path);
+    let binary_literal = powershell_single_quoted_literal(BINARY_NAME);
+    format!(
+        r#"
+$expectedPath = {expected_literal}
+function ConvertTo-AegosComparablePath([string]$path) {{
+  if ([string]::IsNullOrWhiteSpace($path)) {{ return '' }}
+  $normalized = $path.Replace('/', '\')
+  if ($normalized.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {{
+    return '\\' + $normalized.Substring(8)
+  }}
+  if ($normalized.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {{
+    return $normalized.Substring(4)
+  }}
+  return $normalized
+}}
+$stopped = 0
+Get-CimInstance Win32_Process -Filter "Name = {binary_literal}" -ErrorAction Stop |
+  ForEach-Object {{
+    if ((ConvertTo-AegosComparablePath $_.ExecutablePath) -ieq $expectedPath) {{
+      Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop
+      $stopped++
+    }}
+  }}
+"stopped=$stopped"
+"#
+    )
+}
+
 pub fn windows_proxy_server(mixed_port: u16) -> String {
     format!("127.0.0.1:{mixed_port}")
 }
@@ -3178,6 +3217,22 @@ mod tests {
             normalize_windows_program_path_text("\\\\?\\UNC\\server/share/aegos.exe"),
             "\\\\server\\share\\aegos.exe"
         );
+    }
+
+    #[test]
+    fn orphaned_core_cleanup_is_limited_to_the_managed_core_path() {
+        let script = orphaned_core_cleanup_script(Path::new("C:/Aegos/Core/mihomo.exe"));
+        assert!(script.contains("Get-CimInstance Win32_Process"));
+        assert!(script.contains("Name = 'mihomo.exe'"));
+        assert!(script.contains("$_.ExecutablePath"));
+        assert!(script.contains("-ieq $expectedPath"));
+        assert!(script.contains("Stop-Process -Id $_.ProcessId -Force"));
+        assert!(script.contains("stopped=$stopped"));
+        assert!(script.contains("C:\\Aegos\\Core\\mihomo.exe"));
+        assert!(script.contains("$path.Replace('/', '\\')"));
+        assert!(script.contains("StartsWith('\\\\?\\UNC\\'"));
+        assert!(script.contains("StartsWith('\\\\?\\'"));
+        assert!(!script.contains("Get-Process mihomo"));
     }
 
     #[test]
@@ -4426,6 +4481,8 @@ rules:
             false,
             "gvisor",
             true,
+            "auto",
+            json!([]),
             false,
             false,
             "warning",

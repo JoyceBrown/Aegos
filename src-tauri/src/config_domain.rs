@@ -197,6 +197,25 @@ impl ManualNodeConfig {
         if port == 0 || port > u64::from(u16::MAX) {
             return Err("Manual node port must be between 1 and 65535".to_string());
         }
+        let uuid = text_value(map, "uuid");
+        let password = text_value(map, "password");
+        if matches!(normalized_protocol.as_str(), "vmess" | "vless" | "tuic") && uuid.is_empty() {
+            return Err(format!("{} manual node UUID is required", normalized_protocol.to_uppercase()));
+        }
+        if matches!(normalized_protocol.as_str(), "ss" | "trojan" | "hysteria2" | "hy2" | "anytls" | "tuic")
+            && password.is_empty()
+        {
+            return Err(format!("{} manual node password is required", normalized_protocol.to_uppercase()));
+        }
+        if let Some(reality_options) = map.get("reality-opts") {
+            let public_key = reality_options
+                .as_object()
+                .map(|options| text_value(options, "public-key"))
+                .unwrap_or_default();
+            if normalized_protocol == "vless" && public_key.is_empty() {
+                return Err("VLESS Reality public key is required when Reality is configured".to_string());
+            }
+        }
         let mut options = JsonMap::new();
         for key in [
             "password",
@@ -210,8 +229,10 @@ impl ManualNodeConfig {
             "flow",
             "skip-cert-verify",
             "client-fingerprint",
+            "alpn",
             "obfs",
             "obfs-password",
+            "reality-opts",
         ] {
             if let Some(value) = map.get(key) {
                 if !value
@@ -354,6 +375,7 @@ rules:
             "server": "tuic.example.com",
             "port": "443",
             "uuid": "00000000-0000-4000-8000-000000000000",
+            "password": "tuic-password",
             "tls": true,
             "manual": true,
             "fixed": true,
@@ -373,6 +395,57 @@ rules:
             Some(true)
         );
         assert_eq!(product.get("port").and_then(JsonValue::as_u64), Some(443));
+    }
+
+    #[test]
+    fn manual_tuic_node_requires_uuid_and_password() {
+        let base = json!({
+            "name": "TUIC",
+            "server": "tuic.example.com",
+            "port": 443,
+            "uuid": "00000000-0000-4000-8000-000000000000"
+        });
+        assert!(ManualNodeConfig::from_input(&base, "tuic".to_string()).is_err());
+        let valid = json!({
+            "name": "TUIC",
+            "server": "tuic.example.com",
+            "port": 443,
+            "uuid": "00000000-0000-4000-8000-000000000000",
+            "password": "tuic-password"
+        });
+        assert!(ManualNodeConfig::from_input(&valid, "tuic".to_string()).is_ok());
+    }
+
+    #[test]
+    fn manual_vless_reality_node_keeps_required_runtime_options() {
+        let input = json!({
+            "name": "Fixed Reality",
+            "type": "vless",
+            "server": "reality.example.com",
+            "port": 443,
+            "uuid": "00000000-0000-4000-8000-000000000000",
+            "servername": "www.microsoft.com",
+            "flow": "xtls-rprx-vision",
+            "client-fingerprint": "chrome",
+            "reality-opts": { "public-key": "public-key", "short-id": "abcd" },
+            "manual": true,
+            "source": "manual"
+        });
+        let node = ManualNodeConfig::from_input(&input, "vless".to_string())
+            .expect("manual Reality node");
+        let runtime = serde_yaml::to_string(&node.runtime_yaml().expect("runtime YAML"))
+            .expect("runtime text");
+        for expected in [
+            "servername: www.microsoft.com",
+            "flow: xtls-rprx-vision",
+            "client-fingerprint: chrome",
+            "public-key: public-key",
+            "short-id: abcd",
+        ] {
+            assert!(runtime.contains(expected), "missing {expected} from {runtime}");
+        }
+        assert!(!runtime.contains("manual:"));
+        assert!(!runtime.contains("source:"));
     }
 
     #[test]

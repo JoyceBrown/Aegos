@@ -31,6 +31,11 @@ function semverAtLeast(version, baseline) {
 
 check('installer regression checklist exists', Boolean(checklist), checklistPath);
 check(
+  'checklist requires isolated execution and verified recovery evidence',
+  ['isolated VM or dedicated test account', 'sanitized baseline', 'verify the saved baseline has been restored', 'Never package changed source as another'].every((text) => checklist.includes(text)),
+  'test isolation, redacted snapshots, recovery stop condition, and immutable release artifact'
+);
+check(
   'checklist covers install prerequisites',
   ['Aegos_{version}_x64-setup.exe', 'WebView2 bootstrapper', '7891', '127.0.0.1', 'allow-lan'].every((text) => checklist.includes(text)),
   'installer prerequisites'

@@ -90,6 +90,10 @@ fn default_reliability_auto() -> bool {
     true
 }
 
+fn default_dns_mode() -> String {
+    "auto".to_string()
+}
+
 fn default_reliability_profile_failover() -> bool {
     true
 }
@@ -202,6 +206,10 @@ struct Settings {
     tun_enabled: bool,
     tun_stack: String,
     dns_hijack_enabled: bool,
+    #[serde(default = "default_dns_mode")]
+    dns_mode: String,
+    #[serde(default)]
+    dns_custom_nameservers: Vec<String>,
     ipv6_enabled: bool,
     allow_lan: bool,
     log_level: String,
@@ -957,6 +965,37 @@ fn string_choice_from_value(
         return Err(format!("{label} must be one of: {}", allowed.join(", ")));
     }
     Ok(text.to_string())
+}
+
+fn dns_custom_nameservers_from_value(value: &JsonValue) -> Result<Vec<String>, String> {
+    let values = value
+        .as_array()
+        .ok_or_else(|| "Custom DNS resolvers must be an array".to_string())?;
+    if values.is_empty() || values.len() > 4 {
+        return Err("Custom DNS requires between 1 and 4 encrypted resolvers".to_string());
+    }
+    let mut resolvers = Vec::with_capacity(values.len());
+    for value in values {
+        let resolver = value
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Custom DNS resolver must be a non-empty string".to_string())?;
+        if !(resolver.starts_with("https://") || resolver.starts_with("tls://"))
+            || config_pipeline::is_local_or_fake_nameserver(resolver)
+        {
+            return Err(format!(
+                "Custom DNS resolver must use https:// or tls:// and cannot be local: {resolver}"
+            ));
+        }
+        if !resolvers.iter().any(|item| item == resolver) {
+            resolvers.push(resolver.to_string());
+        }
+    }
+    if resolvers.is_empty() {
+        return Err("Custom DNS requires at least one encrypted resolver".to_string());
+    }
+    Ok(resolvers)
 }
 
 fn test_proxy_delay_request(
@@ -2942,7 +2981,7 @@ rules:
         assert_eq!(clash_source.summary.format, "clash-yaml");
         assert_eq!(clash_source.summary.proxies, 2);
         assert_eq!(mixed_source.summary.format, "uri");
-        assert_eq!(mixed_source.summary.proxies, 4);
+        assert_eq!(mixed_source.summary.proxies, 5);
         assert_eq!(mixed_source.summary.unsupported_lines, 0);
         assert_eq!(
             mixed_b64_source.summary.proxies,
@@ -3010,6 +3049,56 @@ rules:
             .as_str()
             .map(|value| !config_pipeline::is_local_or_fake_nameserver(value))
             .unwrap_or(false)));
+    }
+
+    #[test]
+    fn dns_modes_render_their_runtime_contracts() {
+        let source: YamlValue = serde_yaml::from_str(
+            "proxies: []\nproxy-groups: []\nrules: [MATCH,DIRECT]\n",
+        )
+        .expect("source");
+
+        let mut system = default_settings();
+        system.dns_mode = "system".to_string();
+        system.dns_hijack_enabled = false;
+        let system_config = config_pipeline::patch_config(source.clone(), &system, Some("test"))
+            .expect("system DNS config");
+        assert_eq!(
+            system_config
+                .get(yaml_key("dns"))
+                .and_then(|dns| dns.get(yaml_key("enable")))
+                .and_then(YamlValue::as_bool),
+            Some(false)
+        );
+
+        let mut custom = default_settings();
+        custom.dns_mode = "custom".to_string();
+        custom.dns_custom_nameservers = vec!["https://resolver.example/dns-query".to_string()];
+        let custom_config = config_pipeline::patch_config(source, &custom, Some("test"))
+            .expect("custom DNS config");
+        let nameservers = custom_config
+            .get(yaml_key("dns"))
+            .and_then(|dns| dns.get(yaml_key("nameserver")))
+            .and_then(YamlValue::as_sequence)
+            .expect("custom nameservers");
+        assert_eq!(nameservers[0].as_str(), Some("https://resolver.example/dns-query"));
+
+        let mut secure = default_settings();
+        secure.tun_enabled = true;
+        secure.dns_mode = "secure".to_string();
+        secure.dns_hijack_enabled = false;
+        let secure_config = config_pipeline::patch_config(
+            serde_yaml::from_str("proxies: []\nproxy-groups: []\nrules: [MATCH,DIRECT]\n")
+                .expect("secure source"),
+            &secure,
+            Some("test"),
+        )
+        .expect("secure DNS config");
+        assert!(secure_config
+            .get(yaml_key("tun"))
+            .and_then(|tun| tun.get(yaml_key("dns-hijack")))
+            .and_then(YamlValue::as_sequence)
+            .is_some_and(|items| items.iter().any(|item| item.as_str() == Some("any:53"))));
     }
 
     #[test]
@@ -3585,6 +3674,29 @@ rules:
             .expect("lookup proxies");
         assert_eq!(lookup_proxies[0].as_str(), Some("Node A"));
         assert!(lookup_proxies.iter().any(|item| item.as_str() == Some("DIRECT")));
+    }
+
+    #[test]
+    fn outbound_ip_query_identity_rejects_stale_contexts() {
+        let is_current = |generation, profile, mode, proxy| {
+            outbound_ip_query_is_current(
+                7,
+                generation,
+                "profile-a",
+                profile,
+                "rule",
+                mode,
+                "Node A",
+                proxy,
+            )
+        };
+
+        assert!(is_current(7, "profile-a", "rule", Some("Node A")));
+        assert!(!is_current(8, "profile-a", "rule", Some("Node A")));
+        assert!(!is_current(7, "profile-b", "rule", Some("Node A")));
+        assert!(!is_current(7, "profile-a", "global", Some("Node A")));
+        assert!(!is_current(7, "profile-a", "rule", Some("Node B")));
+        assert!(!is_current(7, "profile-a", "rule", None));
     }
 
     #[test]
@@ -4232,6 +4344,8 @@ fn default_settings() -> Settings {
         tun_enabled: false,
         tun_stack: "mixed".to_string(),
         dns_hijack_enabled: true,
+        dns_mode: default_dns_mode(),
+        dns_custom_nameservers: Vec::new(),
         ipv6_enabled: false,
         allow_lan: false,
         log_level: "info".to_string(),
@@ -5453,6 +5567,8 @@ impl CoreManager {
             | "tunEnabled"
             | "tunStack"
             | "dnsHijackEnabled"
+            | "dnsMode"
+            | "dnsCustomNameservers"
             | "ipv6Enabled"
             | "allowLan"
             | "logLevel"
@@ -5474,6 +5590,8 @@ impl CoreManager {
     ) -> Result<(), String> {
         let mut candidate = self.settings.clone();
         Self::apply_port_candidate_value(&mut candidate, key, value)?;
+        Self::apply_dns_candidate_value(&mut candidate, key, value)?;
+        Self::validate_dns_candidate(&candidate)?;
         Self::validate_port_settings_snapshot(&candidate)
     }
 
@@ -5484,8 +5602,50 @@ impl CoreManager {
         let mut candidate = self.settings.clone();
         for (key, value) in map {
             Self::apply_port_candidate_value(&mut candidate, key, value)?;
+            Self::apply_dns_candidate_value(&mut candidate, key, value)?;
         }
+        Self::validate_dns_candidate(&candidate)?;
         Self::validate_port_settings_snapshot(&candidate)
+    }
+
+    fn apply_dns_candidate_value(
+        settings: &mut Settings,
+        key: &str,
+        value: &JsonValue,
+    ) -> Result<(), String> {
+        match key {
+            "dnsMode" => {
+                settings.dns_mode = string_choice_from_value(
+                    value,
+                    "auto",
+                    &["auto", "secure", "system", "custom"],
+                    "DNS mode",
+                )?;
+            }
+            "dnsCustomNameservers" => {
+                settings.dns_custom_nameservers = dns_custom_nameservers_from_value(value)?;
+            }
+            "tunEnabled" => settings.tun_enabled = value.as_bool().unwrap_or(false),
+            "dnsHijackEnabled" => settings.dns_hijack_enabled = value.as_bool().unwrap_or(false),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn validate_dns_candidate(settings: &Settings) -> Result<(), String> {
+        if settings.dns_mode == "custom" && settings.dns_custom_nameservers.is_empty() {
+            return Err("Custom DNS mode requires at least one encrypted resolver".to_string());
+        }
+        if settings.dns_mode == "system" && settings.tun_enabled {
+            return Err("System DNS mode cannot be used with TUN; choose Auto, Secure, or Custom DNS".to_string());
+        }
+        if settings.dns_mode == "system" && settings.dns_hijack_enabled {
+            return Err("System DNS mode cannot enable DNS hijacking".to_string());
+        }
+        if settings.dns_mode == "secure" && !settings.dns_hijack_enabled {
+            return Err("Secure DNS takeover requires DNS hijacking".to_string());
+        }
+        Ok(())
     }
 
     fn restore_settings_snapshot(
@@ -6954,9 +7114,29 @@ impl CoreManager {
         self.start_with_takeover(false)
     }
 
+    fn stop_orphaned_core_processes(&self) -> Result<(), String> {
+        let script = core_runtime::orphaned_core_cleanup_script(&self.core_path);
+        let output = run_powershell(&script)?;
+        if output.trim() != "stopped=0" {
+            self.add_log(
+                format!("Recovered interrupted managed core process state: {output}"),
+                "warn",
+            );
+        }
+        Ok(())
+    }
+
     fn start_with_takeover(&mut self, enable_takeover: bool) -> Result<JsonValue, String> {
         if !self.core_path.exists() {
             return Err(core_runtime::core_missing_message(&self.core_path));
+        }
+        if self.process.is_none() {
+            self.stop_orphaned_core_processes().map_err(|err| {
+                self.start_failure_message(
+                    None,
+                    &format!("Interrupted managed core recovery failed: {err}"),
+                )
+            })?;
         }
         self.ensure_runtime_ports().map_err(|err| {
             self.start_failure_message(None, &format!("Port preparation failed: {err}"))
@@ -7290,6 +7470,8 @@ impl CoreManager {
             self.settings.tun_enabled,
             &self.settings.tun_stack,
             self.settings.dns_hijack_enabled,
+            &self.settings.dns_mode,
+            json!(&self.settings.dns_custom_nameservers),
             self.settings.ipv6_enabled,
             self.settings.allow_lan,
             &self.settings.log_level,
@@ -7639,7 +7821,26 @@ impl CoreManager {
                 )?
             }
             "dnsHijackEnabled" => {
+                if self.settings.dns_mode == "system" && value.as_bool().unwrap_or(false) {
+                    return Err("System DNS mode cannot enable DNS hijacking".to_string());
+                }
                 self.settings.dns_hijack_enabled = value.as_bool().unwrap_or(true)
+            }
+            "dnsMode" => {
+                self.settings.dns_mode = string_choice_from_value(
+                    value,
+                    "auto",
+                    &["auto", "secure", "system", "custom"],
+                    "DNS mode",
+                )?;
+                if self.settings.dns_mode == "system" {
+                    self.settings.dns_hijack_enabled = false;
+                } else if self.settings.dns_mode == "secure" {
+                    self.settings.dns_hijack_enabled = true;
+                }
+            }
+            "dnsCustomNameservers" => {
+                self.settings.dns_custom_nameservers = dns_custom_nameservers_from_value(value)?;
             }
             "ipv6Enabled" => self.settings.ipv6_enabled = value.as_bool().unwrap_or(false),
             "allowLan" => self.settings.allow_lan = value.as_bool().unwrap_or(false),
@@ -9769,6 +9970,8 @@ fn diagnostics_public_settings(snapshot: &DiagnosticsSnapshot) -> JsonValue {
         snapshot.settings.tun_enabled,
         &snapshot.settings.tun_stack,
         snapshot.settings.dns_hijack_enabled,
+        &snapshot.settings.dns_mode,
+        json!(&snapshot.settings.dns_custom_nameservers),
         snapshot.settings.ipv6_enabled,
         snapshot.settings.allow_lan,
         &snapshot.settings.log_level,
@@ -10472,6 +10675,22 @@ fn update_profile_detached(
     Ok(profile)
 }
 
+fn outbound_ip_query_is_current(
+    query_generation: u64,
+    current_generation: u64,
+    profile_id: &str,
+    current_profile_id: &str,
+    mode: &str,
+    current_mode: &str,
+    selected_proxy: &str,
+    current_proxy: Option<&str>,
+) -> bool {
+    current_generation == query_generation
+        && current_profile_id == profile_id
+        && current_mode == mode
+        && current_proxy == Some(selected_proxy)
+}
+
 fn refresh_outbound_ip_detached(core: Arc<Mutex<CoreManager>>) -> Result<String, String> {
     let (mixed_port, query_generation, profile_id, mode, controller) = {
         let mut core = core.lock().unwrap();
@@ -10496,11 +10715,16 @@ fn refresh_outbound_ip_detached(core: Arc<Mutex<CoreManager>>) -> Result<String,
         .ok()
         .map(|(_, proxy)| proxy);
     let mut core = core.lock().unwrap();
-    if core.outbound_ip_query_generation != query_generation
-        || core.settings.active_profile_id != profile_id
-        || core.settings.mode != mode
-        || current_proxy.as_deref() != Some(selected_proxy.as_str())
-    {
+    if !outbound_ip_query_is_current(
+        query_generation,
+        core.outbound_ip_query_generation,
+        &profile_id,
+        &core.settings.active_profile_id,
+        &mode,
+        &core.settings.mode,
+        &selected_proxy,
+        current_proxy.as_deref(),
+    ) {
         core.add_log(
             "Outbound IP refresh result ignored because the selected node changed.",
             "info",

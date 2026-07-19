@@ -45,7 +45,14 @@ const singleSpeedBackendBody = singleSpeedBackendStart >= 0 && singleSpeedBacken
 const activeConnectionCommandBody = mainRs.match(/fn active_connection_count\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 const connectionStatusSummaryBody = mainRs.match(/fn connection_status_summary\(&self\) -> JsonValue \{([\s\S]*?)\n    \}/)?.[1] || '';
 const connectionClosureBody = mainRs.match(/fn connection_closure\(&self\) -> JsonValue \{([\s\S]*?)\n    \}/)?.[1] || '';
-const outboundIpRefreshBody = mainRs.match(/fn refresh_outbound_ip_detached\(core: Arc<Mutex<CoreManager>>\) -> Result<String, String> \{([\s\S]*?)\n\}/)?.[1] || '';
+const outboundIpRefreshStart = mainRs.indexOf('fn refresh_outbound_ip_detached');
+const outboundIpRefreshEnd = mainRs.indexOf('fn update_all_profiles_detached', outboundIpRefreshStart);
+const outboundIpRefreshBody = outboundIpRefreshStart >= 0 && outboundIpRefreshEnd > outboundIpRefreshStart
+  ? mainRs.slice(outboundIpRefreshStart, outboundIpRefreshEnd)
+  : '';
+const outboundIpIdentityIndex = outboundIpRefreshBody.indexOf('if !outbound_ip_query_is_current(');
+const outboundIpStaleReturnIndex = outboundIpRefreshBody.indexOf('Outbound IP query expired after node changed; retrying will use the current node.');
+const outboundIpFallbackIndex = outboundIpRefreshBody.indexOf('let fallback = core.outbound_ip_cache.trim().to_string()');
 const publicProfileStart = mainRs.indexOf('fn public_profile(');
 const publicProfileEnd = mainRs.indexOf('fn is_fake_ip_address(', publicProfileStart);
 const publicProfileBody = publicProfileStart >= 0 && publicProfileEnd > publicProfileStart
@@ -96,12 +103,14 @@ check(
     coreDomainRs.includes('pub fn resolve_runtime_leaf(') &&
     coreDomainRs.includes('pub fn group_contains_leaf(') &&
     outboundIpRefreshBody.includes('let selected_proxy = sync_outbound_ip_route(&controller, &mode)?') &&
-    outboundIpRefreshBody.includes('core.settings.mode != mode') &&
-    outboundIpRefreshBody.includes('current_proxy.as_deref() != Some(selected_proxy.as_str())') &&
+    mainRs.includes('fn outbound_ip_query_is_current(') &&
+    mainRs.includes('fn outbound_ip_query_identity_rejects_stale_contexts()') &&
+    outboundIpIdentityIndex >= 0 &&
+    outboundIpStaleReturnIndex > outboundIpIdentityIndex &&
+    outboundIpFallbackIndex > outboundIpStaleReturnIndex &&
     !outboundIpRefreshBody.includes('current_outbound_ip_proxy_name') &&
     outboundIpRefreshBody.includes('Outbound IP refresh result ignored because the selected node changed.') &&
     outboundIpRefreshBody.includes('Outbound IP query expired after node changed; retrying will use the current node.') &&
-    !/current_proxy\.as_deref\(\) != Some\(selected_proxy\.as_str\(\)\)[\s\S]*?return Ok\(fallback\)/.test(outboundIpRefreshBody) &&
     mainRs.includes('Unable to query outbound IP') &&
     !outboundIpRefreshBody.includes('鐠囧嘲') &&
     !mainRs.includes('閺冪姵纭堕懢宄板絿'),
@@ -183,7 +192,7 @@ check(
     configPipelineRs.includes('pub(crate) fn harden_runtime_dns') &&
     configPipelineRs.includes('proxy-server-nameserver') &&
     configPipelineRs.includes('pub(crate) fn is_local_or_fake_nameserver') &&
-    configPipelineRs.includes('harden_runtime_dns(&mut config)') &&
+    configPipelineRs.includes('harden_runtime_dns(&mut config, settings)') &&
     mainRs.includes('runtime_dns_is_isolated_from_local_fake_ip_resolvers'),
   'proxy server domains must not resolve through 127.0.0.1:1053 or 198.18/198.19 fake-ip DNS'
 );
@@ -642,6 +651,10 @@ check(
     coreRuntimeRs.includes('pub const RUNTIME_DRIFT_RESTART_MESSAGE') &&
     mainRs.includes('fn restart_core_preserving_proxy') &&
     mainRs.includes('fn restore_system_proxy_preference') &&
+    mainRs.includes('fn stop_orphaned_core_processes') &&
+    mainRs.includes('Interrupted managed core recovery failed:') &&
+    coreRuntimeRs.includes('pub fn orphaned_core_cleanup_script') &&
+    coreRuntimeRs.includes('Stop-Process -Id $_.ProcessId -Force') &&
     mainRs.includes('self.restart_core_preserving_proxy(350)?') &&
     mainRs.includes('core.restart_core_preserving_proxy(350)') &&
     mainRs.includes('if let Err(err) = self.wait_for_controller()'),

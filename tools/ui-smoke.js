@@ -108,6 +108,19 @@ async function evaluate(page, expression) {
   return result.result.value;
 }
 
+async function waitForAegosUi(page) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const ready = await evaluate(page, `Boolean(
+      document.readyState === 'complete' &&
+      document.querySelector('#homeNodeRows .row') &&
+      document.querySelector('#settingsPortSummary')?.textContent?.trim()
+    )`);
+    if (ready) return;
+    await delay(125);
+  }
+  throw new Error('Aegos UI did not reach the mocked ready state.');
+}
+
 async function auditViewport(page, width, height, deviceScaleFactor = 1) {
   await page.send('Emulation.setDeviceMetricsOverride', {
     width,
@@ -116,9 +129,9 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
     mobile: false
   });
   await page.send('Page.navigate', { url: appUrl });
-  await delay(900);
+  await waitForAegosUi(page);
 
-  const report = await evaluate(page, `(() => {
+  const report = await evaluate(page, `(async () => {
     const box = (selector) => {
       const el = document.querySelector(selector);
       if (!el) return null;
@@ -193,6 +206,7 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
     const statusCenterClosed = document.querySelector('#statusCenterOverlay')?.classList.contains('hidden') || false;
     const statusCenterFocusRestored = document.activeElement?.id === 'sidebarStatusCenterBtn';
     document.querySelector('[data-page="nodes"]').click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const nodeBase = collectBase();
     const table = document.querySelector('.node-table')?.getBoundingClientRect();
     const tableEl = document.querySelector('.node-table');
@@ -201,6 +215,7 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       return r.bottom > table.top && r.top < table.bottom;
     }).length : 0;
     document.querySelector('[data-page="settings"]').click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const settingsBase = collectBase();
     const settingsPanel = document.querySelector('[data-page-panel="settings"]');
     const tunToggle = document.querySelector('#tunToggle');
@@ -210,6 +225,7 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
     const settingsSummary = box('[data-page-panel="settings"] .settings-summary-grid');
     const settingsSections = all('[data-page-panel="settings"] .settings-section').filter(visible).length;
     document.querySelector('[data-page="diagnostics"]').click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     document.querySelector('#diagSummary').innerHTML = '<div class="diagnostic-status is-warn"><b>需要关注</b><span>2 项检查 / 1 项异常</span></div><div class="diagnostic-metrics"><span><b>0</b>错误</span><span><b>1</b>警告</span><span><b>1</b>通过</span></div><div class="diagnostic-actions"><small>重启网络核心后重新检查。</small></div>';
     document.querySelector('#diagRows').innerHTML = '<section class="diagnostic-group"><header class="diagnostic-group-head"><div><h3>节点</h3><span>1 项需要处理</span></div><b>2 项</b></header><div class="diagnostic-group-rows"><article class="diagnostic-row severity-warning"><div class="diagnostic-row-copy"><div class="diagnostic-row-title"><b>近期网络异常</b><span class="diagnostic-code">AEG-NOD-099</span></div><p>近期日志中出现了需要关注的节点错误。</p><div class="diagnostic-hint"><b>建议</b><span>重启网络核心后重新检查。</span></div><details class="diagnostic-technical"><summary>查看技术细节</summary><code>[warn] mock warning</code></details></div><div class="diagnostic-row-actions"><span class="diagnostic-result warn">需要关注</span><button class="primary compact diagnostic-repair-btn">重启网络核心</button></div></article><article class="diagnostic-row severity-ok"><div class="diagnostic-row-copy"><div class="diagnostic-row-title"><b>网络核心</b><span class="diagnostic-code">AEG-CON-001</span></div><p>网络核心文件可用。</p></div><div class="diagnostic-row-actions"><span class="diagnostic-result ok">正常</span></div></article></div></section>';
     const diagnosticsBase = collectBase();

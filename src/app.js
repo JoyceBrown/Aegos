@@ -3486,6 +3486,19 @@ function renderSettings(status) {
   $('#startProxyToggle').checked = Boolean(settings.startWithSystemProxy);
   $('#tunToggle').checked = Boolean(settings.tunEnabled);
   $('#dnsToggle').checked = settings.dnsHijackEnabled !== false;
+  const dnsMode = settings.dnsMode || 'auto';
+  $('#dnsModeSelect').value = dnsMode;
+  $('#dnsCustomNameserversInput').value = Array.isArray(settings.dnsCustomNameservers)
+    ? settings.dnsCustomNameservers.join(', ')
+    : '';
+  $('#dnsCustomNameserversRow').hidden = dnsMode !== 'custom';
+  $('#dnsModeHint').textContent = dnsMode === 'secure'
+    ? 'TUN 连接时强制接管 DNS，避免系统解析绕过代理。'
+    : dnsMode === 'system'
+      ? '兼容模式：不接管 DNS；不能与 TUN 或 DNS 防泄漏同时使用。'
+      : dnsMode === 'custom'
+        ? '使用你指定的加密 DNS；地址不会显示在诊断日志中。'
+        : '自动使用 Aegos 的加密 DNS；TUN 下建议安全接管。';
   $('#killToggle').checked = Boolean(settings.killSwitchEnabled);
   $('#ipv6Toggle').checked = Boolean(settings.ipv6Enabled);
   $('#ipv6Toggle').disabled = true;
@@ -5052,6 +5065,43 @@ function setEditorValue(selector, value) {
   if (el) el.value = value ?? '';
 }
 
+function refreshNodeEditorProtocolFields() {
+  const type = $('#nodeEditTypeSelect')?.value || 'ss';
+  const tuicPasswordRow = $('#nodeEditTuicPasswordRow');
+  if (tuicPasswordRow) tuicPasswordRow.hidden = type !== 'tuic';
+  const secretLabel = $('#nodeEditSecretLabel');
+  const secretInput = $('#nodeEditSecretInput');
+  const uuidProtocols = new Set(['vmess', 'vless', 'tuic']);
+  if (secretLabel) secretLabel.textContent = uuidProtocols.has(type) ? 'UUID' : '密码';
+  if (secretInput) secretInput.placeholder = uuidProtocols.has(type) ? 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' : 'password';
+  const hints = {
+    ss: 'SS：填写密码与加密方式。',
+    trojan: 'Trojan：填写密码；通常需启用 TLS 并填写 SNI。',
+    vmess: 'VMess：填写 UUID；加密通常为 auto。',
+    vless: 'VLESS：填写 UUID；Reality 需要公钥，Vision 可填写 Flow。',
+    socks5: 'SOCKS5：填写密码（如服务端要求认证）。',
+    http: 'HTTP：填写密码（如服务端要求认证）。',
+    hysteria2: 'Hysteria2：填写密码；可填写 SNI 与混淆参数。',
+    anytls: 'AnyTLS：填写密码；通常需启用 TLS 并填写 SNI。',
+    tuic: 'TUIC：UUID 与 TUIC 密码必须分别填写；通常需启用 TLS 并填写 SNI。'
+  };
+  const hint = $('#nodeEditProtocolHint');
+  if (hint) hint.textContent = hints[type] || '';
+}
+
+function validateNodeEditorPayload(payload) {
+  const uuidProtocols = new Set(['vmess', 'vless', 'tuic']);
+  const passwordProtocols = new Set(['ss', 'trojan', 'hysteria2', 'hy2', 'anytls', 'tuic']);
+  if (!payload.name || !payload.server || !Number.isInteger(payload.port) || payload.port < 1 || payload.port > 65535) {
+    throw new Error('请填写名称、服务器地址和 1–65535 之间的端口。');
+  }
+  if (uuidProtocols.has(payload.type) && !payload.uuid) throw new Error(`${payload.type.toUpperCase()} 必须填写 UUID。`);
+  if (passwordProtocols.has(payload.type) && !payload.password) throw new Error(`${payload.type.toUpperCase()} 必须填写密码。`);
+  if (payload.type === 'vless' && payload['reality-opts'] && !payload['reality-opts']['public-key']) {
+    throw new Error('VLESS Reality 已启用时必须填写 Reality 公钥。');
+  }
+}
+
 function closeNodeEditor() {
   $('#nodeEditorOverlay')?.classList.add('hidden');
 }
@@ -5065,11 +5115,22 @@ function openNodeEditor(name = '') {
   setEditorValue('#nodeEditServerInput', item?.server || '');
   setEditorValue('#nodeEditPortInput', item?.port || '');
   setEditorValue('#nodeEditSecretInput', item?.password || item?.uuid || '');
+  setEditorValue('#nodeEditTuicPasswordInput', protocol === 'tuic' ? item?.password || '' : '');
   setEditorValue('#nodeEditCipherInput', item?.cipher || (protocol === 'vmess' ? 'auto' : ''));
+  setEditorValue('#nodeEditSniInput', item?.servername || item?.sni || '');
+  setEditorValue('#nodeEditFlowInput', item?.flow || '');
+  setEditorValue('#nodeEditFingerprintInput', item?.['client-fingerprint'] || '');
+  setEditorValue('#nodeEditRealityPublicKeyInput', item?.['reality-opts']?.['public-key'] || '');
+  setEditorValue('#nodeEditRealityShortIdInput', item?.['reality-opts']?.['short-id'] || '');
+  setEditorValue('#nodeEditObfsInput', item?.obfs || '');
+  setEditorValue('#nodeEditObfsPasswordInput', item?.['obfs-password'] || '');
   const tls = $('#nodeEditTlsToggle');
   if (tls) tls.checked = Boolean(item?.tls);
+  const skipCert = $('#nodeEditSkipCertToggle');
+  if (skipCert) skipCert.checked = Boolean(item?.['skip-cert-verify']);
   const udp = $('#nodeEditUdpToggle');
   if (udp) udp.checked = item?.udp !== false;
+  refreshNodeEditorProtocolFields();
   $('#nodeEditorOverlay')?.classList.remove('hidden');
   $('#nodeEditNameInput')?.focus();
   setNotice(item ? `\u7f16\u8f91\u8282\u70b9\uff1a${item.name}` : '\u6dfb\u52a0\u56fa\u5b9a\u8282\u70b9');
@@ -5093,7 +5154,28 @@ function collectNodeEditorPayload() {
   };
   if (type === 'vmess' || type === 'vless' || type === 'tuic') payload.uuid = secret;
   else if (secret) payload.password = secret;
+  if (type === 'tuic') payload.password = $('#nodeEditTuicPasswordInput')?.value.trim() || '';
   if (cipher) payload.cipher = cipher;
+  const advanced = [
+    ['servername', '#nodeEditSniInput'],
+    ['flow', '#nodeEditFlowInput'],
+    ['client-fingerprint', '#nodeEditFingerprintInput'],
+    ['obfs', '#nodeEditObfsInput'],
+    ['obfs-password', '#nodeEditObfsPasswordInput']
+  ];
+  advanced.forEach(([key, selector]) => {
+    const value = $(selector)?.value.trim() || '';
+    if (value) payload[key] = value;
+  });
+  payload['skip-cert-verify'] = Boolean($('#nodeEditSkipCertToggle')?.checked);
+  const realityPublicKey = $('#nodeEditRealityPublicKeyInput')?.value.trim() || '';
+  const realityShortId = $('#nodeEditRealityShortIdInput')?.value.trim() || '';
+  if (realityPublicKey || realityShortId) {
+    payload['reality-opts'] = {
+      ...(realityPublicKey ? { 'public-key': realityPublicKey } : {}),
+      ...(realityShortId ? { 'short-id': realityShortId } : {})
+    };
+  }
   return payload;
 }
 
@@ -5102,6 +5184,7 @@ async function saveNodeEditor(event) {
   const button = $('#saveNodeEditorBtn');
   await runButtonAction(button, '\u4fdd\u5b58\u4e2d...', async () => {
     const payload = collectNodeEditorPayload();
+    validateNodeEditorPayload(payload);
     const result = await invoke('save_manual_node', { node: payload });
     if (result?.settings && latestStatus?.settings) {
       latestStatus = { ...latestStatus, settings: result.settings };
@@ -7362,6 +7445,37 @@ if (updateAllProfilesBtn) updateAllProfilesBtn.onclick = (event) => runButtonAct
   $(`#${id}`).onchange = (event) => updateSetting(key, event.target.checked);
 });
 
+function dnsCustomNameserversFromInput() {
+  return String($('#dnsCustomNameserversInput').value || '')
+    .split(/[\n,]/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function refreshDnsModeControls() {
+  const mode = $('#dnsModeSelect').value || 'auto';
+  $('#dnsCustomNameserversRow').hidden = mode !== 'custom';
+  $('#dnsModeHint').textContent = mode === 'secure'
+    ? 'TUN 连接时强制接管 DNS，避免系统解析绕过代理。'
+    : mode === 'system'
+      ? '兼容模式：不接管 DNS；不能与 TUN 或 DNS 防泄漏同时使用。'
+      : mode === 'custom'
+        ? '输入 1–4 个 https:// 或 tls:// 解析器。'
+        : '自动使用 Aegos 的加密 DNS；TUN 下建议安全接管。';
+}
+
+$('#dnsModeSelect').onchange = refreshDnsModeControls;
+$('#saveDnsModeBtn').onclick = (event) => runButtonAction(event.currentTarget, '保存中...', async () => {
+  const dnsMode = $('#dnsModeSelect').value || 'auto';
+  const updates = { dnsMode };
+  if (dnsMode === 'custom') updates.dnsCustomNameservers = dnsCustomNameserversFromInput();
+  if (dnsMode === 'system') updates.dnsHijackEnabled = false;
+  if (dnsMode === 'secure') updates.dnsHijackEnabled = true;
+  await updateSettingsJob(updates);
+  await refreshStatus(true);
+  await refreshNodes(true);
+});
+
 $all('[data-region]').forEach((button) => {
   button.onclick = () => {
     const nextRegion = uiStore.state.homeRegionFilter === button.dataset.region ? '' : button.dataset.region;
@@ -7422,6 +7536,7 @@ $all('[data-page-jump]').forEach((button) => {
 
 $('#addFixedNodeBtn')?.addEventListener('click', () => openNodeEditor(''));
 $('#nodeEditorForm')?.addEventListener('submit', saveNodeEditor);
+$('#nodeEditTypeSelect')?.addEventListener('change', refreshNodeEditorProtocolFields);
 $('#cancelNodeEditorBtn')?.addEventListener('click', closeNodeEditor);
 $('#closeNodeEditorBtn')?.addEventListener('click', closeNodeEditor);
 statusCenterTriggers().forEach((button) => {

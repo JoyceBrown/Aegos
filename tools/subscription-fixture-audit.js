@@ -40,14 +40,15 @@ check(
 );
 
 check(
-  'fixtures cover Clash YAML, mixed URI, base64 URI, and unsupported protocols',
+  'fixtures cover Clash YAML, base64 URI, modern protocol families, and unsupported protocols',
   mainRs.includes('sanitized_subscription_fixtures_parse_without_real_tokens') &&
     mainRs.includes('sanitized_subscription_fixture_reports_unsupported_protocols') &&
     mainRs.includes('include_str!("../fixtures/subscriptions/clash-basic.yaml")') &&
     mainRs.includes('include_str!("../fixtures/subscriptions/mixed-uri.txt")') &&
     mainRs.includes('include_str!("../fixtures/subscriptions/unsupported-protocol.txt")') &&
-    mainRs.includes('general_purpose::STANDARD.encode(mixed)'),
-  'Rust regression tests use sanitized fixtures'
+    mainRs.includes('general_purpose::STANDARD.encode(mixed)') &&
+    ['trojan://', 'vless://', 'hysteria2://', 'anytls://', 'tuic://'].every((scheme) => combined.includes(scheme)),
+  'Rust regression tests use sanitized fixtures for Trojan/VLESS/Hysteria2/AnyTLS/TUIC'
 );
 
 check(

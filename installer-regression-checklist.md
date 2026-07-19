@@ -1,9 +1,16 @@
 # Aegos Installer Regression Checklist
 
-Version: 2.9.57
-Updated: 2026-07-12
+Applies to: 3.6.36 and later installer checkpoints
+Updated: 2026-07-19
 
-Purpose: define the real Windows installer regression checklist that must be completed before any medium-version or installer checkpoint is given to the user.
+Purpose: define the real Windows installer regression checklist that must be completed before any installer checkpoint is given to the user. This document is a test plan, not evidence that an installer has passed; each release must retain its own environment, artifact hash, execution results, and remaining risks.
+
+## 0. Test Environment And Recovery Preconditions
+
+- Run install, forced-termination, TUN, firewall, and uninstall scenarios in an isolated VM or dedicated test account. A shared daily-use Windows profile requires an explicit owner-approved recovery plan before those scenarios begin.
+- Before every destructive scenario, record a sanitized baseline of Aegos version, proxy enabled/PAC/auto-detect state, relevant routes/adapters, firewall rule counts, and whether the process is elevated. Do not record subscription URLs, tokens, node credentials, controller secrets, or public IPs.
+- After every destructive scenario, verify the saved baseline has been restored before starting the next scenario. A failed recovery ends the run and blocks the installer checkpoint.
+- The released 3.6.35 installer is only a behavior baseline. Never package changed source as another `Aegos_3.6.35_x64-setup.exe`, and never use a locally rebuilt artifact to replace or validate the published release asset.
 
 ## 1. Installer Preconditions
 

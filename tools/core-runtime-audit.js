@@ -365,6 +365,22 @@ check(
   'dataplane process launch must be planned by core_runtime',
 );
 check(
+  'unclean core recovery stops only the exact managed executable before a fresh launch',
+  coreRuntimeRs.includes('pub fn orphaned_core_cleanup_script') &&
+    coreRuntimeRs.includes('Get-CimInstance Win32_Process') &&
+    coreRuntimeRs.includes("Name = {binary_literal}") &&
+    coreRuntimeRs.includes('$_.ExecutablePath') &&
+    coreRuntimeRs.includes('-ieq $expectedPath') &&
+    coreRuntimeRs.includes('Stop-Process -Id $_.ProcessId -Force') &&
+    coreRuntimeRs.includes('orphaned_core_cleanup_is_limited_to_the_managed_core_path') &&
+    mainRs.includes('fn stop_orphaned_core_processes') &&
+    startWithTakeoverBody.includes('if self.process.is_none()') &&
+    startWithTakeoverBody.includes('self.stop_orphaned_core_processes()') &&
+    startWithTakeoverBody.indexOf('self.stop_orphaned_core_processes()') <
+      startWithTakeoverBody.indexOf('self.ensure_runtime_ports()'),
+  'stale Mihomo processes must be scoped to Aegos core_path and cleared before port preparation',
+);
+check(
   'Aegos normalizes runtime profile YAML through the core runtime boundary',
   coreRuntimeRs.includes('pub struct CoreRuntimeProfile') &&
     coreRuntimeRs.includes('pub fn render_runtime_profile_yaml') &&

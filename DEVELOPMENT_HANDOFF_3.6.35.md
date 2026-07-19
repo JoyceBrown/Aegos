@@ -512,11 +512,11 @@ npm run audit:release
 ### 需要诚实保留的异常
 
 1. 单独第一次 `smoke:perf` 出现测速流帧 P95 66.7 ms 的失败；立即独立复测通过，正式 3 轮 repeat 也通过。这说明无头软件合成器仍有单轮波动，不能只跑一次后挑选通过结果。真实 WebView2 仍需人工性能矩阵。
-2. `npm run audit:current-mainline` 当前失败两项：
+2. 交接时 `npm run audit:current-mainline` 失败两项：
    - 它用脆弱正则截取 `refresh_outbound_ip_detached`，并期待旧表达式 `current_proxy != selected_proxy`；当前实现已经使用 query generation、profile、mode 和当前代理复核，并在缓存 fallback 前返回。功能路径存在，但审计解析器与实现脱节。
    - `RELEASE_3.6.35.md` 没有记录该旧主线门禁要求的三段固定文字。
 
-不得把上述失败隐藏。下一版本首先修复审计为结构/行为检查，并在新 Release Note 中记录真实证据；不要修改或重写已发布的 `v3.6.35` 标签来伪造历史。
+交接后的首轮维护已修正上述门禁：落地 IP 查询身份判断现在有 generation、profile、mode 和当前代理的行为测试，审计验证 stale 返回发生在缓存 fallback 之前；3.6.35 使用交接记录保留历史事实。已发布的 `RELEASE_3.6.35.md` 和 `v3.6.35` 标签保持不变，下一版本仍须在新 Release Note 中记录真实证据。
 
 另一个证据质量提醒：`audit:stage3-acceptance` 是阶段保留门禁，输出仍引用 3.6.0 checkpoint 安装包且 hash 为空。当前安装包由独立 `audit:installer` 正确验证。后续应让阶段门禁明确“契约保留”和“当前制品验证”的区别。
 
@@ -526,11 +526,11 @@ npm run audit:release
 
 ### P0：进入下一发布前处理
 
-1. **修复 `audit:current-mainline` 的脆弱实现**
-   改为 AST/结构检查或行为测试，验证节点变化后旧落地 IP 查询不会返回缓存，而不是匹配某一行旧源码文本。
+1. **复核并合入 `audit:current-mainline` 首轮修正**
+   已增加查询身份行为测试，并让审计验证 stale 返回先于缓存 fallback；合入前仍须通过完整 Rust、outbound IP、主线、运行时和交互门禁。下一版本 Release Note 必须记录该修正，不能回写 3.6.35 发布历史。
 
 2. **完成 3.6.36–3.6.40 成熟验收**
-   当前发布停在 3.6.35。安装卸载、多协议真实矩阵、其他 Windows 设备、剩余风险清单和成熟候选包尚未完成，不能宣称 3.6.40 已完成。
+   当前发布停在 3.6.35。安装卸载、多协议真实矩阵、其他 Windows 设备、剩余风险清单和成熟候选包尚未完成，不能宣称 3.6.40 已完成。`INSTALLER_BASELINE_3.6.35_2026-07-19.md` 保留了 3.6.35 的崩溃恢复缺陷：强制结束后重启未清理 Aegos 旧 Mihomo 进程，反而会启动额外进程。首轮维护已用“受管核心绝对路径完全匹配”修复并在开发构建复测；仍必须用隔离环境中的版本化 3.6.36 候选安装包重复该路径，才能解除 installer checkpoint。
 
 3. **许可证与分发合规收口**
    仓库没有项目根级 `LICENSE`；需要由所有者决定 Aegos 自身许可证。Mihomo 是独立数据面二进制，发布前必须补齐其许可证、源码对应关系/获取方式、版本和分发义务记录。Fluent 图标已有 MIT 许可证和 pinned commit 记录。

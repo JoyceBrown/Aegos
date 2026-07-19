@@ -3155,6 +3155,10 @@ h1 {
   background: #fff;
 }
 
+.input-row[hidden] {
+  display: none;
+}
+
 .switch-row b, .switch-row small,
 .input-row b, .input-row small {
   display: block;

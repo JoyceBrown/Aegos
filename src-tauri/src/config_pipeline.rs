@@ -418,7 +418,7 @@ pub(crate) fn patch_config(
     );
     set_yaml(&mut config, "unified-delay", YamlValue::Bool(true));
     set_yaml(&mut config, "tcp-concurrent", YamlValue::Bool(true));
-    harden_runtime_dns(&mut config);
+    harden_runtime_dns(&mut config, settings)?;
     sanitize_subscription_metadata_nodes(&mut config);
 
     if settings.tun_enabled {
@@ -438,7 +438,9 @@ pub(crate) fn patch_config(
         set_yaml(
             tun_map,
             "dns-hijack",
-            if settings.dns_hijack_enabled {
+            if settings.dns_mode == "secure"
+                || (settings.dns_mode != "system" && settings.dns_hijack_enabled)
+            {
                 YamlValue::Sequence(vec![YamlValue::String("any:53".to_string())])
             } else {
                 YamlValue::Sequence(Vec::new())
@@ -492,11 +494,11 @@ fn yaml_str(value: impl Into<String>) -> YamlValue {
     YamlValue::String(value.into())
 }
 
-fn yaml_string_sequence(values: &[&str]) -> YamlValue {
+fn yaml_string_sequence<T: AsRef<str>>(values: &[T]) -> YamlValue {
     YamlValue::Sequence(
         values
             .iter()
-            .map(|value| YamlValue::String((*value).to_string()))
+            .map(|value| YamlValue::String(value.as_ref().to_string()))
             .collect(),
     )
 }
@@ -808,8 +810,8 @@ pub(crate) fn runtime_dns_safety_report(config: &YamlValue) -> Result<String, St
     ))
 }
 
-pub(crate) fn harden_runtime_dns(config: &mut Mapping) {
-    let nameservers = AEGOS_DIRECT_NAMESERVERS
+pub(crate) fn harden_runtime_dns(config: &mut Mapping, settings: &Settings) -> Result<(), String> {
+    let default_nameservers = AEGOS_DIRECT_NAMESERVERS
         .iter()
         .copied()
         .filter(|value| !is_local_or_fake_nameserver(value))
@@ -818,6 +820,21 @@ pub(crate) fn harden_runtime_dns(config: &mut Mapping) {
         .entry(yaml_key("dns"))
         .or_insert_with(|| YamlValue::Mapping(Mapping::new()));
     let dns_map = get_mapping_mut(dns);
+    if settings.dns_mode == "system" {
+        set_yaml(dns_map, "enable", YamlValue::Bool(false));
+        set_yaml(dns_map, "listen", yaml_str(AEGOS_DNS_LISTEN));
+        set_yaml(dns_map, "nameserver", YamlValue::Sequence(Vec::new()));
+        set_yaml(dns_map, "proxy-server-nameserver", YamlValue::Sequence(Vec::new()));
+        return Ok(());
+    }
+    let nameservers = if settings.dns_mode == "custom" {
+        if settings.dns_custom_nameservers.is_empty() {
+            return Err("Custom DNS mode requires at least one encrypted resolver".to_string());
+        }
+        settings.dns_custom_nameservers.clone()
+    } else {
+        default_nameservers.iter().map(|value| value.to_string()).collect()
+    };
     set_yaml(dns_map, "enable", YamlValue::Bool(true));
     set_yaml(dns_map, "ipv6", YamlValue::Bool(false));
     set_yaml(dns_map, "listen", yaml_str(AEGOS_DNS_LISTEN));
@@ -828,6 +845,7 @@ pub(crate) fn harden_runtime_dns(config: &mut Mapping) {
         "proxy-server-nameserver",
         yaml_string_sequence(&nameservers),
     );
+    Ok(())
 }
 
 fn preflight_config(
