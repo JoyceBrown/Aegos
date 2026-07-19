@@ -124,41 +124,166 @@ pub(crate) struct CompiledRoutingRule {
     pub(crate) rule: String,
 }
 
+/// Aegos' rule vocabulary.  Mihomo identifiers are confined to the compiler
+/// below so the rest of the product never needs to reason about engine syntax.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RoutingConditionKind {
+    WebsiteExact,
+    WebsiteSuffix,
+    WebsiteKeyword,
+    ProcessName,
+    ProcessPath,
+    Country,
+    SiteSet,
+    IpCidr,
+}
+
+impl RoutingConditionKind {
+    pub(crate) fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "DOMAIN" => Ok(Self::WebsiteExact),
+            "DOMAIN-SUFFIX" => Ok(Self::WebsiteSuffix),
+            "DOMAIN-KEYWORD" => Ok(Self::WebsiteKeyword),
+            "PROCESS-NAME" => Ok(Self::ProcessName),
+            "PROCESS-PATH" => Ok(Self::ProcessPath),
+            "GEOIP" => Ok(Self::Country),
+            "GEOSITE" => Ok(Self::SiteSet),
+            "IP-CIDR" => Ok(Self::IpCidr),
+            other => Err(format!("Unsupported routing rule type: {other}")),
+        }
+    }
+
+    pub(crate) fn engine_kind(self) -> &'static str {
+        match self {
+            Self::WebsiteExact => "DOMAIN",
+            Self::WebsiteSuffix => "DOMAIN-SUFFIX",
+            Self::WebsiteKeyword => "DOMAIN-KEYWORD",
+            Self::ProcessName => "PROCESS-NAME",
+            Self::ProcessPath => "PROCESS-PATH",
+            Self::Country => "GEOIP",
+            Self::SiteSet => "GEOSITE",
+            Self::IpCidr => "IP-CIDR",
+        }
+    }
+
+    fn accepts_no_resolve(self) -> bool {
+        matches!(self, Self::Country | Self::IpCidr)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RoutingTarget {
+    Named(String),
+    Direct,
+    Reject,
+}
+
+impl RoutingTarget {
+    fn parse(value: &str, targets: &HashSet<String>) -> Result<Self, String> {
+        let target = validate_part("Rule route target", value, 140)?;
+        match target.to_ascii_uppercase().as_str() {
+            "DIRECT" => Ok(Self::Direct),
+            "REJECT" => Ok(Self::Reject),
+            _ if target_exists(targets, &target) => Ok(Self::Named(target)),
+            _ => Err(format!("Rule route target does not exist: {target}")),
+        }
+    }
+
+    fn engine_target(&self) -> &str {
+        match self {
+            Self::Named(value) => value,
+            Self::Direct => "DIRECT",
+            Self::Reject => "REJECT",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RoutingRuleOption {
+    NoResolve,
+}
+
+impl RoutingRuleOption {
+    fn parse(value: Option<&str>, kind: RoutingConditionKind) -> Result<Option<Self>, String> {
+        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(None);
+        };
+        if value != "no-resolve" {
+            return Err(format!("Unsupported routing rule option: {value}"));
+        }
+        if !kind.accepts_no_resolve() {
+            return Err("no-resolve only applies to GEOIP or IP-CIDR rules.".to_string());
+        }
+        Ok(Some(Self::NoResolve))
+    }
+
+    fn engine_option(self) -> &'static str {
+        match self {
+            Self::NoResolve => "no-resolve",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RoutingIntent {
+    pub(crate) kind: RoutingConditionKind,
+    pub(crate) condition: String,
+    pub(crate) target: RoutingTarget,
+    pub(crate) option: Option<RoutingRuleOption>,
+}
+
+impl RoutingIntent {
+    fn from_draft(draft: &RoutingDraftInput, targets: &HashSet<String>) -> Result<Self, String> {
+        let kind = RoutingConditionKind::parse(&draft.kind)?;
+        Ok(Self {
+            kind,
+            condition: validate_part("Rule match value", &draft.condition, 220)?,
+            target: RoutingTarget::parse(&draft.target, targets)?,
+            option: RoutingRuleOption::parse(draft.option.as_deref(), kind)?,
+        })
+    }
+
+    fn compile(&self) -> (String, String, String, Option<String>) {
+        let kind = self.kind.engine_kind().to_string();
+        let target = self.target.engine_target().to_string();
+        let option = self.option.map(|value| value.engine_option().to_string());
+        (kind, self.condition.clone(), target, option)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StrategyPolicy {
+    Manual,
+    LowestLatency,
+    Failover,
+    LoadBalanced,
+}
+
+impl StrategyPolicy {
+    pub(crate) fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "select" | "selector" => Ok(Self::Manual),
+            "url-test" | "urltest" => Ok(Self::LowestLatency),
+            "fallback" => Ok(Self::Failover),
+            "load-balance" | "loadbalance" => Ok(Self::LoadBalanced),
+            other => Err(format!("Unsupported strategy group type: {other}")),
+        }
+    }
+
+    pub(crate) fn engine_group_type(self) -> &'static str {
+        match self {
+            Self::Manual => "select",
+            Self::LowestLatency => "url-test",
+            Self::Failover => "fallback",
+            Self::LoadBalanced => "load-balance",
+        }
+    }
+}
+
 impl RoutingDraftInput {
     pub(crate) fn compile(&self, targets: &HashSet<String>) -> Result<CompiledRoutingRule, String> {
-        let kind = self.kind.trim().to_ascii_uppercase();
-        const ALLOWED_KINDS: &[&str] = &[
-            "DOMAIN",
-            "DOMAIN-SUFFIX",
-            "DOMAIN-KEYWORD",
-            "PROCESS-NAME",
-            "PROCESS-PATH",
-            "GEOIP",
-            "GEOSITE",
-            "IP-CIDR",
-        ];
-        if !ALLOWED_KINDS.contains(&kind.as_str()) {
-            return Err(format!("Unsupported routing rule type: {kind}"));
-        }
-        let condition = validate_part("Rule match value", &self.condition, 220)?;
-        let target = validate_part("Rule route target", &self.target, 140)?;
-        if !target_exists(targets, &target) {
-            return Err(format!("Rule route target does not exist: {target}"));
-        }
-        let option = self
-            .option
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
-        if let Some(option) = option.as_deref() {
-            if option != "no-resolve" {
-                return Err(format!("Unsupported routing rule option: {option}"));
-            }
-            if !matches!(kind.as_str(), "GEOIP" | "IP-CIDR") {
-                return Err("no-resolve only applies to GEOIP or IP-CIDR rules.".to_string());
-            }
-        }
+        let intent = RoutingIntent::from_draft(self, targets)?;
+        let (kind, condition, target, option) = intent.compile();
         let rule = if let Some(option) = option.as_deref() {
             format!("{kind},{condition},{target},{option}")
         } else {
@@ -197,13 +322,7 @@ impl RoutingRuleEditInput {
 }
 
 pub(crate) fn validate_group_type(value: &str) -> Result<&'static str, String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "select" | "selector" => Ok("select"),
-        "url-test" | "urltest" => Ok("url-test"),
-        "fallback" => Ok("fallback"),
-        "load-balance" | "loadbalance" => Ok("load-balance"),
-        other => Err(format!("Unsupported strategy group type: {other}")),
-    }
+    Ok(StrategyPolicy::parse(value)?.engine_group_type())
 }
 
 pub(crate) fn validate_group_members(
@@ -334,6 +453,18 @@ mod tests {
             "DOMAIN-SUFFIX,example.com,Proxies"
         );
         assert_eq!(
+            RoutingConditionKind::parse("domain-suffix")
+                .expect("website suffix")
+                .engine_kind(),
+            "DOMAIN-SUFFIX"
+        );
+        assert_eq!(
+            StrategyPolicy::parse("urltest")
+                .expect("latency policy")
+                .engine_group_type(),
+            "url-test"
+        );
+        assert_eq!(
             validate_group_members(&["Node A".to_string(), "Node A".to_string()], &targets,)
                 .expect("members"),
             vec!["Node A".to_string()]
@@ -354,5 +485,23 @@ mod tests {
                 "DOMAIN,keep.example,Proxies".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn semantic_intent_compiles_reserved_actions_deterministically() {
+        let draft = RoutingDraftInput {
+            kind: "ip-cidr".to_string(),
+            condition: "10.0.0.0/8".to_string(),
+            target: "direct".to_string(),
+            option: Some("no-resolve".to_string()),
+            label: None,
+            source: None,
+            scope: None,
+        };
+        let compiled = draft
+            .compile(&HashSet::new())
+            .expect("compiled direct intent");
+        assert_eq!(compiled.rule, "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve");
+        assert_eq!(compiled.target, "DIRECT");
     }
 }

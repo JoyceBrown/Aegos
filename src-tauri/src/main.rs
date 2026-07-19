@@ -9,6 +9,7 @@ mod diagnostics_runtime;
 mod profile_compiler;
 mod routing_domain;
 mod routing_store;
+mod runtime_command;
 mod speed_runtime;
 mod speed_scheduler;
 mod subscription_runtime;
@@ -714,7 +715,7 @@ struct AppState {
     logs: LogStore,
     app_data: PathBuf,
     jobs: JobStore,
-    operations: Arc<Mutex<()>>,
+    operations: runtime_command::RuntimeOperationCoordinator,
 }
 
 #[derive(Clone)]
@@ -3738,11 +3739,11 @@ rules:
 
     #[test]
     fn operation_queue_is_exclusive() {
-        let operations = Arc::new(Mutex::new(()));
+        let operations = runtime_command::RuntimeOperationCoordinator::default();
         let guard = lock_operation_queue(&operations, "test").expect("queue lock");
-        assert!(operations.try_lock().is_err());
+        assert_eq!(operations.snapshot().active_label.as_deref(), Some("test"));
         drop(guard);
-        assert!(operations.try_lock().is_ok());
+        assert!(operations.snapshot().active_label.is_none());
     }
 
     #[test]
@@ -5253,8 +5254,17 @@ impl CoreManager {
     }
 
     fn recover_interrupted_system_takeover(&mut self) {
-        let pending = system_takeover::interrupted_transactions(&self.app_data);
-        for (path, journal) in pending {
+        let scan = system_takeover::recovery_scan(&self.app_data);
+        for path in scan.unreadable_journals {
+            self.add_log(
+                format!(
+                    "System takeover recovery journal is unreadable: {}. No automatic network mutation was attempted; inspect and recover Windows networking before enabling takeover.",
+                    path.display()
+                ),
+                "error",
+            );
+        }
+        for (path, journal) in scan.pending {
             let result = self.recover_takeover_component(&journal.component);
             let (ok, detail) = match result {
                 Ok(detail) => (true, detail),
@@ -5850,13 +5860,54 @@ impl CoreManager {
                 });
             }
         };
-        finish_routing_store_transaction(
+        // Undo evidence is part of the deployment transaction.  Do not mark
+        // the new rules verified until it is durable; otherwise a user could
+        // receive a successful apply with no recoverable prior state.
+        if let Err(err) = write_routing_store_undo(&self.app_data, &profile, &previous_store, applied.len()) {
+            let restore_runtime = if self.process.is_some() {
+                self.hot_reload_profile(&profile).map(|_| ())
+            } else {
+                Ok(())
+            };
+            let restore_store = rollback_routing_store_transaction(
+                &self.app_data,
+                "apply-drafts",
+                &profile.id,
+                &previous_store,
+                &err.to_string(),
+                restore_runtime.is_ok(),
+            );
+            return Err(format!(
+                "Routing rule apply could not persist undo evidence; rule-store rollback: {}; runtime rollback: {}",
+                restore_result_label(restore_store),
+                restore_result_label(restore_runtime)
+            ));
+        }
+        if let Err(err) = finish_routing_store_transaction(
             &self.app_data,
             "apply-drafts",
             &profile.id,
             json!({ "profileName": profile.name, "ruleCount": applied.len() }),
-        )?;
-        write_routing_store_undo(&self.app_data, &profile, &previous_store, applied.len())?;
+        ) {
+            let restore_runtime = if self.process.is_some() {
+                self.hot_reload_profile(&profile).map(|_| ())
+            } else {
+                Ok(())
+            };
+            let restore_store = rollback_routing_store_transaction(
+                &self.app_data,
+                "apply-drafts",
+                &profile.id,
+                &previous_store,
+                &err.to_string(),
+                restore_runtime.is_ok(),
+            );
+            return Err(format!(
+                "Routing rule apply could not finalize deployment; rule-store rollback: {}; runtime rollback: {}",
+                restore_result_label(restore_store),
+                restore_result_label(restore_runtime)
+            ));
+        }
         self.add_log(
             format!("Aegos user rules applied: {} rule(s) for profile {}", applied.len(), profile.name),
             "info",
@@ -10320,7 +10371,7 @@ fn diagnostics_detached(core: Arc<Mutex<CoreManager>>) -> JsonValue {
 
 fn add_profile_url_detached(
     core: Arc<Mutex<CoreManager>>,
-    operations: Arc<Mutex<()>>,
+    operations: runtime_command::RuntimeOperationCoordinator,
     url: &str,
 ) -> Result<Profile, String> {
     let parsed = reqwest::Url::parse(url).map_err(|err| err.to_string())?;
@@ -10486,7 +10537,7 @@ fn add_profile_url_detached(
 
 fn update_profile_detached(
     core: Arc<Mutex<CoreManager>>,
-    operations: Arc<Mutex<()>>,
+    operations: runtime_command::RuntimeOperationCoordinator,
     id: &str,
 ) -> Result<Profile, String> {
     let (mut profile, app_data) = {
@@ -10765,7 +10816,7 @@ fn refresh_outbound_ip_detached(core: Arc<Mutex<CoreManager>>) -> Result<String,
 
 fn update_all_profiles_detached(
     core: Arc<Mutex<CoreManager>>,
-    operations: Arc<Mutex<()>>,
+    operations: runtime_command::RuntimeOperationCoordinator,
     jobs: JobStore,
     job_id: &str,
 ) -> Result<JsonValue, String> {
@@ -10860,12 +10911,10 @@ fn provider_healthcheck_detached(core: Arc<Mutex<CoreManager>>) -> Result<JsonVa
 }
 
 fn lock_operation_queue<'a>(
-    operations: &'a Arc<Mutex<()>>,
+    operations: &'a runtime_command::RuntimeOperationCoordinator,
     label: &str,
-) -> Result<std::sync::MutexGuard<'a, ()>, String> {
-    operations
-        .lock()
-        .map_err(|_| format!("Operation queue poisoned while waiting for {label}"))
+) -> Result<runtime_command::RuntimeOperationLease<'a>, String> {
+    operations.acquire(label)
 }
 
 fn job_label(kind: &str) -> String {
@@ -11272,6 +11321,7 @@ fn cancel_job(state: State<AppState>, id: String) -> Result<JsonValue, String> {
 #[tauri::command]
 fn app_status(state: State<AppState>, app: AppHandle) -> Result<JsonValue, String> {
     let command_started = Instant::now();
+    let operation_snapshot = state.operations.snapshot();
     let first_lock_started = Instant::now();
     let (observed_running, controller, previous_traffic, refresh_lan_ip) = {
         let mut core = state
@@ -11294,6 +11344,7 @@ fn app_status(state: State<AppState>, app: AppHandle) -> Result<JsonValue, Strin
     let mut status = core.status_from_observed_traffic(observed_running, observed_traffic, is_admin);
     let final_lock_ms = final_lock_started.elapsed().as_millis() as u64;
     if let Some(map) = status.as_object_mut() {
+        map.insert("runtimeOperation".to_string(), json!(operation_snapshot));
         map.insert(
             "runtimeObservationMs".to_string(),
             json!({
@@ -13592,7 +13643,7 @@ fn main() {
                 logs,
                 app_data,
                 jobs: Arc::new(Mutex::new(HashMap::new())),
-                operations: Arc::new(Mutex::new(())),
+                operations: runtime_command::RuntimeOperationCoordinator::default(),
             });
             thread::spawn(move || {
                 // Integrity metadata is diagnostic information. Read the binary

@@ -45,6 +45,15 @@ pub struct ActiveTakeoverState {
     pub updated_at_ms: u128,
 }
 
+/// Startup must never silently discard an unreadable takeover journal.  It is
+/// unsafe to guess whether Windows state was changed when the durable record
+/// is corrupt, so callers surface it as a manual-recovery incident.
+#[derive(Clone, Debug, Default)]
+pub struct TakeoverRecoveryScan {
+    pub pending: Vec<(PathBuf, TakeoverJournal)>,
+    pub unreadable_journals: Vec<PathBuf>,
+}
+
 impl ActiveTakeoverState {
     pub fn any_active(&self) -> bool {
         self.system_proxy || self.firewall || self.tun
@@ -258,25 +267,37 @@ impl SystemTakeoverTransaction {
     }
 }
 
+#[cfg(test)]
 pub fn interrupted_transactions(app_data: &Path) -> Vec<(PathBuf, TakeoverJournal)> {
+    recovery_scan(app_data).pending
+}
+
+pub fn recovery_scan(app_data: &Path) -> TakeoverRecoveryScan {
     let root = app_data.join(TRANSACTION_DIR);
     let Ok(entries) = fs::read_dir(root) else {
-        return Vec::new();
+        return TakeoverRecoveryScan::default();
     };
-    let mut items = entries
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("json") {
-                return None;
-            }
-            let raw = fs::read_to_string(&path).ok()?;
-            let journal = serde_json::from_str::<TakeoverJournal>(&raw).ok()?;
-            (!journal.is_terminal()).then_some((path, journal))
-        })
-        .collect::<Vec<_>>();
-    items.sort_by_key(|(_, item)| item.started_at_ms);
-    items
+    let mut scan = TakeoverRecoveryScan::default();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(raw) = fs::read_to_string(&path) else {
+            scan.unreadable_journals.push(path);
+            continue;
+        };
+        let Ok(journal) = serde_json::from_str::<TakeoverJournal>(&raw) else {
+            scan.unreadable_journals.push(path);
+            continue;
+        };
+        if !journal.is_terminal() {
+            scan.pending.push((path, journal));
+        }
+    }
+    scan.pending.sort_by_key(|(_, item)| item.started_at_ms);
+    scan.unreadable_journals.sort();
+    scan
 }
 
 pub fn active_takeover_state(app_data: &Path) -> ActiveTakeoverState {
@@ -346,7 +367,8 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("journal");
-    let temp = parent.join(format!(".{name}.{}.tmp", now_ms()));
+    let sequence = TRANSACTION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temp = parent.join(format!(".{name}.{}-{sequence}.tmp", now_ms()));
     {
         let mut file = fs::File::create(&temp)
             .map_err(|err| format!("system takeover journal temp create failed: {err}"))?;
@@ -355,10 +377,48 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
         file.sync_all()
             .map_err(|err| format!("system takeover journal sync failed: {err}"))?;
     }
-    fs::rename(&temp, path).map_err(|err| {
+    atomic_replace_file(&temp, path).map_err(|err| {
         let _ = fs::remove_file(&temp);
         format!("system takeover journal replace failed: {err}")
     })
+}
+
+#[cfg(windows)]
+fn atomic_replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
+
+    #[link(name = "Kernel32")]
+    extern "system" {
+        fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
+    }
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+    let source = OsStr::new(source)
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let destination = OsStr::new(destination)
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let replaced = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn atomic_replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
 }
 
 fn prune_reports(root: &Path) {
@@ -381,7 +441,8 @@ mod tests {
     use super::*;
 
     fn temp_root(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("aegos-takeover-{label}-{}", now_ms()))
+        let sequence = TRANSACTION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("aegos-takeover-{label}-{}-{sequence}", now_ms()))
     }
 
     #[test]
@@ -489,6 +550,33 @@ mod tests {
         assert!(active_takeover_state(&root).firewall);
         set_component_active(&root, "firewall", false).unwrap();
         assert!(!active_takeover_state(&root).any_active());
+        assert!(!root.join(ACTIVE_STATE_FILE).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn corrupt_journal_is_reported_instead_of_being_silently_ignored() {
+        let root = temp_root("corrupt-journal");
+        let transaction_root = root.join(TRANSACTION_DIR);
+        fs::create_dir_all(&transaction_root).unwrap();
+        fs::write(transaction_root.join("broken.json"), "not json").unwrap();
+
+        let scan = recovery_scan(&root);
+        assert!(scan.pending.is_empty());
+        assert_eq!(scan.unreadable_journals.len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn active_takeover_state_is_durable_and_removed_after_full_recovery() {
+        let root = temp_root("active-state");
+        set_component_active(&root, "system-proxy", true).unwrap();
+        set_component_active(&root, "tun", true).unwrap();
+        assert!(active_takeover_state(&root).system_proxy);
+        assert!(active_takeover_state(&root).tun);
+        set_component_active(&root, "system-proxy", false).unwrap();
+        assert!(active_takeover_state(&root).tun);
+        set_component_active(&root, "tun", false).unwrap();
         assert!(!root.join(ACTIVE_STATE_FILE).exists());
         let _ = fs::remove_dir_all(root);
     }

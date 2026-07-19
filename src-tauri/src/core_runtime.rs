@@ -97,6 +97,96 @@ pub const SUPPORTED_PROXY_TYPES: &[&str] = &[
     "ssh",
 ];
 
+/// The approved dataplane contract for this release.  Feature work must query
+/// this manifest instead of assuming that every Mihomo version supports every
+/// generated field.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineCapabilityManifest {
+    pub engine: &'static str,
+    pub version: &'static str,
+    pub sha256: &'static str,
+    pub features: &'static [&'static str],
+}
+
+pub const APPROVED_ENGINE_FEATURES: &[&str] = &[
+    "gvisor",
+    "process-routing",
+    "runtime-config-reload",
+    "local-controller-secret",
+    "standby-delay-probe",
+];
+
+/// The result of evaluating a binary proposed for bundling.  Aegos does not
+/// upgrade the data plane merely because a newer executable exists: its
+/// identity and required control-plane capabilities must be approved together.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineUpgradeAssessment {
+    pub approved: bool,
+    pub reason: String,
+    pub required_features: Vec<String>,
+}
+
+pub fn approved_engine_manifest() -> EngineCapabilityManifest {
+    EngineCapabilityManifest {
+        engine: ENGINE,
+        version: EXPECTED_VERSION,
+        sha256: EXPECTED_SHA256,
+        features: APPROVED_ENGINE_FEATURES,
+    }
+}
+
+pub fn assess_engine_candidate(
+    version: &str,
+    sha256: &str,
+    features: &[&str],
+) -> EngineUpgradeAssessment {
+    let required_features = APPROVED_ENGINE_FEATURES
+        .iter()
+        .map(|feature| (*feature).to_string())
+        .collect::<Vec<_>>();
+    if version.trim() != EXPECTED_VERSION {
+        return EngineUpgradeAssessment {
+            approved: false,
+            reason: format!(
+                "Mihomo version {} is not approved for this Aegos release (expected {}).",
+                version.trim(),
+                EXPECTED_VERSION
+            ),
+            required_features,
+        };
+    }
+    if !sha256.trim().eq_ignore_ascii_case(EXPECTED_SHA256) {
+        return EngineUpgradeAssessment {
+            approved: false,
+            reason: "Mihomo checksum does not match the approved release artifact.".to_string(),
+            required_features,
+        };
+    }
+    let missing = APPROVED_ENGINE_FEATURES
+        .iter()
+        .filter(|feature| !features.iter().any(|candidate| candidate == *feature))
+        .copied()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return EngineUpgradeAssessment {
+            approved: false,
+            reason: format!(
+                "Mihomo candidate is missing required capability: {}.",
+                missing.join(", ")
+            ),
+            required_features,
+        };
+    }
+    EngineUpgradeAssessment {
+        approved: true,
+        reason: "Mihomo artifact identity and Aegos control-plane capabilities are approved."
+            .to_string(),
+        required_features,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CoreRuntimePaths {
     pub core_path: PathBuf,
@@ -132,6 +222,9 @@ impl Default for CoreRuntimeContract {
 impl CoreRuntimeContract {
     pub fn identity_json(&self, paths: &CoreRuntimePaths, sha256: &str) -> JsonValue {
         let exists = paths.core_path.exists();
+        let manifest = approved_engine_manifest();
+        let upgrade_assessment =
+            assess_engine_candidate(self.expected_version, sha256, manifest.features);
         json!({
             "engine": self.engine,
             "role": self.role,
@@ -142,7 +235,9 @@ impl CoreRuntimeContract {
             "homeDir": paths.home_dir.to_string_lossy(),
             "runtimeProfile": paths.runtime_profile_path.to_string_lossy(),
             "exists": exists,
-            "verified": exists && sha256.eq_ignore_ascii_case(self.expected_sha256),
+            "verified": exists && upgrade_assessment.approved,
+            "capabilities": manifest,
+            "upgradeAssessment": upgrade_assessment,
             "managedBy": self.managed_by,
             "controlPlane": self.control_plane,
             "dataPlane": self.data_plane,
@@ -1544,7 +1639,12 @@ impl CoreController {
     }
 
     pub fn provider_healthcheck_snapshot(&self) -> Result<JsonValue, String> {
-        let providers = self.request("GET", "/providers/proxies", None, PROVIDER_HEALTHCHECK_TIMEOUT_MS)?;
+        let providers = self.request(
+            "GET",
+            "/providers/proxies",
+            None,
+            PROVIDER_HEALTHCHECK_TIMEOUT_MS,
+        )?;
         let names = provider_names_from_controller(&providers);
         if names.is_empty() {
             return Ok(json!({ "providers": [], "available": false }));
@@ -4775,5 +4875,33 @@ rules:
         );
         assert!(classified_error("Node switch", "connection refused")
             .contains("Node switch failed [refused]"));
+    }
+
+    #[test]
+    fn approved_engine_manifest_binds_identity_to_explicit_capabilities() {
+        let manifest = approved_engine_manifest();
+        assert_eq!(manifest.engine, ENGINE);
+        assert_eq!(manifest.version, EXPECTED_VERSION);
+        assert_eq!(manifest.sha256, EXPECTED_SHA256);
+        assert!(manifest.features.contains(&"process-routing"));
+        assert!(manifest.features.contains(&"standby-delay-probe"));
+    }
+
+    #[test]
+    fn engine_upgrade_requires_exact_identity_and_control_plane_capabilities() {
+        let manifest = approved_engine_manifest();
+        assert!(
+            assess_engine_candidate(manifest.version, manifest.sha256, manifest.features).approved
+        );
+        assert!(!assess_engine_candidate("v0.0.0", manifest.sha256, manifest.features).approved);
+        assert!(!assess_engine_candidate(manifest.version, "bad", manifest.features).approved);
+        assert!(
+            !assess_engine_candidate(
+                manifest.version,
+                manifest.sha256,
+                &["gvisor", "process-routing"],
+            )
+            .approved
+        );
     }
 }

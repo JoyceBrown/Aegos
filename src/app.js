@@ -3772,9 +3772,24 @@ function statusUiSignature(status = {}) {
     permissions: status.permissions,
     protection: status.protection,
     connection: status.connection,
+    runtimeOperation: status.runtimeOperation,
     settings,
     corePowerPendingKind
   });
+}
+
+function runtimeOperationLabel(operation = {}) {
+  const names = {
+    StartCore: '\u542f\u52a8\u6838\u5fc3', StopCore: '\u505c\u6b62\u6838\u5fc3', RestartCore: '\u91cd\u542f\u6838\u5fc3',
+    SetActiveProfile: '\u5207\u6362\u8ba2\u9605', RemoveProfile: '\u79fb\u9664\u8ba2\u9605', UpdateSettings: '\u4fdd\u5b58\u8bbe\u7f6e',
+    SetMode: '\u5207\u6362\u6a21\u5f0f', ChangeProxy: '\u5207\u6362\u8282\u70b9', SelectBestProxy: '\u4f18\u9009\u8282\u70b9',
+    RepairSystemProxy: '\u4fee\u590d\u7cfb\u7edf\u4ee3\u7406', RecoverNetwork: '\u6062\u590d\u7f51\u7edc',
+    ApplyRouting: '\u5e94\u7528\u5206\u6d41\u89c4\u5219', EditRoutingGroup: '\u4fdd\u5b58\u7b56\u7565\u7ec4',
+    EditRoutingRule: '\u4fdd\u5b58\u5206\u6d41\u89c4\u5219', ResolveUnboundRoutingRule: '\u5904\u7406\u672a\u7ed1\u5b9a\u89c4\u5219',
+    ImportProfile: '\u5bfc\u5165\u8ba2\u9605', UpdateProfile: '\u66f4\u65b0\u8ba2\u9605', RenameProfile: '\u91cd\u547d\u540d\u8ba2\u9605',
+    DiagnosticsRepair: '\u6267\u884c\u8bca\u65ad\u4fee\u590d'
+  };
+  return operation?.activeCommand ? (names[operation.activeCommand] || '\u6b63\u5728\u5904\u7406') : '\u7a7a\u95f2';
 }
 
 function renderTrafficMetrics(traffic = {}) {
@@ -3836,6 +3851,16 @@ function renderStatus(status) {
 
   $('#softwareState').textContent = runtimeSummaryLabel(status, settings);
   $('#softwareState').className = coreReady ? 'ok' : '';
+  const runtimeOperation = status.runtimeOperation || {};
+  const runtimeOperationState = $('#runtimeOperationState');
+  if (runtimeOperationState) {
+    const active = Boolean(runtimeOperation.activeCommand);
+    runtimeOperationState.textContent = runtimeOperationLabel(runtimeOperation);
+    runtimeOperationState.className = active ? 'pending' : 'ok';
+    runtimeOperationState.title = active && runtimeOperation.activeLabel
+      ? `#${runtimeOperation.sequence || 0} ${runtimeOperation.activeLabel}`
+      : '\u6682\u65e0\u4f1a\u4fee\u6539\u8fd0\u884c\u65f6\u72b6\u6001\u7684\u64cd\u4f5c';
+  }
   $('#networkAvailabilityState').textContent = availability.label;
   $('#networkAvailabilityState').className = availability.className;
   $('#networkAvailabilityState').setAttribute('title', availability.detail || availability.label);

@@ -19,6 +19,7 @@ const speedSchedulerRs = readSource('src-tauri', 'src', 'speed_scheduler.rs');
 const diagnosticsRuntimeRs = readSource('src-tauri', 'src', 'diagnostics_runtime.rs');
 const subscriptionRuntimeRs = readSource('src-tauri', 'src', 'subscription_runtime.rs');
 const configDeploymentRs = readSource('src-tauri', 'src', 'config_deployment.rs');
+const runtimeCommandRs = readSource('src-tauri', 'src', 'runtime_command.rs');
 
 const fail = [];
 const pass = [];
@@ -833,7 +834,10 @@ check(
 
 check(
   'core-changing operations use a shared operation queue',
-  mainRs.includes('operations: Arc<Mutex<()>>') &&
+  mainRs.includes('operations: runtime_command::RuntimeOperationCoordinator') &&
+    mainRs.includes('mod runtime_command;') &&
+    runtimeCommandRs.includes('pub struct RuntimeOperationCoordinator') &&
+    runtimeCommandRs.includes('pub struct RuntimeOperationSnapshot') &&
     mainRs.includes('fn lock_operation_queue') &&
     ['startCore', 'stopCore', 'restartCore', 'setActiveProfile', 'updateSettings', 'updateSetting', 'setMode', 'changeProxy'].every((name) => mainRs.includes(`"${name}"`) && mainRs.includes(`"${name}"`)) &&
     mainRs.includes('operation_queue_is_exclusive') &&

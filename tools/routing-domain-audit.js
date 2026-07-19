@@ -17,9 +17,9 @@ const section = (source, start, end) => {
   return from >= 0 && to > from ? source.slice(from, to) : '';
 };
 
-const groupEdit = section(main, 'fn apply_routing_group_edit(', 'fn apply_routing_rule_edit(');
-const ruleEdit = section(main, 'fn apply_routing_rule_edit(', 'fn standby_settings(');
-const draftApply = section(main, 'fn apply_routing_drafts(', 'fn undo_last_routing_apply(');
+const groupEdit = section(main, 'fn apply_routing_group_edit(', 'fn standby_settings(');
+const ruleEdit = section(main, 'fn apply_user_rule_store_edit(', 'fn resolve_unbound_user_rule(');
+const draftApply = section(main, 'fn apply_user_rule_store_drafts(', 'fn apply_user_rule_store_edit(');
 const draftCompile = section(domain, 'impl RoutingDraftInput {', 'impl RoutingRuleEditInput {');
 
 check(
@@ -64,15 +64,17 @@ check(
 
 check(
   'rule ownership and batch undo records roll back with configuration',
-  main.includes('fn restore_routing_transaction(') &&
-    main.includes('write_routing_user_rules(&self.app_data, previous_registry)') &&
-    ruleEdit.includes('let previous_registry = read_routing_user_rules(&self.app_data);') &&
-    ruleEdit.includes('commit_needed,') &&
-    ruleEdit.includes('could not update user-rule ownership') &&
-    draftApply.includes('let previous_backup = fs::read_to_string(&backup_path).ok();') &&
-    draftApply.includes('restore_optional_text_file(') &&
-    draftApply.includes('could not finalize undo and ownership records'),
-  'post-deploy file failures restore preferences, user ownership, active config, and prior undo evidence'
+  main.includes('fn stage_routing_store_transaction(') &&
+    main.includes('fn rollback_routing_store_transaction(') &&
+    main.includes('fn recover_interrupted_routing_store_transaction(') &&
+    ruleEdit.includes('let previous_store = store.clone();') &&
+    ruleEdit.includes('rollback_routing_store_transaction(') &&
+    ruleEdit.includes('finish_routing_store_transaction(') &&
+    draftApply.includes('stage_routing_store_transaction(') &&
+    draftApply.includes('write_routing_store_undo(') &&
+    draftApply.includes('Routing rule apply could not persist undo evidence') &&
+    draftApply.includes('Routing rule apply could not finalize deployment'),
+  'store promotion, runtime reload, undo evidence, and finalization each retain a rollback path'
 );
 
 check(
