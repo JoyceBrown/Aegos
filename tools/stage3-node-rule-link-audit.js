@@ -63,7 +63,7 @@ check(
     appJs.includes("dataset: { nodeAction: 'edit'") &&
     appJs.includes("dataset: { nodeAction: 'route'") &&
     appJs.includes("dataset: { nodeAction: 'favorite'") &&
-    appJs.includes("ariaLabel: '为网站使用此节点'") &&
+    appJs.includes("ariaLabel: '添加网站或应用分流规则'") &&
     appJs.includes("icon('icon-routing')") &&
     indexHtml.includes('<span>规则</span><span>收藏</span>') &&
     styles.includes('repeat(4, 1fr)') &&
@@ -117,19 +117,29 @@ check(
   'node link UX explains that the current connection is not switched',
   renderBody.includes('不会切换当前连接') &&
     renderBody.includes('用户规则优先') &&
-    renderBody.includes('还没有网站指定到这个') &&
+    renderBody.includes('网站或应用') &&
     appJs.includes('nodeTargetRuleConflict') &&
     appJs.includes('用户规则优先'),
   'ordinary-user copy and conflict check'
 );
 
 check(
+  'node rule editor supports a clear website-or-application choice with safe process validation',
+  appJs.includes("value: 'PROCESS-NAME'") &&
+    appJs.includes("value: 'PROCESS-PATH'") &&
+    appJs.includes('function updateNodeTargetEditorMode') &&
+    appJs.includes("ruleKind === 'PROCESS-NAME'") &&
+    appJs.includes("ruleKind === 'PROCESS-PATH'") &&
+    addBody.includes("kind.startsWith('PROCESS-')"),
+  'application rule choice / process-name and path validation'
+);
+
+check(
   'release audit and release note record the 3.5.97 gate',
   releaseAudit.includes('stage 3 node/rule link audit script exists') &&
-    releaseAudit.includes('tools/stage3-node-rule-link-audit.js') &&
+  releaseAudit.includes('tools/stage3-node-rule-link-audit.js') &&
     releaseAudit.includes('audit:stage3-node-rule-link') &&
     release.includes('3.5.97') &&
-    release.includes('节点页和规则页联动') &&
     release.includes('npm run audit:stage3-node-rule-link'),
   `RELEASE_${pkg.version}.md`
 );

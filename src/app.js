@@ -1039,8 +1039,8 @@ function ensureNodeGroupTargetEditor() {
     el('section', { className: 'node-member-panel node-target-panel' }, [
       el('header', { className: 'node-member-head' }, [
         el('div', {}, [
-          el('b', { id: 'nodeTargetTitle', textContent: '编辑目标网站' }),
-          el('small', { id: 'nodeTargetHint', textContent: '把网站固定到这个策略组，不影响当前连接。' })
+          el('b', { id: 'nodeTargetTitle', textContent: '添加分流规则' }),
+          el('small', { id: 'nodeTargetHint', textContent: '把网站或应用固定到这个策略组，不影响当前连接。' })
         ]),
         el('button', { className: 'ghost compact', dataset: { closeNodeTargetEditor: '1' }, attrs: { type: 'button' }, textContent: '关闭' })
       ]),
@@ -1049,21 +1049,23 @@ function ensureNodeGroupTargetEditor() {
         el('label', { className: 'routing-field' }, [
           el('span', { textContent: '匹配方式' }),
           el('select', { id: 'nodeTargetKindSelect' }, [
-            el('option', { textContent: '网站后缀：example.com 及子域名', attrs: { value: 'DOMAIN-SUFFIX' } }),
+            el('option', { textContent: '网站：子域名也适用', attrs: { value: 'DOMAIN-SUFFIX' } }),
+            el('option', { textContent: '应用：进程名称（推荐）', attrs: { value: 'PROCESS-NAME' } }),
+            el('option', { textContent: '应用：完整程序路径', attrs: { value: 'PROCESS-PATH' } }),
             el('option', { textContent: '完整域名：只匹配一个域名', attrs: { value: 'DOMAIN' } }),
             el('option', { textContent: '关键词：域名包含关键词', attrs: { value: 'DOMAIN-KEYWORD' } })
           ])
         ]),
         el('label', { className: 'routing-field' }, [
-          el('span', { textContent: '目标网站' }),
-          el('input', { id: 'nodeTargetConditionInput', attrs: { placeholder: '例如 bilibili.com', autocomplete: 'off', spellcheck: 'false' } })
+          el('span', { id: 'nodeTargetConditionLabel', textContent: '网站或应用' }),
+          el('input', { id: 'nodeTargetConditionInput', attrs: { placeholder: '例如 bilibili.com 或 Telegram.exe', autocomplete: 'off', spellcheck: 'false' } })
         ]),
         el('button', { className: 'primary compact', dataset: { addNodeTargetRule: '1' }, attrs: { type: 'button' }, textContent: '添加' }),
         el('div', { className: 'node-target-examples' }, [
           el('small', { id: 'nodeTargetInputHint', textContent: '输入后 Aegos 会立即检查重复和冲突。' }),
           el('button', { className: 'ghost compact', dataset: { nodeTargetExample: 'youtube.com', nodeTargetKind: 'DOMAIN-SUFFIX' }, attrs: { type: 'button' }, textContent: 'youtube.com' }),
-          el('button', { className: 'ghost compact', dataset: { nodeTargetExample: 'telegram', nodeTargetKind: 'DOMAIN-KEYWORD' }, attrs: { type: 'button' }, textContent: 'telegram' }),
-          el('button', { className: 'ghost compact', dataset: { nodeTargetExample: 'chat.openai.com', nodeTargetKind: 'DOMAIN' }, attrs: { type: 'button' }, textContent: 'chat.openai.com' })
+          el('button', { className: 'ghost compact', dataset: { nodeTargetExample: 'Telegram.exe', nodeTargetKind: 'PROCESS-NAME' }, attrs: { type: 'button' }, textContent: 'Telegram.exe' }),
+          el('button', { className: 'ghost compact', dataset: { nodeTargetExample: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', nodeTargetKind: 'PROCESS-PATH' }, attrs: { type: 'button' }, textContent: 'chrome.exe 路径' })
         ])
       ]),
       el('div', { id: 'nodeTargetList', className: 'node-target-list' }),
@@ -1084,7 +1086,10 @@ function ensureNodeGroupTargetEditor() {
     if (event.target?.id === 'nodeTargetConditionInput') updateNodeTargetInputHint();
   });
   overlay.addEventListener('change', (event) => {
-    if (event.target?.id === 'nodeTargetKindSelect') updateNodeTargetInputHint();
+    if (event.target?.id === 'nodeTargetKindSelect') {
+      updateNodeTargetEditorMode();
+      updateNodeTargetInputHint();
+    }
   });
   document.body.append(overlay);
 }
@@ -1340,7 +1345,8 @@ function renderNodeTargetEditor() {
   const userRules = rules.filter((rule) => routingRuleCategory(rule) === 'user');
   const readonlyRules = rules.filter((rule) => routingRuleCategory(rule) !== 'user');
   $('#nodeTargetTitle').textContent = `${targetLabel}规则：${groupName}`;
-  $('#nodeTargetHint').textContent = `添加网站后，这些网站会固定走这个${targetLabel}；不会切换当前连接，用户规则优先于订阅规则。`;
+  $('#nodeTargetHint').textContent = `添加网站或应用后，它会固定走这个${targetLabel}；不会切换当前连接，用户规则优先于订阅规则。`;
+  updateNodeTargetEditorMode();
   replaceChildrenSafe($('#nodeTargetSummary'), [
     el('div', { className: 'node-target-summary-card' }, [
       el('b', { textContent: String(userRules.length) }),
@@ -1372,7 +1378,7 @@ function renderNodeTargetEditor() {
     ]);
   });
   replaceChildrenSafe($('#nodeTargetList'), rows.length ? rows : [
-    emptyState(`还没有网站指定到这个${targetLabel}，可以先添加 bilibili.com 试一下。`)
+    emptyState(`还没有网站或应用指定到这个${targetLabel}，可以添加 bilibili.com 或 Telegram.exe。`)
   ]);
   updateNodeTargetInputHint();
 }
@@ -1395,7 +1401,21 @@ function closeNodeGroupTargetEditor() {
 function normalizeNodeTargetCondition(kind = '', value = '') {
   const ruleKind = String(kind || 'DOMAIN-SUFFIX').toUpperCase();
   const raw = String(value || '').trim();
-  if (!raw) return { ok: false, error: '请输入目标网站。' };
+  if (!raw) return { ok: false, error: '请输入网站或应用。' };
+  if (ruleKind === 'PROCESS-NAME') {
+    const processName = raw.replace(/[\\/]/g, '').trim();
+    if (!/^[a-z0-9][a-z0-9_. -]{0,180}(?:\.exe)?$/i.test(processName) || processName.includes(',')) {
+      return { ok: false, error: '请输入应用进程名，例如 Telegram.exe。' };
+    }
+    return { ok: true, condition: processName };
+  }
+  if (ruleKind === 'PROCESS-PATH') {
+    const processPath = raw.replace(/\//g, '\\').trim();
+    if (!/^[a-z]:\\.+\.exe$/i.test(processPath) || processPath.includes(',')) {
+      return { ok: false, error: '请输入 Windows 应用完整路径，例如 C:\\Program Files\\App\\App.exe。' };
+    }
+    return { ok: true, condition: processPath };
+  }
   if (ruleKind === 'DOMAIN-KEYWORD') {
     const keyword = raw.replace(/[,\s]/g, '').toLowerCase();
     if (!/^[a-z0-9_.-]{2,80}$/i.test(keyword)) return { ok: false, error: '关键词格式不对，例如 bilibili。' };
@@ -1404,6 +1424,17 @@ function normalizeNodeTargetCondition(kind = '', value = '') {
   const parsed = normalizeWebsiteRuleInput(raw);
   if (!parsed.ok) return { ok: false, error: parsed.error };
   return { ok: true, condition: parsed.domain };
+}
+
+function updateNodeTargetEditorMode() {
+  const kind = $('#nodeTargetKindSelect')?.value || 'DOMAIN-SUFFIX';
+  const appRule = kind === 'PROCESS-NAME' || kind === 'PROCESS-PATH';
+  const label = $('#nodeTargetConditionLabel');
+  const input = $('#nodeTargetConditionInput');
+  if (label) label.textContent = appRule ? '目标应用' : '目标网站';
+  if (input) input.placeholder = kind === 'PROCESS-PATH'
+    ? '例如 C:\\Program Files\\Telegram Desktop\\Telegram.exe'
+    : kind === 'PROCESS-NAME' ? '例如 Telegram.exe' : '例如 bilibili.com';
 }
 
 function sameTargetRule(rule = {}, kind = '', condition = '') {
@@ -1476,13 +1507,14 @@ async function addNodeTargetRuleFromEditor() {
     target: groupName,
     option: '',
     label: `${parsed.condition} -> ${groupName}`
-  }, { label: '添加目标网站' });
+  }, { label: kind.startsWith('PROCESS-') ? '添加应用分流规则' : '添加网站分流规则' });
   $('#nodeTargetConditionInput').value = '';
   await refreshRoutingSnapshot();
   nodeGroupTargetEditorState = { groupName, targetType };
   renderNodeTargetEditor();
   updateNodeTargetInputHint();
-  setNotice(conflict.level === 'warn' ? '目标网站已添加，并优先于订阅规则。' : '目标网站已添加');
+  const ruleLabel = kind.startsWith('PROCESS-') ? '应用分流规则' : '网站分流规则';
+  setNotice(conflict.level === 'warn' ? `${ruleLabel}已添加，并优先于订阅规则。` : `${ruleLabel}已添加`);
 }
 
 async function deleteNodeTargetRuleFromEditor(raw = '') {
@@ -1521,6 +1553,7 @@ function handleNodeTargetEditorClick(event) {
       input.focus();
       input.select?.();
     }
+    updateNodeTargetEditorMode();
     updateNodeTargetInputHint();
     return;
   }
@@ -2464,7 +2497,7 @@ function renderNodeRow(row) {
   const actions = el('span', { className: 'row-actions' }, [
     el('button', { dataset: { nodeAction: 'test', node: name }, ariaLabel: '测试节点延迟', attrs: { title: '测试节点延迟' } }, [icon('icon-speed')]),
     el('button', { dataset: { nodeAction: 'edit', node: name }, ariaLabel: '编辑节点', attrs: { title: '编辑节点' } }, [icon('icon-edit')]),
-    el('button', { dataset: { nodeAction: 'route', node: name }, ariaLabel: '为网站使用此节点', attrs: { title: '为网站使用此节点' } }, [icon('icon-routing')]),
+    el('button', { dataset: { nodeAction: 'route', node: name }, ariaLabel: '添加网站或应用分流规则', attrs: { title: '添加网站或应用分流规则' } }, [icon('icon-routing')]),
     el('button', { dataset: { nodeAction: 'favorite', node: name }, ariaLabel: favorite ? '取消收藏节点' : '收藏节点', attrs: { title: favorite ? '取消收藏节点' : '收藏节点' } }, [icon(favorite ? 'icon-star-filled' : 'icon-star')])
   ]);
   return el('div', {
