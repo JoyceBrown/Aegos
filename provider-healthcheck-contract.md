@@ -32,8 +32,8 @@ Planned API:
 
 Current status:
 
-- Not exposed in UI.
-- Not called by Aegos runtime.
+- Exposed as an explicit profile-level background job.
+- Called only through Aegos' typed controller boundary.
 - Not allowed inside ordinary one-click speed test.
 - Not allowed inside single-node speed test.
 
@@ -105,15 +105,9 @@ To enable provider healthcheck, Aegos must pass a fixture or live-local test:
 6. Assert no `change_proxy` path ran.
 7. Assert no system proxy, TUN, or traffic takeover changed.
 
-## 6. Current 2.9.56 Decision
+## 6. Current implementation decision
 
-2.9.56 approves the contract and audit gate only. It does not enable a user-visible provider healthcheck button.
-
-Reason:
-
-- The feature is useful, but user trust is more important.
-- Aegos must first prove the API does not mutate current selection under real provider profiles.
-- Ordinary speed test is already stable and must not be mixed with provider-level checks.
+The healthcheck is explicit, background-only, and verifies after completion that selected nodes, Windows proxy intent, TUN intent, and traffic takeover have not changed. A failed integrity check discards the result.
 
 ## 7. Acceptance
 

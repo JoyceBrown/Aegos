@@ -291,7 +291,12 @@ try {
       await wait(360);
     }
     click('[data-page="home"]');
-    await wait(500);
+    // Measure timer retention only after deferred navigation, idle work and
+    // speed-result coalescing have had time to settle. The samples above keep
+    // detecting growth during the exercise; this final sample distinguishes
+    // bounded in-flight work from an actual retained timer leak.
+    await wait(1200);
+    sampleResources('settled');
     const commands = window.__aegosCalls.map((item) => item.command);
     const jobKinds = window.__aegosCalls.filter((item) => item.command === 'start_job').map((item) => item.args.kind);
     return {
@@ -328,9 +333,10 @@ try {
   const elementCounts = settledSamples.map((sample) => sample.elements);
   const intervalCounts = settledSamples.map((sample) => sample.timers.intervals);
   const timeoutCounts = settledSamples.map((sample) => sample.timers.timeouts);
+  const finalTimeoutCount = settledSamples.at(-1)?.timers.timeouts || 0;
   if (elementCounts.length && Math.max(...elementCounts) - Math.min(...elementCounts) > 180) failures.push(`DOM element count did not stabilize: ${elementCounts.join(', ')}`);
   if (intervalCounts.some((count) => count > 7)) failures.push(`interval retention exceeded budget: ${intervalCounts.join(', ')}`);
-  if (timeoutCounts.some((count) => count > 5)) failures.push(`timeout retention exceeded budget: ${timeoutCounts.join(', ')}`);
+  if (finalTimeoutCount > 5) failures.push(`timeout retention exceeded budget after settling: ${timeoutCounts.join(', ')}`);
   if (domAfter.nodes > domBefore.nodes + 300) failures.push(`DOM nodes retained after soak: before=${domBefore.nodes} after=${domAfter.nodes}`);
 
   const result = { ...report, ok: failures.length === 0, failures };

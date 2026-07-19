@@ -54,6 +54,7 @@ pub const ROUTING_RECENT_RULES_LIMIT: usize = 12;
 pub const ACTIVE_CONNECTION_COUNT_TIMEOUT_MS: u64 = 350;
 pub const CLOSE_CONNECTION_TIMEOUT_MS: u64 = 2000;
 pub const CLOSE_ALL_CONNECTIONS_TIMEOUT_MS: u64 = 3000;
+pub const PROVIDER_HEALTHCHECK_TIMEOUT_MS: u64 = 5000;
 pub const CONFIG_FORCE_APPLY_ENDPOINT: &str = "/configs?force=true";
 pub const CONFIG_FORCE_APPLY_TIMEOUT_MS: u64 = 8000;
 pub const CONFIG_APPLY_VERSION_PROBE_TIMEOUT_MS: u64 = 900;
@@ -1542,6 +1543,25 @@ impl CoreController {
         self.select_proxy(group, proxy, AUXILIARY_PROXY_SELECT_TIMEOUT_MS)
     }
 
+    pub fn provider_healthcheck_snapshot(&self) -> Result<JsonValue, String> {
+        let providers = self.request("GET", "/providers/proxies", None, PROVIDER_HEALTHCHECK_TIMEOUT_MS)?;
+        let names = provider_names_from_controller(&providers);
+        if names.is_empty() {
+            return Ok(json!({ "providers": [], "available": false }));
+        }
+        let mut results = Vec::new();
+        for name in names {
+            let endpoint = format!("/providers/proxies/{}/healthcheck", url_path_encode(&name));
+            let result = self.request("GET", &endpoint, None, PROVIDER_HEALTHCHECK_TIMEOUT_MS);
+            results.push(json!({
+                "name": name,
+                "ok": result.is_ok(),
+                "error": result.err(),
+            }));
+        }
+        Ok(json!({ "providers": results, "available": true }))
+    }
+
     pub fn cleanup_stale_connections_after_selection(&self) {
         let _ = self.close_connections(STALE_CONNECTION_CLEANUP_TIMEOUT_MS);
     }
@@ -1721,6 +1741,14 @@ impl CoreController {
     fn config_apply_version_probe(&self) -> Result<RuntimeVersionSnapshot, String> {
         self.version_probe(CONFIG_APPLY_VERSION_PROBE_TIMEOUT_MS)
     }
+}
+
+pub fn provider_names_from_controller(payload: &JsonValue) -> Vec<String> {
+    payload
+        .get("providers")
+        .and_then(JsonValue::as_object)
+        .map(|providers| providers.keys().cloned().collect())
+        .unwrap_or_default()
 }
 
 pub fn classify_delay_http_failure(status: u16, body: &str) -> &'static str {
@@ -3681,6 +3709,15 @@ rules:
             }),
             CoreDelayProbeResult::failed("tls")
         );
+    }
+
+    #[test]
+    fn provider_health_names_are_read_only_controller_data() {
+        let payload = json!({ "providers": { "airport-a": {}, "airport-b": {} } });
+        let mut names = provider_names_from_controller(&payload);
+        names.sort();
+        assert_eq!(names, vec!["airport-a", "airport-b"]);
+        assert!(provider_names_from_controller(&json!({})).is_empty());
     }
 
     #[test]

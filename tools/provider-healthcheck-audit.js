@@ -37,7 +37,7 @@ check(
 );
 check(
   'contract defines planned mihomo API boundary',
-  ['GET /providers/proxies', 'GET /providers/proxies/{provider}/healthcheck', 'Not exposed in UI', 'Not called by Aegos runtime'].every((text) => contract.includes(text)),
+  ['GET /providers/proxies', 'GET /providers/proxies/{provider}/healthcheck'].every((text) => contract.includes(text)),
   'API boundary'
 );
 check(
@@ -51,12 +51,14 @@ check(
   'safety proof'
 );
 check(
-  'runtime does not expose provider healthcheck yet',
-  !mainRs.includes('/providers/proxies/{provider}/healthcheck') &&
-    !mainRs.includes('provider_healthcheck') &&
-    !appJs.includes('provider_healthcheck') &&
-    !appJs.includes('providerHealthcheck'),
-  'no runtime/UI entry point'
+  'provider healthcheck is a background read-only job with state-integrity verification',
+  mainRs.includes('provider_healthcheck_detached') &&
+    mainRs.includes('provider_healthcheck_snapshot') &&
+    mainRs.includes('selectionUnchanged') &&
+    mainRs.includes('providerHealthcheck') &&
+    appJs.includes("runBackgroundJob('providerHealthcheck'") &&
+    appJs.includes('profileHealth'),
+  'background job / unchanged selection proof / profile UI'
 );
 check(
   'ordinary speed audit remains the speed-test authority',

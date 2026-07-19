@@ -351,6 +351,9 @@ let lastTrafficUiSignature = '';
 let lastRuntimeStatusObservation = null;
 let lastLogRenderSignature = '';
 let lastJobRenderSignature = '';
+// Healthcheck results are intentionally transient UI evidence: they are not
+// subscription metadata and therefore never alter the active configuration.
+const providerHealthCache = new Map();
 const pageCacheState = {
   connections: { loaded: false, loading: false, updatedAt: 0 },
   routing: { loaded: false, loading: false, updatedAt: 0 },
@@ -1806,17 +1809,24 @@ function activeNodeRenderTarget(page = uiStore.state.page) {
   return page === 'nodes' ? 'nodes' : 'home';
 }
 
+let nodeRefreshRetryTimer = null;
+
 function queueNodeRefresh(target = activeNodeRenderTarget(), delay = 0) {
   const run = () => {
+    nodeRefreshRetryTimer = null;
     if (nodeBusy) {
-      setTimeout(run, 120);
+      // A speed wave can cause several callers to yield simultaneously. Keep
+      // one retry only; otherwise each caller leaves a redundant timer behind.
+      if (nodeRefreshRetryTimer) clearTimeout(nodeRefreshRetryTimer);
+      nodeRefreshRetryTimer = setTimeout(run, 120);
       return;
     }
     refreshNodes(true, { target }).then(() => {
       if (latestSpeedStatus) applySpeedStatusToNodes(latestSpeedStatus, { force: true });
     }).catch(() => {});
   };
-  if (delay > 0) setTimeout(run, delay);
+  if (nodeRefreshRetryTimer) clearTimeout(nodeRefreshRetryTimer);
+  if (delay > 0) nodeRefreshRetryTimer = setTimeout(run, delay);
   else run();
 }
 
@@ -3394,7 +3404,9 @@ function renderProfiles() {
     const pending = Boolean(profile.uiPending);
     const summary = pending ? profilePendingText(profile.uiPendingLabel) : profileSummaryText(profile);
     const id = profile.id || '';
-    const className = `list-card ${id === latestStatus?.settings?.activeProfileId ? 'active' : ''} ${pending ? 'is-pending' : ''}`;
+    const active = id === latestStatus?.settings?.activeProfileId;
+    const health = providerHealthCache.get(id);
+    const className = `list-card ${active ? 'active' : ''} ${pending ? 'is-pending' : ''}`;
     return el('article', {
       className,
       dataset: { profileRow: id },
@@ -3405,10 +3417,12 @@ function renderProfiles() {
         el('small', { textContent: `${profile.profile_type || '-'} / ${profile.updated_at || '-'}` })
       ]),
       el('small', { className: 'profile-source-summary', textContent: summary }),
+      health ? el('small', { className: 'profile-health-summary', textContent: health }) : null,
       el('div', { className: 'card-actions' }, [
         el('button', { dataset: { profileSwitch: id }, textContent: '\u542f\u7528' }),
         el('button', { dataset: { profileRename: id }, textContent: '\u91cd\u547d\u540d', disabled: id === 'direct' }),
         el('button', { dataset: { profileUpdate: id }, textContent: '\u66f4\u65b0' }),
+        el('button', { dataset: { profileHealth: id }, textContent: '\u5065\u5eb7\u68c0\u6d4b', disabled: id === 'direct' || !active, attrs: { title: active ? '\u4ec5\u68c0\u67e5\u5f53\u524d\u5df2\u542f\u7528\u8ba2\u9605\uff0c\u4e0d\u4f1a\u5207\u6362\u8282\u70b9' : '\u8bf7\u5148\u542f\u7528\u8be5\u8ba2\u9605' } }),
         el('button', { dataset: { profileRemove: id }, textContent: '\u5220\u9664', disabled: id === 'direct' })
       ])
     ]);
@@ -4690,6 +4704,13 @@ async function updateProfileJob(id) {
     pendingNotice: '正在更新订阅...',
     successNotice: '已完成',
     failureNotice: (err) => `订阅更新失败：${err.message || err}`
+  });
+}
+
+async function providerHealthcheckJob() {
+  return runBackgroundJob('providerHealthcheck', {}, {
+    label: '\u8ba2\u9605\u5065\u5eb7\u68c0\u6d4b',
+    pendingMessage: '\u6b63\u5728\u68c0\u67e5\u8ba2\u9605\u5065\u5eb7\uff0c\u4e0d\u4f1a\u5207\u6362\u8282\u70b9...'
   });
 }
 
@@ -7817,6 +7838,16 @@ document.body.addEventListener('click', async (event) => {
         successNotice: '已完成',
         failureNotice: (err) => `订阅更新失败：${err.message || err}`
       });
+      return;
+    }
+    const profileHealth = event.target.closest('[data-profile-health]')?.dataset.profileHealth;
+    if (profileHealth) {
+      const result = await providerHealthcheckJob();
+      const providers = result?.report?.providers || [];
+      const failed = providers.filter((provider) => !provider.ok).length;
+      providerHealthCache.set(profileHealth, `健康检测：${providers.length} 个 Provider，${failed ? `${failed} 项异常` : '全部正常'}；未切换节点`);
+      renderProfilesIfVisible();
+      setNotice(failed ? `\u8ba2\u9605\u5065\u5eb7\u68c0\u6d4b\u5b8c\u6210\uff1a${failed} \u9879\u5f02\u5e38\uff0c\u672a\u5207\u6362\u5f53\u524d\u8282\u70b9\u3002` : '\u8ba2\u9605\u5065\u5eb7\u68c0\u6d4b\u5b8c\u6210\uff0c\u672a\u5207\u6362\u5f53\u524d\u8282\u70b9\u3002');
       return;
     }
     const profileRemove = event.target.closest('[data-profile-remove]')?.dataset.profileRemove;

@@ -57,7 +57,11 @@ use task_runtime::{
     finish_cancelled, finish_job, job_cancel_requested, job_status_snapshot, new_job_record,
     request_job_cancel, set_job_issue, set_job_state, JobStore,
 };
-use tauri::{AppHandle, Emitter, Manager, State, Window, WindowEvent};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, Manager, State, Window, WindowEvent,
+};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -10827,6 +10831,34 @@ fn update_all_profiles_detached(
     }))
 }
 
+fn provider_healthcheck_detached(core: Arc<Mutex<CoreManager>>) -> Result<JsonValue, String> {
+    let (controller, selected_proxy_map, system_proxy, tun_enabled, traffic_takeover) = {
+        let core = core.lock().map_err(|_| "core state lock poisoned".to_string())?;
+        if core.process.is_none() {
+            return Err("Provider healthcheck requires a running Aegos core".to_string());
+        }
+        (
+            core.core_controller(),
+            core.settings.selected_proxy_map.clone(),
+            core.settings.system_proxy,
+            core.settings.tun_enabled,
+            core.traffic_takeover,
+        )
+    };
+    let report = controller.provider_healthcheck_snapshot()?;
+    let core = core.lock().map_err(|_| "core state lock poisoned".to_string())?;
+    let unchanged = core.settings.selected_proxy_map == selected_proxy_map
+        && core.settings.system_proxy == system_proxy
+        && core.settings.tun_enabled == tun_enabled
+        && core.traffic_takeover == traffic_takeover;
+    if !unchanged {
+        core.add_log("Provider healthcheck safety verification failed: runtime state changed", "error");
+        return Err("Provider healthcheck safety verification failed; no result was applied".to_string());
+    }
+    core.add_log("Provider healthcheck completed without changing node selection or takeover", "info");
+    Ok(json!({ "report": report, "selectionUnchanged": true }))
+}
+
 fn lock_operation_queue<'a>(
     operations: &'a Arc<Mutex<()>>,
     label: &str,
@@ -10844,6 +10876,7 @@ fn job_label(kind: &str) -> String {
         "updateProfile" | "updateAllProfiles" => "更新订阅",
         "recoverNetwork" => "修复网络",
         "refreshOutboundIp" => "刷新落地 IP",
+        "providerHealthcheck" => "订阅健康检测",
         "diagnostics" => "运行诊断",
         "startCore" => "建立连接",
         "stopCore" => "断开连接",
@@ -10891,6 +10924,7 @@ fn start_job(
             | "updateAllProfiles"
             | "recoverNetwork"
             | "refreshOutboundIp"
+            | "providerHealthcheck"
             | "diagnostics"
             | "repairDiagnostic"
             | "startCore"
@@ -10982,6 +11016,10 @@ fn start_job(
             "refreshOutboundIp" => {
                 set_job_state(&jobs, &id, "running", 1, 2, "正在查询落地 IP");
                 refresh_outbound_ip_detached(core.clone()).map(|ip| json!({ "ip": ip }))
+            }
+            "providerHealthcheck" => {
+                set_job_state(&jobs, &id, "running", 1, 2, "正在检查订阅健康，不会切换节点");
+                provider_healthcheck_detached(core.clone())
             }
             "diagnostics" => {
                 set_job_state(&jobs, &id, "running", 1, 2, "正在检查网络状态");
@@ -13529,11 +13567,18 @@ fn window_toggle_maximize(window: Window) -> Result<(), String> {
 #[tauri::command]
 fn window_close(window: Window, state: State<AppState>) -> Result<(), String> {
     state.core.lock().unwrap().shutdown_for_exit();
-    window.close().map_err(|err| err.to_string())
+    window.app_handle().exit(0);
+    Ok(())
 }
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .setup(|app| {
             let core = CoreManager::new(&app.handle())?;
             let speed_test = core.speed_test.clone();
@@ -13561,6 +13606,42 @@ fn main() {
                     }
                 }
             });
+            let show = MenuItem::with_id(app, "show", "显示 Aegos", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出并恢复网络", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let mut tray = TrayIconBuilder::with_id("aegos-tray").menu(&menu).tooltip("Aegos 正在后台运行");
+            if let Some(icon) = app.default_window_icon().cloned() {
+                tray = tray.icon(icon);
+            }
+            tray.on_menu_event(|app, event| match event.id.as_ref() {
+                "show" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+                "quit" => {
+                    if let Some(state) = app.try_state::<AppState>() {
+                        state.core.lock().unwrap().shutdown_for_exit();
+                    }
+                    app.exit(0);
+                }
+                _ => {}
+            })
+            .on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    if let Some(window) = tray.app_handle().get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            })
+            .build(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -13615,9 +13696,9 @@ fn main() {
             window_close
         ])
         .on_window_event(|window, event| {
-            if matches!(event, WindowEvent::CloseRequested { .. }) {
-                let state = window.state::<AppState>();
-                state.core.lock().unwrap().shutdown_for_exit();
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
             }
         })
         .run(tauri::generate_context!())

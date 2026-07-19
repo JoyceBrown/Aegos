@@ -47,7 +47,13 @@ check('connection closure audit is exposed as package script', packageJson.inclu
 check('package version keeps connection closure lane after 3.4.12', semverAtLeast(pkg.version, '3.4.12'), pkg.version);
 check('release audit knows connection closure audit', releaseAudit.includes('connection closure audit script exists'), 'tools/release-audit.js');
 check('backend exposes user-facing connection phase and next action', coreRuntimeRs.includes('pub fn connection_phase(') && coreRuntimeRs.includes('pub fn connection_status_json(') && coreRuntimeRs.includes('"phase"') && coreRuntimeRs.includes('"label"') && coreRuntimeRs.includes('"nextAction"') && mainRs.includes('core_runtime::connection_status_json(') && !mainRs.includes('fn connection_phase(&self)'), 'connection_phase/summary');
-check('app status includes lightweight connection summary', mainRs.includes('"connection": self.connection_status_summary()'), 'status connection summary');
+check(
+  'app status includes lightweight connection summary',
+  mainRs.includes('self.connection_status_summary(),')
+    && mainRs.includes('core_runtime::status_surface_json(')
+    && coreRuntimeRs.includes('"connection": connection'),
+  'status connection summary reaches the shared status surface'
+);
 check('connection closure still returns current node and outbound IP for jobs', mainRs.includes('fn connection_closure(&self)') && mainRs.includes('core_runtime::connection_closure_json(') && coreRuntimeRs.includes('"currentNode"') && coreRuntimeRs.includes('"outboundIp"') && coreRuntimeRs.includes('"outboundIpKnown"'), 'job connection closure');
 check('manual system proxy preference still does not auto-connect', mainRs.includes('System proxy preference enabled; connect before applying Windows proxy takeover') && mainRs.includes('if enable && !self.traffic_takeover'), 'manual proxy preference path');
 check('frontend reads backend connection applied/wanted state', appJs.includes('const connection = status.connection || {}') && appJs.includes('connection.systemProxyApplied') && appJs.includes('connection.systemProxyWanted'), 'renderStatus connection source');

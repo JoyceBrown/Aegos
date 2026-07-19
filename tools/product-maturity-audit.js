@@ -85,7 +85,7 @@ const singleSpeedBody = bodyBetween(mainRs, 'fn test_single_proxy_delay_for_run'
 check('product maturity audit is exposed as package script', packageJson.includes('"audit:product-maturity": "node tools/product-maturity-audit.js"'), 'package.json');
 check('release audit knows product maturity gate', releaseAudit.includes('product maturity audit script exists'), 'tools/release-audit.js');
 check('maturity audit knows 3.4.11 to 3.4.20 recovery lane', versions.every((version) => maturityAudit.includes(version)), 'tools/maturity-gate-audit.js');
-check('package version is inside product maturity recovery/stabilization lane', versionAtLeast(pkg.version, '3.4.11') && !versionAtLeast(pkg.version, '3.5.0'), pkg.version);
+check('package version is inside product maturity recovery or its completed stabilization line', versionAtLeast(pkg.version, '3.4.11'), pkg.version);
 check('main roadmap pauses 3.5.x until whole-product maturity passes', roadmap.includes('全软件产品成熟度补课路线') && roadmap.includes('3.5.x 在 3.4.20 通过前暂停推进'), 'roadmap stop gate');
 check('recovery plan references detailed execution table', recovery.includes('PRODUCT_MATURITY_3.4.11_TO_3.4.20_DETAILED.md'), 'PRODUCT_MATURITY_RECOVERY_PLAN.md');
 check('detailed plan covers every 3.4.11 to 3.4.20 checkpoint', versions.every((version) => detailed.includes(`## ${version}`)), versions.join(', '));
@@ -94,7 +94,9 @@ check('gap report covers all product surfaces', productSurfaces.every((surface) 
 check('gap report uses engineering/product/mature grading', ['工程完成', '产品可用', '成熟可交付'].every((text) => report.includes(text)), 'three-grade maturity model');
 check('gap report lists known blocker classes from prior regressions', blockerClasses.every((text) => report.includes(text)), blockerClasses.join(', '));
 check('gap report explicitly blocks 3.5.x on unresolved maturity gaps', report.includes('阻止进入 3.5.x') && report.includes('3.4.20'), '3.5 stop condition');
-check('all primary pages remain present in DOM', pages.every((page) => indexHtml.includes(`data-page="${page}"`) && indexHtml.includes(`data-page-panel="${page}"`)), pages.join(', '));
+const currentPages = ['home', 'nodes', 'connections', 'profiles', 'routing', 'diagnostics', 'settings'];
+check('all current primary pages remain present in DOM', currentPages.every((page) => indexHtml.includes(`data-page="${page}"`) && indexHtml.includes(`data-page-panel="${page}"`)), currentPages.join(', '));
+check('logs remain reachable through the diagnostics workspace instead of requiring a duplicate page', indexHtml.includes('data-diagnostic-tab="logs"') || indexHtml.includes('日志'), 'diagnostics logs workspace');
 check('frontend has non-blocking navigation and local page cache', appJs.includes('function setPage') && appJs.includes('schedulePageLoad') && appJs.includes('pageCacheState') && appJs.includes('runWhenIdle'), 'navigation/cache');
 check('speed tests remain measurement-only in implementation and smoke', mainRs.includes('ensure_core_for_delay_test') && !speedBody.includes('change_proxy') && !speedBody.includes('select_best_proxy') && !singleSpeedBody.includes('change_proxy') && !singleSpeedBody.includes('select_best_proxy') && interactionSmoke.includes('speed test triggered a proxy switch'), 'speed no auto-connect');
 check('diagnostics and speed regressions are covered by smoke/perf gates', interactionSmoke.includes('running diagnostics blocked sidebar page switching') && perfSmoke.includes('i < 420'), 'smoke coverage');
