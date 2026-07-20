@@ -103,6 +103,8 @@ check(
   })() &&
     app.includes('speedResultOverlay.set(name, next)') &&
     app.includes('function speedOverlayForItem') &&
+    app.includes('function setSpeedProgressNotice') &&
+    app.includes('setSpeedProgressNotice(delta.phase') &&
     app.includes('pendingSpeedTerminal') &&
     !between(app, 'function applySpeedStatusToNodes', 'function speedOverlayForItem').includes('updateLatestGroupItems(nextItems)'),
   'streamed delays update visible rows without cloning the complete node list'

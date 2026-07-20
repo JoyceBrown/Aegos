@@ -16,8 +16,8 @@
 - Added explicit Mihomo capability/identity admission checks and documented
   version governance plus the boundary for upstream collaboration.
 - Tuned streamed speed-result rendering with a bounded 48-item frame batch,
-  a 0.75ms processing budget, and throttled progress/visible-row updates while
-  preserving terminal reconciliation.
+  a 0.75ms processing budget, shell-free progress updates, and throttled
+  visible-row updates while preserving terminal reconciliation.
 
 ## Verification
 
@@ -36,4 +36,4 @@
 ## Artifact
 
 - Installer: `src-tauri/target/release/bundle/nsis/Aegos_3.6.46_x64-setup.exe`
-- SHA-256: `0bb2396fdc47d3063298562d67776e8674c9a37a0d544529df88de98059aeddc`
+- SHA-256: `85a120b9750f841b62f2610fa67f61b7042d63a4a6ba6037f61b29bd50f8a640`

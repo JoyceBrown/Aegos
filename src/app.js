@@ -1980,7 +1980,7 @@ function applySpeedStatusToNodes(status = {}, options = {}) {
   if (recommendedName) latestRecommendedName = recommendedName;
   if (changed && isNodeSurfaceActive()) {
     const now = performance.now();
-    if (!speedVisibleUpdateAt || now - speedVisibleUpdateAt >= 120) {
+    if (!speedVisibleUpdateAt || now - speedVisibleUpdateAt >= 300) {
       updateVisibleNodeDelays(visibleChanges);
       speedVisibleUpdateAt = now;
     }
@@ -2567,6 +2567,17 @@ function setNotice(message) {
   notice.classList.toggle('is-warn', level === 'warn');
   notice.classList.toggle('is-info', level === 'info');
   syncShellSummary();
+}
+
+function setSpeedProgressNotice(message) {
+  const notice = $('#protectionNotice');
+  if (!notice) return;
+  const level = noticeLevel(message);
+  if (notice.textContent === message && notice.classList.contains(`is-${level}`)) return;
+  notice.textContent = message;
+  notice.classList.toggle('is-bad', level === 'bad');
+  notice.classList.toggle('is-warn', level === 'warn');
+  notice.classList.toggle('is-info', level === 'info');
 }
 
 function syncShellSummary() {
@@ -4526,7 +4537,7 @@ function flushSpeedResultEvents() {
   // but avoid rebuilding the shell summary for every animation frame.
   const now = performance.now();
   if (!speedProgressNoticeAt || now - speedProgressNoticeAt >= 120) {
-    setNotice(delta.phase === 'refining'
+    setSpeedProgressNotice(delta.phase === 'refining'
       ? `\u540e\u53f0\u590d\u6d4b ${delta.refineCompleted}/${delta.refineTotal}\uff0c\u754c\u9762\u53ef\u7ee7\u7eed\u4f7f\u7528`
       : `\u6d4b\u901f\u4e2d ${delta.completed}/${delta.total}\uff0c\u6210\u529f ${delta.ok}`);
     speedProgressNoticeAt = now;

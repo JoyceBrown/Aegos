@@ -28,7 +28,8 @@ thresholds, and no failing report is treated as passing evidence.
 
 - Speed results use a dynamic overlay and constant-time node indexing.
 - Rendering is limited to a 48-result batch with a `0.75ms` frame budget.
-- Progress text and visible-row updates are throttled to `120ms`.
+- Progress text is throttled to `120ms`; visible-row updates are throttled to
+  `300ms` and final reconciliation remains immediate.
 - Terminal reconciliation performs a final authoritative visible refresh.
 
 ## Reopening Criteria
