@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -23,6 +23,18 @@ const appUrl = pathToFileURL(path.join(root, 'src', 'index.html')).href;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function terminatePerfChrome() {
+  if (process.platform !== 'win32') {
+    chrome.kill();
+    return;
+  }
+  if (chrome.pid) spawnSync('taskkill', ['/PID', String(chrome.pid), '/T', '/F'], { stdio: 'ignore' });
+  // Chrome may detach renderer descendants after its browser process exits.
+  // The dedicated profile prefix cannot target a user Chrome session.
+  const command = "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | Where-Object { $_.CommandLine -match 'aegos-perf-smoke-' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
+  spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { stdio: 'ignore' });
 }
 
 function httpJson(route, method = 'GET') {
@@ -883,8 +895,8 @@ try {
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) process.exitCode = 2;
 } finally {
+  terminatePerfChrome();
   try { page?.close(); } catch {}
-  chrome.kill();
   await delay(300);
   try { fs.rmSync(userDataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 150 }); } catch {}
 }
