@@ -62,6 +62,7 @@ let speedProgressNoticeAt = 0;
 let speedVisibleUpdateAt = 0;
 const speedResultsByRun = new Map();
 const singleSpeedWaiters = new Map();
+const pendingSingleSpeedRuns = new Set();
 const speedResultChunkSize = 48;
 const speedResultFrameBudgetMs = 0.75;
 let profileStateSeq = 0;
@@ -4449,9 +4450,10 @@ function speedResultFromEvent(payload = {}) {
 function rememberSpeedResultEvent(payload = {}) {
   const runId = Number(payload.runId || 0);
   if (!runId) return;
+  const waiter = singleSpeedWaiters.get(runId);
+  if (!waiter && !pendingSingleSpeedRuns.has(runId)) return;
   speedResultsByRun.set(runId, payload);
   while (speedResultsByRun.size > 8) speedResultsByRun.delete(speedResultsByRun.keys().next().value);
-  const waiter = singleSpeedWaiters.get(runId);
   if (!waiter) return;
   const eventName = payload.name || payload.selectName || '';
   if (waiter.name && eventName && waiter.name !== eventName) return;
@@ -4461,6 +4463,7 @@ function rememberSpeedResultEvent(payload = {}) {
 function cancelSingleSpeedWaiters(reason = 'cancelled') {
   singleSpeedWaiters.forEach((waiter) => waiter.resolve({ delay: -1, reason, healthStatus: 'failed' }));
   singleSpeedWaiters.clear();
+  pendingSingleSpeedRuns.clear();
   speedResultsByRun.clear();
 }
 
@@ -5122,6 +5125,7 @@ async function testSingleNode(name, button) {
       const queued = await invoke('test_single_proxy_delay', { name });
       const runId = Number(queued?.runId || 0);
       if (runId > 0) {
+        pendingSingleSpeedRuns.add(runId);
         activeSpeedRunId = runId;
         activeSpeedProfileId = latestStatus?.settings?.activeProfileId || latestStatus?.activeProfile?.id || '';
         latestSpeedStatus = { ...(latestSpeedStatus || {}), ...queued, running: true, total: 1, completed: 0 };
@@ -5135,6 +5139,7 @@ async function testSingleNode(name, button) {
             healthStatus: queued?.healthStatus || queued?.status || ''
           };
       if (runId > 0 && activeSpeedRunId === runId) {
+        pendingSingleSpeedRuns.delete(runId);
         activeSpeedRunId = 0;
         activeSpeedProfileId = '';
         latestSpeedStatus = { ...(latestSpeedStatus || {}), running: false };

@@ -17,7 +17,8 @@
   version governance plus the boundary for upstream collaboration.
 - Tuned streamed speed-result rendering with a bounded 48-item frame batch,
   a 0.75ms processing budget, shell-free progress updates, and throttled
-  visible-row updates while preserving terminal reconciliation.
+  visible-row updates while preserving terminal reconciliation. Batch events no
+  longer populate the single-node result cache.
 
 ## Verification
 
@@ -36,4 +37,4 @@
 ## Artifact
 
 - Installer: `src-tauri/target/release/bundle/nsis/Aegos_3.6.46_x64-setup.exe`
-- SHA-256: `85a120b9750f841b62f2610fa67f61b7042d63a4a6ba6037f61b29bd50f8a640`
+- SHA-256: `4eaafd1e5d8508dcbbb8050bf5356542d80e83b71e7b637b7d827b30cc714588`
