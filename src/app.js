@@ -58,10 +58,12 @@ let speedResultFrame = null;
 const pendingSpeedResults = new Map();
 let pendingSpeedTerminal = null;
 let latestQueuedSpeedProgress = null;
+let speedProgressNoticeAt = 0;
+let speedVisibleUpdateAt = 0;
 const speedResultsByRun = new Map();
 const singleSpeedWaiters = new Map();
-const speedResultChunkSize = 160;
-const speedResultFrameBudgetMs = 3;
+const speedResultChunkSize = 48;
+const speedResultFrameBudgetMs = 0.75;
 let profileStateSeq = 0;
 let profilePreviewSeq = 0;
 let profileMenuAnchor = null;
@@ -1976,7 +1978,13 @@ function applySpeedStatusToNodes(status = {}, options = {}) {
     changed = true;
   });
   if (recommendedName) latestRecommendedName = recommendedName;
-  if (changed && isNodeSurfaceActive()) updateVisibleNodeDelays(visibleChanges);
+  if (changed && isNodeSurfaceActive()) {
+    const now = performance.now();
+    if (!speedVisibleUpdateAt || now - speedVisibleUpdateAt >= 120) {
+      updateVisibleNodeDelays(visibleChanges);
+      speedVisibleUpdateAt = now;
+    }
+  }
   if (summaryRelevant) {
     renderHomeNodeSummary(summaryRowsFromLatestGroup());
   }
@@ -4406,6 +4414,8 @@ function stopSpeedTestPolling() {
   if (speedTestTimer) clearInterval(speedTestTimer);
   speedTestTimer = null;
   speedTestStarting = false;
+  speedProgressNoticeAt = 0;
+  speedVisibleUpdateAt = 0;
   activeSpeedRunId = 0;
   activeSpeedProfileId = '';
   if (speedResultFrame) cancelAnimationFrame(speedResultFrame);
@@ -4512,9 +4522,15 @@ function flushSpeedResultEvents() {
     health
   };
   applySpeedStatusToNodes(delta, { force: true, preserveLatest: true });
-  setNotice(delta.phase === 'refining'
-    ? `\u540e\u53f0\u590d\u6d4b ${delta.refineCompleted}/${delta.refineTotal}\uff0c\u754c\u9762\u53ef\u7ee7\u7eed\u4f7f\u7528`
-    : `\u6d4b\u901f\u4e2d ${delta.completed}/${delta.total}\uff0c\u6210\u529f ${delta.ok}`);
+  // Progress updates can arrive in dense bursts. Keep the result stream live,
+  // but avoid rebuilding the shell summary for every animation frame.
+  const now = performance.now();
+  if (!speedProgressNoticeAt || now - speedProgressNoticeAt >= 120) {
+    setNotice(delta.phase === 'refining'
+      ? `\u540e\u53f0\u590d\u6d4b ${delta.refineCompleted}/${delta.refineTotal}\uff0c\u754c\u9762\u53ef\u7ee7\u7eed\u4f7f\u7528`
+      : `\u6d4b\u901f\u4e2d ${delta.completed}/${delta.total}\uff0c\u6210\u529f ${delta.ok}`);
+    speedProgressNoticeAt = now;
+  }
   if (pendingSpeedResults.size || pendingSpeedTerminal) scheduleSpeedResultFlush();
 }
 

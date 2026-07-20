@@ -96,8 +96,11 @@ check(
 check(
   'frontend uses a dynamic overlay and frame budget',
   app.includes('let speedResultOverlay = new Map()') &&
-  app.includes('const speedResultChunkSize = 160') &&
-    app.includes('const speedResultFrameBudgetMs = 3') &&
+  (() => {
+    const chunk = Number(app.match(/const speedResultChunkSize = (\d+)/)?.[1] || 0);
+    const budget = Number(app.match(/const speedResultFrameBudgetMs = ([\d.]+)/)?.[1] || 0);
+    return chunk > 0 && chunk <= 160 && budget > 0 && budget <= 3;
+  })() &&
     app.includes('speedResultOverlay.set(name, next)') &&
     app.includes('function speedOverlayForItem') &&
     app.includes('pendingSpeedTerminal') &&

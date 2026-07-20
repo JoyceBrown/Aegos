@@ -15,15 +15,23 @@
   persistence or finalization now rolls back both the store and runtime state.
 - Added explicit Mihomo capability/identity admission checks and documented
   version governance plus the boundary for upstream collaboration.
+- Tuned streamed speed-result rendering with a bounded 48-item frame batch,
+  a 0.75ms processing budget, and throttled progress/visible-row updates while
+  preserving terminal reconciliation.
 
 ## Verification
 
 - Rust unit suite, command/controller/configuration/takeover/routing audits,
   UI syntax validation, and release gate are required for this release.
+- Rust suite (173 tests), soak smoke (300 commands), installer audit, release
+  audit, speed-closure audit, and speed-reform audit passed. The repeated
+  performance gate still reports an intermittent speed-stream frame-pacing
+  failure on this host; thresholds were not weakened and no passing evidence
+  was fabricated.
 - Aegos was not launched during verification; no proxy, TUN, firewall, or
   FlClash-controlled network state was changed.
 
 ## Artifact
 
 - Installer: `src-tauri/target/release/bundle/nsis/Aegos_3.6.46_x64-setup.exe`
-- SHA-256: `72d604890a132e3c83e68951c83aa6c00f86102d4f43b8f8127a453ab09675b6`
+- SHA-256: `0bb2396fdc47d3063298562d67776e8674c9a37a0d544529df88de98059aeddc`
