@@ -105,6 +105,8 @@ check(
     app.includes('function speedOverlayForItem') &&
     app.includes('function setSpeedProgressNotice') &&
     app.includes('setSpeedProgressNotice(delta.phase') &&
+    app.includes('if (isForegroundHot())') &&
+    app.includes('Keep foreground navigation/input ahead of background speed rendering.') &&
     app.includes('pendingSpeedTerminal') &&
     !between(app, 'function applySpeedStatusToNodes', 'function speedOverlayForItem').includes('updateLatestGroupItems(nextItems)'),
   'streamed delays update visible rows without cloning the complete node list'

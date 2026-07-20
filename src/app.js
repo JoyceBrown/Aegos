@@ -4499,6 +4499,11 @@ function scheduleSpeedResultFlush() {
 function flushSpeedResultEvents() {
   if (speedResultFrame) cancelAnimationFrame(speedResultFrame);
   speedResultFrame = null;
+  if (isForegroundHot()) {
+    // Keep foreground navigation/input ahead of background speed rendering.
+    setTimeout(scheduleSpeedResultFlush, 120);
+    return;
+  }
   if (!pendingSpeedResults.size) {
     if (pendingSpeedTerminal) {
       const terminal = pendingSpeedTerminal;

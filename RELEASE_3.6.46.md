@@ -18,7 +18,8 @@
 - Tuned streamed speed-result rendering with a bounded 48-item frame batch,
   a 0.75ms processing budget, shell-free progress updates, and throttled
   visible-row updates while preserving terminal reconciliation. Batch events no
-  longer populate the single-node result cache.
+  longer populate the single-node result cache, and active foreground input
+  defers background result DOM work until the quiet window.
 
 ## Verification
 
@@ -37,4 +38,4 @@
 ## Artifact
 
 - Installer: `src-tauri/target/release/bundle/nsis/Aegos_3.6.46_x64-setup.exe`
-- SHA-256: `4eaafd1e5d8508dcbbb8050bf5356542d80e83b71e7b637b7d827b30cc714588`
+- SHA-256: `36df3e9b9717509dcc7a953841f3088195f4a3aa0548cd7cc5130cbde0cd97b1`
