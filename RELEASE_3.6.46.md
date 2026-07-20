@@ -28,6 +28,8 @@
   performance gate still reports an intermittent speed-stream frame-pacing
   failure on this host; thresholds were not weakened and no passing evidence
   was fabricated.
+- The reproducible host limitation and reopening criteria are recorded in
+  `PERFORMANCE_LIMITATION_3.6.46.md`.
 - Aegos was not launched during verification; no proxy, TUN, firewall, or
   FlClash-controlled network state was changed.
 
