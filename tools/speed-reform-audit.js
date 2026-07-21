@@ -78,8 +78,12 @@ check(
     batch.includes('"kind": "refined"') &&
     batch.includes('"kind": "complete"') &&
     app.includes("kind === 'fast-complete'") &&
+    app.includes('首轮结果已返回') &&
+    app.includes('delta.phase !== \'refining\'') &&
+    app.includes('setTransientNotice(message)') &&
+    !app.includes('测速完成：成功') &&
     app.includes("kind === 'result' || kind === 'refined'"),
-  'quick timeout is not a final failure and slow protocols refine in background'
+  'the first pass returns user-visible results while slow refinement stays in the background'
 )
 
 check(
@@ -104,9 +108,13 @@ check(
     app.includes('speedResultOverlay.set(name, next)') &&
     app.includes('function speedOverlayForItem') &&
     app.includes('function setSpeedProgressNotice') &&
-    app.includes('setSpeedProgressNotice(delta.phase') &&
+    app.includes("delta.phase !== 'refining'") &&
+    app.includes('setSpeedProgressNotice(`\\u6d4b\\u901f\\u4e2d') &&
     app.includes('if (isForegroundHot())') &&
     app.includes('Keep foreground navigation/input ahead of background speed rendering.') &&
+    app.includes('deferVisible: foregroundHot') &&
+    app.includes('Math.min(speedResultChunkSize, 24)') &&
+    app.includes('pendingSpeedResults.size > 160') &&
     app.includes('pendingSpeedTerminal') &&
     !between(app, 'function applySpeedStatusToNodes', 'function speedOverlayForItem').includes('updateLatestGroupItems(nextItems)'),
   'streamed delays update visible rows without cloning the complete node list'
@@ -139,6 +147,15 @@ check(
   app.includes('const eventQueueDraining = pendingSpeedResults.size > 0 || pendingSpeedTerminal != null') &&
     app.includes('!eventQueueDraining && Date.now() - speedLastEventAt > 1500'),
   'a large healthy result burst must not trigger an expensive full-state fallback'
+)
+
+check(
+  'speed preparation never presents an empty run as 0/0 progress',
+  testNodes.includes("status.phase === 'preparing' || !Number(status.total || 0)") &&
+    app.includes("status.phase === 'preparing' || total === 0") &&
+    app.includes('\\u6b63\\u5728\\u51c6\\u5907\\u6d4b\\u901f\\u8282\\u70b9') &&
+    !testNodes.includes('0/${status.total || 0}'),
+  'runtime preparation is a distinct state until a measurable target count is known'
 )
 
 check(

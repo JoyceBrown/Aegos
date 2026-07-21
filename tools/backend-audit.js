@@ -655,7 +655,11 @@ check(
     mainRs.includes('fn stop_orphaned_core_processes') &&
     mainRs.includes('Interrupted managed core recovery failed:') &&
     coreRuntimeRs.includes('pub fn orphaned_core_cleanup_script') &&
-    coreRuntimeRs.includes('Stop-Process -Id $_.ProcessId -Force') &&
+    coreRuntimeRs.includes("Get-Process -Name {process_name_literal}") &&
+    coreRuntimeRs.includes('Stop-Process -Id $_.Id -Force') &&
+    !coreRuntimeRs.includes('Get-CimInstance Win32_Process -Filter "Name = {binary_literal}"') &&
+    mainRs.includes('fn run_powershell_with_timeout') &&
+    mainRs.includes('run_powershell_with_timeout(&script, Duration::from_secs(3))') &&
     mainRs.includes('self.restart_core_preserving_proxy(350)?') &&
     mainRs.includes('core.restart_core_preserving_proxy(350)') &&
     mainRs.includes('if let Err(err) = self.wait_for_controller()'),

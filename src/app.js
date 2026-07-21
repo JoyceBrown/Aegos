@@ -354,6 +354,7 @@ let lastTrafficUiSignature = '';
 let lastRuntimeStatusObservation = null;
 let lastLogRenderSignature = '';
 let lastJobRenderSignature = '';
+let noticeRestoreTimer = null;
 // Healthcheck results are intentionally transient UI evidence: they are not
 // subscription metadata and therefore never alter the active configuration.
 const providerHealthCache = new Map();
@@ -1979,7 +1980,7 @@ function applySpeedStatusToNodes(status = {}, options = {}) {
     changed = true;
   });
   if (recommendedName) latestRecommendedName = recommendedName;
-  if (changed && isNodeSurfaceActive()) {
+  if (changed && isNodeSurfaceActive() && !options.deferVisible) {
     const now = performance.now();
     if (!speedVisibleUpdateAt || now - speedVisibleUpdateAt >= 300) {
       updateVisibleNodeDelays(visibleChanges);
@@ -2561,6 +2562,10 @@ function noticeLevel(message = '') {
 }
 
 function setNotice(message) {
+  if (noticeRestoreTimer) {
+    clearTimeout(noticeRestoreTimer);
+    noticeRestoreTimer = null;
+  }
   const notice = $('#protectionNotice');
   const level = noticeLevel(message);
   notice.textContent = message;
@@ -2568,6 +2573,21 @@ function setNotice(message) {
   notice.classList.toggle('is-warn', level === 'warn');
   notice.classList.toggle('is-info', level === 'info');
   syncShellSummary();
+}
+
+function restoreRuntimeNotice() {
+  if (!latestStatus) return;
+  const settings = latestStatus.settings || {};
+  const protection = latestStatus.protection || {};
+  setNotice(statusSurfaceNotice(latestStatus, settings, protection, networkAvailabilityInfo(latestStatus)));
+}
+
+function setTransientNotice(message, timeoutMs = 2600) {
+  setNotice(message);
+  noticeRestoreTimer = setTimeout(() => {
+    noticeRestoreTimer = null;
+    restoreRuntimeNotice();
+  }, timeoutMs);
 }
 
 function setSpeedProgressNotice(message) {
@@ -4483,12 +4503,13 @@ function finishSpeedTerminalEvent(payload) {
   const changed = applySpeedStatusToNodes(summaryStatus, { force: true, preserveLatest: true, refreshSummary: true });
   refreshVisibleNodesForSpeed(true, changed);
   const message = kind === 'complete'
-    ? `\u6d4b\u901f\u5b8c\u6210\uff1a\u6210\u529f ${status.ok || 0}\uff0c\u5931\u8d25 ${status.failed || 0}\uff0c\u5171 ${status.total || 0} \u4e2a`
+    ? `\u6d4b\u901f\u7ed3\u679c\u5df2\u66f4\u65b0\uff1a\u53ef\u7528 ${status.ok || 0}/${status.total || 0}`
     : kind === 'cancelled'
       ? '\u6d4b\u901f\u5df2\u53d6\u6d88'
       : `\u6d4b\u901f\u672a\u5b8c\u6210\uff1a${speedFailureReasonLabel(status.error || 'probe-failed')}`;
   stopSpeedTestPolling();
-  setNotice(message);
+  if (kind === 'complete') setTransientNotice(message);
+  else setNotice(message);
 }
 
 function scheduleSpeedResultFlush() {
@@ -4499,10 +4520,17 @@ function scheduleSpeedResultFlush() {
 function flushSpeedResultEvents() {
   if (speedResultFrame) cancelAnimationFrame(speedResultFrame);
   speedResultFrame = null;
+  let foregroundHot = false;
   if (isForegroundHot()) {
     // Keep foreground navigation/input ahead of background speed rendering.
-    setTimeout(scheduleSpeedResultFlush, 120);
-    return;
+    // Results still enter the overlay immediately so the next page paint can
+    // use them for ordinary subscriptions. Very large bursts stay coalesced
+    // until the foreground quiet window so they cannot monopolize frames.
+    foregroundHot = true;
+    if (pendingSpeedResults.size > 160) {
+      setTimeout(scheduleSpeedResultFlush, 120);
+      return;
+    }
   }
   if (!pendingSpeedResults.size) {
     if (pendingSpeedTerminal) {
@@ -4516,13 +4544,14 @@ function flushSpeedResultEvents() {
   const health = {};
   const progress = latestQueuedSpeedProgress;
   const frameStarted = performance.now();
+  const chunkLimit = foregroundHot ? Math.min(speedResultChunkSize, 24) : speedResultChunkSize;
   let processed = 0;
   for (const [name, payload] of pendingSpeedResults) {
     delays[name] = Number(payload.delay ?? -1);
     if (payload.health) health[name] = payload.health;
     pendingSpeedResults.delete(name);
     processed += 1;
-    if (processed >= speedResultChunkSize) break;
+    if (processed >= chunkLimit) break;
     if (processed % 16 === 0 && performance.now() - frameStarted >= speedResultFrameBudgetMs) break;
   }
   if (!progress) return;
@@ -4540,14 +4569,12 @@ function flushSpeedResultEvents() {
     delays,
     health
   };
-  applySpeedStatusToNodes(delta, { force: true, preserveLatest: true });
+  applySpeedStatusToNodes(delta, { force: true, preserveLatest: true, deferVisible: foregroundHot });
   // Progress updates can arrive in dense bursts. Keep the result stream live,
   // but avoid rebuilding the shell summary for every animation frame.
   const now = performance.now();
-  if (!speedProgressNoticeAt || now - speedProgressNoticeAt >= 120) {
-    setSpeedProgressNotice(delta.phase === 'refining'
-      ? `\u540e\u53f0\u590d\u6d4b ${delta.refineCompleted}/${delta.refineTotal}\uff0c\u754c\u9762\u53ef\u7ee7\u7eed\u4f7f\u7528`
-      : `\u6d4b\u901f\u4e2d ${delta.completed}/${delta.total}\uff0c\u6210\u529f ${delta.ok}`);
+  if (delta.phase !== 'refining' && (!speedProgressNoticeAt || now - speedProgressNoticeAt >= 120)) {
+    setSpeedProgressNotice(`\u6d4b\u901f\u4e2d ${delta.completed}/${delta.total}\uff0c\u5df2\u53ef\u7528 ${delta.ok}`);
     speedProgressNoticeAt = now;
   }
   if (pendingSpeedResults.size || pendingSpeedTerminal) scheduleSpeedResultFlush();
@@ -4587,9 +4614,7 @@ function handleSpeedTestEvent(event) {
     const status = payload.status || {};
     speedTestButtons.forEach((button) => setButtonBusy(button, false, '', { preserveContent: true }));
     speedTestButtons.clear();
-    setNotice(status.refineTotal
-      ? `\u5feb\u901f\u9996\u8f6e\u5b8c\u6210\uff0c${status.refineTotal} \u4e2a\u8282\u70b9\u5728\u540e\u53f0\u590d\u6d4b`
-      : `\u5feb\u901f\u9996\u8f6e\u5b8c\u6210\uff1a\u6210\u529f ${status.ok || 0} \u4e2a`);
+    setTransientNotice(`\u9996\u8f6e\u7ed3\u679c\u5df2\u8fd4\u56de\uff1a\u53ef\u7528 ${status.ok || 0}/${status.total || 0}`);
     return;
   }
   if (kind === 'complete' || kind === 'error' || kind === 'cancelled') {
@@ -4674,11 +4699,18 @@ async function pollSpeedTest() {
     const changed = applySpeedStatusToNodes(displayStatus, { preserveLatest: summaryOnly });
     refreshVisibleNodesForSpeed(!status.running, changed);
     if (status.running) {
-      setNotice(`测速中 ${status.completed || 0}/${status.total || 0}，成功 ${status.ok || 0}，失败 ${status.failed || 0}`);
+      const total = Number(status.total || 0);
+      if (status.phase === 'preparing' || total === 0) {
+        setNotice('\u6b63\u5728\u51c6\u5907\u6d4b\u901f\u8282\u70b9\uff0c\u754c\u9762\u53ef\u7ee7\u7eed\u64cd\u4f5c\u3002');
+      } else if (status.phase === 'refining') {
+        setTransientNotice(`首轮结果已返回：可用 ${status.ok || 0}/${status.total || 0}`);
+      } else {
+        setNotice(`测速中 ${status.completed || 0}/${status.total || 0}，已可用 ${status.ok || 0}`);
+      }
       return;
     }
     stopSpeedTestPolling();
-    setNotice(`测速完成：成功 ${status.ok || 0}，失败 ${status.failed || 0}，共 ${status.total || 0} 个`);
+    setTransientNotice(`测速结果已更新：可用 ${status.ok || 0}/${status.total || 0}`);
   } catch (err) {
     stopSpeedTestPolling();
     setNotice(`测速状态获取失败：${err.message || err}`);
@@ -4706,7 +4738,11 @@ async function testNodes(button = null, options = {}) {
     activeSpeedRunId = Number(status.runId || 0);
     applySpeedStatusToNodes(status, { force: true });
     if (!latestGroup?.items?.length) queueNodeRefresh('all', 0);
-    setNotice(`\u6d4b\u901f\u5df2\u5728\u540e\u53f0\u5f00\u59cb\uff1a0/${status.total || 0}`);
+    if (status.phase === 'preparing' || !Number(status.total || 0)) {
+      setNotice('\u6b63\u5728\u51c6\u5907\u6d4b\u901f\u8282\u70b9\uff0c\u754c\u9762\u53ef\u7ee7\u7eed\u64cd\u4f5c\u3002');
+    } else {
+      setNotice(`\u6d4b\u901f\u5df2\u5728\u540e\u53f0\u5f00\u59cb\uff1a0/${status.total}`);
+    }
     speedTestTimer = setInterval(() => {
       const eventQueueDraining = pendingSpeedResults.size > 0 || pendingSpeedTerminal != null;
       if (!speedEventReady || (!eventQueueDraining && Date.now() - speedLastEventAt > 1500)) pollSpeedTest();
@@ -7937,11 +7973,18 @@ document.body.addEventListener('click', async (event) => {
     const profileHealth = event.target.closest('[data-profile-health]')?.dataset.profileHealth;
     if (profileHealth) {
       const result = await providerHealthcheckJob();
-      const providers = result?.report?.providers || [];
-      const failed = providers.filter((provider) => !provider.ok).length;
-      providerHealthCache.set(profileHealth, `健康检测：${providers.length} 个 Provider，${failed ? `${failed} 项异常` : '全部正常'}；未切换节点`);
+      const report = result?.report || {};
+      const providers = report.providers || [];
+      const available = providers.filter((provider) => provider.ok).length;
+      const unavailable = providers.length - available;
+      const hasRemoteProviders = Boolean(report.available && providers.length);
+      providerHealthCache.set(profileHealth, hasRemoteProviders
+        ? `Provider 检查：可用 ${available}/${providers.length}${unavailable ? `，${unavailable} 个未响应` : ''}`
+        : '内置节点配置，请使用批量测速检查节点');
       renderProfilesIfVisible();
-      setNotice(failed ? `\u8ba2\u9605\u5065\u5eb7\u68c0\u6d4b\u5b8c\u6210\uff1a${failed} \u9879\u5f02\u5e38\uff0c\u672a\u5207\u6362\u5f53\u524d\u8282\u70b9\u3002` : '\u8ba2\u9605\u5065\u5eb7\u68c0\u6d4b\u5b8c\u6210\uff0c\u672a\u5207\u6362\u5f53\u524d\u8282\u70b9\u3002');
+      setTransientNotice(hasRemoteProviders
+        ? `Provider 检查完成：可用 ${available}/${providers.length}`
+        : '当前订阅使用内置节点，请用批量测速检查实际可用性。');
       return;
     }
     const profileRemove = event.target.closest('[data-profile-remove]')?.dataset.profileRemove;

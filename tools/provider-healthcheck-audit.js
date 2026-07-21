@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
+const coreRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'core_runtime.rs'), 'utf8');
 const appJs = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
 const speedAudit = fs.readFileSync(path.join(root, 'tools', 'speed-closure-audit.js'), 'utf8');
 const contractPath = 'provider-healthcheck-contract.md';
@@ -59,6 +60,15 @@ check(
     appJs.includes("runBackgroundJob('providerHealthcheck'") &&
     appJs.includes('profileHealth'),
   'background job / unchanged selection proof / profile UI'
+);
+check(
+  'provider healthcheck excludes compatible inline proxy groups',
+  coreRuntimeRs.includes('provider_healthcheck_names_from_controller') &&
+    coreRuntimeRs.includes('vehicle_type.eq_ignore_ascii_case("compatible")') &&
+    coreRuntimeRs.includes('provider_healthcheck_excludes_compatible_proxy_groups') &&
+    appJs.includes('内置节点配置，请使用批量测速检查节点') &&
+    !appJs.includes('项异常；未切换节点'),
+  'inline groups are not remote providers and must not be reported as subscription failures'
 );
 check(
   'ordinary speed audit remains the speed-test authority',

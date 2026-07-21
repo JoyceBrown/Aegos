@@ -367,18 +367,19 @@ check(
 check(
   'unclean core recovery stops only the exact managed executable before a fresh launch',
   coreRuntimeRs.includes('pub fn orphaned_core_cleanup_script') &&
-    coreRuntimeRs.includes('Get-CimInstance Win32_Process') &&
-    coreRuntimeRs.includes("Name = {binary_literal}") &&
-    coreRuntimeRs.includes('$_.ExecutablePath') &&
+    coreRuntimeRs.includes("Get-Process -Name {process_name_literal}") &&
+    coreRuntimeRs.includes('$_.Path') &&
     coreRuntimeRs.includes('-ieq $expectedPath') &&
-    coreRuntimeRs.includes('Stop-Process -Id $_.ProcessId -Force') &&
+    coreRuntimeRs.includes('Stop-Process -Id $_.Id -Force') &&
+    !coreRuntimeRs.includes('Get-CimInstance Win32_Process -Filter "Name = {binary_literal}"') &&
     coreRuntimeRs.includes('orphaned_core_cleanup_is_limited_to_the_managed_core_path') &&
     mainRs.includes('fn stop_orphaned_core_processes') &&
+    mainRs.includes('run_powershell_with_timeout(&script, Duration::from_secs(3))') &&
     startWithTakeoverBody.includes('if self.process.is_none()') &&
     startWithTakeoverBody.includes('self.stop_orphaned_core_processes()') &&
     startWithTakeoverBody.indexOf('self.stop_orphaned_core_processes()') <
       startWithTakeoverBody.indexOf('self.ensure_runtime_ports()'),
-  'stale Mihomo processes must be scoped to Aegos core_path and cleared before port preparation',
+  'stale Mihomo processes must be path scoped, CIM independent, timeout bounded, and cleared before port preparation',
 );
 check(
   'Aegos normalizes runtime profile YAML through the core runtime boundary',

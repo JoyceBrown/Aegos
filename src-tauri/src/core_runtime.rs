@@ -1645,9 +1645,14 @@ impl CoreController {
             None,
             PROVIDER_HEALTHCHECK_TIMEOUT_MS,
         )?;
-        let names = provider_names_from_controller(&providers);
+        let all_count = provider_names_from_controller(&providers).len();
+        let names = provider_healthcheck_names_from_controller(&providers);
         if names.is_empty() {
-            return Ok(json!({ "providers": [], "available": false }));
+            return Ok(json!({
+                "providers": [],
+                "available": false,
+                "compatibleSkipped": all_count,
+            }));
         }
         let mut results = Vec::new();
         for name in names {
@@ -1659,7 +1664,12 @@ impl CoreController {
                 "error": result.err(),
             }));
         }
-        Ok(json!({ "providers": results, "available": true }))
+        let checked_count = results.len();
+        Ok(json!({
+            "providers": results,
+            "available": true,
+            "compatibleSkipped": all_count.saturating_sub(checked_count),
+        }))
     }
 
     pub fn cleanup_stale_connections_after_selection(&self) {
@@ -1848,6 +1858,31 @@ pub fn provider_names_from_controller(payload: &JsonValue) -> Vec<String> {
         .get("providers")
         .and_then(JsonValue::as_object)
         .map(|providers| providers.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+pub fn provider_healthcheck_names_from_controller(payload: &JsonValue) -> Vec<String> {
+    payload
+        .get("providers")
+        .and_then(JsonValue::as_object)
+        .map(|providers| {
+            providers
+                .iter()
+                .filter_map(|(name, provider)| {
+                    let provider_type = provider
+                        .get("type")
+                        .and_then(JsonValue::as_str)
+                        .unwrap_or_default();
+                    let vehicle_type = provider
+                        .get("vehicleType")
+                        .and_then(JsonValue::as_str)
+                        .unwrap_or_default();
+                    (provider_type.eq_ignore_ascii_case("proxy")
+                        && !vehicle_type.eq_ignore_ascii_case("compatible"))
+                    .then(|| name.clone())
+                })
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -2733,7 +2768,12 @@ pub fn orphaned_core_cleanup_script(core_path: &Path) -> String {
             .to_string_lossy(),
     );
     let expected_literal = powershell_single_quoted_literal(expected_path);
-    let binary_literal = powershell_single_quoted_literal(BINARY_NAME);
+    let process_name_literal = powershell_single_quoted_literal(
+        Path::new(BINARY_NAME)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or(BINARY_NAME),
+    );
     format!(
         r#"
 $expectedPath = {expected_literal}
@@ -2749,10 +2789,11 @@ function ConvertTo-AegosComparablePath([string]$path) {{
   return $normalized
 }}
 $stopped = 0
-Get-CimInstance Win32_Process -Filter "Name = {binary_literal}" -ErrorAction Stop |
+Get-Process -Name {process_name_literal} -ErrorAction SilentlyContinue |
   ForEach-Object {{
-    if ((ConvertTo-AegosComparablePath $_.ExecutablePath) -ieq $expectedPath) {{
-      Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop
+    $candidatePath = try {{ $_.Path }} catch {{ '' }}
+    if ((ConvertTo-AegosComparablePath $candidatePath) -ieq $expectedPath) {{
+      Stop-Process -Id $_.Id -Force -ErrorAction Stop
       $stopped++
     }}
   }}
@@ -3350,17 +3391,16 @@ mod tests {
     #[test]
     fn orphaned_core_cleanup_is_limited_to_the_managed_core_path() {
         let script = orphaned_core_cleanup_script(Path::new("C:/Aegos/Core/mihomo.exe"));
-        assert!(script.contains("Get-CimInstance Win32_Process"));
-        assert!(script.contains("Name = 'mihomo.exe'"));
-        assert!(script.contains("$_.ExecutablePath"));
+        assert!(script.contains("Get-Process -Name 'mihomo'"));
+        assert!(script.contains("$_.Path"));
         assert!(script.contains("-ieq $expectedPath"));
-        assert!(script.contains("Stop-Process -Id $_.ProcessId -Force"));
+        assert!(script.contains("Stop-Process -Id $_.Id -Force"));
         assert!(script.contains("stopped=$stopped"));
         assert!(script.contains("C:\\Aegos\\Core\\mihomo.exe"));
         assert!(script.contains("$path.Replace('/', '\\')"));
         assert!(script.contains("StartsWith('\\\\?\\UNC\\'"));
         assert!(script.contains("StartsWith('\\\\?\\'"));
-        assert!(!script.contains("Get-Process mihomo"));
+        assert!(!script.contains("Get-CimInstance"));
     }
 
     #[test]
@@ -3818,6 +3858,21 @@ rules:
         names.sort();
         assert_eq!(names, vec!["airport-a", "airport-b"]);
         assert!(provider_names_from_controller(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn provider_healthcheck_excludes_compatible_proxy_groups() {
+        let payload = json!({
+            "providers": {
+                "Proxies": { "type": "Proxy", "vehicleType": "Compatible" },
+                "airport-http": { "type": "Proxy", "vehicleType": "HTTP" },
+                "airport-file": { "type": "Proxy", "vehicleType": "File" },
+                "rules": { "type": "Rule", "vehicleType": "HTTP" }
+            }
+        });
+        let mut names = provider_healthcheck_names_from_controller(&payload);
+        names.sort();
+        assert_eq!(names, vec!["airport-file", "airport-http"]);
     }
 
     #[test]
