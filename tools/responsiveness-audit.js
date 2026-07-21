@@ -7,6 +7,7 @@ const appJs = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
 const styles = fs.readFileSync(path.join(root, 'src', 'styles.css'), 'utf8');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
 const coreRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'core_runtime.rs'), 'utf8');
+const windowsProcessRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'windows_process.rs'), 'utf8');
 const perfSmoke = fs.readFileSync(path.join(root, 'tools', 'perf-smoke.js'), 'utf8');
 const interactionSmoke = fs.readFileSync(path.join(root, 'tools', 'interaction-smoke.js'), 'utf8');
 const releaseAudit = fs.readFileSync(path.join(root, 'tools', 'release-audit.js'), 'utf8');
@@ -99,9 +100,9 @@ check(
     mainRs.includes('fn refresh_elevation_detached(app: AppHandle)') &&
     mainRs.includes('thread::sleep(Duration::from_millis(1800))') &&
     mainRs.includes('cached_process_elevated().unwrap_or(false)') &&
-    mainRs.includes('fn run_powershell_with_timeout') &&
-    mainRs.includes('child.try_wait()') &&
-    mainRs.includes('started.elapsed() >= timeout') &&
+    windowsProcessRs.includes('fn run_powershell_with_timeout') &&
+    windowsProcessRs.includes('child.try_wait()') &&
+    windowsProcessRs.includes('started.elapsed() >= timeout') &&
     mainRs.includes('run_powershell_with_timeout(&script, Duration::from_secs(3))') &&
     coreRuntimeRs.includes("Get-Process -Name {process_name_literal}") &&
     !coreRuntimeRs.includes('Get-CimInstance Win32_Process -Filter "Name = {binary_literal}"') &&

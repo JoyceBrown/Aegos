@@ -3,8 +3,10 @@
 mod config_deployment;
 mod config_domain;
 mod config_pipeline;
+mod app_config;
 mod core_domain;
 mod core_runtime;
+mod dataplane;
 mod diagnostics_runtime;
 mod profile_compiler;
 mod routing_domain;
@@ -12,14 +14,22 @@ mod routing_store;
 mod runtime_command;
 mod speed_runtime;
 mod speed_scheduler;
+mod storage_runtime;
 mod subscription_runtime;
 mod system_takeover;
 mod task_runtime;
+mod windows_process;
 
 #[cfg(test)]
 use base64::{engine::general_purpose, Engine as _};
 use config_domain::ManualNodeConfig;
+use app_config::{
+    default_dns_mode, default_reliability_auto, default_reliability_candidate_limit,
+    default_reliability_failure_threshold, default_reliability_max_delay_ms,
+    default_reliability_profile_failover, Profile, Settings,
+};
 use core_domain::{ProxyCatalog, TrafficSnapshot};
+use dataplane::DataplaneControl;
 use diagnostics_runtime::{logs_export_document, LogEntry, LogStore};
 use rand::random;
 use reqwest::blocking::Client;
@@ -28,7 +38,7 @@ use routing_domain::{
     RoutingRuleEditInput, UnboundRuleResolutionInput,
 };
 use routing_store::{UserRuleRecord, UserRuleScope, UserRuleStore};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
 use serde_yaml::{Mapping, Value as YamlValue};
 use sha2::{Digest, Sha256};
@@ -37,15 +47,17 @@ use speed_runtime::{
     reset_speed_test_state as reset_speed_test_runtime_state, speed_result_confidence,
     speed_test_progress_snapshot, speed_test_run_is_current,
     speed_test_snapshot as speed_test_runtime_snapshot, NodeHealth, SpeedTestState, SpeedTestStore,
+    DelayTestResult, SpeedTargetCatalog, SpeedTestTarget,
 };
 use speed_scheduler::{run_probe_wave, ProbeOutcome, SchedulerPolicy};
+use storage_runtime::{atomic_write_text_confined, ensure_dir, remove_file_confined, sha256_text};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader},
     net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::Child,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex, OnceLock,
@@ -63,9 +75,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, State, Window, WindowEvent,
 };
-
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use windows_process::{run_powershell, run_powershell_with_timeout};
 
 const AEGOS_DEFAULT_MIXED_PORT: u16 = 7891;
 const AEGOS_DEFAULT_CONTROLLER_PORT: u16 = 19091;
@@ -91,47 +101,6 @@ const OUTBOUND_IP_RULE_DOMAINS: &[&str] = &[
     "ifconfig.me",
     "icanhazip.com",
 ];
-fn default_reliability_auto() -> bool {
-    true
-}
-
-fn default_dns_mode() -> String {
-    "auto".to_string()
-}
-
-fn default_reliability_profile_failover() -> bool {
-    true
-}
-
-fn default_reliability_failure_threshold() -> u64 {
-    2
-}
-
-fn default_reliability_max_delay_ms() -> u64 {
-    800
-}
-
-fn default_reliability_candidate_limit() -> u64 {
-    24
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct Profile {
-    id: String,
-    name: String,
-    #[serde(rename = "type")]
-    profile_type: String,
-    path: String,
-    #[serde(default)]
-    source_url: Option<String>,
-    #[serde(default)]
-    node_count: usize,
-    #[serde(default)]
-    proxy_group_count: usize,
-    updated_at: String,
-    digest: String,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ProfileYamlFingerprint {
     bytes: u64,
@@ -196,82 +165,6 @@ fn cached_profile_yaml(path: &Path) -> Result<Arc<YamlValue>, String> {
         );
     }
     Ok(value)
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct Settings {
-    active_profile_id: String,
-    mixed_port: u16,
-    controller_port: u16,
-    secret: String,
-    mode: String,
-    system_proxy: bool,
-    start_with_system_proxy: bool,
-    kill_switch_enabled: bool,
-    tun_enabled: bool,
-    tun_stack: String,
-    dns_hijack_enabled: bool,
-    #[serde(default = "default_dns_mode")]
-    dns_mode: String,
-    #[serde(default)]
-    dns_custom_nameservers: Vec<String>,
-    ipv6_enabled: bool,
-    allow_lan: bool,
-    log_level: String,
-    #[serde(default = "default_reliability_auto")]
-    reliability_auto: bool,
-    #[serde(default = "default_reliability_profile_failover")]
-    reliability_profile_failover: bool,
-    #[serde(default = "default_reliability_failure_threshold")]
-    reliability_failure_threshold: u64,
-    #[serde(default = "default_reliability_max_delay_ms")]
-    reliability_max_delay_ms: u64,
-    #[serde(default = "default_reliability_candidate_limit")]
-    reliability_candidate_limit: u64,
-    #[serde(default)]
-    selected_proxy_map: HashMap<String, String>,
-    #[serde(default)]
-    manual_nodes: HashMap<String, HashMap<String, ManualNodeConfig>>,
-    profiles: Vec<Profile>,
-}
-
-#[derive(Clone)]
-struct SpeedTestTarget {
-    name: String,
-    select_name: String,
-    group_name: String,
-    protocol: String,
-    server: String,
-}
-
-#[derive(Clone)]
-struct SpeedTargetCatalog {
-    key: String,
-    profile_id: String,
-    targets: Vec<SpeedTestTarget>,
-    built_at_ms: u64,
-}
-
-#[derive(Clone)]
-struct DelayTestResult {
-    delay: i64,
-    failure_reason: String,
-}
-
-impl DelayTestResult {
-    fn ok(delay: i64) -> Self {
-        Self {
-            delay,
-            failure_reason: String::new(),
-        }
-    }
-
-    fn failed(reason: &str) -> Self {
-        Self {
-            delay: -1,
-            failure_reason: reason.to_string(),
-        }
-    }
 }
 
 fn export_logs_from_state(logs: &LogStore, app_data: &Path) -> Result<JsonValue, String> {
@@ -637,23 +530,27 @@ fn apply_speed_test_delays_from_state(catalog: &mut ProxyCatalog, speed: &SpeedT
 
 fn assemble_proxy_groups_snapshot(
     running: bool,
-    controller: core_runtime::CoreController,
+    controller: impl DataplaneControl,
     active_profile: Option<Profile>,
     selected_map: HashMap<String, String>,
     manual_names: HashSet<String>,
     speed: SpeedTestState,
 ) -> JsonValue {
-    let catalog =
-        controller.proxy_catalog_snapshot_or_else(running, &[AEGOS_OUTBOUND_IP_GROUP], || {
-            active_profile
-                .as_ref()
-                .map(|profile| {
-                    profile_proxy_groups_for_profile_snapshot(profile, &selected_map, true)
-                })
-                .as_ref()
-                .and_then(|groups| ProxyCatalog::from_product_json(groups).ok())
-                .unwrap_or_default()
-        });
+    let fallback = || {
+        active_profile
+            .as_ref()
+            .map(|profile| profile_proxy_groups_for_profile_snapshot(profile, &selected_map, true))
+            .as_ref()
+            .and_then(|groups| ProxyCatalog::from_product_json(groups).ok())
+            .unwrap_or_default()
+    };
+    let catalog = if running {
+        controller
+            .proxy_catalog_snapshot(&[AEGOS_OUTBOUND_IP_GROUP])
+            .unwrap_or_else(|_| fallback())
+    } else {
+        fallback()
+    };
     // While the core is running, Controller `now` values are the runtime truth.
     // Persisted preferences are only an offline fallback and must not overwrite
     // a node selected by an automatic or subscription-owned group.
@@ -767,103 +664,6 @@ fn sha256_file(path: &Path) -> String {
     format!("{:x}", Sha256::digest(data))
 }
 
-fn sha256_text(text: &str) -> String {
-    format!("{:x}", Sha256::digest(text.as_bytes()))
-}
-
-fn ensure_dir(path: &Path) -> Result<(), String> {
-    fs::create_dir_all(path).map_err(|err| err.to_string())
-}
-
-fn ensure_path_within(path: &Path, root: &Path) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("path has no parent: {}", path.display()))?;
-    ensure_dir(root)?;
-    ensure_dir(parent)?;
-    let root_abs = root.canonicalize().map_err(|err| {
-        format!(
-            "path confinement root unavailable {}: {err}",
-            root.display()
-        )
-    })?;
-    let parent_abs = parent.canonicalize().map_err(|err| {
-        format!(
-            "path confinement parent unavailable {}: {err}",
-            parent.display()
-        )
-    })?;
-    if parent_abs.starts_with(&root_abs) {
-        Ok(())
-    } else {
-        Err(format!(
-            "refusing to write outside app data: {}",
-            path.display()
-        ))
-    }
-}
-
-fn atomic_write_text_confined(path: &Path, root: &Path, content: &str) -> Result<(), String> {
-    ensure_path_within(path, root)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("path has no parent: {}", path.display()))?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("aegos-file");
-    let temp_path = parent.join(format!(".{file_name}.{}.tmp", hex_random(4)));
-    {
-        let mut file = fs::File::create(&temp_path)
-            .map_err(|err| format!("atomic temp create failed {}: {err}", temp_path.display()))?;
-        file.write_all(content.as_bytes())
-            .map_err(|err| format!("atomic temp write failed {}: {err}", temp_path.display()))?;
-        let _ = file.sync_all();
-    }
-    atomic_replace_file(&temp_path, path).map_err(|err| {
-        let _ = fs::remove_file(&temp_path);
-        format!("atomic replace failed {}: {err}", path.display())
-    })
-}
-
-#[cfg(windows)]
-fn atomic_replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
-    use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
-
-    #[link(name = "Kernel32")]
-    extern "system" {
-        fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
-    }
-
-    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
-    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
-    let source = OsStr::new(source)
-        .encode_wide()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    let destination = OsStr::new(destination)
-        .encode_wide()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    let replaced = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if replaced == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(not(windows))]
-fn atomic_replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
-    fs::rename(source, destination)
-}
-
 type SpeedHealthCache = HashMap<String, HashMap<String, NodeHealth>>;
 static SPEED_HEALTH_CACHE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -912,15 +712,6 @@ fn persist_profile_speed_health(
     let raw = serde_json::to_string(&cache)
         .map_err(|err| format!("Speed health cache encode failed: {err}"))?;
     atomic_write_text_confined(path, app_data, &raw)
-}
-
-fn remove_file_confined(path: &Path, root: &Path) -> Result<(), String> {
-    ensure_path_within(path, root)?;
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(format!("remove file failed {}: {err}", path.display())),
-    }
 }
 
 fn restore_result_label(result: Result<(), String>) -> String {
@@ -1918,7 +1709,7 @@ fn normalize_outbound_ip_response(text: &str) -> Option<String> {
 }
 
 fn runtime_current_proxy_route(
-    controller: &core_runtime::CoreController,
+    controller: &impl DataplaneControl,
     mode: &str,
 ) -> Result<(ProxyCatalog, String), String> {
     let catalog = controller.proxy_catalog_snapshot(&[])?;
@@ -1934,7 +1725,7 @@ fn runtime_current_proxy_route(
 }
 
 fn sync_outbound_ip_route(
-    controller: &core_runtime::CoreController,
+    controller: &impl DataplaneControl,
     mode: &str,
 ) -> Result<String, String> {
     let (catalog, proxy) = runtime_current_proxy_route(controller, mode)?;
@@ -2174,20 +1965,6 @@ mod tests {
         assert!(parse_usable_lan_ip("0.0.0.0").is_none());
         assert!(parse_usable_lan_ip("8.8.8.8").is_none());
         assert!(parse_usable_lan_ip("172.32.0.1").is_none());
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn powershell_timeout_terminates_a_stalled_command() {
-        let started = Instant::now();
-        let error = run_powershell_with_timeout(
-            "Start-Sleep -Seconds 5",
-            Duration::from_millis(150),
-        )
-        .expect_err("sleeping PowerShell command should time out");
-
-        assert!(error.contains("timed out after 150 ms"));
-        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
@@ -4510,81 +4287,6 @@ fn is_proxy_group_reference_item(item: &JsonValue) -> bool {
             .and_then(JsonValue::as_str)
             .map(|value| value.eq_ignore_ascii_case("group"))
             .unwrap_or(false)
-}
-
-fn run_powershell(script: &str) -> Result<String, String> {
-    run_powershell_with_timeout(script, Duration::from_secs(30))
-}
-
-fn run_powershell_with_timeout(script: &str, timeout: Duration) -> Result<String, String> {
-    let wrapped_script = format!(
-        "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;\n{script}"
-    );
-    let mut command = Command::new("powershell.exe");
-    command.args([
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        &wrapped_script,
-    ]);
-    #[cfg(windows)]
-    command.creation_flags(core_runtime::CREATE_NO_WINDOW);
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|err| err.to_string())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "PowerShell stdout pipe is unavailable".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "PowerShell stderr pipe is unavailable".to_string())?;
-    let stdout_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let mut stream = stdout;
-        stream.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let stderr_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let mut stream = stderr;
-        stream.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let started = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait().map_err(|err| err.to_string())? {
-            break status;
-        }
-        if started.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            return Err(format!(
-                "PowerShell command timed out after {} ms",
-                timeout.as_millis()
-            ));
-        }
-        thread::sleep(Duration::from_millis(20));
-    };
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| "PowerShell stdout reader failed".to_string())?
-        .map_err(|err| err.to_string())?;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| "PowerShell stderr reader failed".to_string())?
-        .map_err(|err| err.to_string())?;
-    if status.success() {
-        Ok(String::from_utf8_lossy(&stdout).trim().to_string())
-    } else {
-        let message = String::from_utf8_lossy(&stderr).trim().to_string();
-        Err(if message.is_empty() {
-            format!("PowerShell command failed with status {status}")
-        } else {
-            message
-        })
-    }
 }
 
 static IS_PROCESS_ELEVATED: OnceLock<bool> = OnceLock::new();
@@ -10963,7 +10665,7 @@ fn provider_healthcheck_detached(core: Arc<Mutex<CoreManager>>) -> Result<JsonVa
             core.traffic_takeover,
         )
     };
-    let report = controller.provider_healthcheck_snapshot()?;
+    let report = DataplaneControl::provider_healthcheck_snapshot(&controller)?;
     let core = core.lock().map_err(|_| "core state lock poisoned".to_string())?;
     let unchanged = core.settings.selected_proxy_map == selected_proxy_map
         && core.settings.system_proxy == system_proxy

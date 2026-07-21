@@ -1,15 +1,16 @@
 use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
-use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 
 use crate::{
+    app_config::{Profile, Settings},
     config_deployment::ConfigDeploymentCandidate,
     config_domain::{ProfileCatalog, RuntimeConfigReport},
-    config_pipeline, Profile, Settings,
+    config_pipeline,
+    storage_runtime::sha256_text,
 };
 
 pub(crate) struct RuntimeDeploymentPlan {
@@ -139,12 +140,6 @@ pub(crate) fn verify_tun_candidate(
         "device": if expected_enabled { "Aegos" } else { "-" },
         "dnsSafety": !expected_enabled || config_pipeline::runtime_dns_safety_report(&source).is_ok()
     }))
-}
-
-fn sha256_text(text: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(text.as_bytes());
-    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(test)]

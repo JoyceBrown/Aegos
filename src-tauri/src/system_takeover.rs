@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::Write,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+use crate::storage_runtime::atomic_write_text_confined;
 
 const TRANSACTION_DIR: &str = "system-takeover-transactions";
 const ACTIVE_STATE_FILE: &str = "system-takeover-active.json";
@@ -361,64 +362,7 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "system takeover journal path has no parent".to_string())?;
-    fs::create_dir_all(parent)
-        .map_err(|err| format!("system takeover journal parent failed: {err}"))?;
-    let name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("journal");
-    let sequence = TRANSACTION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let temp = parent.join(format!(".{name}.{}-{sequence}.tmp", now_ms()));
-    {
-        let mut file = fs::File::create(&temp)
-            .map_err(|err| format!("system takeover journal temp create failed: {err}"))?;
-        file.write_all(content.as_bytes())
-            .map_err(|err| format!("system takeover journal temp write failed: {err}"))?;
-        file.sync_all()
-            .map_err(|err| format!("system takeover journal sync failed: {err}"))?;
-    }
-    atomic_replace_file(&temp, path).map_err(|err| {
-        let _ = fs::remove_file(&temp);
-        format!("system takeover journal replace failed: {err}")
-    })
-}
-
-#[cfg(windows)]
-fn atomic_replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
-    use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
-
-    #[link(name = "Kernel32")]
-    extern "system" {
-        fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
-    }
-
-    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
-    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
-    let source = OsStr::new(source)
-        .encode_wide()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    let destination = OsStr::new(destination)
-        .encode_wide()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    let replaced = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if replaced == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(not(windows))]
-fn atomic_replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
-    fs::rename(source, destination)
+    atomic_write_text_confined(path, parent, content)
 }
 
 fn prune_reports(root: &Path) {

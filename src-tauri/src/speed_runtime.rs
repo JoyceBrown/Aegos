@@ -10,6 +10,45 @@ pub const SPEED_RESULT_MEDIUM_CONFIDENCE_SECS: u64 = 1800;
 
 pub type SpeedTestStore = Arc<Mutex<SpeedTestState>>;
 
+#[derive(Clone)]
+pub(crate) struct SpeedTestTarget {
+    pub(crate) name: String,
+    pub(crate) select_name: String,
+    pub(crate) group_name: String,
+    pub(crate) protocol: String,
+    pub(crate) server: String,
+}
+
+#[derive(Clone)]
+pub(crate) struct SpeedTargetCatalog {
+    pub(crate) key: String,
+    pub(crate) profile_id: String,
+    pub(crate) targets: Vec<SpeedTestTarget>,
+    pub(crate) built_at_ms: u64,
+}
+
+#[derive(Clone)]
+pub(crate) struct DelayTestResult {
+    pub(crate) delay: i64,
+    pub(crate) failure_reason: String,
+}
+
+impl DelayTestResult {
+    pub(crate) fn ok(delay: i64) -> Self {
+        Self {
+            delay,
+            failure_reason: String::new(),
+        }
+    }
+
+    pub(crate) fn failed(reason: &str) -> Self {
+        Self {
+            delay: -1,
+            failure_reason: reason.to_string(),
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct SpeedTestState {
     pub run_id: u64,

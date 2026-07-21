@@ -1,4 +1,10 @@
 use crate::config_domain::RuntimeConfigReport;
+use crate::dataplane::{
+    approved_dataplane_manifest, assess_dataplane_candidate, DataplaneControl, ENGINE,
+    EXPECTED_SHA256, EXPECTED_VERSION,
+};
+use crate::storage_runtime::{atomic_write_text_confined, sha256_text};
+use crate::windows_process::CREATE_NO_WINDOW;
 use crate::core_domain::{
     connection_snapshots_from_controller, delay_probe_from_controller,
     proxy_groups_from_controller, recent_rule_hits, runtime_version_from_controller,
@@ -9,11 +15,10 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
-use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -22,17 +27,12 @@ use std::{
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-pub const ENGINE: &str = "mihomo";
 pub const ROLE: &str = "Aegos Network Engine dataplane";
-pub const EXPECTED_VERSION: &str = "v1.19.28";
-pub const EXPECTED_SHA256: &str =
-    "c14bda8dc4cc8910ccd2110fe2be083c51a1b66da59141a0b87aff6fe6126517";
 pub const MANAGED_BY: &str = "Aegos";
 pub const CONTROL_PLANE: &str = "Aegos";
 pub const AEGOS_AUTO_SELECT_GROUP_NAME: &str = "自动选择";
 pub const LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME: &str = "鑷姩閫夋嫨";
 pub const LEGACY_AEGOS_AUTO_SELECT_GROUP_NAME_V2: &str = "閼奉亜濮╅柅澶嬪";
-pub const CREATE_NO_WINDOW: u32 = 0x08000000;
 pub const READY_CHECK_ATTEMPTS: usize = 24;
 pub const READY_PROBE_TIMEOUT_MS: u64 = 300;
 pub const READY_RETRY_INTERVAL_MS: u64 = 250;
@@ -97,96 +97,6 @@ pub const SUPPORTED_PROXY_TYPES: &[&str] = &[
     "ssh",
 ];
 
-/// The approved dataplane contract for this release.  Feature work must query
-/// this manifest instead of assuming that every Mihomo version supports every
-/// generated field.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EngineCapabilityManifest {
-    pub engine: &'static str,
-    pub version: &'static str,
-    pub sha256: &'static str,
-    pub features: &'static [&'static str],
-}
-
-pub const APPROVED_ENGINE_FEATURES: &[&str] = &[
-    "gvisor",
-    "process-routing",
-    "runtime-config-reload",
-    "local-controller-secret",
-    "standby-delay-probe",
-];
-
-/// The result of evaluating a binary proposed for bundling.  Aegos does not
-/// upgrade the data plane merely because a newer executable exists: its
-/// identity and required control-plane capabilities must be approved together.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EngineUpgradeAssessment {
-    pub approved: bool,
-    pub reason: String,
-    pub required_features: Vec<String>,
-}
-
-pub fn approved_engine_manifest() -> EngineCapabilityManifest {
-    EngineCapabilityManifest {
-        engine: ENGINE,
-        version: EXPECTED_VERSION,
-        sha256: EXPECTED_SHA256,
-        features: APPROVED_ENGINE_FEATURES,
-    }
-}
-
-pub fn assess_engine_candidate(
-    version: &str,
-    sha256: &str,
-    features: &[&str],
-) -> EngineUpgradeAssessment {
-    let required_features = APPROVED_ENGINE_FEATURES
-        .iter()
-        .map(|feature| (*feature).to_string())
-        .collect::<Vec<_>>();
-    if version.trim() != EXPECTED_VERSION {
-        return EngineUpgradeAssessment {
-            approved: false,
-            reason: format!(
-                "Mihomo version {} is not approved for this Aegos release (expected {}).",
-                version.trim(),
-                EXPECTED_VERSION
-            ),
-            required_features,
-        };
-    }
-    if !sha256.trim().eq_ignore_ascii_case(EXPECTED_SHA256) {
-        return EngineUpgradeAssessment {
-            approved: false,
-            reason: "Mihomo checksum does not match the approved release artifact.".to_string(),
-            required_features,
-        };
-    }
-    let missing = APPROVED_ENGINE_FEATURES
-        .iter()
-        .filter(|feature| !features.iter().any(|candidate| candidate == *feature))
-        .copied()
-        .collect::<Vec<_>>();
-    if !missing.is_empty() {
-        return EngineUpgradeAssessment {
-            approved: false,
-            reason: format!(
-                "Mihomo candidate is missing required capability: {}.",
-                missing.join(", ")
-            ),
-            required_features,
-        };
-    }
-    EngineUpgradeAssessment {
-        approved: true,
-        reason: "Mihomo artifact identity and Aegos control-plane capabilities are approved."
-            .to_string(),
-        required_features,
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct CoreRuntimePaths {
     pub core_path: PathBuf,
@@ -222,9 +132,9 @@ impl Default for CoreRuntimeContract {
 impl CoreRuntimeContract {
     pub fn identity_json(&self, paths: &CoreRuntimePaths, sha256: &str) -> JsonValue {
         let exists = paths.core_path.exists();
-        let manifest = approved_engine_manifest();
+        let manifest = approved_dataplane_manifest();
         let upgrade_assessment =
-            assess_engine_candidate(self.expected_version, sha256, manifest.features);
+            assess_dataplane_candidate(self.expected_version, sha256, manifest.features);
         json!({
             "engine": self.engine,
             "role": self.role,
@@ -1546,23 +1456,6 @@ impl CoreController {
             .map(ProxyCatalog::new)
     }
 
-    pub fn proxy_catalog_snapshot_or_else<F>(
-        &self,
-        running: bool,
-        hidden_group_names: &[&str],
-        fallback: F,
-    ) -> ProxyCatalog
-    where
-        F: FnOnce() -> ProxyCatalog,
-    {
-        if running {
-            self.proxy_catalog_snapshot(hidden_group_names)
-                .unwrap_or_else(|_| fallback())
-        } else {
-            fallback()
-        }
-    }
-
     fn version_probe(&self, timeout_ms: u64) -> Result<RuntimeVersionSnapshot, String> {
         let payload = self.request("GET", "/version", None, timeout_ms)?;
         runtime_version_from_controller(&payload)
@@ -1850,6 +1743,20 @@ impl CoreController {
 
     fn config_apply_version_probe(&self) -> Result<RuntimeVersionSnapshot, String> {
         self.version_probe(CONFIG_APPLY_VERSION_PROBE_TIMEOUT_MS)
+    }
+}
+
+impl DataplaneControl for CoreController {
+    fn proxy_catalog_snapshot(&self, hidden_group_names: &[&str]) -> Result<ProxyCatalog, String> {
+        CoreController::proxy_catalog_snapshot(self, hidden_group_names)
+    }
+
+    fn apply_auxiliary_proxy_selection(&self, group: &str, proxy: &str) -> Result<(), String> {
+        CoreController::apply_auxiliary_proxy_selection(self, group, proxy)
+    }
+
+    fn provider_healthcheck_snapshot(&self) -> Result<JsonValue, String> {
+        CoreController::provider_healthcheck_snapshot(self)
     }
 }
 
@@ -2966,73 +2873,6 @@ pub fn write_runtime_profile(
     })
 }
 
-fn atomic_write_text_confined(path: &Path, root: &Path, content: &str) -> Result<(), String> {
-    ensure_path_within(path, root)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("runtime profile path has no parent: {}", path.display()))?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("aegos-runtime-profile.yaml");
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|value| value.as_nanos())
-        .unwrap_or_default();
-    let temp_path = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), stamp));
-    {
-        let mut file = fs::File::create(&temp_path).map_err(|err| {
-            format!(
-                "runtime profile temp create failed {}: {err}",
-                temp_path.display()
-            )
-        })?;
-        file.write_all(content.as_bytes()).map_err(|err| {
-            format!(
-                "runtime profile temp write failed {}: {err}",
-                temp_path.display()
-            )
-        })?;
-        let _ = file.sync_all();
-    }
-    fs::rename(&temp_path, path).map_err(|err| {
-        let _ = fs::remove_file(&temp_path);
-        format!(
-            "runtime profile atomic replace failed {}: {err}",
-            path.display()
-        )
-    })
-}
-
-fn ensure_path_within(path: &Path, root: &Path) -> Result<(), String> {
-    let root_abs = root
-        .canonicalize()
-        .map_err(|err| format!("runtime root canonicalize failed {}: {err}", root.display()))?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("runtime profile path has no parent: {}", path.display()))?;
-    fs::create_dir_all(parent).map_err(|err| {
-        format!(
-            "runtime profile parent create failed {}: {err}",
-            parent.display()
-        )
-    })?;
-    let parent_abs = parent.canonicalize().map_err(|err| {
-        format!(
-            "runtime profile parent canonicalize failed {}: {err}",
-            parent.display()
-        )
-    })?;
-    if parent_abs.starts_with(&root_abs) {
-        Ok(())
-    } else {
-        Err(format!(
-            "refusing to write runtime profile outside core home: {}",
-            path.display()
-        ))
-    }
-}
-
 fn apply_interface_binding(config: &mut YamlValue, interface_name: &str) -> Option<String> {
     let name = interface_name.trim();
     if name.is_empty() {
@@ -3044,12 +2884,6 @@ fn apply_interface_binding(config: &mut YamlValue, interface_name: &str) -> Opti
         YamlValue::String(name.to_string()),
     );
     Some(name.to_string())
-}
-
-fn sha256_text(text: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(text.as_bytes());
-    format!("{:x}", hasher.finalize())
 }
 
 pub fn digest_prefix(digest: &str) -> &str {
@@ -4862,20 +4696,10 @@ rules:
     }
 
     #[test]
-    fn controller_proxy_groups_snapshot_fallback_is_owned_by_runtime_boundary() {
-        let controller = CoreController::new(0, "");
-        let fallback = ProxyCatalog::from_product_json(
-            &json!([{ "name": "Proxies", "items": [{ "name": "HK 01" }] }]),
-        )
-        .expect("fallback catalog");
-        assert_eq!(
-            controller.proxy_catalog_snapshot_or_else(false, &[], || fallback.clone()),
-            fallback
-        );
-        assert_eq!(
-            controller.proxy_catalog_snapshot_or_else(true, &[], || fallback.clone()),
-            fallback
-        );
+    fn core_controller_implements_dataplane_control_boundary() {
+        fn assert_dataplane_control<T: DataplaneControl>() {}
+
+        assert_dataplane_control::<CoreController>();
     }
 
     #[test]
@@ -4934,7 +4758,7 @@ rules:
 
     #[test]
     fn approved_engine_manifest_binds_identity_to_explicit_capabilities() {
-        let manifest = approved_engine_manifest();
+        let manifest = approved_dataplane_manifest();
         assert_eq!(manifest.engine, ENGINE);
         assert_eq!(manifest.version, EXPECTED_VERSION);
         assert_eq!(manifest.sha256, EXPECTED_SHA256);
@@ -4944,14 +4768,14 @@ rules:
 
     #[test]
     fn engine_upgrade_requires_exact_identity_and_control_plane_capabilities() {
-        let manifest = approved_engine_manifest();
+        let manifest = approved_dataplane_manifest();
         assert!(
-            assess_engine_candidate(manifest.version, manifest.sha256, manifest.features).approved
+            assess_dataplane_candidate(manifest.version, manifest.sha256, manifest.features).approved
         );
-        assert!(!assess_engine_candidate("v0.0.0", manifest.sha256, manifest.features).approved);
-        assert!(!assess_engine_candidate(manifest.version, "bad", manifest.features).approved);
+        assert!(!assess_dataplane_candidate("v0.0.0", manifest.sha256, manifest.features).approved);
+        assert!(!assess_dataplane_candidate(manifest.version, "bad", manifest.features).approved);
         assert!(
-            !assess_engine_candidate(
+            !assess_dataplane_candidate(
                 manifest.version,
                 manifest.sha256,
                 &["gvisor", "process-routing"],

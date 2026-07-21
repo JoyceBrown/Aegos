@@ -3,8 +3,9 @@ use std::collections::HashSet;
 use serde_yaml::{Mapping, Value as YamlValue};
 
 use crate::{
+    app_config::{Profile, Settings},
     config_domain::{ManualNodeConfig, ProfileCatalog, RuntimeConfigReport},
-    core_runtime, subscription_runtime, Profile, Settings, AEGOS_OUTBOUND_IP_GROUP,
+    core_runtime, subscription_runtime, AEGOS_OUTBOUND_IP_GROUP,
     OUTBOUND_IP_RULE_DOMAINS,
 };
 

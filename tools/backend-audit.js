@@ -20,6 +20,9 @@ const diagnosticsRuntimeRs = readSource('src-tauri', 'src', 'diagnostics_runtime
 const subscriptionRuntimeRs = readSource('src-tauri', 'src', 'subscription_runtime.rs');
 const configDeploymentRs = readSource('src-tauri', 'src', 'config_deployment.rs');
 const runtimeCommandRs = readSource('src-tauri', 'src', 'runtime_command.rs');
+const windowsProcessRs = readSource('src-tauri', 'src', 'windows_process.rs');
+const storageRuntimeRs = readSource('src-tauri', 'src', 'storage_runtime.rs');
+const dataplaneRs = readSource('src-tauri', 'src', 'dataplane.rs');
 
 const fail = [];
 const pass = [];
@@ -456,8 +459,9 @@ check(
 check(
   'proxy group refresh and preview avoid holding the CoreManager mutex during controller/YAML work',
   mainRs.includes('fn assemble_proxy_groups_snapshot') &&
-    mainRs.includes('controller: core_runtime::CoreController') &&
-    coreRuntimeRs.includes('pub fn proxy_catalog_snapshot_or_else') &&
+    mainRs.includes('controller: impl DataplaneControl') &&
+    dataplaneRs.includes('pub(crate) trait DataplaneControl') &&
+    mainRs.includes('.proxy_catalog_snapshot(&[AEGOS_OUTBOUND_IP_GROUP])') &&
     mainRs.includes('fn profile_proxy_groups_for_profile_snapshot') &&
     mainRs.includes('fn apply_speed_test_delays_from_state') &&
     mainRs.includes("async fn proxy_groups(state: State<'_, AppState>)") &&
@@ -508,7 +512,8 @@ check(
     coreRuntimeRs.includes('pub const AUXILIARY_PROXY_SELECT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const STALE_CONNECTION_CLEANUP_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub fn proxy_catalog_snapshot(') &&
-    coreRuntimeRs.includes('pub fn proxy_catalog_snapshot_or_else') &&
+    dataplaneRs.includes('fn proxy_catalog_snapshot(&self, hidden_group_names: &[&str])') &&
+    coreRuntimeRs.includes('impl DataplaneControl for CoreController') &&
     coreRuntimeRs.includes('pub const PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub fn proxy_delay_with_client(') &&
     coreDomainRs.includes('pub struct DelayProbeSnapshot') &&
@@ -518,7 +523,7 @@ check(
     coreRuntimeRs.includes('pub fn classify_delay_http_failure(') &&
     coreRuntimeRs.includes('#[derive(Clone, Debug)]') &&
     coreRuntimeRs.includes('pub struct CoreController') &&
-    mainRs.includes('controller.proxy_catalog_snapshot_or_else(') &&
+    mainRs.includes('.proxy_catalog_snapshot(&[AEGOS_OUTBOUND_IP_GROUP])') &&
     mainRs.includes('&[AEGOS_OUTBOUND_IP_GROUP]') &&
     !mainRs.includes('.ui_proxy_groups_snapshot_or_none(running, &[AEGOS_OUTBOUND_IP_GROUP])') &&
     !mainRs.includes('fn controller_proxy_groups_snapshot') &&
@@ -658,7 +663,8 @@ check(
     coreRuntimeRs.includes("Get-Process -Name {process_name_literal}") &&
     coreRuntimeRs.includes('Stop-Process -Id $_.Id -Force') &&
     !coreRuntimeRs.includes('Get-CimInstance Win32_Process -Filter "Name = {binary_literal}"') &&
-    mainRs.includes('fn run_powershell_with_timeout') &&
+    windowsProcessRs.includes('fn run_powershell_with_timeout') &&
+    windowsProcessRs.includes('child.try_wait()') &&
     mainRs.includes('run_powershell_with_timeout(&script, Duration::from_secs(3))') &&
     mainRs.includes('self.restart_core_preserving_proxy(350)?') &&
     mainRs.includes('core.restart_core_preserving_proxy(350)') &&
@@ -732,7 +738,8 @@ check(
     mainRs.includes('fn patch_profile_file') &&
     mainRs.includes('fn launch_runtime_yaml') &&
     coreRuntimeRs.includes('pub fn write_runtime_profile') &&
-    coreRuntimeRs.includes('fn atomic_write_text_confined') &&
+    storageRuntimeRs.includes('pub(crate) fn atomic_write_text_confined') &&
+    coreRuntimeRs.includes('use crate::storage_runtime::{atomic_write_text_confined, sha256_text};') &&
     mainRs.includes('core_runtime::write_runtime_profile') &&
     coreRuntimeRs.includes('proxy_group_name_set') &&
     coreRuntimeRs.includes('pub struct CoreRuntimeApplyTransaction') &&

@@ -35,6 +35,8 @@ const tauri = readJson('src-tauri/tauri.conf.json');
 const mainRs = read('src-tauri/src/main.rs');
 const coreDomainRs = read('src-tauri/src/core_domain.rs');
 const coreRuntimeRs = read('src-tauri/src/core_runtime.rs');
+const dataplaneRs = read('src-tauri/src/dataplane.rs');
+const storageRuntimeRs = read('src-tauri/src/storage_runtime.rs');
 const configPipelineRs = read('src-tauri/src/config_pipeline.rs');
 const releaseAudit = read('tools/release-audit.js');
 const activeConnectionCommandBody = mainRs.match(/fn active_connection_count\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
@@ -98,9 +100,9 @@ check(
 check(
   'Aegos exposes core runtime identity through status and command',
   [
-    'pub const ENGINE: &str = "mihomo"',
+    'pub(crate) const ENGINE: &str = "mihomo"',
     'pub const ROLE: &str = "Aegos Network Engine dataplane"',
-    `pub const EXPECTED_VERSION: &str = "${expectedVersion}"`,
+    `pub(crate) const EXPECTED_VERSION: &str = "${expectedVersion}"`,
     'pub const RESOURCE_SUBDIR: &str = "core"',
     'pub const BINARY_NAME: &str = "mihomo.exe"',
     'pub const MISSING_RESOURCE_HINT',
@@ -131,11 +133,13 @@ check(
     'core_runtime::MISSING_RESOURCE_HINT',
     '#[tauri::command]\nfn core_runtime_info',
     'core_runtime_info,',
-  ].every((token) => mainRs.includes(token) || coreRuntimeRs.includes(token)),
+  ].every((token) => mainRs.includes(token) || coreRuntimeRs.includes(token) || dataplaneRs.includes(token)),
   'core runtime identity is not fully wired',
 );
 check(
   'Aegos routes controller access through the CoreController adapter',
+  dataplaneRs.includes('pub(crate) trait DataplaneControl') &&
+    coreRuntimeRs.includes('impl DataplaneControl for CoreController') &&
   coreRuntimeRs.includes('pub struct CoreController') &&
     coreRuntimeRs.includes('#[derive(Clone, Debug)]') &&
     coreRuntimeRs.includes('pub struct CoreController') &&
@@ -227,8 +231,9 @@ check(
     coreRuntimeRs.includes('pub const AUXILIARY_PROXY_SELECT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const STALE_CONNECTION_CLEANUP_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub fn proxy_catalog_snapshot(') &&
-    coreRuntimeRs.includes('pub fn proxy_catalog_snapshot_or_else') &&
-    coreRuntimeRs.includes('controller_proxy_groups_snapshot_fallback_is_owned_by_runtime_boundary') &&
+    dataplaneRs.includes('fn proxy_catalog_snapshot(&self, hidden_group_names: &[&str])') &&
+    coreRuntimeRs.includes('impl DataplaneControl for CoreController') &&
+    coreRuntimeRs.includes('core_controller_implements_dataplane_control_boundary') &&
     coreRuntimeRs.includes('pub const PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub fn proxy_delay_with_client(') &&
     coreDomainRs.includes('pub struct DelayProbeSnapshot') &&
@@ -236,9 +241,9 @@ check(
     coreRuntimeRs.includes('Result<DelayProbeSnapshot, CoreControllerHttpFailure>') &&
     coreRuntimeRs.includes('pub fn proxy_delay_result_with_client(') &&
     coreRuntimeRs.includes('pub fn classify_delay_http_failure(') &&
-    mainRs.includes('controller.proxy_catalog_snapshot_or_else(') &&
+    mainRs.includes('.proxy_catalog_snapshot(&[AEGOS_OUTBOUND_IP_GROUP])') &&
     mainRs.includes('&[AEGOS_OUTBOUND_IP_GROUP]') &&
-    mainRs.includes('controller: core_runtime::CoreController') &&
+    mainRs.includes('controller: impl DataplaneControl') &&
     mainRs.includes('core.core_controller()') &&
     !mainRs.includes('fn assemble_proxy_groups_snapshot(\n    running: bool,\n    controller_port: u16') &&
     !mainRs.includes('fn assemble_proxy_groups_snapshot(\n    running: bool,\n    controller: core_runtime::CoreController,\n    secret:') &&
@@ -386,7 +391,8 @@ check(
   coreRuntimeRs.includes('pub struct CoreRuntimeProfile') &&
     coreRuntimeRs.includes('pub fn render_runtime_profile_yaml') &&
     coreRuntimeRs.includes('fn apply_interface_binding') &&
-    coreRuntimeRs.includes('fn sha256_text') &&
+    storageRuntimeRs.includes('pub(crate) fn sha256_text') &&
+    coreRuntimeRs.includes('use crate::storage_runtime::{atomic_write_text_confined, sha256_text};') &&
     mainRs.includes('core_runtime::render_runtime_profile_yaml') &&
     !mainRs.includes('fn apply_runtime_interface_binding_name') &&
     !mainRs.includes('serde_yaml::from_str(&rendered.yaml)'),
@@ -396,9 +402,9 @@ check(
   'Aegos writes runtime profile files through the core runtime boundary',
   coreRuntimeRs.includes('pub struct CoreRuntimeProfileWrite') &&
     coreRuntimeRs.includes('pub fn write_runtime_profile') &&
-    coreRuntimeRs.includes('fn atomic_write_text_confined') &&
-    coreRuntimeRs.includes('fn ensure_path_within') &&
-    coreRuntimeRs.includes('refusing to write runtime profile outside core home') &&
+    storageRuntimeRs.includes('pub(crate) fn atomic_write_text_confined') &&
+    storageRuntimeRs.includes('pub(crate) fn ensure_path_within') &&
+    storageRuntimeRs.includes('refusing to write outside managed root') &&
     mainRs.includes('core_runtime::write_runtime_profile') &&
     !mainRs.includes('atomic_write_text_confined(&runtime_path, &self.home_dir'),
   'runtime profile writes must be path-confined and owned by core_runtime',

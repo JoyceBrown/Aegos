@@ -136,6 +136,8 @@ const mainRs = readText('src-tauri/src/main.rs');
 const coreDomainRs = readText('src-tauri/src/core_domain.rs');
 const configDomainRs = readText('src-tauri/src/config_domain.rs');
 const coreRuntimeRs = readText('src-tauri/src/core_runtime.rs');
+const dataplaneRs = readText('src-tauri/src/dataplane.rs');
+const storageRuntimeRs = readText('src-tauri/src/storage_runtime.rs');
 const profileCompilerRs = readText('src-tauri/src/profile_compiler.rs');
 const configPipelineRs = readText('src-tauri/src/config_pipeline.rs');
 const taskRuntimeRs = readText('src-tauri/src/task_runtime.rs');
@@ -144,12 +146,13 @@ const speedRuntimeRs = readText('src-tauri/src/speed_runtime.rs');
 const speedSchedulerRs = readText('src-tauri/src/speed_scheduler.rs');
 const diagnosticsRuntimeRs = readText('src-tauri/src/diagnostics_runtime.rs');
 const subscriptionRuntimeRs = readText('src-tauri/src/subscription_runtime.rs');
+const windowsProcessRs = readText('src-tauri/src/windows_process.rs');
 const activeConnectionCommandBody = mainRs.match(/fn active_connection_count\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
-const powershellCalls = (mainRs.match(/Command::new\("powershell\.exe"\)/g) || []).length;
+const powershellCalls = (windowsProcessRs.match(/Command::new\("powershell\.exe"\)/g) || []).length;
 check(
   'PowerShell commands are hidden on Windows',
   powershellCalls === 1 &&
-    /fn run_powershell[\s\S]*creation_flags\((?:core_runtime::)?CREATE_NO_WINDOW\)/.test(mainRs) &&
+    /fn run_powershell[\s\S]*creation_flags\(CREATE_NO_WINDOW\)/.test(windowsProcessRs) &&
     !mainRs.includes('fn ps_escape') &&
     mainRs.includes('core_runtime::powershell_single_quote_escape'),
   `${powershellCalls} powershell launcher(s)`,
@@ -229,7 +232,7 @@ check('proxy takeover status is runtime-shaped', coreRuntimeRs.includes('pub fn 
 check('public settings surfaces are runtime-shaped', coreRuntimeRs.includes('pub fn public_settings_surface_json') && coreRuntimeRs.includes('public_settings_surface_json_is_runtime_shaped') && (mainRs.match(/core_runtime::public_settings_surface_json\(/g) || []).length === 2 && coreRuntimeRs.includes('pub const RESERVED_MIXED_PORTS') && !mainRs.includes('"reservedPorts":') && !mainRs.includes('"reliability": {'), 'runtime public settings surface');
 check('diagnostic checks and summary are runtime-shaped', coreRuntimeRs.includes('pub fn diagnostic_check_json') && coreRuntimeRs.includes('pub fn diagnostic_summary_json') && coreRuntimeRs.includes('diagnostic_check_and_summary_are_runtime_shaped') && mainRs.includes('core_runtime::diagnostic_check_json(') && mainRs.includes('core_runtime::diagnostic_summary_json(&checks)') && !mainRs.includes('let check =') && !mainRs.includes('let failed_count = checks') && !mainRs.includes('閺傤厾缍夋穱婵囧Б'), 'runtime diagnostics check surface');
 check('disconnect protection quick action uses backend setting', appJs.includes("updateSetting('killSwitchEnabled'") && mainRs.includes('"killSwitchEnabled" =>') && stylesCss.includes('.kill-icon') && interactionSmoke.includes('quick kill protection did not call backend setting') && interactionSmoke.includes('disconnect protection icon is not using stable css icon'), 'disconnect protection backend setting/icon');
-check('disconnect protection verifies firewall state', coreRuntimeRs.includes('pub fn firewall_program_paths') && coreRuntimeRs.includes('pub fn powershell_string_array_literal') && !mainRs.includes('fn ps_escape') && !mainRs.includes('fn firewall_program_path') && mainRs.includes('Invoke-AegosNetsh') && mainRs.includes('advfirewall') && mainRs.includes('Get-NetFirewallRule -DisplayName "$rulePrefix *"') && !mainRs.includes('"group=$group"') && mainRs.includes("DefaultOutboundAction -ne 'Block'") && mainRs.includes('$rules.Count -lt 1') && mainRs.includes('$rules.Count -gt 0') && mainRs.includes('Disconnect protection enable failed') && mainRs.includes('[Console]::OutputEncoding'), 'disconnect protection firewall verification');
+check('disconnect protection verifies firewall state', coreRuntimeRs.includes('pub fn firewall_program_paths') && coreRuntimeRs.includes('pub fn powershell_string_array_literal') && !mainRs.includes('fn ps_escape') && !mainRs.includes('fn firewall_program_path') && mainRs.includes('Invoke-AegosNetsh') && mainRs.includes('advfirewall') && mainRs.includes('Get-NetFirewallRule -DisplayName "$rulePrefix *"') && !mainRs.includes('"group=$group"') && mainRs.includes("DefaultOutboundAction -ne 'Block'") && mainRs.includes('$rules.Count -lt 1') && mainRs.includes('$rules.Count -gt 0') && mainRs.includes('Disconnect protection enable failed') && windowsProcessRs.includes('[Console]::OutputEncoding'), 'disconnect protection firewall verification');
 check('speed test uses standby core without traffic takeover or proxy switching', testNodesBody.includes("invoke('start_proxy_delay_test'") && !testNodesBody.includes("runBackgroundJob('changeProxy'") && !testNodesBody.includes('selectBestProxyJob') && mainRs.includes('fn start_standby') && mainRs.includes('fn ensure_core_for_delay_test') && mainRs.includes('core_runtime::STANDBY_SPEED_START_MESSAGE') && coreRuntimeRs.includes('pub const STANDBY_SPEED_START_MESSAGE') && mainRs.includes('settings.tun_enabled = false') && mainRs.includes('"trafficTakeover"') && !speedTestBody.includes('change_proxy') && interactionSmoke.includes('speed test triggered a proxy switch') && interactionSmoke.includes('batch speed test triggered a proxy switch') && interactionSmoke.includes('standby speed test triggered the connect job'), 'test only prepares a non-takeover controller and updates delay/recommendation');
 check('manual system proxy toggle does not auto-connect', mainRs.includes('System proxy preference enabled; connect before applying Windows proxy takeover') && mainRs.includes('if enable && !self.traffic_takeover') && appJs.includes('pendingConnection') && appJs.includes('systemProxyUiLabel(systemProxyApplied, systemProxyWanted)') && interactionSmoke.includes('manual system proxy toggle auto-connected traffic takeover'), 'system proxy preference before connection');
 check('home quick action row keeps canonical stable geometry', stylesCss.includes('--home-quick-row: 72px') && stylesCss.includes('grid-template-rows: 36px') && stylesCss.includes('.page[data-page-panel="home"].active') && stylesCss.includes('grid-template-rows: var(--home-hero-row) var(--home-quick-row) minmax(0, 1fr)'), 'quick row fixed 72/36 layout');
@@ -309,8 +312,10 @@ check(
     coreRuntimeRs.includes('pub const AUXILIARY_PROXY_SELECT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub const STALE_CONNECTION_CLEANUP_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub fn proxy_catalog_snapshot(') &&
-    coreRuntimeRs.includes('pub fn proxy_catalog_snapshot_or_else') &&
-    coreRuntimeRs.includes('controller_proxy_groups_snapshot_fallback_is_owned_by_runtime_boundary') &&
+    dataplaneRs.includes('pub(crate) trait DataplaneControl') &&
+    dataplaneRs.includes('fn proxy_catalog_snapshot(&self, hidden_group_names: &[&str])') &&
+    coreRuntimeRs.includes('impl DataplaneControl for CoreController') &&
+    coreRuntimeRs.includes('core_controller_implements_dataplane_control_boundary') &&
     coreRuntimeRs.includes('pub const PROXY_GROUPS_SNAPSHOT_TIMEOUT_MS') &&
     coreRuntimeRs.includes('pub fn proxy_delay_with_client(') &&
     coreDomainRs.includes('pub struct DelayProbeSnapshot') &&
@@ -320,7 +325,8 @@ check(
     coreRuntimeRs.includes('pub fn classify_delay_http_failure(') &&
     coreRuntimeRs.includes('#[derive(Clone, Debug)]') &&
     coreRuntimeRs.includes('pub struct CoreController') &&
-    mainRs.includes('controller.proxy_catalog_snapshot_or_else(') &&
+    mainRs.includes('.proxy_catalog_snapshot(&[AEGOS_OUTBOUND_IP_GROUP])') &&
+    mainRs.includes('.unwrap_or_else(|_| fallback())') &&
     mainRs.includes('&[AEGOS_OUTBOUND_IP_GROUP]') &&
     !mainRs.includes('.ui_proxy_groups_snapshot_or_none(running, &[AEGOS_OUTBOUND_IP_GROUP])') &&
     !mainRs.includes('fn controller_proxy_groups_snapshot') &&
@@ -332,7 +338,7 @@ check(
     mainRs.includes('fn test_proxy_delay_plan(\n    client: &Client,\n    controller: &core_runtime::CoreController,') &&
     mainRs.includes('fn test_proxy_delay_with_retry(\n    client: &Client,\n    controller: &core_runtime::CoreController,') &&
     mainRs.includes('fn test_proxy_delay_fast(\n    client: &Client,\n    controller: &core_runtime::CoreController,') &&
-    mainRs.includes('controller: core_runtime::CoreController') &&
+    mainRs.includes('controller: impl DataplaneControl') &&
     mainRs.includes('core.core_controller()') &&
     !mainRs.includes('fn assemble_proxy_groups_snapshot(\n    running: bool,\n    controller_port: u16') &&
     !mainRs.includes('fn assemble_proxy_groups_snapshot(\n    running: bool,\n    controller: core_runtime::CoreController,\n    secret:') &&
@@ -455,7 +461,8 @@ check(
     mainRs.includes('fn patch_profile_file') &&
     mainRs.includes('fn launch_runtime_yaml') &&
     coreRuntimeRs.includes('pub fn write_runtime_profile') &&
-    coreRuntimeRs.includes('fn atomic_write_text_confined') &&
+    storageRuntimeRs.includes('pub(crate) fn atomic_write_text_confined') &&
+    coreRuntimeRs.includes('use crate::storage_runtime::{atomic_write_text_confined, sha256_text};') &&
     mainRs.includes('core_runtime::write_runtime_profile') &&
     mainRs.includes('aegos-runtime-profile.yaml') &&
     coreRuntimeRs.includes('pub struct CoreRuntimeApplyTransaction') &&

@@ -26,6 +26,7 @@ const pkg = readJson('package.json');
 const tauri = readJson('src-tauri/tauri.conf.json');
 const capabilities = read('src-tauri/capabilities/default.json');
 const mainRs = read('src-tauri/src/main.rs');
+const windowsProcessRs = read('src-tauri/src/windows_process.rs');
 const configPipelineRs = read('src-tauri/src/config_pipeline.rs');
 const coreRuntimeRs = read('src-tauri/src/core_runtime.rs');
 const taskRuntimeRs = read('src-tauri/src/task_runtime.rs');
@@ -98,7 +99,7 @@ check('sensitive data is sanitized before logs and reports', ['fn sanitize_sensi
 check('frontend escapes dynamic template data', appJs.includes('function escapeHtml') && !/(outerHTML|insertAdjacentHTML|document\.write|new Function|eval\()/m.test(appJs), 'template guardrails');
 
 check('Tauri CSP and capability surface stay constrained', tauri.app?.security?.csp?.includes("default-src 'self'") && tauri.app?.security?.csp?.includes('connect-src ipc: http://ipc.localhost') && capabilities.includes('core:window:allow-start-dragging') && !capabilities.includes('shell:allow-open'), 'CSP/capabilities');
-check('PowerShell runs through single hidden launcher with runtime-owned escaping helpers', (mainRs.match(/Command::new\("powershell\.exe"\)/g) || []).length === 1 && mainRs.includes('fn run_powershell') && mainRs.includes('CREATE_NO_WINDOW') && mainRs.includes('core_runtime::powershell_single_quote_escape') && !mainRs.includes('fn ps_escape'), 'PowerShell launcher');
+check('PowerShell runs through single hidden platform launcher with runtime-owned escaping helpers', (windowsProcessRs.match(/Command::new\("powershell\.exe"\)/g) || []).length === 1 && windowsProcessRs.includes('fn run_powershell') && windowsProcessRs.includes('CREATE_NO_WINDOW') && mainRs.includes('core_runtime::powershell_single_quote_escape') && !mainRs.includes('fn ps_escape'), 'PowerShell launcher');
 
 check('interaction/performance/soak stress gates exist', ['smoke:interactions', 'smoke:perf', 'smoke:soak', 'smoke:ui', 'audit:security'].every((script) => Object.prototype.hasOwnProperty.call(pkg.scripts, script)) && perfSmoke.includes('i < 420') && interactionSmoke.includes('running diagnostics blocked sidebar page switching'), 'stress scripts');
 check('layout uses stable inactive page isolation', stylesCss.includes('.page.active') && stylesCss.includes('position: absolute') && stylesCss.includes('contain: layout paint'), 'page isolation/layout containment');
