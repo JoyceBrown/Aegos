@@ -5228,7 +5228,11 @@ function refreshNodeEditorProtocolFields() {
   const secretInput = $('#nodeEditSecretInput');
   const uuidProtocols = new Set(['vmess', 'vless', 'tuic']);
   if (secretLabel) secretLabel.textContent = uuidProtocols.has(type) ? 'UUID' : '密码';
-  if (secretInput) secretInput.placeholder = uuidProtocols.has(type) ? 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' : 'password';
+  if (secretInput) {
+    secretInput.type = uuidProtocols.has(type) ? 'text' : 'password';
+    secretInput.autocomplete = uuidProtocols.has(type) ? 'off' : 'new-password';
+    secretInput.placeholder = uuidProtocols.has(type) ? 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' : 'password';
+  }
   const hints = {
     ss: 'SS：填写密码与加密方式。',
     trojan: 'Trojan：填写密码；通常需启用 TLS 并填写 SNI。',

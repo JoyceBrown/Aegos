@@ -852,6 +852,8 @@ try {
     await click('[data-home-mode="fixed"]');
     if (!document.querySelector('[data-home-mode="fixed"]')?.classList.contains('active')) throw new Error('fixed node mode did not become active');
     await click('#addFixedNodeBtn');
+    if (getComputedStyle(document.querySelector('#nodeEditUsernameRow')).display !== 'none') throw new Error('fixed node editor showed the username field for a protocol that does not use it');
+    if (document.querySelector('#nodeEditSecretInput')?.type !== 'password') throw new Error('fixed node editor exposed a password as plain text');
     document.querySelector('#nodeEditNameInput').value = 'Fixed Smoke 01';
     document.querySelector('#nodeEditTypeSelect').value = 'socks5';
     document.querySelector('#nodeEditTypeSelect').dispatchEvent(new Event('change', { bubbles: true }));

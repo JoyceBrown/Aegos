@@ -354,13 +354,14 @@ fn profile_proxy_groups_for_profile_snapshot(
     profile: &Profile,
     selected_map: &HashMap<String, String>,
     use_selected_map: bool,
-) -> JsonValue {
-    let config_value = cached_profile_yaml(Path::new(&profile.path))
-        .unwrap_or_else(|_| Arc::new(YamlValue::Mapping(Mapping::new())));
+    manual_nodes: &HashMap<String, ManualNodeConfig>,
+) -> Result<JsonValue, String> {
+    let config_value = cached_profile_yaml(Path::new(&profile.path))?;
     let mut config = match config_value.as_ref().clone() {
         YamlValue::Mapping(map) => map,
         _ => Mapping::new(),
     };
+    config_pipeline::apply_manual_nodes_to_catalog(&mut config, manual_nodes)?;
     config_pipeline::normalize_runtime_proxy_groups_for_display(&mut config);
     let proxies = config
         .get(yaml_key("proxies"))
@@ -380,7 +381,7 @@ fn profile_proxy_groups_for_profile_snapshot(
         })
         .collect::<HashMap<_, _>>();
     if proxy_items.is_empty() {
-        return json!([]);
+        return Ok(json!([]));
     }
     let proxy_groups = config
         .get(yaml_key("proxy-groups"))
@@ -461,18 +462,18 @@ fn profile_proxy_groups_for_profile_snapshot(
         })
         .collect::<Vec<_>>();
     if !groups.is_empty() {
-        return json!(groups);
+        return Ok(json!(groups));
     }
     let items: Vec<JsonValue> = proxy_items.into_values().collect();
     if items.is_empty() {
-        return json!([]);
+        return Ok(json!([]));
     }
     let now = items
         .first()
         .and_then(|item| item.get("name"))
         .cloned()
         .unwrap_or(json!(""));
-    json!([{ "name": "GLOBAL", "type": "Selector", "now": now, "items": items }])
+    Ok(json!([{ "name": "GLOBAL", "type": "Selector", "now": now, "items": items }]))
 }
 
 fn apply_speed_test_delays_from_state(catalog: &mut ProxyCatalog, speed: &SpeedTestState) {
@@ -533,13 +534,22 @@ fn assemble_proxy_groups_snapshot(
     controller: impl DataplaneControl,
     active_profile: Option<Profile>,
     selected_map: HashMap<String, String>,
-    manual_names: HashSet<String>,
+    manual_nodes: HashMap<String, ManualNodeConfig>,
     speed: SpeedTestState,
 ) -> JsonValue {
+    let manual_names = manual_nodes.keys().cloned().collect::<HashSet<_>>();
     let fallback = || {
         active_profile
             .as_ref()
-            .map(|profile| profile_proxy_groups_for_profile_snapshot(profile, &selected_map, true))
+            .and_then(|profile| {
+                profile_proxy_groups_for_profile_snapshot(
+                    profile,
+                    &selected_map,
+                    true,
+                    &manual_nodes,
+                )
+                .ok()
+            })
             .as_ref()
             .and_then(|groups| ProxyCatalog::from_product_json(groups).ok())
             .unwrap_or_default()
@@ -2759,6 +2769,87 @@ rules:
             subscription_runtime::AEGOS_URI_PROTOCOLS
         )
         .contains("Aegos URI parser"));
+    }
+
+    #[test]
+    fn standby_profile_snapshot_restores_persisted_manual_nodes() {
+        let path = std::env::temp_dir().join(format!(
+            "aegos-manual-snapshot-{}.yaml",
+            hex_random(8)
+        ));
+        fs::write(
+            &path,
+            "proxies:\n  - name: Subscription Node\n    type: ss\n    server: subscription.example.com\n    port: 443\n    cipher: aes-128-gcm\n    password: fixture\nproxy-groups:\n  - name: Proxies\n    type: select\n    proxies: [Subscription Node]\nrules: [MATCH,Proxies]\n",
+        )
+        .expect("fixture profile");
+        let profile = Profile {
+            id: "manual-snapshot".to_string(),
+            name: "Manual snapshot".to_string(),
+            profile_type: "url".to_string(),
+            path: path.to_string_lossy().to_string(),
+            source_url: None,
+            node_count: 1,
+            proxy_group_count: 1,
+            updated_at: "test".to_string(),
+            digest: "test".to_string(),
+        };
+        let manual = ManualNodeConfig::from_input(
+            &json!({
+                "name": "Fixed SOCKS5",
+                "server": "198.51.100.10",
+                "port": 1080,
+                "username": "fixture-user",
+                "password": "fixture-password"
+            }),
+            "socks5".to_string(),
+        )
+        .expect("manual node");
+        let manual_nodes = HashMap::from([(manual.name.clone(), manual)]);
+
+        let groups = profile_proxy_groups_for_profile_snapshot(
+            &profile,
+            &HashMap::new(),
+            true,
+            &manual_nodes,
+        )
+        .expect("standby catalog");
+        let item = groups
+            .as_array()
+            .and_then(|groups| groups.first())
+            .and_then(|group| group.get("items"))
+            .and_then(JsonValue::as_array)
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("name").and_then(JsonValue::as_str) == Some("Fixed SOCKS5")
+                })
+            })
+            .expect("manual node restored into standby catalog");
+        assert_eq!(
+            item.get("server").and_then(JsonValue::as_str),
+            Some("198.51.100.10")
+        );
+        let catalog = core_runtime::shape_proxy_catalog_model(
+            ProxyCatalog::from_product_json(&groups).expect("product catalog"),
+            &HashMap::new(),
+            &HashSet::from(["Fixed SOCKS5".to_string()]),
+        );
+        let product = catalog.into_product_json();
+        let restored = product
+            .as_array()
+            .and_then(|groups| groups.first())
+            .and_then(|group| group.get("items"))
+            .and_then(JsonValue::as_array)
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("name").and_then(JsonValue::as_str) == Some("Fixed SOCKS5")
+                })
+            })
+            .expect("manual product node");
+        assert_eq!(
+            restored.get("manual").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -8088,22 +8179,21 @@ impl CoreManager {
     }
 
     fn proxy_groups(&self) -> JsonValue {
-        let manual_names = self.active_manual_node_names();
+        let manual_nodes = self.active_manual_nodes();
         let speed = self.speed_test.lock().unwrap().clone();
         assemble_proxy_groups_snapshot(
             self.process.is_some(),
             self.core_controller(),
             self.active_profile(),
             self.settings.selected_proxy_map.clone(),
-            manual_names,
+            manual_nodes,
             speed,
         )
     }
 
-    fn active_manual_node_names(&self) -> HashSet<String> {
+    fn active_manual_nodes(&self) -> HashMap<String, ManualNodeConfig> {
         self.active_profile()
             .and_then(|profile| self.settings.manual_nodes.get(&profile.id).cloned())
-            .map(|nodes| nodes.keys().cloned().collect::<HashSet<_>>())
             .unwrap_or_default()
     }
 
@@ -11168,13 +11258,12 @@ fn relaunch_as_admin(app: AppHandle) -> Result<bool, String> {
 
 #[tauri::command]
 async fn proxy_groups(state: State<'_, AppState>) -> Result<JsonValue, String> {
-    let (running, controller, active_profile, selected_map, manual_names, speed) = {
+    let (running, controller, active_profile, selected_map, manual_nodes, speed) = {
         let core = state.core.lock().unwrap();
         let active_profile = core.active_profile();
-        let manual_names = active_profile
+        let manual_nodes = active_profile
             .as_ref()
             .and_then(|profile| core.settings.manual_nodes.get(&profile.id).cloned())
-            .map(|nodes| nodes.keys().cloned().collect::<HashSet<_>>())
             .unwrap_or_default();
         let speed = core.speed_test.lock().unwrap().clone();
         (
@@ -11182,7 +11271,7 @@ async fn proxy_groups(state: State<'_, AppState>) -> Result<JsonValue, String> {
             core.core_controller(),
             active_profile,
             core.settings.selected_proxy_map.clone(),
-            manual_names,
+            manual_nodes,
             speed,
         )
     };
@@ -11192,7 +11281,7 @@ async fn proxy_groups(state: State<'_, AppState>) -> Result<JsonValue, String> {
             controller,
             active_profile,
             selected_map,
-            manual_names,
+            manual_nodes,
             speed,
         ))
     })
@@ -11202,7 +11291,7 @@ async fn proxy_groups(state: State<'_, AppState>) -> Result<JsonValue, String> {
 
 #[tauri::command]
 fn preview_profile_groups(state: State<AppState>, id: String) -> Result<JsonValue, String> {
-    let (profile, selected_map) = {
+    let (profile, selected_map, manual_nodes) = {
         let core = state.core.lock().unwrap();
         let profile = core
             .settings
@@ -11211,13 +11300,20 @@ fn preview_profile_groups(state: State<AppState>, id: String) -> Result<JsonValu
             .find(|profile| profile.id == id)
             .cloned()
             .ok_or_else(|| "Profile not found".to_string())?;
-        (profile, core.settings.selected_proxy_map.clone())
+        let manual_nodes = core
+            .settings
+            .manual_nodes
+            .get(&profile.id)
+            .cloned()
+            .unwrap_or_default();
+        (profile, core.settings.selected_proxy_map.clone(), manual_nodes)
     };
-    Ok(profile_proxy_groups_for_profile_snapshot(
+    profile_proxy_groups_for_profile_snapshot(
         &profile,
         &selected_map,
         false,
-    ))
+        &manual_nodes,
+    )
 }
 
 #[tauri::command]
@@ -11517,13 +11613,12 @@ fn test_single_proxy_delay(
 #[tauri::command]
 fn node_diagnostics(state: State<AppState>, name: String) -> Result<JsonValue, String> {
     let logs = state.logs.clone();
-    let (running, controller, active_profile, selected_map, manual_names, speed, max_delay_ms) = {
+    let (running, controller, active_profile, selected_map, manual_nodes, speed, max_delay_ms) = {
         let core = state.core.lock().unwrap();
         let active_profile = core.active_profile();
-        let manual_names = active_profile
+        let manual_nodes = active_profile
             .as_ref()
             .and_then(|profile| core.settings.manual_nodes.get(&profile.id).cloned())
-            .map(|nodes| nodes.keys().cloned().collect::<HashSet<_>>())
             .unwrap_or_default();
         let speed = core.speed_test.lock().unwrap().clone();
         (
@@ -11531,7 +11626,7 @@ fn node_diagnostics(state: State<AppState>, name: String) -> Result<JsonValue, S
             core.core_controller(),
             active_profile,
             core.settings.selected_proxy_map.clone(),
-            manual_names,
+            manual_nodes,
             speed,
             core.settings.reliability_max_delay_ms,
         )
@@ -11541,7 +11636,7 @@ fn node_diagnostics(state: State<AppState>, name: String) -> Result<JsonValue, S
         controller,
         active_profile,
         selected_map,
-        manual_names,
+        manual_nodes,
         speed.clone(),
     );
     node_diagnostics_from_snapshot(name, &groups, &speed, &logs, max_delay_ms)

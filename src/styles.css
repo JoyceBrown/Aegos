@@ -4538,6 +4538,10 @@ dd {
   font-weight: 800;
 }
 
+.editor-grid > [hidden] {
+  display: none !important;
+}
+
 .editor-grid input,
 .editor-grid select {
   min-width: 0;

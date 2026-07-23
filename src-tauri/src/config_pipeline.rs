@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_yaml::{Mapping, Value as YamlValue};
 
@@ -352,6 +352,13 @@ fn apply_manual_nodes(
     let Some(nodes) = settings.manual_nodes.get(profile_id) else {
         return Ok(());
     };
+    apply_manual_nodes_to_catalog(config, nodes)
+}
+
+pub(crate) fn apply_manual_nodes_to_catalog(
+    config: &mut Mapping,
+    nodes: &HashMap<String, ManualNodeConfig>,
+) -> Result<(), String> {
     for node in nodes.values() {
         insert_manual_node_into_config(config, node, None)?;
     }
