@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...parts) => fs.readFileSync(path.join(root, ...parts), 'utf8').replace(/\r\n/g, '\n');
 const mainRs = read('src-tauri', 'src', 'main.rs');
+const appConfigRs = read('src-tauri', 'src', 'app_config.rs');
 const configDomainRs = read('src-tauri', 'src', 'config_domain.rs');
 const configPipelineRs = read('src-tauri', 'src', 'config_pipeline.rs');
 const profileCompilerRs = read('src-tauri', 'src', 'profile_compiler.rs');
@@ -63,7 +64,7 @@ check(
 
 check(
   'manual nodes are typed and product metadata is excluded from runtime YAML',
-  mainRs.includes('manual_nodes: HashMap<String, HashMap<String, ManualNodeConfig>>') &&
+  appConfigRs.includes('manual_nodes: HashMap<String, HashMap<String, ManualNodeConfig>>') &&
     mainRs.includes('fn normalize_manual_node(input: &JsonValue) -> Result<ManualNodeConfig, String>') &&
     configPipelineRs.includes('node: &ManualNodeConfig') &&
     configPipelineRs.includes('let proxy = node.runtime_yaml()?') &&

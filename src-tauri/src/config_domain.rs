@@ -417,6 +417,23 @@ rules:
     }
 
     #[test]
+    fn authenticated_socks5_node_keeps_username_and_password_in_runtime_config() {
+        let input = json!({
+            "name": "Authenticated SOCKS5",
+            "server": "198.51.100.10",
+            "port": 1080,
+            "username": "fixture-user",
+            "password": "fixture-password"
+        });
+        let node = ManualNodeConfig::from_input(&input, "socks5".to_string())
+            .expect("authenticated SOCKS5 node");
+        let runtime = serde_yaml::to_string(&node.runtime_yaml().expect("runtime YAML"))
+            .expect("runtime text");
+        assert!(runtime.contains("username: fixture-user"));
+        assert!(runtime.contains("password: fixture-password"));
+    }
+
+    #[test]
     fn manual_vless_reality_node_keeps_required_runtime_options() {
         let input = json!({
             "name": "Fixed Reality",

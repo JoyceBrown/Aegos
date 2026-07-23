@@ -5219,6 +5219,9 @@ function setEditorValue(selector, value) {
 
 function refreshNodeEditorProtocolFields() {
   const type = $('#nodeEditTypeSelect')?.value || 'ss';
+  const authenticatedProxyProtocols = new Set(['socks5', 'http']);
+  const usernameRow = $('#nodeEditUsernameRow');
+  if (usernameRow) usernameRow.hidden = !authenticatedProxyProtocols.has(type);
   const tuicPasswordRow = $('#nodeEditTuicPasswordRow');
   if (tuicPasswordRow) tuicPasswordRow.hidden = type !== 'tuic';
   const secretLabel = $('#nodeEditSecretLabel');
@@ -5231,8 +5234,8 @@ function refreshNodeEditorProtocolFields() {
     trojan: 'Trojan：填写密码；通常需启用 TLS 并填写 SNI。',
     vmess: 'VMess：填写 UUID；加密通常为 auto。',
     vless: 'VLESS：填写 UUID；Reality 需要公钥，Vision 可填写 Flow。',
-    socks5: 'SOCKS5：填写密码（如服务端要求认证）。',
-    http: 'HTTP：填写密码（如服务端要求认证）。',
+    socks5: 'SOCKS5：如需认证，请分别填写用户名和密码；名称仅用于显示。',
+    http: 'HTTP：如需认证，请分别填写用户名和密码；名称仅用于显示。',
     hysteria2: 'Hysteria2：填写密码；可填写 SNI 与混淆参数。',
     anytls: 'AnyTLS：填写密码；通常需启用 TLS 并填写 SNI。',
     tuic: 'TUIC：UUID 与 TUIC 密码必须分别填写；通常需启用 TLS 并填写 SNI。'
@@ -5266,6 +5269,7 @@ function openNodeEditor(name = '') {
   setEditorValue('#nodeEditTypeSelect', ['ss', 'trojan', 'vmess', 'vless', 'socks5', 'http', 'hysteria2', 'hy2', 'anytls', 'tuic'].includes(protocol) ? protocol : 'ss');
   setEditorValue('#nodeEditServerInput', item?.server || '');
   setEditorValue('#nodeEditPortInput', item?.port || '');
+  setEditorValue('#nodeEditUsernameInput', item?.username || '');
   setEditorValue('#nodeEditSecretInput', item?.password || item?.uuid || '');
   setEditorValue('#nodeEditTuicPasswordInput', protocol === 'tuic' ? item?.password || '' : '');
   setEditorValue('#nodeEditCipherInput', item?.cipher || (protocol === 'vmess' ? 'auto' : ''));
@@ -5306,6 +5310,8 @@ function collectNodeEditorPayload() {
   };
   if (type === 'vmess' || type === 'vless' || type === 'tuic') payload.uuid = secret;
   else if (secret) payload.password = secret;
+  const username = $('#nodeEditUsernameInput')?.value.trim() || '';
+  if ((type === 'socks5' || type === 'http') && username) payload.username = username;
   if (type === 'tuic') payload.password = $('#nodeEditTuicPasswordInput')?.value.trim() || '';
   if (cipher) payload.cipher = cipher;
   const advanced = [

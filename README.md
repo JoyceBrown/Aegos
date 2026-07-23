@@ -2,7 +2,7 @@
 
 Aegos is a Windows proxy client built with Tauri, Rust, WebView2, and a managed Mihomo data plane. The product layer owns connection truth, background task scheduling, configuration transactions, Windows network takeover, diagnostics, rule editing, and recovery.
 
-Current candidate: **3.6.49**
+Current candidate: **3.6.50**
 
 ## Product Guarantees
 
@@ -20,7 +20,7 @@ Current candidate: **3.6.49**
 - `src-tauri/src/`: Rust control plane, runtime domains, task scheduling, configuration deployment, diagnostics, and Windows takeover.
 - `resources/core/`: approved managed Mihomo runtime asset.
 - `tools/`: executable product, security, performance, and regression audits.
-- `RELEASE_3.6.49.md`: current candidate release notes, verification, installer hash, and known limits.
+- `RELEASE_3.6.50.md`: current candidate release notes, verification, installer hash, and known limits.
 
 ## Build
 
@@ -41,7 +41,7 @@ npm run build
 The NSIS installer is written to:
 
 ```text
-src-tauri/target/release/bundle/nsis/Aegos_3.6.49_x64-setup.exe
+src-tauri/target/release/bundle/nsis/Aegos_3.6.50_x64-setup.exe
 ```
 
 Build outputs are intentionally excluded from Git. Signed release artifacts belong in GitHub Releases.
@@ -60,7 +60,7 @@ npm run audit:installer
 npm run audit:release
 ```
 
-The 3.6.49 candidate baseline includes 181 Rust tests, an 89-node complete-list interaction fixture, and an 8,000-node virtual-list and streamed-speed pressure fixture.
+The 3.6.50 candidate baseline includes 182 Rust tests, an 89-node complete-list interaction fixture, and an 8,000-node virtual-list and streamed-speed pressure fixture.
 
 ## Security
 

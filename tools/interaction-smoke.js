@@ -854,10 +854,16 @@ try {
     await click('#addFixedNodeBtn');
     document.querySelector('#nodeEditNameInput').value = 'Fixed Smoke 01';
     document.querySelector('#nodeEditTypeSelect').value = 'socks5';
+    document.querySelector('#nodeEditTypeSelect').dispatchEvent(new Event('change', { bubbles: true }));
+    if (document.querySelector('#nodeEditUsernameRow')?.hidden) throw new Error('SOCKS5 fixed node editor did not show the authentication username field');
     document.querySelector('#nodeEditServerInput').value = '198.51.100.10';
     document.querySelector('#nodeEditPortInput').value = '1080';
+    document.querySelector('#nodeEditUsernameInput').value = 'smoke-user';
+    document.querySelector('#nodeEditSecretInput').value = 'smoke-password';
     await click('#saveNodeEditorBtn');
-    if (!window.__aegosCalls.some((item) => item.command === 'save_manual_node')) throw new Error('fixed node editor did not save through backend command');
+    const savedFixedNodeCall = window.__aegosCalls.find((item) => item.command === 'save_manual_node' && item.args?.node?.name === 'Fixed Smoke 01');
+    if (!savedFixedNodeCall) throw new Error('fixed node editor did not save through backend command');
+    if (savedFixedNodeCall.args.node.username !== 'smoke-user' || savedFixedNodeCall.args.node.password !== 'smoke-password') throw new Error('authenticated SOCKS5 fixed node did not save its username and password');
     if (!document.querySelector('#homeNodeRows .row[data-node="Fixed Smoke 01"]')) throw new Error('fixed node filter did not show saved manual node');
     await navDown('[data-page="nodes"]');
     await click('[data-node-filter="low"]');
