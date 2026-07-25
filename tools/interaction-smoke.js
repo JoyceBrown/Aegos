@@ -146,6 +146,7 @@ try {
           ]
         }];
         window.__aegosMockGroups = groups;
+        window.__aegosFailNextStatusRead = false;
         let speedTestPollsRemaining = 0;
         let speedRunId = 42;
         const eventListeners = new Map();
@@ -280,7 +281,13 @@ try {
           },
           core: { invoke: async (command, args = {}) => {
           calls.push({ command, args });
-          if (command === 'app_status') return status();
+          if (command === 'app_status') {
+            if (window.__aegosFailNextStatusRead) {
+              window.__aegosFailNextStatusRead = false;
+              throw new Error('mock transient status read failure');
+            }
+            return status();
+          }
           if (command === 'start_core') { state.running = true; state.trafficTakeover = true; if (!state.tunEnabled) state.systemProxy = true; return { ok: true, trafficTakeover: true }; }
           if (command === 'stop_core') { state.running = false; state.trafficTakeover = false; state.systemProxy = false; return { ok: true, trafficTakeover: false }; }
           if (command === 'restart_core') { state.running = true; state.trafficTakeover = true; return { ok: true }; }
@@ -627,12 +634,32 @@ try {
       settingsAndEnvironment: false,
       nonBlockingBackgroundWork: false
     };
+    const startupSpeedDeadline = Date.now() + 4000;
+    while (!window.__aegosCalls.some((item) => item.command === 'start_proxy_delay_test') && Date.now() < startupSpeedDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     const startupSpeedCalls = window.__aegosCalls.filter((item) => item.command === 'start_proxy_delay_test');
     if (startupSpeedCalls.length !== 1) throw new Error('startup did not launch exactly one Aegos-managed first speed test: ' + startupSpeedCalls.length);
     const startupStatusCall = window.__aegosCalls.find((item) => item.command === 'app_status');
     const startupGroupsCall = window.__aegosCalls.find((item) => item.command === 'proxy_groups');
     if (!startupStatusCall || !startupGroupsCall || startupSpeedCalls[0].at <= Math.max(startupStatusCall.at, startupGroupsCall.at)) throw new Error('startup speed test began before status and nodes were ready');
     if (window.__aegosCalls.some((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'startCore'))) throw new Error('startup speed test changed the connection or selected proxy');
+    if (document.querySelector('#nodeName')?.textContent.trim() !== 'HK 01' || document.querySelector('#nodeRegionBadge')?.textContent.trim() !== 'HK') {
+      throw new Error('current node identity did not derive its name and region from the runtime node');
+    }
+    const truthfulNodeBeforeStatusFailure = document.querySelector('#nodeName')?.textContent.trim();
+    const truthfulConnectionBeforeStatusFailure = document.querySelector('.ring strong')?.textContent.trim();
+    window.__aegosFailNextStatusRead = true;
+    await refreshStatus(true);
+    if (document.querySelector('#nodeName')?.textContent.trim() !== truthfulNodeBeforeStatusFailure || document.querySelector('.ring strong')?.textContent.trim() !== truthfulConnectionBeforeStatusFailure) {
+      throw new Error('transient app_status failure replaced the last truthful runtime snapshot');
+    }
+    if (!document.querySelector('#protectionNotice')?.textContent.includes('\u5f53\u524d\u663e\u793a\u4e0a\u6b21\u6570\u636e')) {
+      throw new Error('transient app_status failure did not disclose stale status data');
+    }
+    if (!document.querySelector('#closeAllConnectionsBtn')?.disabled || !document.querySelector('#copyDiagBtn')?.disabled || !document.querySelector('#exportDiagBtn')?.disabled) {
+      throw new Error('empty-state connection or diagnostic actions remained enabled');
+    }
     const statusCenterCallsBefore = window.__aegosCalls.length;
     document.querySelector('#titlebarStatusCenterBtn').focus();
     document.querySelector('#titlebarStatusCenterBtn').click();
@@ -640,6 +667,7 @@ try {
     if (document.querySelector('#statusCenterOverlay')?.classList.contains('hidden')) throw new Error('status center did not open from titlebar');
     if (document.activeElement?.id !== 'closeStatusCenterBtn') throw new Error('status center did not receive focus');
     if (!document.querySelector('#statusCenterPanel .status-card #lanIpState')) throw new Error('status center did not preserve runtime status fields');
+    if (document.querySelector('#statusCenterPanel')?.getBoundingClientRect().width > 321) throw new Error('status center is wider than the compact layout');
     if (window.__aegosCalls.length !== statusCenterCallsBefore) throw new Error('status center open triggered a backend command');
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     if (!document.querySelector('#statusCenterOverlay')?.classList.contains('hidden')) throw new Error('status center did not close with Escape');
@@ -647,8 +675,161 @@ try {
     if (window.__aegosCalls.length !== statusCenterCallsBefore) throw new Error('status center close triggered a backend command');
     const statusCenterInitialBackendDelta = window.__aegosCalls.length - statusCenterCallsBefore;
     journeys.startupTruth = true;
+
+    if (document.querySelector('#tunHomeState') || document.querySelector('.tun-home-toggle')?.textContent.includes('未开启')) {
+      throw new Error('home TUN control still renders the removed state text');
+    }
+    const tunHomeControlBox = document.querySelector('.tun-home-toggle')?.getBoundingClientRect();
+    const tunHomeSwitchBox = document.querySelector('#tunHomeToggle')?.getBoundingClientRect();
+    if (!tunHomeControlBox || !tunHomeSwitchBox || Math.abs((tunHomeControlBox.top + tunHomeControlBox.height / 2) - (tunHomeSwitchBox.top + tunHomeSwitchBox.height / 2)) > 1.5) {
+      throw new Error('home TUN switch is not vertically centered');
+    }
+
+    const mutationCommand = (item) => ['start_job', 'change_proxy', 'update_setting', 'update_settings', 'save_manual_node', 'delete_manual_node'].includes(item.command);
+    const customizationMutationsBefore = window.__aegosCalls.filter(mutationCommand).length;
+    const openContextMenu = async (selector) => {
+      const target = document.querySelector(selector);
+      if (!target) throw new Error('missing context target ' + selector);
+      const rect = target.getBoundingClientRect();
+      target.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true,
+        cancelable: true,
+        clientX: rect.left + Math.min(16, rect.width / 2),
+        clientY: rect.top + Math.min(12, rect.height / 2)
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const menu = document.querySelector('#homeCustomizeContextMenu');
+      if (!menu || menu.classList.contains('hidden')) throw new Error('home customization context menu did not open');
+      const menuRect = menu.getBoundingClientRect();
+      if (menuRect.left < 0 || menuRect.top < 0 || menuRect.right > window.innerWidth + 1 || menuRect.bottom > window.innerHeight + 1) {
+        throw new Error('home customization context menu escaped the viewport');
+      }
+    };
+    const submitDialogInput = async (value) => {
+      const input = document.querySelector('#appDialogInput');
+      if (!input) throw new Error('home customization input dialog did not open');
+      input.value = value;
+      document.querySelector('#appDialogForm').dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    };
+
+    const keyboardRegionTrigger = document.querySelector('[data-region="TW"]');
+    keyboardRegionTrigger?.focus();
+    keyboardRegionTrigger?.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'F10',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    if (document.querySelector('#homeCustomizeContextMenu')?.getAttribute('role') !== 'menu' || !document.activeElement?.closest('#homeCustomizeContextMenu')) {
+      throw new Error('home customization menu did not open and focus from Shift+F10');
+    }
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    if (document.activeElement !== keyboardRegionTrigger || !document.querySelector('#homeCustomizeContextMenu')?.classList.contains('hidden')) {
+      throw new Error('home customization menu did not restore keyboard trigger focus: active=' + (document.activeElement?.outerHTML || 'none') + '; menu=' + document.querySelector('#homeCustomizeContextMenu')?.className);
+    }
+
+    await openContextMenu('[data-region="TW"]');
+    await click('[data-home-customize-action="region-right"]');
+    let storedRegions = JSON.parse(localStorage.getItem('aegos.homeRegions') || '[]');
+    if (storedRegions.map((item) => item.code).join(',') !== 'HK,US,TW,JP,SG') throw new Error('home region reorder did not persist');
+
+    await openContextMenu('[data-region="US"]');
+    await click('[data-home-customize-action="region-add"]');
+    await submitDialogInput('DE');
+    await submitDialogInput('德国');
+    storedRegions = JSON.parse(localStorage.getItem('aegos.homeRegions') || '[]');
+    if (!document.querySelector('[data-region="DE"].active') || !storedRegions.some((item) => item.code === 'DE' && item.label === '德国')) {
+      throw new Error('home region add did not render and persist');
+    }
+
+    await openContextMenu('[data-region="DE"]');
+    await click('[data-home-customize-action="region-edit"]');
+    await submitDialogInput('DE');
+    await submitDialogInput('德语区');
+    storedRegions = JSON.parse(localStorage.getItem('aegos.homeRegions') || '[]');
+    if (document.querySelector('[data-region="DE"] .region-label')?.textContent !== '德语区' || !storedRegions.some((item) => item.code === 'DE' && item.label === '德语区')) {
+      throw new Error('home region edit did not render and persist');
+    }
+
+    await openContextMenu('[data-region="DE"]');
+    await click('[data-home-customize-action="region-delete"]');
+    await click('#appDialogOkBtn');
+    if (document.querySelector('[data-region="DE"]') || JSON.parse(localStorage.getItem('aegos.homeRegions') || '[]').some((item) => item.code === 'DE')) {
+      throw new Error('home region delete did not render and persist');
+    }
+
+    await openContextMenu('[data-region="HK"]');
+    await click('[data-home-customize-action="region-reset"]');
+    await click('#appDialogOkBtn');
+    storedRegions = JSON.parse(localStorage.getItem('aegos.homeRegions') || '[]');
+    if (storedRegions.map((item) => item.code).join(',') !== 'HK,TW,US,JP,SG' || !document.querySelector('[data-region="HK"].active')) {
+      throw new Error('home region defaults did not restore');
+    }
+
+    await openContextMenu('#quickProfileBtn');
+    if (document.querySelector('[data-home-customize-action="quick-rename"]')) {
+      throw new Error('quick actions still expose arbitrary label renaming');
+    }
+    const quickMenu = document.querySelector('#homeCustomizeContextMenu');
+    const quickChoices = [...document.querySelectorAll('.quick-action-choice')];
+    if (quickChoices.length < 12 || quickMenu?.getBoundingClientRect().height > 360 || quickMenu?.getBoundingClientRect().width > 370) {
+      throw new Error('resident quick action picker is oversized or has too few choices');
+    }
+    if (quickChoices.some((choice) => {
+      const label = choice.querySelector('b');
+      return !choice.querySelector('.quick-action-choice-marker') || label?.scrollWidth > label?.clientWidth + 1;
+    })) {
+      throw new Error('resident quick action picker clips unselected labels');
+    }
+    await click('[data-home-customize-action="quick-toggle:quickProfileBtn"]');
+    await click('[data-home-customize-action="quick-toggle:quickDiagnosticsBtn"]');
+    let storedActions = JSON.parse(localStorage.getItem('aegos.quickActions') || '[]');
+    const visibleQuickIds = [...document.querySelectorAll('[data-quick-action]:not(.hidden)')].map((button) => button.id);
+    if (!document.querySelector('#quickProfileBtn')?.classList.contains('hidden') || document.querySelector('#quickDiagnosticsBtn')?.classList.contains('hidden') || storedActions.join(',') !== 'quickTestBtn,quickUpdateSubBtn,quickKillBtn,quickDiagnosticsBtn' || visibleQuickIds.length !== 4) {
+      throw new Error('resident quick action selection did not render or persist');
+    }
+    if (window.__aegosCalls.filter(mutationCommand).length !== customizationMutationsBefore) {
+      throw new Error('home customization triggered a backend mutation');
+    }
+    await click('#quickDiagnosticsBtn');
+    if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'diagnostics')) {
+      throw new Error('selected diagnostics quick action lost its original function');
+    }
+    await openContextMenu('#quickDiagnosticsBtn');
+    await click('[data-home-customize-action="quick-toggle:quickNodesPageBtn"]');
+    storedActions = JSON.parse(localStorage.getItem('aegos.quickActions') || '[]');
+    if (storedActions.join(',') !== 'quickTestBtn,quickUpdateSubBtn,quickKillBtn,quickNodesPageBtn' || !document.querySelector('#quickDiagnosticsBtn')?.classList.contains('hidden') || document.querySelector('#quickNodesPageBtn')?.classList.contains('hidden')) {
+      throw new Error('resident quick action replacement at the four-button limit failed');
+    }
+    const mutationsAfterDiagnostics = window.__aegosCalls.filter(mutationCommand).length;
+    await openContextMenu('#quickNodesPageBtn');
+    await click('[data-home-customize-action="quick-left"]');
+    storedActions = JSON.parse(localStorage.getItem('aegos.quickActions') || '[]');
+    if (storedActions.at(-2) !== 'quickNodesPageBtn' || window.__aegosCalls.filter(mutationCommand).length !== mutationsAfterDiagnostics) {
+      throw new Error('resident quick action reorder did not persist');
+    }
+    await click('#quickNodesPageBtn');
+    if (!document.querySelector('[data-page-panel="nodes"]')?.classList.contains('active')) {
+      throw new Error('selected node-management quick action lost its original function');
+    }
+    await click('[data-page="home"]');
+    const mutationsAfterQuickCommand = window.__aegosCalls.filter(mutationCommand).length;
+    await openContextMenu('#quickNodesPageBtn');
+    await click('[data-home-customize-action="quick-reset"]');
+    await click('#appDialogOkBtn');
+    storedActions = JSON.parse(localStorage.getItem('aegos.quickActions') || '[]');
+    if (storedActions.join(',') !== 'quickTestBtn,quickUpdateSubBtn,quickKillBtn,quickProfileBtn' || document.querySelector('#quickProfileBtn')?.classList.contains('hidden') || !document.querySelector('#quickDiagnosticsBtn')?.classList.contains('hidden')) {
+      throw new Error('quick action defaults did not restore');
+    }
+    if (window.__aegosCalls.filter(mutationCommand).length !== mutationsAfterQuickCommand) {
+      throw new Error('restoring resident quick actions triggered a backend mutation');
+    }
+
     await click('#connectBtn');
     if (document.querySelector('#pageTitle')) throw new Error('duplicate top-left page title still renders');
+    if (document.querySelector('.sidebar-runtime-summary')) throw new Error('removed sidebar runtime summary still renders');
     if (![...document.querySelectorAll('.status-card div')].some((item) => item.querySelector('dd#lanIpState') && item.querySelector('dt')?.textContent.includes('IP'))) throw new Error('network status did not render LAN IP label/value pair');
     if (document.querySelector('#lanIpState')?.textContent.trim() !== '192.168.1.2') throw new Error('network status did not render real LAN IP value');
     if (document.querySelector('#connectBtn')?.textContent.trim() !== '\u8fde\u63a5\u4e2d') throw new Error('connect button did not show pending connect feedback');
@@ -666,11 +847,15 @@ try {
     if (!document.querySelector('[data-home-mode="region"]')?.classList.contains('active')) throw new Error('home did not default to common regions');
     if (!document.querySelector('[data-region="HK"]')?.classList.contains('active')) throw new Error('home did not default to Hong Kong region');
     if (document.querySelector('#homeRegionRow')?.classList.contains('hidden')) throw new Error('home common regions were hidden by default');
+    if (document.querySelector('[data-region="GB"]')) throw new Error('removed United Kingdom common-region card still renders');
     if (document.querySelector('[data-page-jump="nodes"]')) throw new Error('all nodes shortcut still renders on home');
     const switchCallsBeforeSpeed = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     await click('#quickTestBtn');
     await navDown('[data-page="nodes"]');
     await new Promise((resolve) => setTimeout(resolve, 380));
+    if (document.querySelector('[data-node-filter="recent"]')) throw new Error('removed recent-node filter still renders');
+    const compactNodeHeader = document.querySelector('[data-page-panel="nodes"] .node-table > .row.head');
+    if (compactNodeHeader?.children.length !== 6) throw new Error('node-page header did not remove the address column: ' + (compactNodeHeader?.children.length || 0) + ' / ' + (compactNodeHeader?.innerHTML || 'missing'));
     if (document.querySelectorAll('#nodeRows .row[data-node]').length !== 89) throw new Error('ordinary subscription did not render all 89 nodes');
     if (document.querySelector('#nodeRows')?.textContent.includes('24 / 89')) throw new Error('node list still exposes the legacy 24-node truncation');
     if (!document.querySelector('#nodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('node page did not receive quick home speed results');
@@ -681,6 +866,7 @@ try {
     if (!document.querySelector('[data-page-panel="settings"]')?.classList.contains('active')) throw new Error('speed test blocked sidebar page switching');
     if (!document.querySelector('#killToggle')?.checked) throw new Error('settings page did not reconcile disconnect protection when it became visible');
     await navDown('[data-page="home"]');
+    if (document.querySelector('.home-row-head')?.children.length !== 5) throw new Error('home header did not remove the address column');
     await click('[data-home-mode="favorite"]');
     await click('[data-home-mode="region"]');
     await click('[data-region="JP"]');
@@ -694,8 +880,11 @@ try {
     if (document.querySelector('#autoGroupNotice')?.classList.contains('hidden')) throw new Error('automatic strategy group warning did not render');
     if (document.querySelector('#bestNodeList') || document.querySelector('.best-node')) throw new Error('duplicate recommended node strip still renders');
     if (!document.querySelector('#quickTestBtn .icon-speed')) throw new Error('speed test quick action does not use lightning icon');
-    if (document.querySelector('#systemProxyMetric')?.classList.contains('is-danger')) throw new Error('connected TUN-off system proxy metric stayed highlighted as disabled');
-    if (!document.querySelector('#systemProxyMetric') || !document.querySelector('#upRate') || !document.querySelector('#downRate') || !document.querySelector('#stabilityMetric') || !document.querySelector('#activeConnectionsMetric') || !document.querySelector('#lastTestedMetric') || !document.querySelector('#currentNodeTestBtn')) throw new Error('home runtime metrics did not show proxy, traffic, stability, active connection, and test age state');
+    if (document.querySelector('#proxyState')?.classList.contains('is-danger')) throw new Error('connected TUN-off system proxy status stayed highlighted as disabled');
+    if (document.querySelector('#systemProxyMetric') || document.querySelector('#networkAvailabilityMetric')) throw new Error('removed duplicate home status metrics still render');
+    if (!document.querySelector('#upRate') || !document.querySelector('#downRate') || !document.querySelector('#stabilityMetric') || !document.querySelector('#activeConnectionsMetric') || !document.querySelector('#lastTestedMetric') || !document.querySelector('#currentNodeTestBtn')) throw new Error('node status card did not show traffic, stability, active connection, and test age state');
+    if (document.querySelectorAll('.node-status-card > article').length !== 9 || !document.querySelector('.sidebar > .node-status-card')) throw new Error('node status metrics did not move to the sidebar bottom card');
+    if (!document.querySelector('.node-column > .node-quick-actions') || document.querySelector('[data-page-panel="home"] > .quick')) throw new Error('quick actions did not move below the current node');
     if (document.querySelector('#tunMetric') || document.querySelector('#adminMetric') || document.querySelector('.traffic-card')) throw new Error('low-value home/sidebar metrics still render');
     await click('#lockAutoGroupBtn');
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'changeProxy')) throw new Error('auto group lock did not use background proxy change job');
@@ -741,13 +930,15 @@ try {
     if (startCoreAfterStandbySpeed !== startCoreBeforeStandbySpeed) throw new Error('standby speed test triggered the connect job');
     if (switchCallsAfterStandbySpeed !== switchCallsBeforeStandbySpeed) throw new Error('standby speed test triggered a proxy switch');
     if (document.querySelector('#connectBtn')?.textContent.trim() !== '\u8fde\u63a5') throw new Error('standby speed test changed the connect button to disconnect');
-    document.querySelector('#quickProxyBtn').click();
+    if (document.querySelector('#quickProxyBtn') || document.querySelector('#quickRestartBtn')) throw new Error('removed infrequent quick actions still render');
+    await navDown('[data-page="settings"]');
+    document.querySelector('#systemProxyToggle').click();
     await new Promise((resolve) => setTimeout(resolve, 20));
-    if (document.querySelector('#quickProxyBtn')?.disabled) throw new Error('home proxy quick action became blocking while backend was pending');
     if (!document.querySelector('#systemProxyToggle')?.checked) throw new Error('system proxy toggle did not update optimistically');
     await new Promise((resolve) => setTimeout(resolve, 420));
     if (document.querySelector('#connectBtn')?.textContent.trim() !== '\u8fde\u63a5') throw new Error('manual system proxy toggle auto-connected traffic takeover');
-    if (!document.querySelector('#systemProxyToggle')?.checked || document.querySelector('#systemProxyMetric')?.classList.contains('is-danger') === false) throw new Error('manual system proxy preference did not show pending connection state');
+    if (!document.querySelector('#systemProxyToggle')?.checked || document.querySelector('#proxyState')?.classList.contains('is-danger') === false) throw new Error('manual system proxy preference did not show pending connection state');
+    await navDown('[data-page="home"]');
     const tunToggle = document.querySelector('#tunHomeToggle');
     tunToggle.click();
     await new Promise((resolve) => setTimeout(resolve, 420));
@@ -760,7 +951,7 @@ try {
     await click('#connectBtn');
     await new Promise((resolve) => setTimeout(resolve, 700));
     if (document.querySelector('#connectBtn')?.textContent.trim() !== '\u8fde\u63a5') throw new Error('TUN-on disconnect did not restore idle connection state');
-    if (document.querySelector('#quickTunBtn') || document.querySelector('#quickCopyProxyBtn') || document.querySelector('#smartRecoverBtn') || document.querySelector('#quickModeBtn')) throw new Error('removed quick actions still render');
+    if (document.querySelector('#quickProxyBtn') || document.querySelector('#quickRestartBtn') || document.querySelector('#quickTunBtn') || document.querySelector('#quickCopyProxyBtn') || document.querySelector('#smartRecoverBtn') || document.querySelector('#quickModeBtn')) throw new Error('removed quick actions still render');
     await click('#quickProfileBtn');
     if (document.querySelector('[data-page-panel="profiles"]')?.classList.contains('active')) throw new Error('quick subscription switch navigated to profiles page');
     if (document.querySelector('#profileMenu')?.classList.contains('hidden')) throw new Error('quick subscription menu did not open');
@@ -829,7 +1020,14 @@ try {
     await navDown('[data-page="routing"]');
     await new Promise((resolve) => setTimeout(resolve, 900));
     if (!document.querySelector('#routingGroupRows .routing-row')) throw new Error('routing page did not render strategy rows after quiet load');
-    if (!document.querySelector('#routingReadonlyBadge')?.textContent.includes('预览阶段')) throw new Error('routing page did not keep the not-yet-applied preview state visible');
+    if (!document.querySelector('#routingReadonlyBadge')?.textContent.includes('预览模式')) throw new Error('routing page did not keep the not-yet-applied preview state visible');
+    if (document.querySelector('.routing-draft-toolbar')) throw new Error('routing page kept duplicate draft controls above the builder');
+    if (!document.querySelector('#routingDraftListCard')?.classList.contains('hidden')) throw new Error('empty routing draft area consumed page space');
+    if (!document.querySelector('#routingSummaryDetail')?.classList.contains('hidden')) throw new Error('routing summary details expanded before the user requested them');
+    await click('[data-routing-summary="user"]');
+    if (document.querySelector('#routingSummaryDetail')?.classList.contains('hidden')) throw new Error('routing summary details did not expand on request');
+    await click('[data-routing-summary="user"]');
+    if (!document.querySelector('#routingSummaryDetail')?.classList.contains('hidden')) throw new Error('routing summary details did not collapse on repeated selection');
     const routingAdvanced = document.querySelector('#routingAdvancedPanel');
     if (!routingAdvanced) throw new Error('routing advanced details control is missing');
     routingAdvanced.open = true;
@@ -850,6 +1048,7 @@ try {
     document.querySelector('#previewWebsiteRuleBtn').click();
     await new Promise((resolve) => setTimeout(resolve, 40));
     if (!document.querySelector('#routingDraftPreview')?.dataset.rule?.includes('DOMAIN-SUFFIX,openai.com')) throw new Error('website routing preview did not create a safe draft');
+    if (document.querySelector('#routingDraftListCard')?.classList.contains('hidden')) throw new Error('routing draft area did not appear after preview');
     const callsBeforeAppDraft = window.__aegosCalls.length;
     document.querySelector('#routingAppInput').value = 'Telegram';
     document.querySelector('#previewAppRuleBtn').click();
@@ -862,6 +1061,9 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 520));
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'applyRoutingDrafts')) throw new Error('routing drafts did not use the safe deployment job');
     if (!document.querySelector('#routingApplyStatus')?.textContent.includes('\u5df2\u5e94\u7528')) throw new Error('routing apply did not show verified applied state');
+    if (document.querySelector('#routingDraftListCard')?.classList.contains('hidden')) throw new Error('routing rollback action disappeared after apply');
+    if (!document.querySelector('#routingDraftList')?.classList.contains('hidden')) throw new Error('empty routing draft rows remained visible after apply');
+    if (document.querySelector('#undoRoutingApplyBtn')?.classList.contains('hidden')) throw new Error('routing rollback action is not visible after apply');
     journeys.routingRuleLifecycle = true;
     if (document.querySelector('#routingModeState')?.textContent.trim() !== document.querySelector('#modeLabel')?.textContent.trim()) throw new Error('routing mode summary did not match current backend mode');
     await navDown('[data-page="diagnostics"]');
@@ -872,11 +1074,14 @@ try {
     await navDown('[data-page="home"]');
     await click('[data-home-mode="region"]');
     if (document.querySelector('#homeRegionRow')?.classList.contains('hidden')) throw new Error('common region subpage buttons did not show');
+    if (!document.querySelector('#fixedNodeActions')?.classList.contains('hidden')) throw new Error('fixed-node add action leaked into the common-region page');
     await click('[data-region="TW"]');
     await click('[data-region="HK"]');
     if (!document.querySelector('[data-region="HK"]')?.classList.contains('active')) throw new Error('home region child filter did not become active');
     await click('[data-home-mode="fixed"]');
     if (!document.querySelector('[data-home-mode="fixed"]')?.classList.contains('active')) throw new Error('fixed node mode did not become active');
+    if (document.querySelector('#fixedNodeActions')?.classList.contains('hidden')) throw new Error('fixed-node add action did not enter the fixed-node page');
+    if (!document.querySelector('.home-filter-head > #fixedNodeActions > #addFixedNodeBtn')) throw new Error('fixed-node add action is not anchored in the fixed-node page header');
     await click('#addFixedNodeBtn');
     if (getComputedStyle(document.querySelector('#nodeEditUsernameRow')).display !== 'none') throw new Error('fixed node editor showed the username field for a protocol that does not use it');
     if (document.querySelector('#nodeEditSecretInput')?.type !== 'password') throw new Error('fixed node editor exposed a password as plain text');
@@ -967,7 +1172,7 @@ try {
     const tableBox = document.querySelector('.node-table')?.getBoundingClientRect();
     if (!rowActionBox || !tableBox || rowActionBox.right > tableBox.right - 6) throw new Error('node row actions are too close to the table edge');
     if (document.querySelectorAll('.row-action-labels span').length !== 4) throw new Error('node action labels did not render');
-    if (document.querySelector('#nodeRows .row[data-node]')?.children.length !== 7) throw new Error('node table did not render the expected status column');
+    if (document.querySelector('#nodeRows .row[data-node]')?.children.length !== 6) throw new Error('node table did not render the compact columns with status');
     if (!document.querySelector('#nodeRows .row[data-node] .node-note')) throw new Error('node speed status note did not render');
     await click('#nodeRows [data-node-action="route"]');
     if (document.querySelector('#nodeGroupTargetEditor')?.classList.contains('hidden')) throw new Error('node route action did not open the target-site editor');
@@ -1044,7 +1249,7 @@ try {
     if (document.querySelector('#connectionRows .simple-row')) throw new Error('connections did not clear optimistically');
     await new Promise((resolve) => setTimeout(resolve, 420));
     await click('[data-page="profiles"]');
-    document.querySelector('[data-profile-row="direct"]').click();
+    document.querySelector('[data-profile-switch="direct"]').click();
     await new Promise((resolve) => setTimeout(resolve, 20));
     if (!document.querySelector('[data-profile-row="direct"]')?.classList.contains('active')) throw new Error('profile row did not become active optimistically');
     await new Promise((resolve) => setTimeout(resolve, 420));
@@ -1162,10 +1367,8 @@ try {
     await click('#connectBtn');
     const jobCenterText = document.querySelector('#jobRows')?.textContent || '';
     if (!jobCenterText.includes('startCore') && !jobCenterText.includes('restartCore') && !jobCenterText.includes('updateSettings')) throw new Error('background job center did not render recent jobs');
-    if (document.querySelector('#sidebarJobCount')?.textContent.trim() === '0') throw new Error('compact sidebar did not summarize active background jobs');
-    if (!document.querySelector('#sidebarNodeName')?.textContent.trim()) throw new Error('compact sidebar did not summarize the current node');
     const statusCenterCallsWithJobs = window.__aegosCalls.length;
-    document.querySelector('#sidebarStatusCenterBtn').click();
+    document.querySelector('#titlebarStatusCenterBtn').click();
     if (!document.querySelector('#statusCenterPanel #jobRows')?.textContent.includes('startCore') && !document.querySelector('#statusCenterPanel #jobRows')?.textContent.includes('restartCore') && !document.querySelector('#statusCenterPanel #jobRows')?.textContent.includes('updateSettings')) throw new Error('status center did not show background jobs');
     if (window.__aegosCalls.length !== statusCenterCallsWithJobs) throw new Error('status center with jobs triggered a backend command');
     document.querySelector('#closeStatusCenterBtn').click();

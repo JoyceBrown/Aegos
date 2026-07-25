@@ -24,7 +24,7 @@ const stylesCss = read('src/styles.css');
 const mainRs = read('src-tauri/src/main.rs');
 const releaseAudit = read('tools/release-audit.js');
 
-check('package version is in 3.3/3.4 execution lane', /^3\.(?:3|4)\.\d+$/.test(pkg.version), pkg.version);
+check('package version includes the 3.3/3.4 routing maturity baseline', /^3\.(?:[3-9]|\d{2,})\.\d+$/.test(pkg.version), pkg.version);
 check('routing assistant maturity audit is exposed', pkg.scripts?.['audit:routing-assistant-maturity'] === 'node tools/routing-assistant-maturity-audit.js', 'package.json');
 check('3.3.4 region and strategy target wizard exists', appJs.includes('routingRegionSelect') && appJs.includes('routingTargetSelect') && appJs.includes('regionRoutingDraftPreset') && appJs.includes('GEOSITE') && appJs.includes('GEOIP'), 'region/strategy wizard');
 check('3.3.5 rule conflict prompts exist before apply', appJs.includes('function classifyRoutingDraft') && appJs.includes('missingTarget') && appJs.includes('duplicateDraft') && appJs.includes('routingConflictSummary'), 'conflict classifier');

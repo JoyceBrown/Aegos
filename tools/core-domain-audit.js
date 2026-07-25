@@ -120,7 +120,10 @@ check(
     !coreRuntimeRs.includes('pub version_probe: JsonValue') &&
     coreRuntimeRs.includes('pub fn receipt_json(&self) -> JsonValue') &&
     coreRuntimeRs.includes('runtime_apply_receipt_is_aegos_shaped') &&
-    mainRs.includes('Ok(result.receipt_json())'),
+    mainRs.includes('let mut receipt = result.receipt_json()') &&
+    mainRs.includes('map.insert("applyElapsedMs".to_string()') &&
+    mainRs.includes('map.insert("versionProbeCount".to_string()') &&
+    mainRs.includes('Ok(receipt)'),
   'hot reload must return an Aegos receipt instead of raw controller JSON',
 );
 

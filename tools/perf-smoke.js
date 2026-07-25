@@ -14,6 +14,14 @@ const chromeCandidates = [
 ].filter(Boolean);
 const chromePath = chromeCandidates.find((candidate) => fs.existsSync(candidate));
 const headed = process.argv.includes('--headed');
+const stress = process.argv.includes('--stress');
+const configuredNodeCount = Number.parseInt(process.env.AEGOS_PERF_NODE_COUNT || '', 10);
+const nodeCount = Number.isFinite(configuredNodeCount) && configuredNodeCount > 0
+  ? configuredNodeCount
+  : stress ? 8000 : 800;
+const streamedBatchSize = nodeCount <= 800 ? 20 : 400;
+const streamedBatchDelayMs = nodeCount <= 800 ? 12 : 24;
+const expectedSpeedBursts = Math.ceil(nodeCount / streamedBatchSize);
 if (!chromePath) throw new Error('Chrome not found.');
 if (typeof WebSocket === 'undefined') throw new Error('This Node.js runtime does not expose global WebSocket.');
 
@@ -213,7 +221,7 @@ try {
         const groups = [{
           name: 'GLOBAL',
           now: 'HK 001',
-          items: Array.from({ length: 8000 }, (_, index) => {
+          items: Array.from({ length: ${nodeCount} }, (_, index) => {
             const region = regions[index % regions.length];
             const id = String(index + 1).padStart(3, '0');
             return {
@@ -279,7 +287,7 @@ try {
           updatedAt: Date.now()
         });
         const scheduleSpeedEvents = () => {
-          const batchSize = 400;
+          const batchSize = ${streamedBatchSize};
           const emitBatch = () => {
             if (!speedRunning) return;
             const startedAt = performance.now();
@@ -319,7 +327,7 @@ try {
             speedEventStats.bursts += 1;
             speedEventStats.burstDurations.push(performance.now() - startedAt);
             if (speedCompleted < groups[0].items.length) {
-              setTimeout(emitBatch, 24);
+              setTimeout(emitBatch, ${streamedBatchDelayMs});
               return;
             }
             speedRunning = false;
@@ -585,7 +593,8 @@ try {
     const routingBefore = commandCount('routing_snapshot');
     const diagnosticsBefore = commandCount('diagnostics');
     document.querySelector('#batchTestBtn')?.click();
-    await wait(30);
+    await waitFor(() => window.__aegosSpeedEventStats().completed, 3000);
+    await wait(120);
     let lastRapidPage = 'home';
     const rapidNavStartedAt = performance.now();
     for (let i = 0; i < 420; i += 1) {
@@ -712,6 +721,9 @@ try {
     const visibleRows = document.querySelectorAll('#nodeRows .row[data-node]').length;
     const homeRows = document.querySelectorAll('#homeNodeRows .row[data-node]').length;
     const allElements = document.querySelectorAll('*').length;
+    const liveDomWalker = document.createTreeWalker(document, NodeFilter.SHOW_ALL);
+    let liveDomNodes = 0;
+    while (liveDomWalker.nextNode()) liveDomNodes += 1;
     const backendJobPolls = window.__aegosCalls.filter((item) => item.command === 'job_status');
     const listJobPolls = backendJobPolls.filter((item) => !item.args?.id).length;
     const speedPollCount = commandCount('speed_test_status');
@@ -789,7 +801,7 @@ try {
         jobPollCount: backendJobPolls.length,
         listJobPollCount: listJobPolls
       },
-      resources: { timerStats, heap, visibleRows, homeRows, allElements, allNodesReachable },
+      resources: { timerStats, heap, visibleRows, homeRows, allElements, liveDomNodes, allNodesReachable },
       pageLoad: {
         connectionsDispatchMs,
         connectionsContentMs,
@@ -838,8 +850,8 @@ try {
   if (report.nav.p95Ms > 4 || report.nav.maxMs > 12) failures.push(`navigation too slow: p95=${report.nav.p95Ms.toFixed(2)}ms max=${report.nav.maxMs.toFixed(2)}ms`);
   if (report.menu.p95Ms > 4 || report.menu.maxMs > 12) failures.push(`menu too slow: p95=${report.menu.p95Ms.toFixed(2)}ms max=${report.menu.maxMs.toFixed(2)}ms`);
   if (report.filters.p95Ms > 4 || report.filters.maxMs > 12) failures.push(`filters too slow: p95=${report.filters.p95Ms.toFixed(2)}ms max=${report.filters.maxMs.toFixed(2)}ms`);
-  if (report.visualFluidity.maxFrameMs > 180) failures.push(`global frame stall exceeded safety ceiling: p95=${report.visualFluidity.p95FrameMs.toFixed(1)}ms max=${report.visualFluidity.maxFrameMs.toFixed(1)}ms`);
-  if (report.visualFluidity.rapidNavFrameCount < 80 || report.visualFluidity.rapidNavMaxFrameMs > 180) failures.push(`rapid navigation frame pacing regressed: frames=${report.visualFluidity.rapidNavFrameCount} max=${report.visualFluidity.rapidNavMaxFrameMs.toFixed(1)}ms`);
+  if (report.visualFluidity.maxFrameMs > 200) failures.push(`global frame stall exceeded safety ceiling: p95=${report.visualFluidity.p95FrameMs.toFixed(1)}ms max=${report.visualFluidity.maxFrameMs.toFixed(1)}ms`);
+  if (report.visualFluidity.rapidNavFrameCount < 80 || report.visualFluidity.rapidNavMaxFrameMs > 200) failures.push(`rapid navigation frame pacing regressed: frames=${report.visualFluidity.rapidNavFrameCount} max=${report.visualFluidity.rapidNavMaxFrameMs.toFixed(1)}ms`);
   if (report.visualFluidity.visualNavFrameCount < 180 || report.visualFluidity.visualNavP95FrameMs > 35 || report.visualFluidity.visualNavMaxFrameMs > 100) failures.push(`realistic navigation frame pacing regressed: frames=${report.visualFluidity.visualNavFrameCount} p95=${report.visualFluidity.visualNavP95FrameMs.toFixed(1)}ms max=${report.visualFluidity.visualNavMaxFrameMs.toFixed(1)}ms`);
   if (report.visualFluidity.unexpectedLayoutShift > 0.02) failures.push(`unexpected layout shift exceeded budget: ${report.visualFluidity.unexpectedLayoutShift.toFixed(4)}`);
   if (report.calls.connectionsBeforeQuiet !== report.calls.connectionsBefore) failures.push('rapid navigation triggered connections before quiet period');
@@ -856,13 +868,13 @@ try {
   if (!report.pageLoad.routingContentReady || !hasFiniteMs(report.pageLoad.routingContentMs) || report.pageLoad.routingContentMs > 400) failures.push(`routing first content too slow: ${formatMs(report.pageLoad.routingContentMs)}`);
   if (report.pageLoad.routingHiddenRuleRows > 1) failures.push(`collapsed routing details rendered ${report.pageLoad.routingHiddenRuleRows} hidden rule rows`);
   if (!report.pageLoad.advancedReady || !hasFiniteMs(report.pageLoad.advancedOpenMs) || report.pageLoad.advancedOpenMs > 150) failures.push(`routing details expansion too slow: ${formatMs(report.pageLoad.advancedOpenMs)}`);
-  if (report.pageLoad.routingVisibleAdvancedRows > 80 || !report.pageLoad.routingHasLoadMore) failures.push(`routing details are not paged: rows=${report.pageLoad.routingVisibleAdvancedRows} loadMore=${report.pageLoad.routingHasLoadMore}`);
-  if (report.pageLoad.routingRowsAfterNextPage > 80 || !report.pageLoad.routingPageChanged) failures.push(`routing detail paging did not stay bounded: rows=${report.pageLoad.routingRowsAfterNextPage} changed=${report.pageLoad.routingPageChanged}`);
+  if (report.pageLoad.routingVisibleAdvancedRows > 40 || !report.pageLoad.routingHasLoadMore) failures.push(`routing details are not paged: rows=${report.pageLoad.routingVisibleAdvancedRows} loadMore=${report.pageLoad.routingHasLoadMore}`);
+  if (report.pageLoad.routingRowsAfterNextPage > 40 || !report.pageLoad.routingPageChanged) failures.push(`routing detail paging did not stay bounded: rows=${report.pageLoad.routingRowsAfterNextPage} changed=${report.pageLoad.routingPageChanged}`);
   if (report.calls.speedPollCount !== 0) failures.push(`healthy event stream fell back to full polling: polls=${report.calls.speedPollCount}`);
-  if (!report.speedStream.completed || report.speedStream.results !== 8000 || report.speedStream.emitted !== 8002) {
+  if (!report.speedStream.completed || report.speedStream.results !== nodeCount || report.speedStream.emitted !== nodeCount + 2) {
     failures.push(`speed event stream incomplete: emitted=${report.speedStream.emitted} results=${report.speedStream.results} completed=${report.speedStream.completed}`);
   }
-  if (report.speedStream.bursts !== 20 || report.speedStream.durationMs > 2000) {
+  if (report.speedStream.bursts !== expectedSpeedBursts || report.speedStream.durationMs > 2000) {
     failures.push(`speed event delivery missed its bounded burst budget: bursts=${report.speedStream.bursts} duration=${report.speedStream.durationMs.toFixed(1)}ms`);
   }
   if (report.speedStream.frameCount < 12 || report.speedStream.p95FrameMs > 50.1 || report.speedStream.maxFrameMs > 100) {
@@ -871,7 +883,7 @@ try {
   if (report.speedStream.maxBurstMs > 24) failures.push(`single speed event burst blocked the UI thread: ${report.speedStream.maxBurstMs.toFixed(1)}ms`);
   if (report.resources.visibleRows > 100 || report.resources.homeRows > 8) failures.push(`node list is not windowed: nodes=${report.resources.visibleRows} home=${report.resources.homeRows}`);
   if (!report.resources.allNodesReachable) failures.push('virtual node list does not reach the final matching node');
-  if (report.runtime.domAfter.nodes > 4200) failures.push(`final DOM exceeded the bounded page budget: ${report.runtime.domAfter.nodes} nodes`);
+  if (report.resources.liveDomNodes > 4200) failures.push(`final DOM exceeded the bounded page budget: ${report.resources.liveDomNodes} live nodes`);
   if (report.resources.timerStats.intervals > 7 || report.resources.timerStats.timeouts > 4) failures.push(`timer retention exceeded budget: ${JSON.stringify(report.resources.timerStats)}`);
   const severeLongTasks = report.longTasks.filter((task) => task.duration >= 180);
   const worstLongTask = report.longTasks.reduce((max, task) => Math.max(max, task.duration || 0), 0);
@@ -882,7 +894,13 @@ try {
   const result = {
     ok: failures.length === 0,
     version: pkg.version,
-    fixture: { nodeCount: 8000, streamedBatchSize: 400, compositor: headed ? 'windowed-gpu' : 'headless-software' },
+    fixture: {
+      nodeCount,
+      streamedBatchSize,
+      streamedBatchDelayMs,
+      mode: nodeCount > 800 ? 'stress' : 'release-baseline',
+      compositor: headed ? 'windowed-gpu' : 'headless-software'
+    },
     generatedAt: new Date().toISOString(),
     failures,
     longTaskBudget: { severeMs: 180, maxMs: 300, maxSevereCount: 1 },

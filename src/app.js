@@ -25,6 +25,38 @@ pageNames.profiles = '\u8ba2\u9605';
 pageNames.diagnostics = '\u8bca\u65ad';
 pageNames.settings = '\u8bbe\u7f6e';
 
+const defaultHomeRegions = Object.freeze([
+  Object.freeze({ code: 'HK', label: '\u9999\u6e2f' }),
+  Object.freeze({ code: 'TW', label: '\u53f0\u6e7e' }),
+  Object.freeze({ code: 'US', label: '\u7f8e\u56fd' }),
+  Object.freeze({ code: 'JP', label: '\u65e5\u672c' }),
+  Object.freeze({ code: 'SG', label: '\u65b0\u52a0\u5761' })
+]);
+const quickActionCatalog = Object.freeze([
+  Object.freeze({ id: 'quickTestBtn', label: '\u4e00\u952e\u6d4b\u901f' }),
+  Object.freeze({ id: 'quickUpdateSubBtn', label: '\u66f4\u65b0\u8ba2\u9605' }),
+  Object.freeze({ id: 'quickKillBtn', label: '\u65ad\u7f51\u4fdd\u62a4' }),
+  Object.freeze({ id: 'quickProfileBtn', label: '\u5207\u6362\u8ba2\u9605' }),
+  Object.freeze({ id: 'quickDiagnosticsBtn', label: '\u8fd0\u884c\u8bca\u65ad' }),
+  Object.freeze({ id: 'quickRecoverBtn', label: '\u7f51\u7edc\u6062\u590d' }),
+  Object.freeze({ id: 'quickCurrentTestBtn', label: '\u5f53\u524d\u6d4b\u901f' }),
+  Object.freeze({ id: 'quickRefreshNodesBtn', label: '\u5237\u65b0\u8282\u70b9' }),
+  Object.freeze({ id: 'quickUpdateAllBtn', label: '\u66f4\u65b0\u5168\u90e8' }),
+  Object.freeze({ id: 'quickNodesPageBtn', label: '\u8282\u70b9\u7ba1\u7406' }),
+  Object.freeze({ id: 'quickConnectionsPageBtn', label: '\u8fde\u63a5\u7ba1\u7406' }),
+  Object.freeze({ id: 'quickRoutingPageBtn', label: '\u5206\u6d41\u89c4\u5219' }),
+  Object.freeze({ id: 'quickProfilesPageBtn', label: '\u8ba2\u9605\u7ba1\u7406' })
+]);
+const defaultQuickActionIds = Object.freeze(quickActionCatalog.slice(0, 4).map((item) => item.id));
+const maxVisibleQuickActions = 4;
+const homeRegionStorageKey = 'aegos.homeRegions';
+const quickActionStorageKey = 'aegos.quickActions';
+let homeRegionPreferences = sanitizeHomeRegions(readLocalJson(homeRegionStorageKey, defaultHomeRegions));
+let quickActionPreferences = sanitizeQuickActions(readLocalJson(quickActionStorageKey, defaultQuickActionIds));
+let homeCustomizeTarget = null;
+let homeCustomizeOpenTrigger = null;
+let homeCustomizeKeyboardMode = false;
+
 let latestStatus = null;
 let latestGroups = [];
 let latestGroupNames = new Set();
@@ -38,7 +70,7 @@ let startedAt = Date.now();
 let statusBusy = false;
 let nodeBusy = false;
 let lastStatusAt = 0;
-let homeRegionFilter = 'HK';
+let homeRegionFilter = homeRegionPreferences[0].code;
 let homeNodeMode = 'region';
 let nodePageFilter = 'all';
 let nodeSearchKeyword = '';
@@ -84,9 +116,9 @@ let ipv6DnsSafetyBusy = false;
 let routingAssistantDrafts = [];
 let routingAssistantView = 'simple';
 let routingAssistantKind = 'website';
-let routingSummaryDetail = 'user';
+let routingSummaryDetail = '';
 let routingAdvancedRuleOffset = 0;
-let routingConfigRulePage = { profileId: '', offset: 0, limit: 80, total: 0, items: [] };
+let routingConfigRulePage = { profileId: '', offset: 0, limit: 40, total: 0, items: [] };
 let routingConfigRuleRequestSeq = 0;
 let routingRuleTestRequestSeq = 0;
 let expandedRoutingDraftId = '';
@@ -148,7 +180,7 @@ const uiStore = {
   state: {
     page: 'home',
     homeNodeMode: 'region',
-    homeRegionFilter: 'HK',
+    homeRegionFilter: homeRegionPreferences[0].code,
     nodePageFilter: 'all'
   },
   listeners: new Set(),
@@ -223,11 +255,6 @@ function enabledLabel(value) {
   return value ? STATUS_TEXT.enabled : STATUS_TEXT.disabled;
 }
 
-function systemProxyUiLabel(applied, wanted) {
-  if (applied) return STATUS_TEXT.enabled;
-  return wanted ? STATUS_TEXT.pendingConnection : STATUS_TEXT.disabled;
-}
-
 function runtimeSummaryLabel(status = {}, settings = {}) {
   if (status.trafficTakeover) {
     if (settings.tunEnabled) return 'TUN \u63a5\u7ba1';
@@ -274,30 +301,29 @@ function statusSurfaceNotice(status = {}, settings = {}, protection = {}, availa
   const connection = status.connection || {};
   const systemProxyWanted = Boolean(connection.systemProxyWanted ?? settings.systemProxy);
   const systemProxyApplied = Boolean(connection.systemProxyApplied ?? (trafficTakeover && Boolean(settings.systemProxy)));
-  const protectionLabel = protection.label || STATUS_TEXT.disabled;
 
   if (!coreReady) {
-    return `${protectionLabel}\uff1a\u6838\u5fc3\u672a\u8fd0\u884c\uff0c\u5f53\u524d\u6ca1\u6709\u6d41\u91cf\u63a5\u7ba1\u3002`;
+    return '\u6838\u5fc3\u672a\u8fd0\u884c\uff0c\u5f53\u524d\u6ca1\u6709\u6d41\u91cf\u63a5\u7ba1\u3002';
   }
   if (!trafficTakeover) {
-    return `${protectionLabel}\uff1a\u6838\u5fc3\u5f85\u547d\uff0c\u8fd8\u672a\u63a5\u7ba1\u7cfb\u7edf\u6d41\u91cf\u3002`;
+    return '\u6838\u5fc3\u5f85\u547d\uff0c\u5c1a\u672a\u63a5\u7ba1\u7cfb\u7edf\u6d41\u91cf\u3002';
   }
   if (systemProxyWanted && !systemProxyApplied) {
-    return `${protectionLabel}\uff1a\u7cfb\u7edf\u4ee3\u7406\u5f85\u751f\u6548\uff0c\u8bf7\u4f7f\u7528\u8bca\u65ad\u68c0\u67e5\u7aef\u53e3\u548c Windows \u4ee3\u7406\u72b6\u6001\u3002`;
+    return '\u7cfb\u7edf\u4ee3\u7406\u5f85\u751f\u6548\uff0c\u8bf7\u4f7f\u7528\u8bca\u65ad\u68c0\u67e5\u7aef\u53e3\u548c Windows \u4ee3\u7406\u72b6\u6001\u3002';
   }
   if (availability.state === 'available') {
-    return `${protectionLabel}\uff1a\u5df2\u63a5\u7ba1\u6d41\u91cf\uff0c\u7f51\u7edc\u53ef\u7528\u6027\u5df2\u9a8c\u8bc1\u3002`;
+    return '\u5df2\u63a5\u7ba1\u6d41\u91cf\uff0c\u7f51\u7edc\u53ef\u7528\u6027\u5df2\u9a8c\u8bc1\u3002';
   }
   if (availability.state === 'stale') {
-    return `${protectionLabel}\uff1a\u5df2\u63a5\u7ba1\u6d41\u91cf\uff0c\u843d\u5730 IP \u4e3a\u65e7\u7ed3\u679c\uff0c\u5efa\u8bae\u5237\u65b0\u72b6\u6001\u3002`;
+    return '\u5df2\u63a5\u7ba1\u6d41\u91cf\uff0c\u843d\u5730 IP \u4e3a\u65e7\u7ed3\u679c\uff0c\u5efa\u8bae\u5237\u65b0\u72b6\u6001\u3002';
   }
   if (availability.state === 'checking') {
-    return `${protectionLabel}\uff1a\u5df2\u63a5\u7ba1\u6d41\u91cf\uff0c\u6b63\u5728\u9a8c\u8bc1\u5f53\u524d\u7f51\u7edc\u3002`;
+    return '\u5df2\u63a5\u7ba1\u6d41\u91cf\uff0c\u6b63\u5728\u9a8c\u8bc1\u5f53\u524d\u7f51\u7edc\u3002';
   }
   if (availability.state === 'unavailable') {
-    return `${protectionLabel}\uff1a\u5df2\u63a5\u7ba1\u6d41\u91cf\uff0c\u4f46\u6700\u8fd1\u4e00\u6b21\u843d\u5730 IP \u67e5\u8be2\u5931\u8d25\u3002`;
+    return '\u5df2\u63a5\u7ba1\u6d41\u91cf\uff0c\u4f46\u6700\u8fd1\u4e00\u6b21\u843d\u5730 IP \u67e5\u8be2\u5931\u8d25\u3002';
   }
-  return `${protectionLabel}\uff1a\u5df2\u63a5\u7ba1\u6d41\u91cf\uff0c\u7f51\u7edc\u72b6\u6001\u5c1a\u672a\u9a8c\u8bc1\u3002`;
+  return '\u5df2\u63a5\u7ba1\u6d41\u91cf\uff0c\u7f51\u7edc\u72b6\u6001\u5c1a\u672a\u9a8c\u8bc1\u3002';
 }
 
 function formatProxyPort(endpoint = '') {
@@ -320,7 +346,7 @@ const defaultControllerPort = 19091;
 const speedTestPollMs = 180;
 const speedTestNodeRefreshMs = 1200;
 const logRenderLimit = 80;
-const routingAdvancedRulePageSize = 80;
+const routingAdvancedRulePageSize = 40;
 const nodeDirectRenderLimit = 240;
 const nodeVirtualRowHeight = 38;
 const nodeVirtualOverscan = 16;
@@ -605,6 +631,108 @@ function requestAppConfirm(options = {}) {
 
 function emptyState(message) {
   return el('p', { className: 'empty', textContent: message });
+}
+
+function normalizedPreferenceLabel(value = '', maxLength = 12) {
+  return Array.from(String(value || '').trim()).slice(0, maxLength).join('');
+}
+
+function sanitizeHomeRegions(value) {
+  if (!Array.isArray(value)) return defaultHomeRegions.map((item) => ({ ...item }));
+  const seen = new Set();
+  const regions = [];
+  value.forEach((item) => {
+    const code = String(item?.code || '').trim().toUpperCase();
+    const label = normalizedPreferenceLabel(item?.label, 8);
+    if (!/^[A-Z0-9]{2,6}$/.test(code) || !label || seen.has(code)) return;
+    seen.add(code);
+    regions.push({ code, label });
+  });
+  return regions.length ? regions.slice(0, 16) : defaultHomeRegions.map((item) => ({ ...item }));
+}
+
+function sanitizeQuickActions(value) {
+  const validIds = new Set(quickActionCatalog.map((item) => item.id));
+  const seen = new Set();
+  const selected = [];
+  if (Array.isArray(value)) {
+    value.forEach((item) => {
+      const id = String(typeof item === 'string' ? item : item?.id || '');
+      if (!validIds.has(id) || seen.has(id) || selected.length >= maxVisibleQuickActions) return;
+      seen.add(id);
+      selected.push(id);
+    });
+  }
+  return selected.length ? selected : [...defaultQuickActionIds];
+}
+
+function saveHomeRegionPreferences() {
+  localStorage.setItem(homeRegionStorageKey, JSON.stringify(homeRegionPreferences));
+}
+
+function saveQuickActionPreferences() {
+  localStorage.setItem(quickActionStorageKey, JSON.stringify(quickActionPreferences));
+}
+
+function renderHomeRegions() {
+  const row = $('#homeRegionRow');
+  if (!row) return;
+  row.style.setProperty('--home-region-count', String(homeRegionPreferences.length));
+  replaceChildrenSafe(row, homeRegionPreferences.map((region) => el('button', {
+    className: region.code === homeRegionFilter ? 'active' : '',
+    dataset: { region: region.code },
+    attrs: {
+      type: 'button',
+      'aria-haspopup': 'menu',
+      title: `${region.label} (${region.code})`
+    },
+    ariaLabel: `筛选${region.label}节点`
+  }, [
+    el('b', { textContent: region.code }),
+    el('span', { className: 'region-label', textContent: region.label })
+  ])));
+  renderedHomeRegionFilter = null;
+}
+
+function applyQuickActionPreferences() {
+  const row = document.querySelector('.node-quick-actions .action-row');
+  if (!row) return;
+  const catalogById = new Map(quickActionCatalog.map((item) => [item.id, item]));
+  row.style.setProperty('--quick-action-count', String(quickActionPreferences.length));
+  quickActionCatalog.forEach((action) => {
+    const button = document.getElementById(action.id);
+    const label = button?.querySelector('.quick-action-label');
+    if (!button || !label) return;
+    label.textContent = action.label;
+    button.classList.toggle('hidden', !quickActionPreferences.includes(action.id));
+    button.title = `${action.label}（右键管理常驻功能）`;
+    button.setAttribute('aria-label', action.label);
+    button.setAttribute('aria-haspopup', 'menu');
+  });
+  quickActionPreferences.forEach((id) => {
+    const button = document.getElementById(id);
+    if (button && catalogById.has(id)) row.append(button);
+  });
+  syncActionAvailability();
+}
+
+function persistHomeRegionPreferences(options = {}) {
+  homeRegionPreferences = sanitizeHomeRegions(homeRegionPreferences);
+  const codes = new Set(homeRegionPreferences.map((item) => item.code));
+  const nextRegion = codes.has(options.preferredCode || homeRegionFilter)
+    ? (options.preferredCode || homeRegionFilter)
+    : homeRegionPreferences[0].code;
+  homeRegionFilter = nextRegion;
+  saveHomeRegionPreferences();
+  renderHomeRegions();
+  uiStore.set({ homeNodeMode: 'region', homeRegionFilter: nextRegion });
+  scheduleRowsRender(latestGroup?.items || [], { force: true, target: 'home', delay: 0 });
+}
+
+function persistQuickActionPreferences() {
+  quickActionPreferences = sanitizeQuickActions(quickActionPreferences);
+  saveQuickActionPreferences();
+  applyQuickActionPreferences();
 }
 
 function connectionEmptyState() {
@@ -1171,6 +1299,333 @@ function nodeGroupContextButton(label, action, options = {}) {
     el('b', { textContent: label }),
     options.hint ? el('small', { textContent: options.hint }) : null
   ]);
+}
+
+function ensureHomeCustomizeContextMenu() {
+  if ($('#homeCustomizeContextMenu')) return;
+  document.body.append(el('div', {
+    id: 'homeCustomizeContextMenu',
+    className: 'node-group-context-menu home-customize-context-menu hidden',
+    attrs: {
+      role: 'menu',
+      tabindex: '-1',
+      'aria-label': '\u9996\u9875\u81ea\u5b9a\u4e49\u83dc\u5355'
+    }
+  }));
+}
+
+function closeHomeCustomizeContextMenu(options = {}) {
+  const menu = $('#homeCustomizeContextMenu');
+  const trigger = homeCustomizeOpenTrigger || menu?.__aegosReturnFocus || null;
+  if (menu) menu.classList.add('hidden');
+  homeCustomizeTarget = null;
+  homeCustomizeKeyboardMode = false;
+  homeCustomizeOpenTrigger = null;
+  if (menu) menu.__aegosReturnFocus = null;
+  if (options.restoreFocus && trigger?.isConnected) trigger.focus();
+}
+
+function homeCustomizeContextButton(label, action, options = {}) {
+  return el('button', {
+    className: options.className || '',
+    dataset: { homeCustomizeAction: action },
+    disabled: Boolean(options.disabled),
+    attrs: {
+      type: 'button',
+      role: options.pressed == null ? 'menuitem' : 'menuitemcheckbox',
+      ...(options.pressed == null ? {} : { 'aria-checked': String(Boolean(options.pressed)) })
+    }
+  }, [
+    options.marker != null ? el('span', { className: 'quick-action-choice-marker', textContent: options.marker }) : null,
+    el('b', { textContent: label }),
+    options.hint ? el('small', { textContent: options.hint }) : null
+  ]);
+}
+
+function positionHomeCustomizeContextMenu(menu, x, y) {
+  menu.style.left = `${Math.max(8, x)}px`;
+  menu.style.top = `${Math.max(8, y)}px`;
+  menu.classList.remove('hidden');
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))}px`;
+  if (homeCustomizeKeyboardMode) {
+    requestAnimationFrame(() => menu.querySelector('button:not(:disabled)')?.focus());
+  }
+}
+
+function homeCustomizeMenuPoint(event, trigger) {
+  if (event.type !== 'keydown') return { x: event.clientX, y: event.clientY };
+  const rect = trigger?.getBoundingClientRect();
+  return {
+    x: rect ? rect.left + Math.min(rect.width / 2, 24) : 8,
+    y: rect ? rect.bottom + 6 : 8
+  };
+}
+
+function openHomeRegionContextMenu(event) {
+  const button = event.target.closest('[data-region]');
+  if (!event.currentTarget?.contains(event.target)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const code = button?.dataset.region || '';
+  const index = homeRegionPreferences.findIndex((item) => item.code === code);
+  const region = index >= 0 ? homeRegionPreferences[index] : null;
+  const point = homeCustomizeMenuPoint(event, button || event.currentTarget);
+  homeCustomizeOpenTrigger = button || event.currentTarget;
+  homeCustomizeKeyboardMode = event.type === 'keydown';
+  homeCustomizeTarget = { type: 'region', id: code, x: point.x, y: point.y };
+  ensureHomeCustomizeContextMenu();
+  const menu = $('#homeCustomizeContextMenu');
+  menu.__aegosReturnFocus = homeCustomizeOpenTrigger;
+  replaceChildrenSafe(menu, [
+    el('div', { className: 'node-group-context-title' }, [
+      el('b', { textContent: region ? `${region.label} (${region.code})` : '常用地区' }),
+      el('small', { textContent: '只调整首页筛选卡，不修改订阅或节点' })
+    ]),
+    nodeGroupContextSection('地区'),
+    homeCustomizeContextButton('添加地区', 'region-add', {
+      disabled: homeRegionPreferences.length >= 16,
+      hint: homeRegionPreferences.length >= 16
+        ? '最多保留 16 个常用地区'
+        : region ? '添加到当前地区右侧' : '添加到列表末尾'
+    }),
+    homeCustomizeContextButton('修改地区', 'region-edit', {
+      disabled: !region,
+      hint: '修改识别代码和显示名称'
+    }),
+    nodeGroupContextSection('排序'),
+    homeCustomizeContextButton('向左移动', 'region-left', { disabled: index <= 0 }),
+    homeCustomizeContextButton('向右移动', 'region-right', {
+      disabled: index < 0 || index >= homeRegionPreferences.length - 1
+    }),
+    nodeGroupContextSection('管理'),
+    homeCustomizeContextButton('删除地区', 'region-delete', {
+      disabled: !region || homeRegionPreferences.length <= 1,
+      hint: homeRegionPreferences.length <= 1 ? '至少保留一个地区' : '仅删除首页入口'
+    }),
+    homeCustomizeContextButton('恢复默认地区', 'region-reset', {
+      hint: '恢复香港、台湾、美国、日本、新加坡'
+    })
+  ]);
+  positionHomeCustomizeContextMenu(menu, point.x, point.y);
+}
+
+function openQuickActionContextMenu(event) {
+  const button = event.target.closest('[data-quick-action]');
+  if (!event.currentTarget?.contains(event.target)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const id = button?.dataset.quickAction || quickActionPreferences[0] || '';
+  const point = homeCustomizeMenuPoint(event, button || event.currentTarget);
+  homeCustomizeOpenTrigger = button || event.currentTarget;
+  homeCustomizeKeyboardMode = event.type === 'keydown';
+  homeCustomizeTarget = {
+    type: 'quick',
+    id,
+    x: point.x,
+    y: point.y
+  };
+  renderQuickActionContextMenu();
+}
+
+function renderQuickActionContextMenu() {
+  if (homeCustomizeTarget?.type !== 'quick') return;
+  const { id, x = 8, y = 8 } = homeCustomizeTarget;
+  const index = quickActionPreferences.indexOf(id);
+  const action = quickActionCatalog.find((item) => item.id === id);
+  ensureHomeCustomizeContextMenu();
+  const menu = $('#homeCustomizeContextMenu');
+  menu.__aegosReturnFocus = homeCustomizeOpenTrigger;
+  replaceChildrenSafe(menu, [
+    el('div', { className: 'node-group-context-title' }, [
+      el('b', { textContent: '\u5e38\u9a7b\u529f\u80fd' }),
+      el('small', { textContent: `\u5df2\u9009 ${quickActionPreferences.length}/${maxVisibleQuickActions}\uff0c\u70b9\u9009\u53ef\u66ff\u6362\u5f53\u524d\u6309\u94ae` })
+    ]),
+    el('div', { className: 'quick-action-choice-grid' }, quickActionCatalog.map((catalogAction) => {
+      const selected = quickActionPreferences.includes(catalogAction.id);
+      return homeCustomizeContextButton(catalogAction.label, `quick-toggle:${catalogAction.id}`, {
+        className: 'quick-action-choice',
+        marker: selected ? '\u2713' : '',
+        pressed: selected,
+        disabled: selected && quickActionPreferences.length <= 1
+      });
+    })),
+    el('div', { className: 'quick-action-menu-tools' }, [
+      homeCustomizeContextButton('\u5de6\u79fb', 'quick-left', {
+        disabled: !action || index <= 0
+      }),
+      homeCustomizeContextButton('\u53f3\u79fb', 'quick-right', {
+        disabled: !action || index < 0 || index >= quickActionPreferences.length - 1
+      }),
+      homeCustomizeContextButton('\u6062\u590d\u9ed8\u8ba4', 'quick-reset')
+    ])
+  ]);
+  positionHomeCustomizeContextMenu(menu, x, y);
+}
+
+function movePreference(items, index, direction) {
+  const nextIndex = index + direction;
+  if (index < 0 || nextIndex < 0 || nextIndex >= items.length) return false;
+  [items[index], items[nextIndex]] = [items[nextIndex], items[index]];
+  return true;
+}
+
+async function requestRegionFields(existing = null) {
+  const codeInput = await requestAppInput({
+    title: existing ? '修改地区' : '添加地区',
+    message: '地区代码用于识别节点名称，建议使用两位国家或地区代码。',
+    label: '地区代码',
+    value: existing?.code || '',
+    placeholder: '例如 DE',
+    hint: '2-6 位大写字母或数字',
+    okText: '下一步'
+  });
+  if (codeInput == null) return null;
+  const code = String(codeInput).trim().toUpperCase();
+  if (!/^[A-Z0-9]{2,6}$/.test(code)) {
+    setNotice('地区代码需为 2-6 位大写字母或数字。');
+    return null;
+  }
+  const duplicate = homeRegionPreferences.some((item) => item.code === code && item.code !== existing?.code);
+  if (duplicate) {
+    setNotice(`地区代码 ${code} 已存在。`);
+    return null;
+  }
+  const labelInput = await requestAppInput({
+    title: existing ? '修改地区' : '添加地区',
+    message: `为 ${code} 设置首页显示名称。`,
+    label: '显示名称',
+    value: existing?.label || '',
+    placeholder: '例如 德国',
+    hint: '最多 8 个字符',
+    okText: '保存'
+  });
+  if (labelInput == null) return null;
+  const label = String(labelInput).trim();
+  if (!label || Array.from(label).length > 8) {
+    setNotice('地区名称需为 1-8 个字符。');
+    return null;
+  }
+  return { code, label };
+}
+
+async function handleHomeCustomizeAction(action = '') {
+  const target = homeCustomizeTarget ? { ...homeCustomizeTarget } : null;
+  closeHomeCustomizeContextMenu({ restoreFocus: true });
+  if (!target) return;
+
+  if (action === 'region-add') {
+    if (homeRegionPreferences.length >= 16) {
+      setNotice('常用地区最多保留 16 个。');
+      return;
+    }
+    const next = await requestRegionFields();
+    if (!next) return;
+    const targetIndex = homeRegionPreferences.findIndex((item) => item.code === target.id);
+    homeRegionPreferences.splice(targetIndex < 0 ? homeRegionPreferences.length : targetIndex + 1, 0, next);
+    persistHomeRegionPreferences({ preferredCode: next.code });
+    setNotice(`已添加常用地区：${next.label}`);
+    return;
+  }
+
+  const regionIndex = homeRegionPreferences.findIndex((item) => item.code === target.id);
+  if (action === 'region-edit' && regionIndex >= 0) {
+    const previous = homeRegionPreferences[regionIndex];
+    const next = await requestRegionFields(previous);
+    if (!next) return;
+    homeRegionPreferences[regionIndex] = next;
+    persistHomeRegionPreferences({
+      preferredCode: homeRegionFilter === previous.code ? next.code : homeRegionFilter
+    });
+    setNotice(`已更新常用地区：${next.label}`);
+    return;
+  }
+  if (action === 'region-left' || action === 'region-right') {
+    if (movePreference(homeRegionPreferences, regionIndex, action === 'region-left' ? -1 : 1)) {
+      persistHomeRegionPreferences({ preferredCode: target.id });
+      setNotice('地区顺序已保存。');
+    }
+    return;
+  }
+  if (action === 'region-delete' && regionIndex >= 0 && homeRegionPreferences.length > 1) {
+    const region = homeRegionPreferences[regionIndex];
+    const confirmed = await requestAppConfirm({
+      title: '删除常用地区',
+      message: `从首页删除“${region.label}”？订阅和节点数据不会受影响。`,
+      okText: '删除',
+      danger: true
+    });
+    if (!confirmed) return;
+    homeRegionPreferences.splice(regionIndex, 1);
+    const preferredCode = homeRegionFilter === region.code
+      ? homeRegionPreferences[Math.min(regionIndex, homeRegionPreferences.length - 1)].code
+      : homeRegionFilter;
+    persistHomeRegionPreferences({ preferredCode });
+    setNotice(`已删除常用地区：${region.label}`);
+    return;
+  }
+  if (action === 'region-reset') {
+    const confirmed = await requestAppConfirm({
+      title: '恢复默认地区',
+      message: '将恢复默认地区和顺序，当前自定义地区会被移除。',
+      okText: '恢复默认'
+    });
+    if (!confirmed) return;
+    homeRegionPreferences = defaultHomeRegions.map((item) => ({ ...item }));
+    persistHomeRegionPreferences({ preferredCode: defaultHomeRegions[0].code });
+    setNotice('常用地区已恢复默认。');
+    return;
+  }
+
+  if (action.startsWith('quick-toggle:')) {
+    const id = action.slice('quick-toggle:'.length);
+    const selectedIndex = quickActionPreferences.indexOf(id);
+    if (selectedIndex >= 0) {
+      if (quickActionPreferences.length <= 1) {
+        setNotice('\u9996\u9875\u81f3\u5c11\u4fdd\u7559\u4e00\u4e2a\u5e38\u9a7b\u529f\u80fd\u3002');
+        return;
+      }
+      quickActionPreferences.splice(selectedIndex, 1);
+      if (target.id === id) target.id = quickActionPreferences[Math.min(selectedIndex, quickActionPreferences.length - 1)];
+    } else {
+      if (!quickActionCatalog.some((item) => item.id === id)) return;
+      if (quickActionPreferences.length >= maxVisibleQuickActions) {
+        const replacementIndex = quickActionPreferences.indexOf(target.id);
+        if (replacementIndex < 0) return;
+        quickActionPreferences[replacementIndex] = id;
+      } else {
+        quickActionPreferences.push(id);
+      }
+      target.id = id;
+    }
+    persistQuickActionPreferences();
+    homeCustomizeTarget = target;
+    renderQuickActionContextMenu();
+    setNotice(`\u9996\u9875\u5e38\u9a7b\u529f\u80fd\u5df2\u66f4\u65b0\uff08${quickActionPreferences.length}/${maxVisibleQuickActions}\uff09\u3002`);
+    return;
+  }
+  const quickIndex = quickActionPreferences.indexOf(target.id);
+  if (action === 'quick-left' || action === 'quick-right') {
+    if (movePreference(quickActionPreferences, quickIndex, action === 'quick-left' ? -1 : 1)) {
+      persistQuickActionPreferences();
+      homeCustomizeTarget = target;
+      renderQuickActionContextMenu();
+      setNotice('\u5e38\u9a7b\u529f\u80fd\u987a\u5e8f\u5df2\u4fdd\u5b58\u3002');
+    }
+    return;
+  }
+  if (action === 'quick-reset') {
+    const confirmed = await requestAppConfirm({
+      title: '\u6062\u590d\u9ed8\u8ba4\u5e38\u9a7b\u529f\u80fd',
+      message: '\u5c06\u6062\u590d\u9ed8\u8ba4\u56db\u9879\u5e38\u9a7b\u529f\u80fd\u53ca\u987a\u5e8f\u3002',
+      okText: '恢复默认'
+    });
+    if (!confirmed) return;
+    quickActionPreferences = [...defaultQuickActionIds];
+    persistQuickActionPreferences();
+    setNotice('\u5e38\u9a7b\u529f\u80fd\u5df2\u6062\u590d\u9ed8\u8ba4\u3002');
+  }
 }
 
 function openNodeGroupContextMenu(event) {
@@ -1831,6 +2286,12 @@ function formatRate(value) {
 
 function inferRegion(name = '') {
   const text = String(name).toLowerCase();
+  const configured = homeRegionPreferences.find((region) => {
+    const label = String(region.label || '').toLowerCase();
+    const codePattern = new RegExp(`\\b${region.code.toLowerCase()}\\b`);
+    return (label && text.includes(label)) || codePattern.test(text);
+  });
+  if (configured) return configured.code;
   if (/hong\s*kong|hongkong|香港|\bhk\b/.test(text)) return 'HK';
   if (/japan|日本|东京|大阪|\bjp\b/.test(text)) return 'JP';
   if (/singapore|新加坡|\bsg\b/.test(text)) return 'SG';
@@ -1841,7 +2302,52 @@ function inferRegion(name = '') {
 }
 
 function regionLabel(region) {
-  return regionNames[region] || region || '全球';
+  return homeRegionPreferences.find((item) => item.code === region)?.label || regionNames[region] || region || '全球';
+}
+
+function currentNodeName() {
+  return String(selectedNode || latestGroup?.now || '').trim();
+}
+
+function renderCurrentNodeIdentity(name = currentNodeName()) {
+  const current = String(name || '').trim();
+  const nodeName = $('#nodeName');
+  const badge = $('#nodeRegionBadge');
+  const waitingForNodes = !latestGroup && nodeBusy;
+  if (nodeName) nodeName.textContent = current
+    ? current
+    : waitingForNodes
+      ? '\u7b49\u5f85\u8282\u70b9\u6570\u636e'
+      : '\u5c1a\u672a\u9009\u62e9\u8282\u70b9';
+  if (!badge) return;
+  const region = current ? inferRegion(current) : '--';
+  badge.textContent = region;
+  badge.title = current ? `\u8282\u70b9\u5730\u533a\uff1a${regionLabel(region)}` : '\u5c1a\u672a\u9009\u62e9\u8282\u70b9';
+}
+
+function syncActionAvailability() {
+  const profiles = latestStatus?.settings?.profiles || [];
+  const activeProfileId = latestStatus?.settings?.activeProfileId || '';
+  const hasProfilesToUpdate = profiles.some((profile) => profile?.id && profile.id !== 'direct');
+  const hasActiveProfileToUpdate = Boolean(activeProfileId && activeProfileId !== 'direct');
+  const hasNodes = Boolean(latestGroup?.items?.length);
+  const hasCurrentNode = Boolean(currentNodeName());
+  const states = {
+    closeAllConnectionsBtn: activeConnectionCount > 0,
+    updateAllProfilesBtn: hasProfilesToUpdate,
+    quickUpdateAllBtn: hasProfilesToUpdate,
+    quickUpdateSubBtn: hasActiveProfileToUpdate,
+    copyDiagBtn: Boolean(latestDiagnostics),
+    exportDiagBtn: Boolean(latestDiagnostics),
+    quickTestBtn: hasNodes,
+    batchTestBtn: hasNodes,
+    quickCurrentTestBtn: hasCurrentNode,
+    currentNodeTestBtn: hasCurrentNode
+  };
+  Object.entries(states).forEach(([id, enabled]) => {
+    const button = document.getElementById(id);
+    if (button) button.disabled = !enabled;
+  });
 }
 
 function normalizeRows(items = []) {
@@ -1888,7 +2394,6 @@ function filterRows(rows, filter) {
   if (filter === 'europe') return rows.filter(([region]) => ['GB'].includes(region));
   if (filter === 'north-america') return rows.filter(([region]) => ['US'].includes(region));
   if (filter === 'favorite') return rows.filter((row) => row[13]);
-  if (filter === 'recent') return rows.filter((row) => row[15] > 0 || row[5]);
   return rows;
 }
 
@@ -2171,7 +2676,6 @@ function rowMatchesNodeFilter(row, filter) {
   if (filter === 'europe') return row[0] === 'GB';
   if (filter === 'north-america') return row[0] === 'US';
   if (filter === 'favorite') return row[13];
-  if (filter === 'recent') return row[15] > 0 || row[5];
   return true;
 }
 
@@ -2286,7 +2790,6 @@ function ensureNodeSortHeader() {
     el('span'),
     el('span'),
     nodeSortButton('name', '节点名称'),
-    el('span', { textContent: '地址' }),
     nodeSortButton('delay', '延迟'),
     nodeSortButton('status', '状态'),
     el('span', { className: 'row-action-labels' }, [
@@ -2323,29 +2826,6 @@ function delayText(value) {
   if (delay > 0) return `${Math.round(delay)} ms`;
   if (delay === 0) return '\u6d4b\u901f\u4e2d';
   return '-';
-}
-
-function shortAddress(host = '') {
-  const value = String(host || '').trim();
-  if (!value) return '-';
-  if (value.length <= 24) return value;
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(value)) return value;
-  const parts = value.split('.');
-  if (parts.length >= 2) {
-    const suffix = parts.slice(-2).join('.');
-    const prefix = parts[0].slice(0, 6);
-    return `${prefix}\u2026${suffix}`;
-  }
-  return `${value.slice(0, 10)}\u2026${value.slice(-8)}`;
-}
-
-function nodeAddressInfo(row = []) {
-  const protocol = protocolLabel(row?.[6] || 'unknown');
-  const host = String(row?.[2] || '').trim();
-  return {
-    label: `${protocol} / ${shortAddress(host)}`,
-    title: `${protocol} / ${host || '-'}`
-  };
 }
 
 function speedFailureReasonLabel(reason = '') {
@@ -2537,6 +3017,8 @@ function renderHomeNodeSummary(rows = []) {
   const autoGroup = isAutoStrategyGroup(latestGroup);
   const notice = $('#autoGroupNotice');
   if (notice) notice.classList.toggle('hidden', !autoGroup);
+  renderCurrentNodeIdentity();
+  syncActionAvailability();
   syncShellSummary();
 }
 
@@ -2546,7 +3028,6 @@ function renderNodeRow(row) {
   const delayValue = Number(delay);
   const delayText = nodeDelayText(row);
   const delayState = delayClass(delayValue);
-  const address = nodeAddressInfo(row);
   const note = nodeSpeedNoteInfo(row);
   const title = el('strong', {}, [
     el('span', { className: 'node-badge', textContent: region }),
@@ -2569,7 +3050,6 @@ function renderNodeRow(row) {
     }),
     icon(`star ${favorite ? 'icon-star-filled' : 'icon-star'}`),
     title,
-    el('span', { className: 'node-address', textContent: address.label, attrs: { title: address.title } }),
     el('span', { className: `node-delay ${delayState}`, textContent: delayText }),
     el('span', { className: note.className, textContent: note.label, attrs: { title: note.title } }),
     actions
@@ -2582,7 +3062,6 @@ function renderHomeNodeRow(row) {
   const delayValue = Number(delay);
   const delayText = nodeDelayText(row);
   const delayState = delayClass(delayValue);
-  const address = nodeAddressInfo(row);
   const note = nodeSpeedNoteInfo(row);
   const title = el('strong', {}, [
     el('span', { className: 'node-badge', textContent: region }),
@@ -2599,7 +3078,6 @@ function renderHomeNodeRow(row) {
     }),
     icon(`star ${favorite ? 'icon-star-filled' : 'icon-star'}`),
     title,
-    el('span', { className: 'node-address', textContent: address.label, attrs: { title: address.title } }),
     el('span', { className: `node-delay ${delayState}`, textContent: delayText }),
     el('span', { className: note.className, textContent: note.label, attrs: { title: note.title } })
   ]);
@@ -2608,7 +3086,7 @@ function renderHomeNodeRow(row) {
 function noticeLevel(message = '') {
   const text = String(message).toLowerCase();
   if (/失败|异常|错误|不可达|超时|failed|error|exception/.test(text)) return 'bad';
-  if (/警告|需要|权限|未生效|warning|not elevated|require/.test(text)) return 'warn';
+  if (/警告|需要|权限|未生效|暂时无法|warning|not elevated|require/.test(text)) return 'warn';
   if (/\.\.\.|正在|中|running|pending/.test(text)) return 'info';
   return 'ok';
 }
@@ -2654,9 +3132,6 @@ function setSpeedProgressNotice(message) {
 }
 
 function syncShellSummary() {
-  const connectionLabel = $('.ring strong')?.textContent?.trim() || STATUS_TEXT.disconnected;
-  const nodeLabel = $('#nodeName')?.textContent?.trim() || '等待节点数据';
-  const delayLabel = $('#delayMetric')?.textContent?.trim() || '-';
   const activeJobs = [...jobRecords.values()].filter((job) => !terminalJobStates.has(job.state)).length;
   const status = latestStatus || {};
   const availability = networkAvailabilityInfo(status);
@@ -2665,27 +3140,14 @@ function syncShellSummary() {
   const warning = availability.state === 'unavailable' || Boolean($('#protectionNotice')?.classList.contains('is-bad'));
   const state = warning ? 'warning' : pending ? 'pending' : connected ? 'connected' : 'idle';
 
-  const connection = $('#sidebarConnectionState');
-  if (connection) connection.textContent = connectionLabel;
-  const node = $('#sidebarNodeName');
-  if (node) {
-    node.textContent = nodeLabel;
-    node.title = nodeLabel;
-  }
-  const delay = $('#sidebarDelayMetric');
-  if (delay) delay.textContent = delayLabel;
-  const jobs = $('#sidebarJobCount');
-  if (jobs) jobs.textContent = String(activeJobs);
   const summary = $('#statusCenterSummary');
   if (summary) summary.textContent = $('#protectionNotice')?.textContent?.trim() || '查看网络接管、当前出口与后台任务。';
-  ['#sidebarRuntimeIndicator', '#titlebarRuntimeIndicator'].forEach((selector) => {
-    const indicator = $(selector);
-    if (indicator) indicator.dataset.state = state;
-  });
+  const indicator = $('#titlebarRuntimeIndicator');
+  if (indicator) indicator.dataset.state = state;
 }
 
 function statusCenterTriggers() {
-  return [$('#sidebarStatusCenterBtn'), $('#titlebarStatusCenterBtn')].filter(Boolean);
+  return [$('#titlebarStatusCenterBtn')].filter(Boolean);
 }
 
 function openStatusCenter(trigger = null) {
@@ -3129,6 +3591,7 @@ function renderUiState(state = uiStore.state) {
   if (renderedHomeNodeMode !== homeNodeMode) {
     $all('[data-home-mode]').forEach((button) => button.classList.toggle('active', button.dataset.homeMode === homeNodeMode));
     $('#homeRegionRow')?.classList.toggle('hidden', homeNodeMode !== 'region');
+    $('#fixedNodeActions')?.classList.toggle('hidden', homeNodeMode !== 'fixed');
     renderedHomeNodeMode = homeNodeMode;
   }
   if (renderedNodePageFilter !== nodePageFilter) {
@@ -3480,7 +3943,8 @@ function updateSelectedNodeDom(name) {
   $all('#nodeRows .row[data-node], #homeNodeRows .row[data-node]').forEach((row) => {
     row.classList.toggle('selected', row.dataset.node === selected);
   });
-  if (selected) $('#nodeName').textContent = selected;
+  renderCurrentNodeIdentity(selected);
+  syncActionAvailability();
 }
 
 function profilePendingText(label = 'syncing') {
@@ -3564,30 +4028,51 @@ function renderProfiles() {
     const health = providerHealthCache.get(id);
     const hasSourceUrl = Boolean(profile.hasSourceUrl ?? profile.source_url ?? profile.sourceUrl);
     const usage = profileUsageText(profile);
-    const className = `list-card ${active ? 'active' : ''} ${pending ? 'is-pending' : ''}`;
+    const className = `list-card profile-table-row ${active ? 'active' : ''} ${pending ? 'is-pending' : ''}`;
     return el('article', {
       className,
       dataset: { profileRow: id },
-      attrs: { tabindex: '0', role: 'button', 'aria-busy': pending ? 'true' : 'false' }
+      attrs: { 'aria-busy': pending ? 'true' : 'false' }
     }, [
-      el('div', {}, [
-        el('b', { textContent: profile.name || id || '-' }),
-        el('small', { textContent: `\u66f4\u65b0 ${profile.updated_at || '-'} / ${profile.sourceFormat || profile.profile_type || '-'}` })
+      el('div', { className: 'profile-card-content' }, [
+        el('div', { className: 'profile-card-heading' }, [
+          el('span', { className: 'profile-active-indicator', attrs: { 'aria-hidden': 'true' } }),
+          el('b', { textContent: profile.name || id || '-' })
+        ]),
+        el('small', { textContent: `\u66f4\u65b0 ${profile.updated_at || '-'} / ${profile.sourceFormat || profile.profile_type || '-'}` }),
       ]),
       el('small', { className: 'profile-source-summary', textContent: summary }),
-      usage ? el('small', { className: 'profile-usage-summary', textContent: usage }) : null,
-      health ? el('small', { className: 'profile-health-summary', textContent: health }) : null,
+      el('div', { className: 'profile-status-column' }, [
+        el('small', { className: 'profile-usage-summary', textContent: usage || '\u672a\u63d0\u4f9b\u6d41\u91cf\u4e0e\u5230\u671f\u4fe1\u606f' }),
+        el('small', { className: 'profile-health-summary', textContent: health || (active ? '\u5f53\u524d\u8fd0\u884c' : '\u5c1a\u672a\u68c0\u6d4b') })
+      ]),
       el('div', { className: 'card-actions' }, [
-        el('button', { dataset: { profileSwitch: id }, textContent: '\u542f\u7528' }),
-        el('button', { dataset: { profileRename: id }, textContent: '\u91cd\u547d\u540d', disabled: id === 'direct' }),
-        el('button', { dataset: { profileEditSource: id }, textContent: '\u7f16\u8f91\u5730\u5740', disabled: id === 'direct' || !hasSourceUrl }),
+        el('button', {
+          dataset: { profileSwitch: id },
+          textContent: active ? '\u5f53\u524d\u4f7f\u7528' : '\u542f\u7528',
+          disabled: active,
+          attrs: { 'aria-current': active ? 'true' : null }
+        }),
         el('button', { dataset: { profileUpdate: id }, textContent: '\u66f4\u65b0', disabled: id === 'direct' || !hasSourceUrl }),
         el('button', { dataset: { profileHealth: id }, textContent: '\u5065\u5eb7\u68c0\u6d4b', disabled: id === 'direct', attrs: { title: active ? '\u68c0\u67e5\u8fd0\u884c\u72b6\u6001\uff0c\u4e0d\u4f1a\u5207\u6362\u8282\u70b9' : '\u4ec5\u9884\u68c0\u4fdd\u5b58\u7684\u914d\u7f6e\uff0c\u4e0d\u4f1a\u542f\u7528\u8be5\u8ba2\u9605' } }),
-        el('button', { dataset: { profileRemove: id }, textContent: '\u5220\u9664', disabled: id === 'direct' })
+        id !== 'direct' ? el('details', { className: 'profile-actions-menu' }, [
+          el('summary', {
+            className: 'profile-actions-menu-trigger',
+            attrs: { 'aria-label': '\u66f4\u591a\u8ba2\u9605\u64cd\u4f5c', title: '\u66f4\u591a\u64cd\u4f5c' }
+          }, [
+            el('span', { attrs: { 'aria-hidden': 'true' }, textContent: '\u22ee' })
+          ]),
+          el('div', { className: 'profile-actions-menu-popover' }, [
+            el('button', { dataset: { profileRename: id }, textContent: '\u91cd\u547d\u540d' }),
+            el('button', { dataset: { profileEditSource: id }, textContent: '\u7f16\u8f91\u5730\u5740', disabled: !hasSourceUrl }),
+            el('button', { className: 'danger', dataset: { profileRemove: id }, textContent: '\u5220\u9664\u8ba2\u9605' })
+          ])
+        ]) : null
       ])
     ]);
   });
   replaceChildrenSafe($('#profileRows'), rows.length ? rows : [emptyState('\u5c1a\u672a\u5bfc\u5165\u8ba2\u9605\uff0c\u53ef\u7c98\u8d34\u94fe\u63a5\u6216\u5bfc\u5165\u672c\u5730 Clash/Mihomo \u914d\u7f6e\u3002')]);
+  syncActionAvailability();
 }
 
 function renderProfilesIfVisible() {
@@ -3914,7 +4399,8 @@ function runtimeOperationLabel(operation = {}) {
     ApplyRouting: '\u5e94\u7528\u5206\u6d41\u89c4\u5219', EditRoutingGroup: '\u4fdd\u5b58\u7b56\u7565\u7ec4',
     EditRoutingRule: '\u4fdd\u5b58\u5206\u6d41\u89c4\u5219', ResolveUnboundRoutingRule: '\u5904\u7406\u672a\u7ed1\u5b9a\u89c4\u5219',
     ImportProfile: '\u5bfc\u5165\u8ba2\u9605', UpdateProfile: '\u66f4\u65b0\u8ba2\u9605', RenameProfile: '\u91cd\u547d\u540d\u8ba2\u9605',
-    DiagnosticsRepair: '\u6267\u884c\u8bca\u65ad\u4fee\u590d'
+    DiagnosticsRepair: '\u6267\u884c\u8bca\u65ad\u4fee\u590d',
+    SaveFixedNode: '\u4fdd\u5b58\u56fa\u5b9a\u8282\u70b9', DeleteFixedNode: '\u5220\u9664\u56fa\u5b9a\u8282\u70b9'
   };
   return operation?.activeCommand ? (names[operation.activeCommand] || '\u6b63\u5728\u5904\u7406') : '\u7a7a\u95f2';
 }
@@ -3956,7 +4442,6 @@ function renderStatus(status) {
 
   const settings = status.settings || {};
   const protection = status.protection || {};
-  const activeProfile = status.activeProfile || {};
   const coreReady = Boolean(status.coreReady ?? status.running);
   const trafficTakeover = Boolean(status.trafficTakeover || settings.proxyTakeover?.active);
   const connection = status.connection || {};
@@ -3970,7 +4455,7 @@ function renderStatus(status) {
   $('#appVersionLabel').textContent = `v${status.appVersion || defaultAppVersion}`;
   $('.ring strong').textContent = trafficTakeover ? STATUS_TEXT.connected : coreReady ? STATUS_TEXT.coreStandby : STATUS_TEXT.disconnected;
   $('.ring').classList.toggle('offline', !trafficTakeover);
-  $('#nodeName').textContent = selectedNode || latestGroup?.now || activeProfile.name || '等待节点数据';
+  renderCurrentNodeIdentity();
   const nodeHost = $('#nodeHost');
   if (nodeHost) nodeHost.textContent = status.network?.proxyEndpoint || '-';
   $('#connectBtn').textContent = connectionButtonLabel(status);
@@ -3992,9 +4477,6 @@ function renderStatus(status) {
   $('#networkAvailabilityState').textContent = availability.label;
   $('#networkAvailabilityState').className = availability.className;
   $('#networkAvailabilityState').setAttribute('title', availability.detail || availability.label);
-  $('#networkAvailabilityMetric').textContent = availability.label;
-  $('#networkAvailabilityMetric').className = availability.className ? `metric-status-${availability.className}` : '';
-  $('#networkAvailabilityMetric').setAttribute('title', availability.detail || availability.label);
   $('#protectMode').textContent = protection.label || STATUS_TEXT.disabled;
   $('#dnsState').textContent = settings.dnsHijackEnabled === false ? STATUS_TEXT.disabled : STATUS_TEXT.enabled;
   $('#tunState').textContent = enabledLabel(settings.tunEnabled);
@@ -4006,13 +4488,10 @@ function renderStatus(status) {
   $('#protocolState').textContent = currentProtocol;
   $('#protocolMetric').textContent = currentProtocol;
   $('#tunHomeToggle').checked = Boolean(settings.tunEnabled);
-  $('#tunHomeState').textContent = enabledLabel(settings.tunEnabled);
   $('#lanIpState').textContent = status.network?.lanIp || '-';
   $('#proxyPortState').textContent = formatProxyPort(status.network?.proxyEndpoint);
   renderOutboundIpFromStatus(status.network?.outboundIp || '-');
   $('#proxyMetric').textContent = formatProxyPort(status.network?.proxyEndpoint);
-  $('#systemProxyMetric').textContent = systemProxyUiLabel(systemProxyApplied, systemProxyWanted);
-  $('#systemProxyMetric').classList.toggle('is-danger', !systemProxyApplied);
 
   renderActiveConnectionMetric();
   if (isPageActive('home')) renderHomeNodeSummary();
@@ -4021,6 +4500,7 @@ function renderStatus(status) {
   if (isPageActive('profiles')) renderProfiles();
   if (isPageActive('diagnostics') && diagnosticView === 'logs') renderLogs();
   if (!$('#profileMenu')?.classList.contains('hidden')) renderQuickProfileMenu();
+  syncActionAvailability();
   syncShellSummary();
 }
 
@@ -4186,10 +4666,14 @@ async function exportDiagnosticReport() {
 
 function removeConnectionElement(button) {
   const row = button?.closest('.simple-row');
-  if (row) row.remove();
+  if (row) {
+    row.remove();
+    activeConnectionCount = Math.max(0, activeConnectionCount - 1);
+  }
   if (!$('#connectionRows')?.querySelector('.simple-row')) {
     replaceChildrenSafe($('#connectionRows'), [connectionEmptyState()]);
   }
+  renderActiveConnectionMetric();
 }
 
 function optimisticProfilePatch(profileId, patch) {
@@ -4262,56 +4746,21 @@ async function refreshStatus(force = false) {
   lastStatusAt = now;
   statusBusy = true;
   try {
-    renderStatus(await invoke('app_status'));
+    const status = await invoke('app_status');
+    renderStatus(status);
+    setNotice(statusSurfaceNotice(status, status.settings || {}, status.protection || {}, networkAvailabilityInfo(status)));
   } catch {
-    renderStatus({
-      running: false,
-      appVersion: defaultAppVersion,
-      mode: 'rule',
-      traffic: { up: 0, down: 0 },
-      logs: [],
-      network: {
-        lanIp: '-',
-        proxyEndpoint: `127.0.0.1:${defaultMixedPort}`,
-        outboundIp: '-',
-        availability: {
-          state: 'unverified',
-          label: STATUS_TEXT.unchecked,
-          detail: '无法读取运行状态，网络可用性未验证。'
-        }
-      },
-      permissions: { isAdmin: false, requiresAdminFor: ['TUN', '\u65ad\u7f51\u4fdd\u62a4'] },
-      settings: {
-        activeProfileId: 'direct',
-        profiles: [],
-        mixedPort: defaultMixedPort,
-        controllerPort: defaultControllerPort,
-        startWithSystemProxy: true,
-        dnsHijackEnabled: true,
-        tunEnabled: false,
-        killSwitchEnabled: false,
-        systemProxy: false,
-        ipv6Enabled: false,
-        allowLan: false,
-        tunStack: 'mixed',
-        logLevel: 'info',
-        reliability: {
-          auto: true,
-          profileFailover: true,
-          failureThreshold: 2,
-          maxDelayMs: 800,
-          candidateLimit: 24
-        }
-      },
-      protection: { label: '未开启' },
-      activeProfile: { name: 'Aegos 预设' }
-    });
+    setNotice(latestStatus
+      ? '\u72b6\u6001\u6682\u65f6\u65e0\u6cd5\u5237\u65b0\uff0c\u5f53\u524d\u663e\u793a\u4e0a\u6b21\u6570\u636e\u3002'
+      : '\u72b6\u6001\u6682\u65f6\u65e0\u6cd5\u8bfb\u53d6\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002');
+    syncActionAvailability();
   } finally {
     statusBusy = false;
   }
 }
 
 function renderActiveConnectionMetric() {
+  syncActionAvailability();
   if (!isPageActive('home')) return;
   const metric = $('#activeConnectionsMetric');
   if (metric) metric.textContent = String(activeConnectionCount || 0);
@@ -4354,19 +4803,27 @@ async function refreshNodes(force = false, options = {}) {
     const groups = await invoke('proxy_groups');
     if (requestProfileSeq !== profileStateSeq) return;
     setLatestGroups(groups, selectedProxyGroupName);
-    selectedNode = latestGroup?.now || selectedNode;
+    selectedNode = latestGroup?.now || '';
+    renderCurrentNodeIdentity();
     scheduleRowsRender(latestGroup?.items || [], {
       force,
       target: options.target || 'all',
       delay: options.delay
     });
-  } catch {
+  } catch (err) {
     if (requestProfileSeq !== profileStateSeq) return;
-    setLatestGroup(null);
-    if (isNodeSurfaceActive()) renderRows();
-    else pendingRowItems = [];
+    if (!latestGroup) {
+      setLatestGroup(null);
+      if (isNodeSurfaceActive()) renderRows();
+      else pendingRowItems = [];
+    }
+    setTransientNotice(latestGroup
+      ? '\u8282\u70b9\u72b6\u6001\u6682\u65f6\u65e0\u6cd5\u5237\u65b0\uff0c\u5f53\u524d\u663e\u793a\u4e0a\u6b21\u6570\u636e\u3002'
+      : `\u8282\u70b9\u6570\u636e\u6682\u65f6\u65e0\u6cd5\u8bfb\u53d6\uff1a${err?.message || err}`);
   } finally {
     nodeBusy = false;
+    renderCurrentNodeIdentity();
+    syncActionAvailability();
     const queued = queuedNodeRefresh;
     queuedNodeRefresh = null;
     if (queued) void refreshNodes(queued.force, queued.options);
@@ -4399,6 +4856,7 @@ async function previewProfileNodes(profileId) {
     selectedProxyGroupName = group.name || '';
     setLatestGroup(group);
     selectedNode = group.now || '';
+    renderCurrentNodeIdentity();
     pendingRowItems = group.items;
     scheduleRowsRender(group.items, { force: true, target: 'all', delay: 40, transition: true });
     renderHomeNodeSummary(summaryRowsFromLatestGroup());
@@ -4641,7 +5099,7 @@ function flushSpeedResultEvents() {
   const health = {};
   const progress = latestQueuedSpeedProgress;
   const frameStarted = performance.now();
-  const chunkLimit = foregroundHot ? Math.min(speedResultChunkSize, 24) : speedResultChunkSize;
+  const chunkLimit = foregroundHot ? Math.min(speedResultChunkSize, 8) : speedResultChunkSize;
   let processed = 0;
   for (const [name, payload] of pendingSpeedResults) {
     delays[name] = Number(payload.delay ?? -1);
@@ -5503,6 +5961,23 @@ async function saveNodeEditor(event) {
   });
 }
 
+async function updateAllProfiles() {
+  return runOptimisticAction({
+    apply: () => applyOptimisticProfilesPending('updating'),
+    commit: async () => {
+      const result = await updateAllProfilesJob();
+      if (!result) throw new Error(lastBackgroundJobError || 'all subscription updates failed');
+      return result;
+    },
+    refresh: async () => {
+      await refreshProfileSurfaces({ refreshOutboundIp: true });
+    },
+    pendingNotice: '\u6b63\u5728\u66f4\u65b0\u5168\u90e8\u8ba2\u9605...',
+    successNotice: updateAllProfilesNotice,
+    failureNotice: (err) => `\u8ba2\u9605\u66f4\u65b0\u5931\u8d25\uff1a${err.message || err}`
+  });
+}
+
 async function importProfileFileJob(name, content) {
   return runBackgroundJob('importProfileFile', { name, content }, {
     pendingNotice: '\u6b63\u5728\u6821\u9a8c\u5e76\u5bfc\u5165\u672c\u5730\u914d\u7f6e...',
@@ -5775,7 +6250,9 @@ async function refreshConnections(token = null) {
   try {
     const items = await invoke('connections');
     if (!isCurrentPageTask(token, 'connections')) return;
-    const rows = (Array.isArray(items) ? items : []).map((item) => {
+    const connectionItems = Array.isArray(items) ? items : [];
+    activeConnectionCount = connectionItems.length;
+    const rows = connectionItems.map((item) => {
       const route = Array.isArray(item.route) && item.route.length ? item.route.join(' > ') : '-';
       const traffic = `${formatRate(item.upload)} / ${formatRate(item.download)}`;
       const target = item.target || '-';
@@ -5791,11 +6268,12 @@ async function refreshConnections(token = null) {
       ]);
     });
     replaceChildrenSafe($('#connectionRows'), rows.length ? rows : [connectionEmptyState()]);
+    renderActiveConnectionMetric();
     markPageCache('connections');
   } catch (err) {
     if (!isCurrentPageTask(token, 'connections')) return;
     replaceChildrenSafe($('#connectionRows'), [emptyState(`\u8fde\u63a5\u7ba1\u7406\u4e0d\u53ef\u7528\uff1a${err.message || err}`)]);
-    markPageCache('connections');
+    invalidatePageCache('connections');
   } finally {
     pageCacheState.connections.loading = false;
   }
@@ -5827,9 +6305,9 @@ function normalizeRoutingStaticText() {
   const title = panel.querySelector('.section-head h2');
   const subtitle = panel.querySelector('.section-head p');
   if (title) title.textContent = '\u89c4\u5219';
-  if (subtitle) subtitle.textContent = '\u4e3a\u7f51\u7ad9\u6216\u5e94\u7528\u6307\u5b9a\u7ebf\u8def\u3002\u66f4\u6539\u4ec5\u5728\u70b9\u51fb\u201c\u5e94\u7528\u8349\u7a3f\u201d\u540e\u751f\u6548\u3002';
+  if (subtitle) subtitle.textContent = '\u4e3a\u7f51\u7ad9\u6216\u5e94\u7528\u6307\u5b9a\u7ebf\u8def\u3002';
   const badge = $('#routingReadonlyBadge');
-  if (badge) badge.textContent = '\u9884\u89c8\u9636\u6bb5\uff0c\u5c1a\u672a\u751f\u6548';
+  if (badge) badge.textContent = '\u9884\u89c8\u6a21\u5f0f';
   const refresh = $('#refreshRoutingBtn');
   if (refresh) refresh.textContent = '\u5237\u65b0';
   const summaryLabels = panel.querySelectorAll('.routing-summary article span');
@@ -6316,8 +6794,9 @@ async function undoLastRoutingApply() {
   return result;
 }
 
-function setRoutingSummaryDetail(kind = 'system') {
-  routingSummaryDetail = ['mode', 'groups', 'user', 'system'].includes(kind) ? kind : 'system';
+function setRoutingSummaryDetail(kind = '') {
+  const next = ['mode', 'groups', 'user', 'system'].includes(kind) ? kind : '';
+  routingSummaryDetail = next && next === routingSummaryDetail ? '' : next;
   document.querySelectorAll('[data-routing-summary]').forEach((card) => {
     card.classList.toggle('active', card.dataset.routingSummary === routingSummaryDetail);
   });
@@ -6598,6 +7077,12 @@ function renderRoutingGroupSummaryForRules(groups = []) {
 function renderRoutingSummaryDetail() {
   const box = $('#routingSummaryDetail');
   if (!box) return;
+  if (!routingSummaryDetail) {
+    box.classList.add('hidden');
+    replaceChildrenSafe(box, []);
+    return;
+  }
+  box.classList.remove('hidden');
   const groups = Array.isArray(latestRoutingSnapshot?.groups) ? latestRoutingSnapshot.groups : [];
   const { userRules, configRules, systemRules } = latestRoutingRulePartitions;
   const mode = modeLabel(latestRoutingSnapshot?.mode || latestStatus?.mode || 'rule');
@@ -6710,13 +7195,45 @@ function renderRoutingDraftList() {
     }
     return el('div', { className: `routing-draft-row ${classification.level === 'bad' ? 'bad' : classification.level === 'warn' ? 'warn' : ''} ${detailOpen ? 'open' : ''}` }, children);
   });
-  replaceChildrenSafe(list, rows.length ? rows : [emptyState('\u6682\u65e0\u8349\u7a3f\u3002')]);
+  replaceChildrenSafe(list, rows);
   const conflicts = routingAssistantDrafts.filter((item) => classifyRoutingDraft(item).level === 'warn').length;
   const blocked = routingAssistantDrafts.filter((item) => classifyRoutingDraft(item).level === 'bad').length;
-  summary.textContent = routingAssistantDrafts.length
-    ? `${routingAssistantDrafts.length} 条草稿，${blocked} 条不能应用，${conflicts} 条需要注意。`
-    : '\u6682\u65e0\u8349\u7a3f\u3002';
+  const hasDrafts = routingAssistantDrafts.length > 0;
+  const rollbackAvailable = Boolean(
+    routingApplyStatus?.rollbackAvailable
+    || latestRoutingSnapshot?.lastApply?.rollbackAvailable
+  );
+  summary.textContent = `${routingAssistantDrafts.length} 条草稿，${blocked} 条不能应用，${conflicts} 条需要注意。`;
   summary.className = `routing-draft-preview ${blocked ? 'bad' : conflicts ? 'warn' : 'ok'}`;
+  const card = $('#routingDraftListCard');
+  const title = $('#routingDraftListTitle');
+  const hint = $('#routingDraftListHint');
+  card?.classList.toggle('hidden', !hasDrafts && !rollbackAvailable);
+  list.classList.toggle('hidden', !hasDrafts);
+  summary.classList.toggle('hidden', !hasDrafts);
+  if (title) title.textContent = hasDrafts ? '\u8349\u7a3f\u4e0e\u9a8c\u8bc1' : '\u6700\u8fd1\u5e94\u7528';
+  if (hint) {
+    hint.textContent = hasDrafts
+      ? `${routingAssistantDrafts.length} \u6761\u672a\u5e94\u7528\u53d8\u66f4`
+      : '\u53ef\u6062\u590d\u5230\u5e94\u7528\u524d\u7684\u914d\u7f6e';
+  }
+  ['undoRoutingDraftBtn', 'verifyAllRoutingDraftsBtn'].forEach((id) => {
+    const button = $(`#${id}`);
+    if (button) {
+      button.disabled = !hasDrafts;
+      button.classList.toggle('hidden', !hasDrafts);
+    }
+  });
+  const applyDraftsButton = $('#applyRoutingDraftsBtn');
+  if (applyDraftsButton) {
+    applyDraftsButton.disabled = !hasDrafts || blocked > 0;
+    applyDraftsButton.classList.toggle('hidden', !hasDrafts);
+  }
+  const undoApplyButton = $('#undoRoutingApplyBtn');
+  if (undoApplyButton) {
+    undoApplyButton.disabled = !rollbackAvailable;
+    undoApplyButton.classList.toggle('hidden', !rollbackAvailable);
+  }
 }
 
 function regionRoutingDraftPreset(value = '', target = 'Proxies') {
@@ -7558,6 +8075,7 @@ async function runDiagnostics(showNotice = true, token = null) {
     });
     if (!data) throw new Error(lastBackgroundJobError || '诊断任务未完成');
     latestDiagnostics = data;
+    syncActionAvailability();
     if (!isCurrentPageTask(token, 'diagnostics')) {
       markPageCache('diagnostics');
       return;
@@ -7572,6 +8090,7 @@ async function runDiagnostics(showNotice = true, token = null) {
   } catch (err) {
     if (!isCurrentPageTask(token, 'diagnostics')) return;
     latestDiagnostics = null;
+    syncActionAvailability();
     replaceChildrenSafe($('#diagSummary'), [
       el('div', { className: 'diagnostic-status is-bad' }, [
         el('b', { textContent: '\u8bca\u65ad\u4e0d\u53ef\u7528' }),
@@ -7645,8 +8164,24 @@ if ($('#refreshNodesBtn')) $('#refreshNodesBtn').onclick = refreshNodes;
 $('#modeBtn').onclick = toggleModeMenu;
 $('#quickKillBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '断网保护切换中...', () => updateSetting('killSwitchEnabled', !latestStatus?.settings?.killSwitchEnabled), { preserveContent: true }));
 $('#quickTestBtn').onclick = (event) => testNodes(event.currentTarget);
-$('#quickUpdateSubBtn').onclick = (event) => runButtonAction(event.currentTarget, '...', updateActiveProfile);
-$('#quickProxyBtn').onclick = () => updateSetting('systemProxy', !latestStatus?.settings?.systemProxy);
+$('#quickUpdateSubBtn').onclick = (event) => runButtonAction(event.currentTarget, '...', updateActiveProfile, { preserveContent: true });
+$('#quickDiagnosticsBtn')?.addEventListener('click', (event) => {
+  runDetachedButtonAction(event.currentTarget, '\u8bca\u65ad\u4e2d...', () => runDiagnostics(), { preserveContent: true });
+});
+$('#quickRecoverBtn')?.addEventListener('click', (event) => {
+  runDetachedButtonAction(event.currentTarget, '\u6062\u590d\u4e2d...', () => recoverNetworkJob(true, true), { preserveContent: true });
+});
+$('#quickCurrentTestBtn')?.addEventListener('click', (event) => testCurrentNode(event.currentTarget));
+$('#quickRefreshNodesBtn')?.addEventListener('click', (event) => {
+  runDetachedButtonAction(event.currentTarget, '\u5237\u65b0\u4e2d...', () => refreshNodes(true), { preserveContent: true });
+});
+$('#quickUpdateAllBtn')?.addEventListener('click', (event) => {
+  runDetachedButtonAction(event.currentTarget, '\u66f4\u65b0\u4e2d...', updateAllProfiles, { preserveContent: true });
+});
+$('#quickNodesPageBtn')?.addEventListener('click', () => setPage('nodes'));
+$('#quickConnectionsPageBtn')?.addEventListener('click', () => setPage('connections'));
+$('#quickRoutingPageBtn')?.addEventListener('click', () => setPage('routing'));
+$('#quickProfilesPageBtn')?.addEventListener('click', () => setPage('profiles'));
 $('#quickProfileBtn')?.addEventListener('pointerdown', (event) => {
   if (event.button !== 0) return;
   event.preventDefault();
@@ -7669,9 +8204,8 @@ $('#nodeProfileBtn')?.addEventListener('click', (event) => {
   event.stopPropagation();
   if (event.detail === 0) toggleProfileMenu(event.currentTarget);
 });
-$('#quickRestartBtn').onclick = (event) => runButtonAction(event.currentTarget, '...', restartCoreJob);
 $('#lockAutoGroupBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '...', lockAutoGroupJob));
-$('#refreshConnectionsBtn').onclick = refreshConnections;
+$('#refreshConnectionsBtn').onclick = () => refreshConnections();
 $('#refreshRoutingBtn')?.addEventListener('click', (event) => runDetachedButtonAction(event.currentTarget, '刷新中...', () => refreshRoutingSnapshot()));
 $('#closeAllConnectionsBtn').onclick = async (event) => {
   const confirmed = await requestAppConfirm({
@@ -7682,7 +8216,11 @@ $('#closeAllConnectionsBtn').onclick = async (event) => {
   });
   if (!confirmed) return;
   runButtonAction(event.currentTarget, '关闭中...', () => runOptimisticAction({
-    apply: () => { replaceChildrenSafe($('#connectionRows'), [connectionEmptyState()]); },
+    apply: () => {
+      activeConnectionCount = 0;
+      replaceChildrenSafe($('#connectionRows'), [connectionEmptyState()]);
+      renderActiveConnectionMetric();
+    },
     commit: () => invoke('close_connections'),
     refresh: () => refreshConnections(),
     rollback: () => refreshConnections(),
@@ -7694,7 +8232,10 @@ $('#closeAllConnectionsBtn').onclick = async (event) => {
 $('#runDiagBtn').onclick = (event) => runDetachedButtonAction(event.currentTarget, '诊断中...', () => runDiagnostics());
 const copyDiagBtn = $('#copyDiagBtn');
 if (copyDiagBtn) copyDiagBtn.onclick = (event) => runButtonAction(event.currentTarget, '...', async () => {
-  if (!latestDiagnostics) await runDiagnostics(false);
+  if (!latestDiagnostics) {
+    setNotice('\u8bf7\u5148\u8fd0\u884c\u8bca\u65ad\u3002');
+    return;
+  }
   const report = diagnosticReportText(latestDiagnostics);
   await navigator.clipboard?.writeText(report);
   setNotice('诊断报告已复制');
@@ -7702,7 +8243,13 @@ if (copyDiagBtn) copyDiagBtn.onclick = (event) => runButtonAction(event.currentT
 const exportLogsBtn = $('#exportLogsBtn');
 if (exportLogsBtn) exportLogsBtn.onclick = (event) => runButtonAction(event.currentTarget, '...', exportLogs);
 const exportDiagBtn = $('#exportDiagBtn');
-if (exportDiagBtn) exportDiagBtn.onclick = (event) => runDetachedButtonAction(event.currentTarget, '...', exportDiagnosticReport);
+if (exportDiagBtn) exportDiagBtn.onclick = (event) => {
+  if (!latestDiagnostics) {
+    setNotice('\u8bf7\u5148\u8fd0\u884c\u8bca\u65ad\u3002');
+    return;
+  }
+  runDetachedButtonAction(event.currentTarget, '...', exportDiagnosticReport);
+};
 const refreshEnvironmentBtn = $('#refreshEnvironmentBtn');
 if (refreshEnvironmentBtn) refreshEnvironmentBtn.onclick = (event) => runDetachedButtonAction(event.currentTarget, '检查中...', () => refreshSettingsChecks(true));
 const environmentDetailsBtn = $('#environmentDetailsBtn');
@@ -7798,22 +8345,7 @@ profileFileInput?.addEventListener('change', async () => {
 const copyEndpointBtn = $('#copyEndpointBtn');
 if (copyEndpointBtn) copyEndpointBtn.onclick = () => navigator.clipboard?.writeText($('#nodeHost')?.textContent || '');
 const updateAllProfilesBtn = $('#updateAllProfilesBtn');
-if (updateAllProfilesBtn) updateAllProfilesBtn.onclick = (event) => runButtonAction(event.currentTarget, '...', async () => {
-  await runOptimisticAction({
-    apply: () => applyOptimisticProfilesPending('updating'),
-    commit: async () => {
-      const result = await updateAllProfilesJob();
-      if (!result) throw new Error(lastBackgroundJobError || 'all subscription updates failed');
-      return result;
-    },
-    refresh: async () => {
-      await refreshProfileSurfaces({ refreshOutboundIp: true });
-    },
-    pendingNotice: '正在更新全部订阅...',
-    successNotice: updateAllProfilesNotice,
-    failureNotice: (err) => `订阅更新失败：${err.message || err}`
-  });
-});
+if (updateAllProfilesBtn) updateAllProfilesBtn.onclick = (event) => runButtonAction(event.currentTarget, '...', updateAllProfiles);
 
 [
   ['systemProxyToggle', 'systemProxy'],
@@ -7861,20 +8393,32 @@ $('#saveDnsModeBtn').onclick = (event) => runButtonAction(event.currentTarget, '
   await refreshNodes(true);
 });
 
-$all('[data-region]').forEach((button) => {
-  button.onclick = () => {
-    const nextRegion = uiStore.state.homeRegionFilter === button.dataset.region ? '' : button.dataset.region;
-    uiStore.set({ homeNodeMode: 'region', homeRegionFilter: nextRegion });
-    scheduleRowsRender(latestGroup?.items || [], { force: true, target: 'home', delay: 0 });
-    if (isSpeedTestActive()) queueNodeRefresh('home', speedTestPollMs);
-    setNotice(nextRegion ? `已筛选地区：${button.textContent.trim()}` : '已取消地区筛选');
-  };
+$('#homeRegionRow')?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-region]');
+  if (!button) return;
+  const nextRegion = uiStore.state.homeRegionFilter === button.dataset.region ? '' : button.dataset.region;
+  uiStore.set({ homeNodeMode: 'region', homeRegionFilter: nextRegion });
+  scheduleRowsRender(latestGroup?.items || [], { force: true, target: 'home', delay: 0 });
+  if (isSpeedTestActive()) queueNodeRefresh('home', speedTestPollMs);
+  const label = button.querySelector('.region-label')?.textContent || button.dataset.region;
+  setNotice(nextRegion ? `已筛选地区：${label}` : '已取消地区筛选');
+});
+$('#homeRegionRow')?.addEventListener('contextmenu', openHomeRegionContextMenu);
+document.querySelector('.node-quick-actions .action-row')?.addEventListener('contextmenu', openQuickActionContextMenu);
+$('#homeRegionRow')?.addEventListener('keydown', (event) => {
+  if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) openHomeRegionContextMenu(event);
+});
+document.querySelector('.node-quick-actions .action-row')?.addEventListener('keydown', (event) => {
+  if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) openQuickActionContextMenu(event);
 });
 
 $all('[data-home-mode]').forEach((button) => {
   button.onclick = () => {
     const mode = button.dataset.homeMode || 'frequent';
-    uiStore.set({ homeNodeMode: mode, homeRegionFilter: mode === 'region' ? (uiStore.state.homeRegionFilter || 'HK') : '' });
+    uiStore.set({
+      homeNodeMode: mode,
+      homeRegionFilter: mode === 'region' ? (uiStore.state.homeRegionFilter || homeRegionPreferences[0].code) : ''
+    });
     scheduleRowsRender(latestGroup?.items || [], { force: true, target: 'home', delay: 0 });
     if (isSpeedTestActive()) queueNodeRefresh('home', speedTestPollMs);
   };
@@ -7935,6 +8479,23 @@ $('#nodeEditorOverlay')?.addEventListener('click', (event) => {
   if (event.target.id === 'nodeEditorOverlay') closeNodeEditor();
 });
 window.addEventListener('keydown', (event) => {
+  const homeMenu = event.target.closest?.('#homeCustomizeContextMenu');
+  if (homeMenu && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    const items = $all('#homeCustomizeContextMenu button:not(:disabled)')
+      .filter((element) => element.getClientRects().length > 0);
+    if (items.length) {
+      event.preventDefault();
+      const currentIndex = items.indexOf(document.activeElement);
+      const nextIndex = event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? items.length - 1
+          : event.key === 'ArrowUp'
+            ? (currentIndex <= 0 ? items.length - 1 : currentIndex - 1)
+            : (currentIndex + 1) % items.length;
+      items[nextIndex].focus();
+    }
+  }
   const statusCenterOpen = !$('#statusCenterOverlay')?.classList.contains('hidden');
   if (event.key === 'Escape' && statusCenterOpen) {
     event.preventDefault();
@@ -7959,8 +8520,15 @@ window.addEventListener('keydown', (event) => {
       first.focus();
     }
   }
-  if (event.key === 'Escape' && !$('#appDialogOverlay')?.classList.contains('hidden')) {
+  const appDialogOverlay = $('#appDialogOverlay');
+  if (event.key === 'Escape' && appDialogOverlay && !appDialogOverlay.classList.contains('hidden')) {
     closeAppDialog(null);
+    return;
+  }
+  const homeCustomizeMenu = $('#homeCustomizeContextMenu');
+  if (event.key === 'Escape' && homeCustomizeMenu && !homeCustomizeMenu.classList.contains('hidden')) {
+    event.preventDefault();
+    closeHomeCustomizeContextMenu({ restoreFocus: true });
     return;
   }
   if (event.key === 'Escape') closeNodeGroupContextMenu();
@@ -7986,8 +8554,15 @@ document.body.addEventListener('click', (event) => {
     void handleNodeGroupMenuAction(menuButton.dataset.nodeGroupMenuAction || '');
     return;
   }
+  const homeCustomizeButton = event.target.closest('[data-home-customize-action]');
+  if (homeCustomizeButton) {
+    event.preventDefault();
+    void handleHomeCustomizeAction(homeCustomizeButton.dataset.homeCustomizeAction || '');
+    return;
+  }
   if (!event.target.closest('#nodeGroupContextMenu')) closeNodeGroupContextMenu();
   if (!event.target.closest('#fixedNodeContextMenu')) closeFixedNodeContextMenu();
+  if (!event.target.closest('#homeCustomizeContextMenu')) closeHomeCustomizeContextMenu();
 });
 
 $('#nodeRows').addEventListener('contextmenu', (event) => { void openFixedNodeContextMenu(event); });
@@ -8131,9 +8706,7 @@ document.body.addEventListener('click', async (event) => {
       });
       return;
     }
-    const profileSwitch = event.target.closest('[data-profile-switch]')?.dataset.profileSwitch;
-    const profileRow = event.target.closest('[data-profile-row]')?.dataset.profileRow;
-    const profileTarget = profileSwitch || (event.target.closest('.card-actions') ? '' : profileRow);
+    const profileTarget = event.target.closest('[data-profile-switch]')?.dataset.profileSwitch;
     if (profileTarget) {
       $('#profileMenu')?.classList.add('hidden');
       profileMenuAnchor = null;
@@ -8297,6 +8870,10 @@ document.body.addEventListener('submit', async (event) => {
 
 normalizeShellStaticText();
 ensureNodeGroupSwitcher();
+saveHomeRegionPreferences();
+saveQuickActionPreferences();
+renderHomeRegions();
+applyQuickActionPreferences();
 uiStore.subscribe(renderUiState);
 renderUiState();
 renderJobCenter();
@@ -8317,7 +8894,19 @@ Promise.all([setupSpeedTestEvents(), setupRuntimeStatusEvents()])
   });
 tick();
 setInterval(tick, 1000);
-setInterval(() => syncJobCenter(false), 2500);
-setInterval(() => refreshActiveConnectionCount(false), 5000);
-setInterval(refreshStatus, 8000);
-setInterval(maybeAutoRecover, 60000);
+const backgroundPollers = [
+  { intervalMs: 2500, nextAt: Date.now() + 1200, task: () => syncJobCenter(false) },
+  { intervalMs: 5000, nextAt: Date.now() + 2200, task: () => refreshActiveConnectionCount(false) },
+  { intervalMs: 8000, nextAt: Date.now() + 3400, task: () => refreshStatus(false) },
+  { intervalMs: 60000, nextAt: Date.now() + 10000, task: maybeAutoRecover }
+];
+function runBackgroundPollScheduler() {
+  const now = Date.now();
+  const poller = backgroundPollers
+    .filter((candidate) => candidate.nextAt <= now)
+    .sort((left, right) => left.nextAt - right.nextAt)[0];
+  if (!poller) return;
+  poller.nextAt = now + poller.intervalMs;
+  Promise.resolve(poller.task()).catch(() => {});
+}
+setInterval(runBackgroundPollScheduler, 500);

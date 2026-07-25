@@ -31,6 +31,8 @@ pub enum RuntimeCommand {
     UpdateProfile,
     RenameProfile,
     DiagnosticsRepair,
+    SaveFixedNode,
+    DeleteFixedNode,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -97,7 +99,8 @@ impl RuntimeCommand {
             "select_best_proxy command" => SelectBestProxy,
             "set_active_profile command" => SetActiveProfile,
             "remove_profile command" => RemoveProfile,
-            "save_manual_node command" => ImportProfile,
+            "save_manual_node command" => SaveFixedNode,
+            "delete_manual_node command" => DeleteFixedNode,
             "addProfileUrl apply" => ImportProfile,
             "updateProfile apply" => UpdateProfile,
             _ => return None,
@@ -225,6 +228,14 @@ mod tests {
         assert_eq!(
             RuntimeCommand::from_operation_label("updateProfile apply"),
             Some(RuntimeCommand::UpdateProfile)
+        );
+        assert_eq!(
+            RuntimeCommand::from_operation_label("save_manual_node command"),
+            Some(RuntimeCommand::SaveFixedNode)
+        );
+        assert_eq!(
+            RuntimeCommand::from_operation_label("delete_manual_node command"),
+            Some(RuntimeCommand::DeleteFixedNode)
         );
     }
 

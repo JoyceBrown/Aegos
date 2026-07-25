@@ -44,6 +44,7 @@ const startBody = sliceBetween(mainRs, 'fn start_with_takeover', 'fn terminate_c
 const renderNodeBody = sliceBetween(appJs, 'function renderNodeRow', 'function renderHomeNodeRow');
 const renderLogsBody = sliceBetween(appJs, 'function renderLogs', 'function setOutboundIpText');
 const dangerousRenderApis = /\b(innerHTML\s*=|outerHTML\s*=|insertAdjacentHTML\s*\(|document\.write\s*\(|eval\s*\(|new Function\s*\()/m;
+const publicSettingsBody = sliceBetween(coreRuntimeRs, 'pub fn public_settings_surface_json', 'pub fn recovery_healthy_result_json');
 
 check(
   'security audit script is exposed in package scripts',
@@ -69,6 +70,17 @@ check(
     mainRs.includes('export_logs_from_state(&state.logs, &state.app_data)') &&
     !publicProfileBody.includes('"source_url": &profile.source_url'),
   'subscription token/password/uuid/bearer/userinfo must not leak through logs or public profile JSON'
+);
+
+check(
+  'fixed-node credentials stay out of public status and diagnostics snapshots',
+  !publicSettingsBody.includes('manual_nodes') &&
+    !publicSettingsBody.includes('"manualNodes"') &&
+    !mainRs.includes('json!(&self.settings.manual_nodes),') &&
+    !mainRs.includes('json!(&snapshot.settings.manual_nodes),') &&
+    mainRs.includes('fn manual_node_editor') &&
+    mainRs.includes('state.core.lock().unwrap().manual_node_editor(&name)'),
+  'complete fixed-node credentials are available only through the explicit editor command'
 );
 
 check(
@@ -155,9 +167,9 @@ check(
     appJs.includes('function el(tag') &&
     appJs.includes('function replaceChildrenSafe') &&
     renderNodeBody.includes('text(name)') &&
-    appJs.includes('function nodeAddressInfo') &&
-    renderNodeBody.includes('textContent: address.label') &&
-    renderNodeBody.includes('attrs: { title: address.title }') &&
+    !appJs.includes('function nodeAddressInfo') &&
+    !renderNodeBody.includes('node-address') &&
+    appJs.includes('function itemMatchesNodeSearch') &&
     renderLogsBody.includes('textContent: entry.line') &&
     appJs.includes('textContent: item.detail') &&
     appJs.includes('emptyState(`\\u8bca\\u65ad\\u5931\\u8d25') &&

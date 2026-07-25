@@ -39,6 +39,11 @@ const frontendSuspicious = [
   ...suspiciousLines('src/app.js'),
   ...suspiciousLines('src/index.html'),
 ];
+const refreshStatusStart = appJs.indexOf('async function refreshStatus');
+const refreshStatusEnd = appJs.indexOf('function renderActiveConnectionMetric', refreshStatusStart);
+const refreshStatusBody = refreshStatusStart >= 0 && refreshStatusEnd > refreshStatusStart
+  ? appJs.slice(refreshStatusStart, refreshStatusEnd)
+  : '';
 
 check('status vocabulary document exists', exists('STATUS_VOCABULARY_3.5.71.md'), 'STATUS_VOCABULARY_3.5.71.md');
 check(
@@ -54,24 +59,23 @@ check(
 );
 check(
   'frontend owns shared status helpers',
-  ['const STATUS_TEXT = Object.freeze', 'function enabledLabel', 'function systemProxyUiLabel', 'function runtimeSummaryLabel', 'function statusSurfaceNotice'].every((needle) => appJs.includes(needle)),
+  ['const STATUS_TEXT = Object.freeze', 'function enabledLabel', 'function runtimeSummaryLabel', 'function statusSurfaceNotice'].every((needle) => appJs.includes(needle)),
   'STATUS_TEXT helpers'
 );
 check(
-  'home and settings consume shared status helpers',
+  'home, settings, and status center consume shared status helpers',
   appJs.includes("$('.ring strong').textContent = trafficTakeover ? STATUS_TEXT.connected") &&
     appJs.includes("$('#settingsRuntimeSummary').textContent = runtimeSummaryLabel") &&
-    appJs.includes("$('#systemProxyMetric').textContent = systemProxyUiLabel"),
-  'renderStatus/renderSettings'
+    appJs.includes("$('#proxyState').textContent = systemProxyApplied ? STATUS_TEXT.enabled"),
+  'renderStatus/renderSettings/statusCenter'
 );
 check(
-  'software state and network availability are separate user-visible fields',
+  'status center keeps software and network availability truth without duplicate home metrics',
   indexHtml.includes('id="softwareState"') &&
     indexHtml.includes('id="networkAvailabilityState"') &&
-    indexHtml.includes('id="networkAvailabilityMetric"') &&
+    !indexHtml.includes('id="networkAvailabilityMetric"') &&
     appJs.includes("$('#softwareState').textContent = runtimeSummaryLabel") &&
-    appJs.includes("$('#networkAvailabilityState').textContent = availability.label") &&
-    appJs.includes("$('#networkAvailabilityMetric').textContent = availability.label"),
+    appJs.includes("$('#networkAvailabilityState').textContent = availability.label"),
   'softwareState/networkAvailabilityState'
 );
 check(
@@ -80,6 +84,21 @@ check(
     appJs.includes('availability.state ===') &&
     appJs.includes('systemProxyWanted && !systemProxyApplied'),
   'statusSurfaceNotice'
+);
+check(
+  'status refresh failure keeps the last backend truth',
+  refreshStatusBody.includes('\\u5f53\\u524d\\u663e\\u793a\\u4e0a\\u6b21\\u6570\\u636e') &&
+    refreshStatusBody.includes('\\u72b6\\u6001\\u6682\\u65f6\\u65e0\\u6cd5\\u8bfb\\u53d6') &&
+    !refreshStatusBody.includes('running: false') &&
+    !refreshStatusBody.includes("protection: { label: '未开启'"),
+  'app_status failure is a stale-read warning, not a synthetic disconnect'
+);
+check(
+  'home connection notice does not prefix inactive protection vocabulary',
+  !appJs.includes('const protectionLabel = protection.label') &&
+    indexHtml.includes('正在读取运行状态...') &&
+    !indexHtml.includes('id="protectionNotice" class="notice">未接管'),
+  'connection state is stated directly without the removed “未开启” prefix'
 );
 check(
   'connection button has explicit pending labels and reconciles from status snapshot',

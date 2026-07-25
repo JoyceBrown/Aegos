@@ -19,7 +19,7 @@
         <div class="brand-mark"><img class="brand-logo" src="assets/brand/aegos-mark-64.png" alt=""></div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v3.6.53</span>
+          <span id="appVersionLabel" class="brand-version">v3.6.54</span>
         </div>
       </section>
 
@@ -33,24 +33,19 @@
         <button data-page="settings"><span class="aegos-icon icon-settings" aria-hidden="true"></span>设置</button>
       </nav>
 
-      <section class="sidebar-runtime-summary" aria-labelledby="sidebarRuntimeTitle">
-        <div class="sidebar-runtime-head">
-          <span id="sidebarRuntimeIndicator" class="runtime-indicator" aria-hidden="true"></span>
-          <div>
-            <small id="sidebarRuntimeTitle">当前状态</small>
-            <strong id="sidebarConnectionState">未连接</strong>
-          </div>
-        </div>
-        <p id="sidebarNodeName" title="等待节点数据">等待节点数据</p>
-        <div class="sidebar-runtime-meta">
-          <span>延迟 <b id="sidebarDelayMetric">-</b></span>
-          <span>任务 <b id="sidebarJobCount">0</b></span>
-        </div>
-        <button id="sidebarStatusCenterBtn" class="sidebar-status-button" aria-controls="statusCenterPanel" aria-expanded="false">
-          <span class="aegos-icon icon-diagnostics" aria-hidden="true"></span>
-          查看状态中心
-        </button>
+      <section class="node-status-card metric-grid" aria-label="节点状态">
+        <header><strong>节点状态</strong></header>
+        <article><span class="metric-icon purple aegos-icon icon-latency" aria-hidden="true"></span><small>延迟</small><strong class="metric-inline"><button id="currentNodeTestBtn" class="metric-delay-action" aria-label="测速当前节点" title="测速当前节点"><span id="delayMetric">-</span></button></strong></article>
+        <article><span class="metric-icon blue aegos-icon icon-loss" aria-hidden="true"></span><small>稳定性</small><strong id="stabilityMetric">未测速</strong></article>
+        <article><span class="metric-icon amber aegos-icon icon-load" aria-hidden="true"></span><small>活跃连接</small><strong id="activeConnectionsMetric">0</strong></article>
+        <article><span class="metric-icon cyan aegos-icon icon-protocol" aria-hidden="true"></span><small>&#21327;&#35758;</small><strong id="protocolMetric">DIRECT</strong></article>
+        <article><span class="metric-icon purple aegos-icon icon-port" aria-hidden="true"></span><small>代理端口</small><strong id="proxyMetric">-</strong></article>
+        <article><span class="metric-icon violet aegos-icon icon-ip" aria-hidden="true"></span><small>落地 IP</small><strong id="outboundMetric">-</strong></article>
+        <article><span class="metric-icon teal aegos-icon icon-clock" aria-hidden="true"></span><small>上次测速</small><strong id="lastTestedMetric">未测速</strong></article>
+        <article><span class="metric-icon up aegos-icon icon-upload" aria-hidden="true"></span><small>上传</small><strong id="upRate">0 B/s</strong></article>
+        <article><span class="metric-icon down aegos-icon icon-download" aria-hidden="true"></span><small>下载</small><strong id="downRate">0 B/s</strong></article>
       </section>
+
     </aside>
 
     <section class="workspace">
@@ -78,7 +73,6 @@
             <label class="tun-home-toggle">
               <span>
                 <strong>TUN &#27169;&#24335;</strong>
-                <small id="tunHomeState">&#26410;&#24320;&#21551;</small>
               </span>
               <input id="tunHomeToggle" type="checkbox" role="switch">
             </label>
@@ -89,7 +83,7 @@
               <div>
                 <small>当前节点</small>
                 <div class="node-title">
-                  <span class="flag">HK</span>
+                  <span id="nodeRegionBadge" class="flag" title="等待节点数据">--</span>
                   <h1 id="nodeName">等待节点数据</h1>
                 </div>
               </div>
@@ -103,7 +97,7 @@
               </div>
             </div>
 
-            <div id="protectionNotice" class="notice">未接管：内核未运行，当前没有流量接管。</div>
+            <div id="protectionNotice" class="notice" role="status" aria-live="polite" aria-atomic="true">正在读取运行状态...</div>
 
             <div id="autoGroupNotice" class="auto-group-notice hidden">
               <b>自动策略组</b>
@@ -111,34 +105,23 @@
               <button id="lockAutoGroupBtn">锁定当前节点</button>
             </div>
 
-            <div class="metric-grid top">
-              <article><span class="metric-icon purple aegos-icon icon-latency" aria-hidden="true"></span><small>延迟</small><strong class="metric-inline"><button id="currentNodeTestBtn" class="metric-delay-action" aria-label="测速当前节点" title="测速当前节点"><span id="delayMetric">-</span></button></strong></article>
-              <article><span class="metric-icon blue aegos-icon icon-loss" aria-hidden="true"></span><small>稳定性</small><strong id="stabilityMetric">未测速</strong></article>
-              <article><span class="metric-icon amber aegos-icon icon-load" aria-hidden="true"></span><small>活跃连接</small><strong id="activeConnectionsMetric">0</strong></article>
-              <article><span class="metric-icon cyan aegos-icon icon-protocol" aria-hidden="true"></span><small>&#21327;&#35758;</small><strong id="protocolMetric">DIRECT</strong></article>
-              <article><span class="metric-icon green aegos-icon icon-dns" aria-hidden="true"></span><small>网络可用</small><strong id="networkAvailabilityMetric">未验证</strong></article>
-            </div>
-
-            <div class="metric-grid bottom">
-              <article><span class="metric-icon purple aegos-icon icon-port" aria-hidden="true"></span><small>代理端口</small><strong id="proxyMetric">-</strong></article>
-              <article><span class="metric-icon violet aegos-icon icon-ip" aria-hidden="true"></span><small>落地 IP</small><strong id="outboundMetric">-</strong></article>
-              <article><span class="metric-icon teal aegos-icon icon-clock" aria-hidden="true"></span><small>上次测速</small><strong id="lastTestedMetric">未测速</strong></article>
-              <article><span class="metric-icon amber aegos-icon icon-proxy" aria-hidden="true"></span><small>系统代理</small><strong id="systemProxyMetric">-</strong></article>
-              <article><span class="metric-icon up aegos-icon icon-upload" aria-hidden="true"></span><small>上传</small><strong id="upRate">0 B/s</strong></article>
-              <article><span class="metric-icon down aegos-icon icon-download" aria-hidden="true"></span><small>下载</small><strong id="downRate">0 B/s</strong></article>
-            </div>
-          </div>
-        </section>
-
-        <section class="quick panel">
-          <div class="quick-row action-row">
-            <strong>快捷操作</strong>
-            <button id="quickTestBtn"><span class="aegos-icon icon-speed" aria-hidden="true"></span><span class="sr-only">⚡</span>一键测速</button>
-            <button id="quickProxyBtn"><span class="aegos-icon icon-proxy" aria-hidden="true"></span>&#31995;&#32479;&#20195;&#29702;</button>
-            <button id="quickUpdateSubBtn"><span class="aegos-icon icon-refresh" aria-hidden="true"></span>&#26356;&#26032;&#35746;&#38405;</button>
-            <button id="quickKillBtn"><span class="kill-icon aegos-icon icon-shield" aria-hidden="true"></span>断网保护</button>
-            <button id="quickProfileBtn"><span class="aegos-icon icon-subscription" aria-hidden="true"></span>切换订阅</button>
-            <button id="quickRestartBtn"><span class="aegos-icon icon-power" aria-hidden="true"></span>&#37325;&#21551;&#20869;&#26680;</button>
+            <section class="quick node-quick-actions">
+              <div class="quick-row action-row">
+                <button id="quickTestBtn" data-quick-action="quickTestBtn"><span class="aegos-icon icon-speed" aria-hidden="true"></span><span class="quick-action-label">一键测速</span></button>
+                <button id="quickUpdateSubBtn" data-quick-action="quickUpdateSubBtn"><span class="aegos-icon icon-refresh" aria-hidden="true"></span><span class="quick-action-label">&#26356;&#26032;&#35746;&#38405;</span></button>
+                <button id="quickKillBtn" data-quick-action="quickKillBtn"><span class="kill-icon aegos-icon icon-shield" aria-hidden="true"></span><span class="quick-action-label">断网保护</span></button>
+                <button id="quickProfileBtn" data-quick-action="quickProfileBtn"><span class="aegos-icon icon-subscription" aria-hidden="true"></span><span class="quick-action-label">切换订阅</span></button>
+                <button id="quickDiagnosticsBtn" class="hidden" data-quick-action="quickDiagnosticsBtn"><span class="aegos-icon icon-diagnostics" aria-hidden="true"></span><span class="quick-action-label">运行诊断</span></button>
+                <button id="quickRecoverBtn" class="hidden" data-quick-action="quickRecoverBtn"><span class="aegos-icon icon-refresh" aria-hidden="true"></span><span class="quick-action-label">网络恢复</span></button>
+                <button id="quickCurrentTestBtn" class="hidden" data-quick-action="quickCurrentTestBtn"><span class="aegos-icon icon-speed" aria-hidden="true"></span><span class="quick-action-label">当前测速</span></button>
+                <button id="quickRefreshNodesBtn" class="hidden" data-quick-action="quickRefreshNodesBtn"><span class="aegos-icon icon-refresh" aria-hidden="true"></span><span class="quick-action-label">刷新节点</span></button>
+                <button id="quickUpdateAllBtn" class="hidden" data-quick-action="quickUpdateAllBtn"><span class="aegos-icon icon-refresh" aria-hidden="true"></span><span class="quick-action-label">更新全部</span></button>
+                <button id="quickNodesPageBtn" class="hidden" data-quick-action="quickNodesPageBtn"><span class="aegos-icon icon-nodes" aria-hidden="true"></span><span class="quick-action-label">节点管理</span></button>
+                <button id="quickConnectionsPageBtn" class="hidden" data-quick-action="quickConnectionsPageBtn"><span class="aegos-icon icon-connections" aria-hidden="true"></span><span class="quick-action-label">连接管理</span></button>
+                <button id="quickRoutingPageBtn" class="hidden" data-quick-action="quickRoutingPageBtn"><span class="aegos-icon icon-routing" aria-hidden="true"></span><span class="quick-action-label">分流规则</span></button>
+                <button id="quickProfilesPageBtn" class="hidden" data-quick-action="quickProfilesPageBtn"><span class="aegos-icon icon-profiles" aria-hidden="true"></span><span class="quick-action-label">订阅管理</span></button>
+              </div>
+            </section>
           </div>
         </section>
 
@@ -150,19 +133,12 @@
               <button data-home-mode="frequent">常用节点</button>
               <button data-home-mode="fixed">固定节点</button>
             </div>
-            <div class="home-filter-actions">
-              <button id="addFixedNodeBtn">添加固定节点</button>
+            <div id="fixedNodeActions" class="home-filter-actions hidden">
+              <button id="addFixedNodeBtn" type="button">添加固定节点</button>
             </div>
           </header>
-          <div id="homeRegionRow" class="region-row">
-            <button class="active" data-region="HK"><b>HK</b>&#39321;&#28207;</button>
-            <button data-region="TW"><b>TW</b>&#21488;&#28286;</button>
-            <button data-region="US"><b>US</b>&#32654;&#22269;</button>
-            <button data-region="JP"><b>JP</b>&#26085;&#26412;</button>
-            <button data-region="SG"><b>SG</b>&#26032;&#21152;&#22369;</button>
-            <button data-region="GB"><b>GB</b>&#33521;&#22269;</button>
-          </div>
-          <div class="home-row-head"><span></span><span></span><span>节点名称</span><span>地址</span><span>延迟</span><span>状态</span></div>
+          <div id="homeRegionRow" class="region-row" aria-label="常用地区"></div>
+          <div class="home-row-head"><span></span><span></span><span>节点名称</span><span>延迟</span><span>状态</span></div>
           <div id="homeNodeRows" class="home-node-list"></div>
         </section>
       </section>
@@ -170,23 +146,24 @@
       <section class="page" data-page-panel="nodes">
         <section class="nodes panel fill">
           <header class="table-head">
-            <button id="nodeProfileBtn" class="node-profile-switch"><span class="aegos-icon icon-subscription" aria-hidden="true"></span>切换订阅</button>
-            <div class="tabs">
+            <div class="node-toolbar-primary">
+              <button id="nodeProfileBtn" class="node-profile-switch"><span class="aegos-icon icon-subscription" aria-hidden="true"></span>切换订阅</button>
+              <div class="table-actions">
+                <button id="batchTestBtn">批量测速</button>
+                <label><span class="aegos-icon icon-search" aria-hidden="true"></span><input id="nodeSearch" placeholder="搜索节点"></label>
+              </div>
+            </div>
+            <div class="tabs node-filter-tabs">
               <button class="active" data-node-filter="all">全部</button>
               <button data-node-filter="favorite">收藏</button>
-              <button data-node-filter="recent">最近使用</button>
               <button data-node-filter="low">低延迟</button>
               <button data-node-filter="asia">亚洲</button>
               <button data-node-filter="europe">欧洲</button>
               <button data-node-filter="north-america">北美</button>
             </div>
-            <div class="table-actions">
-              <button id="batchTestBtn">批量测速</button>
-              <label><span class="aegos-icon icon-search" aria-hidden="true"></span><input id="nodeSearch" placeholder="搜索节点"></label>
-            </div>
           </header>
           <div class="node-table">
-            <div class="row head"><span></span><span></span><span>节点名称</span><span>地址</span><span>延迟</span><span>状态</span><span class="row-action-labels"><span>测速</span><span>编辑</span><span>规则</span><span>收藏</span></span></div>
+            <div class="row head"><span></span><span></span><span>节点名称</span><span>延迟</span><span>状态</span><span class="row-action-labels"><span>测速</span><span>编辑</span><span>规则</span><span>收藏</span></span></div>
             <div id="nodeRows"></div>
           </div>
         </section>
@@ -211,9 +188,9 @@
       <section class="page" data-page-panel="routing">
         <section class="panel fill page-card routing-card">
           <header class="section-head">
-            <div><h2>规则</h2><p>为网站或应用指定线路。更改仅在应用草稿后生效。</p></div>
+            <div><h2>规则</h2><p>为网站或应用指定线路。</p></div>
             <div class="section-actions">
-              <span id="routingReadonlyBadge" class="readonly-badge">预览阶段，尚未生效</span>
+              <span id="routingReadonlyBadge" class="readonly-badge">预览模式</span>
               <button id="refreshRoutingBtn" class="ghost compact">刷新</button>
             </div>
           </header>
@@ -239,15 +216,18 @@
           <header class="section-head">
             <div><h2>订阅</h2><p>导入、更新、切换订阅配置。</p></div>
           </header>
-          <div class="form-row">
-            <input id="profileUrlInput" placeholder="https://example.com/sub.yaml">
-            <button id="addProfileBtn" class="primary compact">导入订阅</button>
+          <div class="profile-import-toolbar">
+            <div class="form-row">
+              <input id="profileUrlInput" placeholder="https://example.com/sub.yaml">
+              <button id="addProfileBtn" class="primary compact">导入订阅</button>
+            </div>
+            <div class="settings-actions">
+              <input id="profileFileInput" type="file" accept=".yaml,.yml,.txt,text/yaml,text/plain,application/x-yaml" hidden>
+              <button id="importProfileFileBtn" class="ghost compact">导入本地文件</button>
+              <button id="updateAllProfilesBtn" class="ghost compact">&#26356;&#26032;&#20840;&#37096;</button>
+            </div>
           </div>
-          <div class="settings-actions">
-            <input id="profileFileInput" type="file" accept=".yaml,.yml,.txt,text/yaml,text/plain,application/x-yaml" hidden>
-            <button id="importProfileFileBtn" class="ghost compact">导入本地文件</button>
-            <button id="updateAllProfilesBtn" class="ghost compact">&#26356;&#26032;&#20840;&#37096;</button>
-          </div>
+          <div class="profile-table-head" aria-hidden="true"><span>订阅</span><span>内容</span><span>状态</span><span>操作</span></div>
           <div id="profileRows" class="card-list"></div>
         </section>
       </section>
@@ -318,21 +298,34 @@
             <div class="settings-primary-grid">
               <section class="settings-section settings-network-section">
                 <header class="settings-section-head">
-                  <h3>网络接管</h3>
+                  <div><h3>网络与安全</h3><small>按接管、解析和保护顺序设置</small></div>
                   <span id="settingsProxySummary">系统代理未开启</span>
                 </header>
-                <div class="settings-grid compact-grid">
-                  <label class="switch-row"><span><b>系统代理</b><small>接管使用 Windows 代理的应用</small></span><input id="systemProxyToggle" type="checkbox"></label>
-                  <label class="switch-row"><span><b>连接后自动接管</b><small>连接成功后开启系统代理</small></span><input id="startProxyToggle" type="checkbox"></label>
-                  <label class="switch-row"><span><b>TUN 模式</b><small>接管不使用系统代理的应用</small></span><input id="tunToggle" type="checkbox"></label>
-                  <label class="switch-row"><span><b>DNS 防泄漏</b><small>阻止 DNS 绕过当前代理</small></span><input id="dnsToggle" type="checkbox"></label>
-                  <label class="input-row"><span><b>DNS 模式</b><small id="dnsModeHint">自动使用 Aegos 的加密 DNS；TUN 下建议安全接管。</small></span><select id="dnsModeSelect"><option value="auto">自动（推荐）</option><option value="secure">安全接管</option><option value="system">系统 DNS（兼容）</option><option value="custom">自定义加密 DNS</option></select></label>
-                  <label id="dnsCustomNameserversRow" class="input-row" hidden><span><b>自定义解析器</b><small>以逗号分隔；仅允许 https:// 或 tls:// 地址。</small></span><input id="dnsCustomNameserversInput" type="text" autocomplete="off" placeholder="https://dns.example/dns-query, tls://dns.example:853"></label>
-                  <button id="saveDnsModeBtn" type="button" class="secondary-btn">保存 DNS 设置</button>
-                  <label class="switch-row"><span><b>断网保护</b><small>代理异常时阻止流量直接联网</small></span><input id="killToggle" type="checkbox"></label>
-                  <label class="switch-row"><span><b>允许局域网设备使用</b><small>向同一局域网开放代理端口</small></span><input id="allowLanToggle" type="checkbox"></label>
-                  <label class="switch-row"><span><b>IPv6</b><small>当前由 Aegos 自动管理</small></span><input id="ipv6Toggle" type="checkbox"></label>
-                  <label class="input-row"><span><b>TUN 兼容模式</b><small>默认 mixed，异常时再调整</small></span><select id="tunStackSelect"><option value="mixed">mixed</option><option value="gvisor">gvisor</option><option value="system">system</option></select></label>
+                <div class="settings-subsection">
+                  <header><h4>接管方式</h4><p>决定哪些应用流量交给 Aegos</p></header>
+                  <div class="settings-grid compact-grid">
+                    <label class="switch-row"><span><b>系统代理</b><small>接管使用 Windows 代理的应用</small></span><input id="systemProxyToggle" type="checkbox"></label>
+                    <label class="switch-row"><span><b>连接后自动接管</b><small>连接成功后开启系统代理</small></span><input id="startProxyToggle" type="checkbox"></label>
+                    <label class="switch-row"><span><b>TUN 模式</b><small>接管不使用系统代理的应用</small></span><input id="tunToggle" type="checkbox"></label>
+                    <label class="switch-row"><span><b>允许局域网设备使用</b><small>向同一局域网开放代理端口</small></span><input id="allowLanToggle" type="checkbox"></label>
+                    <label class="switch-row"><span><b>IPv6</b><small>当前由 Aegos 自动管理</small></span><input id="ipv6Toggle" type="checkbox"></label>
+                  </div>
+                </div>
+                <div class="settings-subsection">
+                  <header><h4>DNS</h4><p>统一解析路径并减少泄漏风险</p></header>
+                  <div class="settings-grid compact-grid">
+                    <label class="switch-row"><span><b>DNS 防泄漏</b><small>阻止 DNS 绕过当前代理</small></span><input id="dnsToggle" type="checkbox"></label>
+                    <label class="input-row"><span><b>DNS 模式</b><small id="dnsModeHint">自动使用 Aegos 的加密 DNS；TUN 下建议安全接管。</small></span><select id="dnsModeSelect"><option value="auto">自动（推荐）</option><option value="secure">安全接管</option><option value="system">系统 DNS（兼容）</option><option value="custom">自定义加密 DNS</option></select></label>
+                    <label id="dnsCustomNameserversRow" class="input-row settings-wide-row" hidden><span><b>自定义解析器</b><small>以逗号分隔；仅允许 https:// 或 tls:// 地址。</small></span><input id="dnsCustomNameserversInput" type="text" autocomplete="off" placeholder="https://dns.example/dns-query, tls://dns.example:853"></label>
+                    <div class="settings-subsection-actions"><button id="saveDnsModeBtn" type="button" class="secondary-btn">保存 DNS 设置</button></div>
+                  </div>
+                </div>
+                <div class="settings-subsection">
+                  <header><h4>安全与兼容</h4><p>仅在需要保护或兼容时调整</p></header>
+                  <div class="settings-grid compact-grid">
+                    <label class="switch-row"><span><b>断网保护</b><small>代理异常时阻止流量直接联网</small></span><input id="killToggle" type="checkbox"></label>
+                    <label class="input-row"><span><b>TUN 兼容模式</b><small>默认 mixed，异常时再调整</small></span><select id="tunStackSelect"><option value="mixed">mixed</option><option value="gvisor">gvisor</option><option value="system">system</option></select></label>
+                  </div>
                 </div>
               </section>
 

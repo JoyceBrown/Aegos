@@ -29,7 +29,7 @@ const refreshNodesBody = bodyBetween(appJs, 'async function refreshNodes', 'asyn
 const refreshProfileBody = bodyBetween(appJs, 'async function refreshProfileSurfaces', 'async function previewProfileNodes');
 const resetBody = bodyBetween(appJs, 'function resetSpeedUiForProfileSwitch', 'async function pollSpeedTest');
 const applyProfileBody = bodyBetween(appJs, 'function applyOptimisticProfile', 'function applyOptimisticNode');
-const profileClickBody = bodyBetween(appJs, 'const profileSwitch =', 'const profileRename =');
+const profileClickBody = bodyBetween(appJs, 'const profileTarget =', 'const profileRename =');
 const addProfileBody = bodyBetween(mainRs, 'fn add_profile_url_detached', 'fn update_profile_detached');
 const updateProfileBody = bodyBetween(mainRs, 'fn update_profile_detached', 'fn update_all_profiles_detached');
 const semverAtLeast = (version, baseline) => {
@@ -174,7 +174,8 @@ check(
 
 check(
   'profile switch is background-job based',
-  profileClickBody.includes('setActiveProfileJob(profileTarget)') &&
+  profileClickBody.includes("closest('[data-profile-switch]')") &&
+    profileClickBody.includes('setActiveProfileJob(profileTarget)') &&
     profileClickBody.includes('pendingNotice') &&
     profileClickBody.includes('failureNotice') &&
     appJs.includes("runBackgroundJob('setActiveProfile'"),

@@ -21,6 +21,16 @@ const pkg = JSON.parse(read('package.json'));
 const passed = [];
 const failed = [];
 const check = (name, ok, detail) => (ok ? passed : failed).push({ name, ok, detail });
+const withoutSection = (source, startNeedle, endNeedle = '') => {
+  const start = source.indexOf(startNeedle);
+  if (start < 0) return source;
+  const end = endNeedle ? source.indexOf(endNeedle, start) : source.length;
+  return end >= start ? `${source.slice(0, start)}${source.slice(end)}` : source;
+};
+const mainProduction = withoutSection(main, '#[cfg(test)]\nmod tests {', '\nfn default_settings');
+const runtimeProduction = withoutSection(runtime, '#[cfg(test)]\nmod tests {');
+const mainProductionLines = mainProduction.split('\n').length;
+const runtimeProductionLines = runtimeProduction.split('\n').length;
 
 check(
   'runtime mutations use a product command coordinator with a visible snapshot',
@@ -108,10 +118,10 @@ check(
 );
 
 check(
-  'legacy orchestration modules are under a no-growth budget',
-  main.split('\n').length <= 13550 &&
-    runtime.split('\n').length <= 4800,
-  `main=${main.split('\n').length} lines, core_runtime=${runtime.split('\n').length} lines`
+  'production orchestration modules are under a no-growth budget',
+  mainProductionLines <= 11770 &&
+    runtimeProductionLines <= 2900,
+  `main=${mainProductionLines}/11770 production lines, core_runtime=${runtimeProductionLines}/2900 production lines`
 );
 
 check(

@@ -52,6 +52,7 @@ check('WebView2 bootstrapper remains user-visible', tauri.bundle?.windows?.webvi
 check('mihomo core is bundled and no alternate core is accidentally added', exists('resources/core/mihomo.exe') && !exists('resources/core/sing-box.exe'), 'resources/core');
 check('installer defaults avoid port 7890 conflict', mainRs.includes('const AEGOS_DEFAULT_MIXED_PORT: u16 = 7891') && mainRs.includes('const AEGOS_DEFAULT_CONTROLLER_PORT: u16 = 19091'), 'mixed=7891 controller=19091');
 check('window remains resizable and non-transparent', tauri.app?.windows?.[0]?.resizable === true && tauri.app?.windows?.[0]?.transparent === false, `resizable=${tauri.app?.windows?.[0]?.resizable} transparent=${tauri.app?.windows?.[0]?.transparent}`);
+check('installer launches the supported minimum window size', tauri.app?.windows?.[0]?.width === tauri.app?.windows?.[0]?.minWidth && tauri.app?.windows?.[0]?.height === tauri.app?.windows?.[0]?.minHeight, `${tauri.app?.windows?.[0]?.width}x${tauri.app?.windows?.[0]?.height}`);
 check('release audit knows installer audit exists', releaseAudit.includes('audit:installer') && releaseAudit.includes('installer candidate audit script exists'), 'release gate includes installer lane');
 
 const failed = results.filter((item) => !item.ok);

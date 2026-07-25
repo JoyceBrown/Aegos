@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Aegos",
-  "version": "3.6.53",
+  "version": "3.6.54",
   "identifier": "com.codex.aegos",
   "build": {
     "frontendDist": "../src"
@@ -11,9 +11,9 @@
     "windows": [
       {
         "title": "Aegos",
-        "width": 1280,
-        "height": 820,
-        "minWidth": 980,
+        "width": 920,
+        "height": 640,
+        "minWidth": 920,
         "minHeight": 640,
         "center": true,
         "decorations": false,

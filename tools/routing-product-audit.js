@@ -7,6 +7,7 @@ const pkg = JSON.parse(read('package.json'));
 const mainRs = read('src-tauri/src/main.rs');
 const routingDomainRs = read('src-tauri/src/routing_domain.rs');
 const appJs = read('src/app.js');
+const routingUiJs = read('src/routing-ui.js');
 const stylesCss = read('src/styles.css');
 const releaseAudit = read('tools/release-audit.js');
 const exists = (file) => fs.existsSync(path.join(root, file));
@@ -70,7 +71,9 @@ check(
   'draft writes are constrained to generated structured rules',
   routingDomainRs.includes('pub(crate) struct RoutingDraftInput') &&
     routingDomainRs.includes('pub(crate) fn compile(') &&
-    routingDomainRs.includes('const ALLOWED_KINDS') &&
+    routingDomainRs.includes('pub(crate) enum RoutingConditionKind') &&
+    routingDomainRs.includes('pub(crate) struct RoutingIntent') &&
+    routingDomainRs.includes('RoutingIntent::from_draft(self, targets)?') &&
     routingDomainRs.includes('target_exists(targets, &target)') &&
     mainRs.includes('fn normalize_routing_draft_rule') &&
     mainRs.includes('let compiled = draft.compile(targets)?;') &&
@@ -216,14 +219,14 @@ check(
 );
 check(
   'routing assistant is task-focused around website, app, and system rules',
-  appJs.includes("className: 'routing-kind-list'") &&
+  routingUiJs.includes("className: 'routing-kind-list'") &&
     appJs.includes('data-routing-kind') &&
     appJs.includes('data-routing-panel') &&
     appJs.includes('function setRoutingAssistantKind') &&
-    appJs.includes("kindButton('website', '\\u7f51\\u7ad9\\u89c4\\u5219'") &&
-    appJs.includes("kindButton('app', '\\u5e94\\u7528\\u89c4\\u5219'") &&
-    appJs.includes("kindButton('system', '\\u7cfb\\u7edf\\u89c4\\u5219'") &&
-    !appJs.includes("kindButton('region'"),
+    routingUiJs.includes("kindButton('website', '\\u7f51\\u7ad9\\u89c4\\u5219'") &&
+    routingUiJs.includes("kindButton('app', '\\u5e94\\u7528\\u89c4\\u5219'") &&
+    routingUiJs.includes("kindButton('system', '\\u7cfb\\u7edf\\u89c4\\u5219'") &&
+    !routingUiJs.includes("kindButton('region'"),
   'website/app/system task selector'
 );
 check(
@@ -243,13 +246,14 @@ check(
 check(
   'routing layout has responsive anti-overlap rules',
   stylesCss.includes('.routing-builder') &&
-    stylesCss.includes('grid-template-columns: 210px minmax(0, 1fr)') &&
+    stylesCss.includes('grid-template-columns: minmax(0, 1fr)') &&
     stylesCss.includes('@media (max-width: 980px)') &&
     stylesCss.includes('@media (max-width: 760px)') &&
+    stylesCss.includes('.routing-draft-toolbar') &&
     stylesCss.includes('.routing-draft-row') &&
     stylesCss.includes('.routing-draft-main') &&
     stylesCss.includes('grid-template-columns: minmax(220px, 1fr) 76px 64px 64px 64px') &&
-    stylesCss.includes('overflow-y: auto') &&
+    stylesCss.includes('overflow: auto') &&
     stylesCss.includes('scrollbar-gutter: stable'),
   'responsive routing layout'
 );

@@ -1,0 +1,96 @@
+{
+  "ok": true,
+  "version": "3.6.54",
+  "generatedAt": "2026-07-25T16:18:47.367Z",
+  "cycles": 16,
+  "commandCount": 300,
+  "jobKinds": [
+    "startCore",
+    "refreshOutboundIp",
+    "setActiveProfile",
+    "diagnostics",
+    "stopCore"
+  ],
+  "finalPage": "home",
+  "resourceSamples": [
+    {
+      "cycle": 0,
+      "elements": 1494,
+      "nodeRows": 48,
+      "homeRows": 8,
+      "heap": 2485734,
+      "timers": {
+        "intervals": 4,
+        "timeouts": 0
+      }
+    },
+    {
+      "cycle": 4,
+      "elements": 977,
+      "nodeRows": 8,
+      "homeRows": 8,
+      "heap": 2469663,
+      "timers": {
+        "intervals": 3,
+        "timeouts": 4
+      }
+    },
+    {
+      "cycle": 8,
+      "elements": 977,
+      "nodeRows": 8,
+      "homeRows": 8,
+      "heap": 2859941,
+      "timers": {
+        "intervals": 3,
+        "timeouts": 7
+      }
+    },
+    {
+      "cycle": 12,
+      "elements": 977,
+      "nodeRows": 8,
+      "homeRows": 8,
+      "heap": 2967665,
+      "timers": {
+        "intervals": 3,
+        "timeouts": 7
+      }
+    },
+    {
+      "cycle": 16,
+      "elements": 977,
+      "nodeRows": 8,
+      "homeRows": 8,
+      "heap": 2721551,
+      "timers": {
+        "intervals": 3,
+        "timeouts": 7
+      }
+    },
+    {
+      "cycle": "settled",
+      "elements": 977,
+      "nodeRows": 8,
+      "homeRows": 8,
+      "heap": 2576459,
+      "timers": {
+        "intervals": 3,
+        "timeouts": 4
+      }
+    }
+  ],
+  "dom": {
+    "before": {
+      "documents": 58,
+      "nodes": 5103,
+      "jsEventListeners": 276
+    },
+    "after": {
+      "documents": 30,
+      "nodes": 2290,
+      "jsEventListeners": 138
+    }
+  },
+  "failures": []
+}

@@ -60,7 +60,7 @@ use std::{
     process::Child,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex, OnceLock,
+        mpsc, Arc, Mutex, MutexGuard, OnceLock,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -625,6 +625,12 @@ struct AppState {
     app_data: PathBuf,
     jobs: JobStore,
     operations: runtime_command::RuntimeOperationCoordinator,
+}
+
+fn lock_state<'a, T>(state: &'a Mutex<T>, label: &str) -> Result<MutexGuard<'a, T>, String> {
+    state
+        .lock()
+        .map_err(|_| format!("{label} state lock poisoned"))
 }
 
 #[derive(Clone)]
@@ -7510,7 +7516,6 @@ impl CoreManager {
             self.settings.allow_lan,
             &self.settings.log_level,
             json!(&self.settings.selected_proxy_map),
-            json!(&self.settings.manual_nodes),
             self.settings.reliability_auto,
             self.settings.reliability_profile_failover,
             self.settings.reliability_failure_threshold,
@@ -9935,7 +9940,6 @@ fn diagnostics_public_settings(snapshot: &DiagnosticsSnapshot) -> JsonValue {
         snapshot.settings.allow_lan,
         &snapshot.settings.log_level,
         json!(&snapshot.settings.selected_proxy_map),
-        json!(&snapshot.settings.manual_nodes),
         snapshot.settings.reliability_auto,
         snapshot.settings.reliability_profile_failover,
         snapshot.settings.reliability_failure_threshold,
@@ -11446,10 +11450,7 @@ fn app_status(state: State<AppState>, app: AppHandle) -> Result<JsonValue, Strin
     let operation_snapshot = state.operations.snapshot();
     let first_lock_started = Instant::now();
     let (observed_running, controller, previous_traffic, refresh_lan_ip) = {
-        let mut core = state
-            .core
-            .lock()
-            .map_err(|_| "core state lock poisoned before status observation".to_string())?;
+        let mut core = lock_state(&state.core, "core")?;
         core.status_observation()
     };
     let first_lock_ms = first_lock_started.elapsed().as_millis() as u64;
@@ -11458,10 +11459,7 @@ fn app_status(state: State<AppState>, app: AppHandle) -> Result<JsonValue, Strin
         controller.status_traffic_snapshot_or_idle(observed_running, &previous_traffic);
     let traffic_ms = traffic_started.elapsed().as_millis() as u64;
     let final_lock_started = Instant::now();
-    let mut core = state
-        .core
-        .lock()
-        .map_err(|_| "core state lock poisoned after status observation".to_string())?;
+    let mut core = lock_state(&state.core, "core")?;
     let is_admin = cached_process_elevated().unwrap_or(false);
     let mut status =
         core.status_from_observed_traffic(observed_running, observed_traffic, is_admin);
@@ -11492,7 +11490,8 @@ fn app_status(state: State<AppState>, app: AppHandle) -> Result<JsonValue, Strin
 
 #[tauri::command]
 fn core_runtime_info(state: State<AppState>) -> Result<JsonValue, String> {
-    Ok(state.core.lock().unwrap().core_runtime_info())
+    let core = lock_state(&state.core, "core")?;
+    Ok(core.core_runtime_info())
 }
 
 #[tauri::command]
@@ -11523,13 +11522,13 @@ fn relaunch_as_admin(app: AppHandle) -> Result<bool, String> {
 #[tauri::command]
 async fn proxy_groups(state: State<'_, AppState>) -> Result<JsonValue, String> {
     let (running, controller, active_profile, selected_map, manual_nodes, speed) = {
-        let core = state.core.lock().unwrap();
+        let core = lock_state(&state.core, "core")?;
         let active_profile = core.active_profile();
         let manual_nodes = active_profile
             .as_ref()
             .and_then(|profile| core.settings.manual_nodes.get(&profile.id).cloned())
             .unwrap_or_default();
-        let speed = core.speed_test.lock().unwrap().clone();
+        let speed = lock_state(&core.speed_test, "speed")?.clone();
         (
             core.process.is_some(),
             core.core_controller(),
@@ -13681,7 +13680,7 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
 #[tauri::command]
 fn active_connection_count(state: State<AppState>) -> Result<JsonValue, String> {
     let (running, controller) = {
-        let core = state.core.lock().unwrap();
+        let core = lock_state(&state.core, "core")?;
         (core.process.is_some(), core.core_controller())
     };
     Ok(controller.home_active_connection_count_snapshot_or_idle(running))
@@ -13690,7 +13689,7 @@ fn active_connection_count(state: State<AppState>) -> Result<JsonValue, String> 
 #[tauri::command]
 fn close_connection(state: State<AppState>, id: String) -> Result<bool, String> {
     let (running, controller) = {
-        let core = state.core.lock().unwrap();
+        let core = lock_state(&state.core, "core")?;
         (core.process.is_some(), core.core_controller())
     };
     if !running {
@@ -13703,7 +13702,7 @@ fn close_connection(state: State<AppState>, id: String) -> Result<bool, String> 
 #[tauri::command]
 fn close_connections(state: State<AppState>) -> Result<bool, String> {
     let (running, controller) = {
-        let core = state.core.lock().unwrap();
+        let core = lock_state(&state.core, "core")?;
         (core.process.is_some(), core.core_controller())
     };
     if !running {

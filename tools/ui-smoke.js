@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const chromeCandidates = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
@@ -143,6 +144,15 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       const r = el.getBoundingClientRect();
       return r.width > 0 && r.height > 0;
     };
+    const waitForSelector = async (selector, timeoutMs = 1200) => {
+      const startedAt = performance.now();
+      while (performance.now() - startedAt < timeoutMs) {
+        const element = document.querySelector(selector);
+        if (element) return element;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return null;
+    };
     const collectBase = () => {
       const overflowX = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth;
       const textOverflow = all('button, .notice, h1, .metric-grid strong, .switch-row b').filter((el) => visible(el) && el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent.trim());
@@ -158,9 +168,6 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       const parent = el.closest('.quick').getBoundingClientRect();
       return visible(el) && (r.left < parent.left - 1 || r.right > parent.right + 1 || r.height > 36);
     }).map((el) => el.textContent.trim());
-    const sidebarSummaryOverflow = all('.sidebar-runtime-summary :is(strong, p, span, button)').filter((el) => {
-      return visible(el) && (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1);
-    }).map((el) => el.id || el.textContent.trim());
     const metricIcons = all('.metric-icon').map((el) => el.getBoundingClientRect().width);
     const homeRows = all('#homeNodeRows .row').filter(visible).length;
     const activeHomeRegion = document.querySelector('[data-region].active')?.dataset.region || '';
@@ -176,13 +183,71 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
     } : null;
     const tunHome = document.querySelector('#tunHomeToggle');
     const tunHomeVisible = Boolean(tunHome && visible(tunHome));
+    const tunHomeControl = document.querySelector('.tun-home-toggle');
+    const tunHomeControlRect = tunHomeControl?.getBoundingClientRect();
+    const tunHomeRect = tunHome?.getBoundingClientRect();
+    const tunHomeCenterOffset = tunHomeControlRect && tunHomeRect
+      ? Math.abs((tunHomeControlRect.top + tunHomeControlRect.height / 2) - (tunHomeRect.top + tunHomeRect.height / 2))
+      : null;
+    const homeTunTextRemoved = !document.querySelector('#tunHomeState') && !tunHomeControl?.textContent.includes('未开启');
+    const regionRow = document.querySelector('#homeRegionRow');
+    const extraRegions = ['DE', 'FR', 'CA', 'AU', 'BR'].map((code) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.region = code;
+      button.innerHTML = '<b>' + code + '</b><span class="region-label">扩展地区</span>';
+      regionRow?.append(button);
+      return button;
+    });
+    if (regionRow) regionRow.style.setProperty('--home-region-count', String(regionRow.children.length));
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const regionRowRect = regionRow?.getBoundingClientRect();
+    const regionOverflowActive = Boolean(regionRow && regionRow.scrollWidth > regionRow.clientWidth + 1);
+    const regionOverflowContained = Boolean(
+      regionRow &&
+      regionRowRect.left >= -1 &&
+      regionRowRect.right <= window.innerWidth + 1 &&
+      (!regionOverflowActive || ['auto', 'scroll'].includes(getComputedStyle(regionRow).overflowX))
+    );
+    extraRegions.forEach((button) => button.remove());
+    if (regionRow) regionRow.style.setProperty('--home-region-count', String(regionRow.children.length));
+    const visibleQuickButtons = all('[data-quick-action]').filter(visible);
+    const quickActionWidths = visibleQuickButtons.map((button) => button.getBoundingClientRect().width);
+    const firstQuickButtonRect = visibleQuickButtons[0]?.getBoundingClientRect();
+    const quickTunRowOffset = firstQuickButtonRect && tunHomeControlRect
+      ? Math.abs((firstQuickButtonRect.top + firstQuickButtonRect.height / 2) - (tunHomeControlRect.top + tunHomeControlRect.height / 2))
+      : null;
+    const quickHeadingRemoved = !document.querySelector('.node-quick-actions .action-row > strong');
+    const quickIconTextGrouped = visibleQuickButtons.every((button) => {
+      const iconRect = button.querySelector('.aegos-icon')?.getBoundingClientRect();
+      const labelRect = button.querySelector('.quick-action-label')?.getBoundingClientRect();
+      return iconRect && labelRect && labelRect.left - iconRect.right >= 4 && labelRect.left - iconRect.right <= 12;
+    });
+    const quickActionsRespectLimit = visibleQuickButtons.length >= 1 && visibleQuickButtons.length <= 4;
     const topDragBox = box('.edge-drag-top');
     const titlebarStatusBox = box('#titlebarStatusCenterBtn');
     const topDragOverlapsStatus = topDragBox && titlebarStatusBox ? topDragBox.right > titlebarStatusBox.left + 1 : false;
-    const navBox = box('.nav');
-    const sidebarSummaryBox = box('.sidebar-runtime-summary');
-    const sidebarOverlap = navBox && sidebarSummaryBox ? navBox.bottom > sidebarSummaryBox.top + 1 : false;
-    const bottomMetricWidths = all('.metric-grid.bottom article').map((el) => Math.round(el.getBoundingClientRect().width));
+    const nodeStatusCardBox = box('.node-status-card');
+    const nodeStatusRows = all('.node-status-card > article').filter(visible).length;
+    const nodeStatusFontSize = parseFloat(getComputedStyle(document.querySelector('.node-status-card small')).fontSize);
+    const outboundMetric = document.querySelector('#outboundMetric');
+    const outboundIpFits = Boolean(outboundMetric && outboundMetric.scrollWidth <= outboundMetric.clientWidth + 1);
+    const windowActionsBox = box('.window-actions');
+    const modeButtonBox = box('#modeBtn');
+    const addFixedActionHiddenOutsidePage = !visible(document.querySelector('#addFixedNodeBtn'));
+    document.querySelector('[data-home-mode="fixed"]')?.click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const addFixedButtonBox = box('#addFixedNodeBtn');
+    const fixedNodeHeaderBox = box('.home-filter-head');
+    document.querySelector('[data-home-mode="region"]')?.click();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const homeNameColumnBox = box('.home-row-head > :nth-child(3)');
+    const homeStatusColumnBox = box('.home-row-head > :nth-child(5)');
+    const homeStatusValueBox = box('#homeNodeRows .row > :nth-child(5)');
+    const homeStatusRightOffset = homeStatusColumnBox && homeStatusValueBox
+      ? Math.abs(homeStatusColumnBox.right - homeStatusValueBox.right)
+      : null;
+    const sidebarBox = box('.sidebar');
     const homeHeroBox = box('.hero');
     const homeQuickBox = box('.quick');
     const homeNodesBox = box('.nodes');
@@ -195,7 +260,7 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       return (top + bottom) / 2;
     };
     const heroCenterOffset = Math.abs((contentCenter('.connect-column > *') || 0) - (contentCenter('.node-column > *') || 0));
-    const statusTrigger = document.querySelector('#sidebarStatusCenterBtn');
+    const statusTrigger = document.querySelector('#titlebarStatusCenterBtn');
     statusTrigger.focus();
     statusTrigger.click();
     const statusCenterPanelBox = box('#statusCenterPanel');
@@ -204,7 +269,7 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
     const statusCenterFocusEntered = document.activeElement?.id === 'closeStatusCenterBtn';
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     const statusCenterClosed = document.querySelector('#statusCenterOverlay')?.classList.contains('hidden') || false;
-    const statusCenterFocusRestored = document.activeElement?.id === 'sidebarStatusCenterBtn';
+    const statusCenterFocusRestored = document.activeElement?.id === 'titlebarStatusCenterBtn';
     document.querySelector('[data-page="nodes"]').click();
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const nodeBase = collectBase();
@@ -214,6 +279,28 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       const r = row.getBoundingClientRect();
       return r.bottom > table.top && r.top < table.bottom;
     }).length : 0;
+    const nodeToolbarPrimary = box('.node-toolbar-primary');
+    const nodeFilterTabs = box('.node-filter-tabs');
+    const nodeToolbarSplit = Boolean(
+      nodeToolbarPrimary
+      && nodeFilterTabs
+      && nodeToolbarPrimary.bottom <= nodeFilterTabs.top + 1
+    );
+    document.querySelector('[data-page="routing"]').click();
+    await waitForSelector('#routingDraftListCard');
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const routingBase = collectBase();
+    const routingDraftCardHidden = document.querySelector('#routingDraftListCard')?.classList.contains('hidden') || false;
+    const routingSummaryDetailHidden = document.querySelector('#routingSummaryDetail')?.classList.contains('hidden') || false;
+    const routingAssistantHeadMissing = !document.querySelector('.routing-assistant-head');
+    const routingToolbarMissing = !document.querySelector('.routing-draft-toolbar');
+    document.querySelector('[data-page="profiles"]').click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const profileBase = collectBase();
+    const profileTableHead = box('.profile-table-head');
+    const profileTableRow = box('#profileRows .profile-table-row');
+    const profileRows = document.querySelector('#profileRows');
+    const profileTableOverflowX = profileRows ? profileRows.scrollWidth - profileRows.clientWidth : 0;
     document.querySelector('[data-page="settings"]').click();
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const settingsBase = collectBase();
@@ -224,6 +311,10 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
     const settingsBox = box('[data-page-panel="settings"] .page-card');
     const settingsSummary = box('[data-page-panel="settings"] .settings-summary-grid');
     const settingsSections = all('[data-page-panel="settings"] .settings-section').filter(visible).length;
+    const settingsSubsections = all('[data-page-panel="settings"] .settings-subsection').filter(visible).length;
+    const primaryStyle = getComputedStyle(document.querySelector('button.primary'));
+    const primaryUsesGradient = primaryStyle.backgroundImage !== 'none';
+    const primaryRadius = parseFloat(primaryStyle.borderRadius);
     document.querySelector('[data-page="diagnostics"]').click();
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     document.querySelector('#diagSummary').innerHTML = '<div class="diagnostic-status is-warn"><b>需要关注</b><span>2 项检查 / 1 项异常</span></div><div class="diagnostic-metrics"><span><b>0</b>错误</span><span><b>1</b>警告</span><span><b>1</b>通过</span></div><div class="diagnostic-actions"><small>重启网络核心后重新检查。</small></div>';
@@ -251,11 +342,21 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       width: window.innerWidth,
       height: window.innerHeight,
       deviceScaleFactor: window.devicePixelRatio,
-      overflowX: Math.max(homeBase.overflowX, nodeBase.overflowX, settingsBase.overflowX, diagnosticsBase.overflowX),
-      textOverflow: [...homeBase.textOverflow, ...nodeBase.textOverflow, ...settingsBase.textOverflow, ...diagnosticsBase.textOverflow],
+      overflowX: Math.max(homeBase.overflowX, nodeBase.overflowX, routingBase.overflowX, profileBase.overflowX, settingsBase.overflowX, diagnosticsBase.overflowX),
+      textOverflow: [...homeBase.textOverflow, ...nodeBase.textOverflow, ...routingBase.textOverflow, ...profileBase.textOverflow, ...settingsBase.textOverflow, ...diagnosticsBase.textOverflow],
       quickEscapes,
       visibleRows,
       tableOverflowX: tableEl ? tableEl.scrollWidth - tableEl.clientWidth : 0,
+      nodeToolbarPrimary,
+      nodeFilterTabs,
+      nodeToolbarSplit,
+      routingDraftCardHidden,
+      routingSummaryDetailHidden,
+      routingAssistantHeadMissing,
+      routingToolbarMissing,
+      profileTableHead,
+      profileTableRow,
+      profileTableOverflowX,
       maxMetricIcon: Math.max(...metricIcons),
       brandFontSize: parseFloat(getComputedStyle(document.querySelector('.brand-name')).fontSize),
       brandLogoLoaded: Boolean(document.querySelector('.brand-logo')?.complete && document.querySelector('.brand-logo')?.naturalWidth >= 48),
@@ -264,13 +365,30 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       navButtonHeight: box('.nav button')?.height || 0,
       ringWidth: homeRingWidth,
       tunHomeVisible,
+      tunHomeCenterOffset,
+      homeTunTextRemoved,
+      regionOverflowContained,
+      regionOverflowActive,
+      quickIconTextGrouped,
+      quickActionsRespectLimit,
+      quickActionWidths,
+      quickTunRowOffset,
+      quickHeadingRemoved,
       topDragOverlapsStatus,
+      nodeStatusFontSize,
+      outboundIpFits,
+      windowActionsBox,
+      modeButtonBox,
+      addFixedButtonBox,
+      addFixedActionHiddenOutsidePage,
+      fixedNodeHeaderBox,
+      homeNameColumnBox,
+      homeStatusColumnBox,
+      homeStatusValueBox,
+      homeStatusRightOffset,
       homeRows,
       activeHomeRegion,
       homeNodeLayout,
-      sidebarSummaryOverflow,
-      sidebarOverlap,
-      sidebarSummary: sidebarSummaryBox,
       statusCenterPanel: statusCenterPanelBox,
       statusCenterRowsWrapped,
       statusCenterOpen,
@@ -279,13 +397,18 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       statusCenterFocusRestored,
       hero: homeHeroBox,
       quick: homeQuickBox,
-      bottomMetricWidths,
+      nodeStatusCard: nodeStatusCardBox,
+      nodeStatusRows,
+      sidebar: sidebarBox,
       heroCenterOffset,
       nodes: homeNodesBox,
       settings: settingsBox,
       settingsActive,
       settingsSummary,
       settingsSections,
+      settingsSubsections,
+      primaryUsesGradient,
+      primaryRadius,
       tunToggleVisible,
       diagnosticsActive,
       diagnosticsSummary,
@@ -296,7 +419,7 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       diagnosticsCard,
       unlabeledIconButtons,
       missingIconMasks,
-      badPanels: [...homeBase.badPanels, ...nodeBase.badPanels, ...settingsBase.badPanels, ...diagnosticsBase.badPanels]
+      badPanels: [...homeBase.badPanels, ...nodeBase.badPanels, ...routingBase.badPanels, ...profileBase.badPanels, ...settingsBase.badPanels, ...diagnosticsBase.badPanels]
     };
   })()`);
 
@@ -323,6 +446,16 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
     fs.writeFileSync(statusCenterPath, Buffer.from(statusCenterShot.data, 'base64'));
     report.statusCenterScreenshot = statusCenterPath;
     await evaluate(page, `document.querySelector('#closeStatusCenterBtn').click()`);
+  }
+  if (width === 920 && height === 640 && deviceScaleFactor === 1) {
+    for (const pageName of ['home', 'nodes', 'connections', 'routing', 'profiles', 'diagnostics', 'settings']) {
+      await evaluate(page, `document.querySelector('[data-page="${pageName}"]').click()`);
+      await delay(160);
+      const pageShot = await page.send('Page.captureScreenshot', { format: 'png' });
+      const pagePath = path.join(screenshotDir, `stage7-${pageName}-920x640.png`);
+      fs.writeFileSync(pagePath, Buffer.from(pageShot.data, 'base64'));
+      report.pageScreenshots.push(pagePath);
+    }
   }
   return report;
 }
@@ -361,10 +494,10 @@ try {
       }));
       const profile = { id: 'ui-smoke', name: 'UI Smoke', type: 'remote', profile_type: 'remote', updated_at: 'now', nodeCount: items.length, proxyGroupCount: 1 };
       const status = () => ({
-        product: 'Aegos', appVersion: '3.6.35', running: false, coreReady: false,
+        product: 'Aegos', appVersion: '${pkg.version}', running: false, coreReady: false,
         trafficTakeover: false, standby: false, mode: 'rule', traffic: { up: 0, down: 0 }, logs: [],
         activeProfile: profile,
-        network: { lanIp: '192.168.1.8', proxyEndpoint: '127.0.0.1:7891', outboundIp: '-', availability: { state: 'unverified', label: '未验证', detail: '尚未连接' } },
+        network: { lanIp: '192.168.1.8', proxyEndpoint: '127.0.0.1:7891', outboundIp: '188.253.127.200', availability: { state: 'unverified', label: '未验证', detail: '尚未连接' } },
         permissions: { isAdmin: true, requiresAdminFor: ['TUN', '断网保护'] },
         protection: { label: '未开启' },
         settings: { activeProfileId: profile.id, profiles: [profile], mixedPort: 7891, controllerPort: 19091, systemProxy: false, tunEnabled: false, startWithSystemProxy: true, dnsHijackEnabled: true, killSwitchEnabled: false, ipv6Enabled: false, allowLan: false, tunStack: 'mixed', logLevel: 'info', reliability: { auto: true, profileFailover: true, failureThreshold: 2, maxDelayMs: 800, candidateLimit: 24 } }
@@ -387,6 +520,7 @@ try {
   ` });
   const reports = [
     await auditViewport(page, 1280, 820, 1),
+    await auditViewport(page, 920, 640, 1),
     await auditViewport(page, 980, 640, 1),
     await auditViewport(page, 1280, 700, 1),
     await auditViewport(page, 1180, 700, 1),
@@ -405,13 +539,42 @@ try {
     if (report.overflowX > 1) failures.push(`${report.width}x${report.height}: horizontal overflow ${report.overflowX}px`);
     if (report.tableOverflowX > 1) failures.push(`${report.width}x${report.height}: node table horizontal overflow ${report.tableOverflowX}px`);
     if (report.visibleRows < 5) failures.push(`${report.width}x${report.height}: only ${report.visibleRows} node rows visible`);
+    if (!report.nodeToolbarSplit) failures.push(`${report.width}x${report.height}: node toolbar is not split into stable command and filter rows`);
+    if (!report.routingDraftCardHidden) failures.push(`${report.width}x${report.height}: empty routing draft area is visible`);
+    if (!report.routingSummaryDetailHidden) failures.push(`${report.width}x${report.height}: routing summary detail expanded without a user request`);
+    if (!report.routingAssistantHeadMissing || !report.routingToolbarMissing) failures.push(`${report.width}x${report.height}: routing assistant retained duplicate heading or controls`);
+    if (!report.profileTableHead || !report.profileTableRow) failures.push(`${report.width}x${report.height}: subscription comparison table is incomplete`);
+    if (report.profileTableOverflowX > 1) failures.push(`${report.width}x${report.height}: subscription table horizontal overflow ${report.profileTableOverflowX}px`);
     if (!report.settingsActive) failures.push(`${report.width}x${report.height}: settings page did not activate`);
     if (!report.settingsSummary || report.settingsSummary.height < 48) failures.push(`${report.width}x${report.height}: settings summary did not render with stable height`);
     if (report.settingsSections < 5) failures.push(`${report.width}x${report.height}: settings sections missing, found ${report.settingsSections}`);
+    if (report.settingsSubsections !== 3) failures.push(`${report.width}x${report.height}: network settings semantic groups changed, found ${report.settingsSubsections}`);
+    if (report.primaryUsesGradient) failures.push(`${report.width}x${report.height}: primary command uses a decorative gradient`);
+    if (report.primaryRadius > 6.1) failures.push(`${report.width}x${report.height}: primary command radius is ${report.primaryRadius}px`);
     if (!report.diagnosticsActive) failures.push(`${report.width}x${report.height}: diagnostics page did not activate`);
     if (!report.tunToggleVisible) failures.push(`${report.width}x${report.height}: TUN toggle is not visible`);
     if (!report.tunHomeVisible) failures.push(`${report.width}x${report.height}: home TUN toggle is not visible`);
+    if (!report.homeTunTextRemoved) failures.push(`${report.width}x${report.height}: removed home TUN state text still renders`);
+    if (report.tunHomeCenterOffset == null || report.tunHomeCenterOffset > 1.5) failures.push(`${report.width}x${report.height}: home TUN toggle is vertically offset by ${report.tunHomeCenterOffset}px`);
+    if (!report.regionOverflowContained) failures.push(`${report.width}x${report.height}: extended home regions are not contained by horizontal scrolling`);
+    if (report.width <= 980 && !report.regionOverflowActive) failures.push(`${report.width}x${report.height}: extended home regions did not activate horizontal scrolling`);
+    if (!report.quickIconTextGrouped) failures.push(`${report.width}x${report.height}: quick action icon and label are visually disconnected`);
+    if (!report.quickActionsRespectLimit) failures.push(`${report.width}x${report.height}: home renders more than four resident quick actions`);
+    if (report.quickActionWidths.some((width) => width < 105 || width > 121)) failures.push(`${report.width}x${report.height}: quick action widths are outside the compact 106-120px range`);
+    if (report.quickTunRowOffset == null || report.quickTunRowOffset > 2) failures.push(`${report.width}x${report.height}: quick actions and TUN control differ by ${report.quickTunRowOffset}px vertically`);
+    if (!report.quickHeadingRemoved) failures.push(`${report.width}x${report.height}: redundant quick-action heading still renders`);
     if (report.topDragOverlapsStatus) failures.push(`${report.width}x${report.height}: top drag region overlaps status center trigger`);
+    if (report.nodeStatusFontSize < 12) failures.push(`${report.width}x${report.height}: node status text is only ${report.nodeStatusFontSize}px`);
+    if (!report.outboundIpFits) failures.push(`${report.width}x${report.height}: full landing IP does not fit the sidebar`);
+    if (!report.sidebar || report.sidebar.width < 194 || report.sidebar.width > 198) failures.push(`${report.width}x${report.height}: sidebar width is not restrained around 196px`);
+    if (!report.windowActionsBox || report.windowActionsBox.top < 4 || report.width - report.windowActionsBox.right < 12) failures.push(`${report.width}x${report.height}: window controls lack safe edge clearance`);
+    if (!report.modeButtonBox || report.width - report.modeButtonBox.right < 12) failures.push(`${report.width}x${report.height}: mode control lacks right-edge clearance`);
+    if (!report.addFixedActionHiddenOutsidePage) failures.push(`${report.width}x${report.height}: fixed-node action leaks outside the fixed-node page`);
+    if (!report.addFixedButtonBox || report.width - report.addFixedButtonBox.right < 12) failures.push(`${report.width}x${report.height}: fixed-node action lacks right-edge clearance`);
+    if (!report.fixedNodeHeaderBox || report.addFixedButtonBox.top < report.fixedNodeHeaderBox.top - 1 || report.addFixedButtonBox.bottom > report.fixedNodeHeaderBox.bottom + 1) failures.push(`${report.width}x${report.height}: fixed-node action is not aligned inside its page header`);
+    if (!report.homeNameColumnBox || report.homeNameColumnBox.width > 370) failures.push(`${report.width}x${report.height}: home node-name column leaves excessive empty space (${report.homeNameColumnBox?.width || 0}px)`);
+    if (!report.homeStatusColumnBox || report.width - report.homeStatusColumnBox.right > 50) failures.push(`${report.width}x${report.height}: home status column leaves excessive right-side space`);
+    if (report.homeStatusRightOffset == null || report.homeStatusRightOffset > 1.5) failures.push(`${report.width}x${report.height}: home status heading and values differ by ${report.homeStatusRightOffset ?? 'unknown'}px`);
     const minHomeRows = report.activeHomeRegion ? 1 : 5;
     if (report.homeRows < minHomeRows) failures.push(`${report.width}x${report.height}: only ${report.homeRows} home node rows visible`);
     if (!report.homeNodeLayout) failures.push(`${report.width}x${report.height}: home node layout metrics missing`);
@@ -421,24 +584,15 @@ try {
     if (report.homeNodeLayout?.headHeight > 42) failures.push(`${report.width}x${report.height}: home table head stretched to ${report.homeNodeLayout.headHeight}px`);
     if (report.maxMetricIcon > 24) failures.push(`${report.width}x${report.height}: metric icon width ${report.maxMetricIcon}px`);
     if (!report.brandLogoLoaded) failures.push(`${report.width}x${report.height}: Aegos brand logo did not load`);
-    if (!report.hero || report.hero.height > 276) failures.push(`${report.width}x${report.height}: home hero row too tall ${report.hero?.height || 0}px`);
-    if (!report.quick || Math.abs(report.quick.height - 72) > 1) failures.push(`${report.width}x${report.height}: quick row height changed to ${report.quick?.height || 0}px`);
+    if (!report.hero || report.hero.height > 194) failures.push(`${report.width}x${report.height}: home hero row too tall ${report.hero?.height || 0}px`);
+    if (!report.quick || report.quick.height < 42 || report.quick.height > 45) failures.push(`${report.width}x${report.height}: embedded quick row height changed to ${report.quick?.height || 0}px`);
+    if (!report.nodeStatusCard || report.nodeStatusRows !== 9) failures.push(`${report.width}x${report.height}: compact node status card is missing rows`);
+    if (report.height >= 640 && report.nodeStatusCard?.height < 230) failures.push(`${report.width}x${report.height}: node status section is too short (${report.nodeStatusCard?.height || 0}px)`);
+    if (report.nodeStatusCard && report.sidebar && (report.nodeStatusCard.bottom > report.sidebar.bottom + 1 || report.sidebar.bottom - report.nodeStatusCard.bottom > 18)) failures.push(`${report.width}x${report.height}: node status card is not anchored at the sidebar bottom`);
     if (report.heroCenterOffset > 8) failures.push(`${report.width}x${report.height}: home hero columns use mismatched vertical alignment (${report.heroCenterOffset.toFixed(1)}px)`);
-    if (report.bottomMetricWidths?.length === 6) {
-      const outboundWidth = report.bottomMetricWidths[1];
-      const upWidth = report.bottomMetricWidths[4];
-      const downWidth = report.bottomMetricWidths[5];
-      if (outboundWidth <= upWidth || outboundWidth <= downWidth) failures.push(`${report.width}x${report.height}: outbound IP metric is not wider than traffic metrics`);
-      if (outboundWidth > upWidth * 2.5 || outboundWidth > downWidth * 2.5) failures.push(`${report.width}x${report.height}: outbound IP metric is wider than needed`);
-    } else {
-      failures.push(`${report.width}x${report.height}: bottom metric widths missing`);
-    }
-    if (report.sidebarOverlap) failures.push(`${report.width}x${report.height}: sidebar navigation overlaps compact runtime summary`);
-    if (report.sidebarSummaryOverflow.length) failures.push(`${report.width}x${report.height}: sidebar runtime summary overflows: ${report.sidebarSummaryOverflow.join(', ')}`);
-    if (!report.sidebarSummary || report.sidebarSummary.height < 120 || report.sidebarSummary.height > 180) failures.push(`${report.width}x${report.height}: compact runtime summary has unstable height ${report.sidebarSummary?.height || 0}px`);
     if (!report.statusCenterOpen || !report.statusCenterClosed) failures.push(`${report.width}x${report.height}: status center did not open and close`);
     if (!report.statusCenterFocusEntered || !report.statusCenterFocusRestored) failures.push(`${report.width}x${report.height}: status center focus lifecycle failed`);
-    if (!report.statusCenterPanel || report.statusCenterPanel.right > report.width + 1 || report.statusCenterPanel.bottom > report.height + 1 || report.statusCenterPanel.width < 330) failures.push(`${report.width}x${report.height}: status center panel is clipped or undersized`);
+    if (!report.statusCenterPanel || report.statusCenterPanel.right > report.width + 1 || report.statusCenterPanel.bottom > report.height + 1 || report.statusCenterPanel.width < 299 || report.statusCenterPanel.width > 321) failures.push(`${report.width}x${report.height}: status center panel is clipped or outside the compact width`);
     if (report.statusCenterRowsWrapped.length) failures.push(`${report.width}x${report.height}: status center rows wrap: ${report.statusCenterRowsWrapped.join(', ')}`);
     if (report.quickEscapes.length) failures.push(`${report.width}x${report.height}: quick buttons escape container: ${report.quickEscapes.join(', ')}`);
     if (report.badPanels.length) failures.push(`${report.width}x${report.height}: panels outside viewport: ${report.badPanels.join(', ')}`);

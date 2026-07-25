@@ -877,7 +877,6 @@ pub fn public_settings_surface_json(
     allow_lan: bool,
     log_level: &str,
     selected_proxy_map: JsonValue,
-    manual_nodes: JsonValue,
     reliability_auto: bool,
     reliability_profile_failover: bool,
     reliability_failure_threshold: u64,
@@ -906,7 +905,6 @@ pub fn public_settings_surface_json(
         "allowLan": allow_lan,
         "logLevel": log_level,
         "selectedProxyMap": selected_proxy_map,
-        "manualNodes": manual_nodes,
         "reliability": {
             "auto": reliability_auto,
             "profileFailover": reliability_profile_failover,
@@ -4528,7 +4526,6 @@ rules:
             false,
             "warning",
             json!({ "Proxies": "HK 1" }),
-            json!([{ "name": "Manual" }]),
             true,
             true,
             3,
@@ -4550,6 +4547,7 @@ rules:
                 .and_then(JsonValue::as_u64),
             Some(7890)
         );
+        assert!(settings.get("manualNodes").is_none());
         assert_eq!(
             settings
                 .pointer("/reservedPorts/reason")

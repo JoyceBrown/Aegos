@@ -41,7 +41,7 @@ check('production rendering avoids dangerous HTML sinks', !/\.innerHTML\s*=|inse
 check('page code does not fetch the controller directly', !/\bfetch\s*\(/.test(productionJs) && !/127\.0\.0\.1:19091/.test(app));
 check('page code does not parse or write runtime YAML', !/js-?yaml|yaml\.parse|yaml\.stringify|parseDocument/i.test(app));
 check('Stage 7 semantic token contract remains', ['--surface-canvas', '--text-primary', '--status-success', '--focus-ring', '--motion-fast', '--home-quick-row'].every((token) => css.includes(`${token}:`)));
-check('detailed runtime state moved out of sidebar', sidebarHtml.includes('sidebar-runtime-summary') && !sidebarHtml.includes('id="softwareState"') && !sidebarHtml.includes('id="jobRows"'));
+check('detailed runtime state is removed from sidebar', !sidebarHtml.includes('sidebar-runtime-summary') && !sidebarHtml.includes('id="softwareState"') && !sidebarHtml.includes('id="jobRows"'));
 check('status center preserves runtime truth fields', ['softwareState', 'networkAvailabilityState', 'protectMode', 'dnsState', 'tunState', 'killState', 'proxyState', 'lanIpState', 'protocolState', 'proxyPortState', 'outboundIpState', 'jobRows'].every((id) => html.includes(`id="${id}"`)));
 check('status center is keyboard and focus managed', app.includes('function openStatusCenter') && app.includes('function closeStatusCenter') && app.includes("event.key === 'Escape' && statusCenterOpen") && app.includes("event.key === 'Tab' && statusCenterOpen"));
 check('status center is frontend-only', !/function openStatusCenter[\s\S]{0,1200}invoke\(/.test(app));

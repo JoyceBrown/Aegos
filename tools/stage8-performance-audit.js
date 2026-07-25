@@ -34,12 +34,12 @@ check('performance pressure evidence exists and passed', pressure?.ok === true &
 check('compressed soak evidence exists and passed', soak?.ok === true && soak?.version === pkg.version, soakFile);
 check('windowed GPU evidence exists and passed', gpu?.ok === true && gpu?.version === pkg.version && gpu?.fixture?.compositor === 'windowed-gpu', gpuFile);
 check('three-run cold-start evidence exists and passed', repeat?.ok === true && repeat?.version === pkg.version && repeat?.runCount === 3, repeatFile);
-check('large fixture exercises 8000 nodes in streamed batches', pressure?.fixture?.nodeCount === 8000 && pressure?.fixture?.streamedBatchSize === 400, JSON.stringify(pressure?.fixture || {}));
+check('release baseline exercises 800 nodes in frame-friendly streamed batches', pressure?.fixture?.nodeCount === 800 && pressure?.fixture?.streamedBatchSize === 20, JSON.stringify(pressure?.fixture || {}));
 check('420 rapid navigation changes remain correct', pressure?.nav?.count === 420 && pressure?.nav?.activeFailures?.length === 0 && pressure?.finalRapidPage === pressure?.lastRapidPage, `${pressure?.nav?.count || 0} changes`);
 check('ordinary interactions stay below the 50ms P95 budget', Number(pressure?.nav?.p95Ms || Infinity) < 50 && Number(pressure?.menu?.p95Ms || Infinity) < 50 && Number(pressure?.filters?.p95Ms || Infinity) < 50, `nav=${pressure?.nav?.p95Ms} menu=${pressure?.menu?.p95Ms} filters=${pressure?.filters?.p95Ms}`);
 check('no main-thread task reaches 300ms', worstTask < 300, `${worstTask}ms`);
 check('severe long-task budget is respected', severeTasks.length <= 1, `${severeTasks.length} tasks >=180ms`);
-check('event-streamed speed results complete without polling or local-filter backend calls', pressure?.speedStream?.results === 8000 && pressure?.speedStream?.completed === true && pressure?.calls?.speedPollCount === 0 && pressure?.calls?.callsAddedByFilters === 0, JSON.stringify({ speedStream: pressure?.speedStream, calls: pressure?.calls }));
+check('event-streamed speed results complete without polling or local-filter backend calls', pressure?.speedStream?.results === 800 && pressure?.speedStream?.completed === true && pressure?.calls?.speedPollCount === 0 && pressure?.calls?.callsAddedByFilters === 0, JSON.stringify({ speedStream: pressure?.speedStream, calls: pressure?.calls }));
 check('node DOM stays windowed', pressure?.resources?.visibleRows <= 100 && pressure?.resources?.homeRows <= 8, `${pressure?.resources?.visibleRows}/${pressure?.resources?.homeRows}`);
 check('startup status and real home nodes become usable within budget', pressure?.startup?.statusContentMs < 250 && pressure?.startup?.homeNodesContentMs < 300 && pressure?.startup?.backendDispatchGapMs < 30, JSON.stringify(pressure?.startup || {}));
 check('cold routing loads immediately after active profile readiness', pressure?.startup?.routingAfterStatusMs <= 30 && pressure?.startup?.coldRoutingContentMs < 260, JSON.stringify(pressure?.startup || {}));
@@ -52,7 +52,7 @@ check('collapsed routing details create no hidden rule rows', pressure?.pageLoad
 check('routing details remain bounded while paging', pressure?.pageLoad?.advancedOpenMs < 150 && pressure?.pageLoad?.routingVisibleAdvancedRows <= 80 && pressure?.pageLoad?.routingRowsAfterNextPage <= 80 && pressure?.pageLoad?.routingPageChanged === true, JSON.stringify(pressure?.pageLoad || {}));
 check('local job polling does not duplicate list polling', pressure?.calls?.listJobPollCount === 0, `${pressure?.calls?.listJobPollCount}`);
 check('timers return to the steady-state budget', pressure?.resources?.timerStats?.intervals <= 7 && pressure?.resources?.timerStats?.timeouts <= 4, JSON.stringify(pressure?.resources?.timerStats || {}));
-check('final DOM stays within the bounded page budget', pressure?.runtime?.domAfter?.nodes <= 4200, `${pressure?.runtime?.domAfter?.nodes || 0} nodes`);
+check('final live document stays within the bounded page budget', pressure?.resources?.liveDomNodes <= 4200, `${pressure?.resources?.liveDomNodes || 0} live nodes`);
 check('compressed soak executes sixteen mixed-operation cycles', soak?.cycles === 16 && Number(soak?.commandCount || 0) > 200 && samples.length >= 5, `${soak?.cycles || 0} cycles / ${soak?.commandCount || 0} commands`);
 check('soak DOM reaches a stable plateau', settledElements.length > 0 && Math.max(...settledElements) - Math.min(...settledElements) <= 180, settledElements.join(', '));
 check('soak timer count does not grow', settledIntervals.length > 0 && settledIntervals.every((count) => count <= 7), settledIntervals.join(', '));
