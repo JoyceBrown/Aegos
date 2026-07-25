@@ -387,6 +387,7 @@ try {
   ` });
   const reports = [
     await auditViewport(page, 1280, 820, 1),
+    await auditViewport(page, 980, 640, 1),
     await auditViewport(page, 1280, 700, 1),
     await auditViewport(page, 1180, 700, 1),
     await auditViewport(page, 1180, 720, 1),

@@ -19,7 +19,7 @@
         <div class="brand-mark"><img class="brand-logo" src="assets/brand/aegos-mark-64.png" alt=""></div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v3.6.51</span>
+          <span id="appVersionLabel" class="brand-version">v3.6.53</span>
         </div>
       </section>
 
@@ -211,9 +211,9 @@
       <section class="page" data-page-panel="routing">
         <section class="panel fill page-card routing-card">
           <header class="section-head">
-            <div><h2>分流</h2><p>只读查看当前模式、策略组和最近规则命中。</p></div>
+            <div><h2>规则</h2><p>为网站或应用指定线路。更改仅在应用草稿后生效。</p></div>
             <div class="section-actions">
-              <span id="routingReadonlyBadge" class="readonly-badge">只读，不修改配置</span>
+              <span id="routingReadonlyBadge" class="readonly-badge">预览阶段，尚未生效</span>
               <button id="refreshRoutingBtn" class="ghost compact">刷新</button>
             </div>
           </header>
@@ -244,6 +244,8 @@
             <button id="addProfileBtn" class="primary compact">导入订阅</button>
           </div>
           <div class="settings-actions">
+            <input id="profileFileInput" type="file" accept=".yaml,.yml,.txt,text/yaml,text/plain,application/x-yaml" hidden>
+            <button id="importProfileFileBtn" class="ghost compact">导入本地文件</button>
             <button id="updateAllProfilesBtn" class="ghost compact">&#26356;&#26032;&#20840;&#37096;</button>
           </div>
           <div id="profileRows" class="card-list"></div>
@@ -443,6 +445,7 @@
         <label><span>协议</span><select id="nodeEditTypeSelect"><option value="ss">SS</option><option value="trojan">Trojan</option><option value="vmess">VMess</option><option value="vless">VLESS</option><option value="socks5">SOCKS5</option><option value="http">HTTP</option><option value="hysteria2">Hysteria2</option><option value="anytls">AnyTLS</option><option value="tuic">TUIC</option></select></label>
         <label><span>地址</span><input id="nodeEditServerInput" required placeholder="example.com"></label>
         <label><span>端口</span><input id="nodeEditPortInput" required type="number" min="1" max="65535" placeholder="443"></label>
+        <label class="editor-wide"><span>前置代理组</span><select id="nodeEditDialerProxySelect"><option value="">直连 / 不使用</option></select></label>
         <label id="nodeEditUsernameRow" hidden><span>用户名</span><input id="nodeEditUsernameInput" autocomplete="username" placeholder="服务商提供的认证账号"></label>
         <label><span id="nodeEditSecretLabel">密码 / UUID</span><input id="nodeEditSecretInput" type="password" autocomplete="new-password" placeholder="password or uuid"></label>
         <label id="nodeEditTuicPasswordRow" hidden><span>TUIC 密码</span><input id="nodeEditTuicPasswordInput" type="password" autocomplete="new-password" placeholder="TUIC password"></label>
@@ -468,6 +471,7 @@
     </form>
   </div>
   <div id="profileMenu" class="quick-profile-menu hidden"></div>
+  <script src="./routing-ui.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

@@ -1,0 +1,96 @@
+{
+  "ok": false,
+  "version": "3.6.41",
+  "runCount": 3,
+  "failures": [
+    "run 1 failed: speed events blocked rendering: frames=44 p95=99.9ms max=150.0ms",
+    "run 2 failed: startup home nodes too slow: 321.0ms",
+    "run 3 failed: startup home nodes too slow: 312.3ms; speed events blocked rendering: frames=41 p95=83.4ms max=99.9ms",
+    "home node variability exceeded budget: {\"samples\":[268.40000000037253,321,312.30000000074506],\"median\":312.30000000074506,\"worst\":321}",
+    "speed stream variability exceeded budget: p95={\"samples\":[99.90000000000009,50.09999999999991,83.40000000000009],\"median\":83.40000000000009,\"worst\":99.90000000000009} max={\"samples\":[150,66.70000000000005,99.90000000000009],\"median\":99.90000000000009,\"worst\":150}"
+  ],
+  "metrics": {
+    "statusContent": {
+      "samples": [
+        154.5,
+        148.7000000011176,
+        162.5
+      ],
+      "median": 154.5,
+      "worst": 162.5
+    },
+    "homeNodesContent": {
+      "samples": [
+        268.40000000037253,
+        321,
+        312.30000000074506
+      ],
+      "median": 312.30000000074506,
+      "worst": 321
+    },
+    "coldRoutingContent": {
+      "samples": [
+        0,
+        0,
+        0
+      ],
+      "median": 0,
+      "worst": 0
+    },
+    "routingAfterStatus": {
+      "samples": [
+        -32.69999999925494,
+        -1,
+        -6.599999999627471
+      ],
+      "median": -6.599999999627471,
+      "worst": -1
+    },
+    "visualNavP95": {
+      "samples": [
+        33.29999999999927,
+        16.800000000000182,
+        33.29999999999927
+      ],
+      "median": 33.29999999999927,
+      "worst": 33.29999999999927
+    },
+    "visualNavMax": {
+      "samples": [
+        66.70000000000073,
+        50,
+        49.899999999999636
+      ],
+      "median": 50,
+      "worst": 66.70000000000073
+    },
+    "layoutShift": {
+      "samples": [
+        0,
+        0,
+        0
+      ],
+      "median": 0,
+      "worst": 0
+    },
+    "speedStreamP95": {
+      "samples": [
+        99.90000000000009,
+        50.09999999999991,
+        83.40000000000009
+      ],
+      "median": 83.40000000000009,
+      "worst": 99.90000000000009
+    },
+    "speedStreamMax": {
+      "samples": [
+        150,
+        66.70000000000005,
+        99.90000000000009
+      ],
+      "median": 99.90000000000009,
+      "worst": 150
+    }
+  },
+  "generatedAt": "2026-07-19T20:22:01.072Z"
+}

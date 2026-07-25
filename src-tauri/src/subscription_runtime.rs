@@ -2,7 +2,11 @@ use base64::{engine::general_purpose, Engine as _};
 use reqwest::blocking::Client;
 use serde_json::Value as JsonValue;
 use serde_yaml::{Mapping, Value as YamlValue};
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, io::Read, time::Duration};
+
+use crate::app_config::SubscriptionUsage;
+
+pub(crate) const MAX_SUBSCRIPTION_BYTES: u64 = 16 * 1024 * 1024;
 
 pub(crate) const AEGOS_URI_PROTOCOLS: &[&str] = &[
     "ss",
@@ -22,6 +26,7 @@ pub(crate) struct ProfileSourceSummary {
     pub(crate) proxy_groups: usize,
     pub(crate) rules: usize,
     pub(crate) unsupported_lines: usize,
+    pub(crate) usage: SubscriptionUsage,
 }
 
 #[derive(Debug)]
@@ -116,6 +121,91 @@ pub(crate) fn summarize_source(
         proxy_groups,
         rules,
         unsupported_lines,
+        usage: SubscriptionUsage::default(),
+    })
+}
+
+fn parse_subscription_usage(value: &str) -> SubscriptionUsage {
+    let mut usage = SubscriptionUsage::default();
+    for item in value.split([';', ',']) {
+        let Some((key, raw_value)) = item.trim().split_once('=') else {
+            continue;
+        };
+        let Ok(number) = raw_value.trim().parse::<u64>() else {
+            continue;
+        };
+        match key.trim().to_ascii_lowercase().as_str() {
+            "upload" => usage.upload = Some(number),
+            "download" => usage.download = Some(number),
+            "total" => usage.total = Some(number),
+            "expire" | "expires" => usage.expire = Some(number),
+            _ => {}
+        }
+    }
+    usage
+}
+
+fn usage_is_empty(usage: &SubscriptionUsage) -> bool {
+    usage.upload.is_none()
+        && usage.download.is_none()
+        && usage.total.is_none()
+        && usage.expire.is_none()
+}
+
+fn subscription_usage_from_text(text: &str) -> SubscriptionUsage {
+    text.lines()
+        .map(str::trim)
+        .find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.trim()
+                .eq_ignore_ascii_case("subscription-userinfo")
+                .then(|| parse_subscription_usage(value))
+        })
+        .unwrap_or_default()
+}
+
+fn read_subscription_body(
+    mut reader: impl Read,
+    declared_length: Option<u64>,
+) -> Result<String, String> {
+    if declared_length.is_some_and(|length| length > MAX_SUBSCRIPTION_BYTES) {
+        return Err(diagnostic(
+            "response-too-large",
+            format!(
+                "subscription response exceeds the {} MiB safety limit",
+                MAX_SUBSCRIPTION_BYTES / 1024 / 1024
+            ),
+            "use a normal Clash/Mihomo subscription instead of a large download or HTML archive",
+        ));
+    }
+    let mut bytes = Vec::new();
+    reader
+        .by_ref()
+        .take(MAX_SUBSCRIPTION_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|err| {
+            diagnostic(
+                "read-failed",
+                format!("subscription read failed: {err}"),
+                "retry once; if it repeats, the server may be returning malformed content",
+            )
+        })?;
+    if bytes.len() as u64 > MAX_SUBSCRIPTION_BYTES {
+        return Err(diagnostic(
+            "response-too-large",
+            format!(
+                "subscription response exceeds the {} MiB safety limit",
+                MAX_SUBSCRIPTION_BYTES / 1024 / 1024
+            ),
+            "use a normal Clash/Mihomo subscription instead of a large download or HTML archive",
+        ));
+    }
+    String::from_utf8(bytes).map_err(|err| {
+        diagnostic(
+            "invalid-encoding",
+            format!("subscription is not valid UTF-8: {err}"),
+            "switch the provider output to a UTF-8 Clash/Mihomo configuration",
+        )
     })
 }
 
@@ -685,7 +775,8 @@ pub(crate) fn parse_uri_source(text: &str) -> Result<ProfileSource, String> {
 
 pub(crate) fn parse_source_text(text: &str) -> Result<ProfileSource, String> {
     let source_text = decoded_body(text);
-    match serde_yaml::from_str::<YamlValue>(&source_text) {
+    let usage = subscription_usage_from_text(text);
+    let mut source = match serde_yaml::from_str::<YamlValue>(&source_text) {
         Ok(YamlValue::Mapping(map)) => {
             let config = YamlValue::Mapping(map);
             let summary = summarize_source(&config, "clash-yaml", 0).map_err(|err| {
@@ -708,7 +799,11 @@ pub(crate) fn parse_source_text(text: &str) -> Result<ProfileSource, String> {
             }
             parse_uri_source(&source_text)
         }
+    }?;
+    if !usage_is_empty(&usage) {
+        source.summary.usage = usage;
     }
+    Ok(source)
 }
 
 pub(crate) fn download_source_url(url: &str, user_agent: &str) -> Result<ProfileSource, String> {
@@ -726,7 +821,7 @@ pub(crate) fn download_source_url(url: &str, user_agent: &str) -> Result<Profile
             "Aegos imports remote subscriptions through HTTP/HTTPS URLs; paste the airport subscription link instead of a local or custom scheme",
         ));
     }
-    let text = Client::builder()
+    let response = Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|err| {
@@ -753,15 +848,15 @@ pub(crate) fn download_source_url(url: &str, user_agent: &str) -> Result<Profile
                 format!("subscription download failed: bad HTTP status: {err}"),
                 "check whether the subscription is expired, token is wrong, or the airport blocks this request",
             )
-        })?
-        .text()
-        .map_err(|err| {
-            diagnostic(
-                "read-failed",
-                format!("subscription read failed: {err}"),
-                "retry once; if it repeats, the server may be returning malformed content",
-            )
         })?;
+    let header_usage = response
+        .headers()
+        .get("subscription-userinfo")
+        .and_then(|value| value.to_str().ok())
+        .map(parse_subscription_usage)
+        .unwrap_or_default();
+    let declared_length = response.content_length();
+    let text = read_subscription_body(response, declared_length)?;
     if text.trim().is_empty() {
         return Err(diagnostic(
             "empty-content",
@@ -769,5 +864,42 @@ pub(crate) fn download_source_url(url: &str, user_agent: &str) -> Result<Profile
             "check whether the subscription token is expired or the airport returned an empty plan",
         ));
     }
-    parse_source_text(&text)
+    let mut source = parse_source_text(&text)?;
+    if !usage_is_empty(&header_usage) {
+        source.summary.usage = header_usage;
+    }
+    Ok(source)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn subscription_usage_is_parsed_from_metadata_lines() {
+        let source = parse_source_text(
+            "subscription-userinfo: upload=10; download=20; total=100; expire=1800000000\nproxies:\n  - name: Fixture\n    type: ss\n    server: example.com\n    port: 443\n    cipher: aes-128-gcm\n    password: fixture\n",
+        )
+        .expect("source");
+        assert_eq!(source.summary.usage.upload, Some(10));
+        assert_eq!(source.summary.usage.download, Some(20));
+        assert_eq!(source.summary.usage.total, Some(100));
+        assert_eq!(source.summary.usage.expire, Some(1_800_000_000));
+    }
+
+    #[test]
+    fn subscription_reader_rejects_declared_and_streamed_oversize_bodies() {
+        let declared = read_subscription_body(
+            Cursor::new(Vec::<u8>::new()),
+            Some(MAX_SUBSCRIPTION_BYTES + 1),
+        )
+        .expect_err("declared oversize");
+        assert!(declared.contains("response-too-large"));
+
+        let body = vec![b'a'; (MAX_SUBSCRIPTION_BYTES + 1) as usize];
+        let streamed =
+            read_subscription_body(Cursor::new(body), None).expect_err("streamed oversize");
+        assert!(streamed.contains("response-too-large"));
+    }
 }

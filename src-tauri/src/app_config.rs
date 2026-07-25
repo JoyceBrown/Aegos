@@ -8,6 +8,19 @@ use crate::config_domain::ManualNodeConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubscriptionUsage {
+    #[serde(default)]
+    pub(crate) upload: Option<u64>,
+    #[serde(default)]
+    pub(crate) download: Option<u64>,
+    #[serde(default)]
+    pub(crate) total: Option<u64>,
+    #[serde(default)]
+    pub(crate) expire: Option<u64>,
+}
+
 pub(crate) fn default_reliability_auto() -> bool {
     true
 }
@@ -45,6 +58,12 @@ pub(crate) struct Profile {
     pub(crate) node_count: usize,
     #[serde(default)]
     pub(crate) proxy_group_count: usize,
+    #[serde(default)]
+    pub(crate) rule_count: usize,
+    #[serde(default)]
+    pub(crate) source_format: String,
+    #[serde(default)]
+    pub(crate) subscription_usage: SubscriptionUsage,
     pub(crate) updated_at: String,
     pub(crate) digest: String,
 }

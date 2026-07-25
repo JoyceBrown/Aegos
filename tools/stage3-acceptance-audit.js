@@ -10,6 +10,14 @@ const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8').replace(/\r\
 const exists = (rel) => fs.existsSync(path.join(root, rel));
 const check = (name, ok, detail = '') => (ok ? pass : fail).push({ name, ok: Boolean(ok), detail });
 const sha256 = (rel) => crypto.createHash('sha256').update(fs.readFileSync(path.join(root, rel))).digest('hex');
+const versionAtLeast = (version, minimum) => {
+  const current = String(version).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const target = String(minimum).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  for (let index = 0; index < Math.max(current.length, target.length); index += 1) {
+    if ((current[index] || 0) !== (target[index] || 0)) return (current[index] || 0) > (target[index] || 0);
+  }
+  return true;
+};
 
 const pkg = JSON.parse(read('package.json'));
 const appJs = read('src/app.js');
@@ -27,7 +35,7 @@ const backendTestStart = mainRs.indexOf('fn test_routing_website');
 const backendTestEnd = mainRs.indexOf('fn routing_snapshot', backendTestStart);
 const backendTestBody = backendTestStart >= 0 && backendTestEnd > backendTestStart ? mainRs.slice(backendTestStart, backendTestEnd) : '';
 
-check('version is at or beyond the 3.6.0 stage-3 checkpoint', /^3\.6\.(?:[0-9]|[1-3][0-9]|40)$/.test(pkg.version), pkg.version);
+check('version is at or beyond the 3.6.0 stage-3 checkpoint', versionAtLeast(pkg.version, stage3Version), pkg.version);
 check('package exposes the stage 3 acceptance audit', pkg.scripts?.['audit:stage3-acceptance'] === 'node tools/stage3-acceptance-audit.js', 'npm run audit:stage3-acceptance');
 check('ordinary user can create, verify, apply, edit, delete, and test routing rules', appJs.includes('previewWebsiteRoutingDraft') && appJs.includes('previewAppRoutingDraft') && appJs.includes('verifyAllRoutingDrafts') && appJs.includes('applyRoutingDrafts') && appJs.includes('submitRoutingRuleForm') && appJs.includes('deleteRoutingRule') && appJs.includes('testRoutingWebsiteRule') && mainRs.includes('fn apply_user_rule_store_edit') && mainRs.includes('fn apply_user_rule_store_drafts'), 'stage 3 rule lifecycle');
 check('stage 3 remains safe: preview/test are read-only and apply uses preflight/rollback', appJs.includes('precheckRoutingDraftsBeforeApply') && testBody.includes("invoke('test_routing_website'") && !testBody.includes('runBackgroundJob') && backendTestBody.includes('fn test_routing_website') && !backendTestBody.includes('write_') && !backendTestBody.includes('hot_reload') && mainRs.includes('render_runtime_profile') && mainRs.includes('write_routing_deployment_report') && mainRs.includes('runtimeRestored'), 'read-only preview/test and guarded apply');

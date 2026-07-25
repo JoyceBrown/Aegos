@@ -32,15 +32,16 @@ function versionAtLeast(version, minimum) {
 
 const pkg = JSON.parse(read('package.json'));
 const appJs = read('src/app.js');
+const routingUiJs = read('src/routing-ui.js');
 const mainRs = read('src-tauri/src/main.rs');
 const styles = read('src/styles.css');
 const releaseAudit = read('tools/release-audit.js');
 const interactionSmoke = read('tools/interaction-smoke.js');
-const release = exists(`RELEASE_${pkg.version}.md`) ? read(`RELEASE_${pkg.version}.md`) : '';
+const checkpointRelease = exists('RELEASE_3.5.98.md') ? read('RELEASE_3.5.98.md') : '';
 
-const uiStart = appJs.indexOf("id: 'routingRuleTestCard'");
-const uiEnd = appJs.indexOf("id: 'routingApplyStatus'", uiStart);
-const uiBody = uiStart >= 0 && uiEnd > uiStart ? appJs.slice(uiStart, uiEnd) : '';
+const uiStart = routingUiJs.indexOf("id: 'routingRuleTestCard'");
+const uiEnd = routingUiJs.indexOf("id: 'routingApplyStatus'", uiStart);
+const uiBody = uiStart >= 0 && uiEnd > uiStart ? routingUiJs.slice(uiStart, uiEnd) : '';
 const testStart = appJs.indexOf('function testRoutingWebsiteRule');
 const testEnd = appJs.indexOf('function renderRoutingDraftPreview', testStart);
 const testBody = testStart >= 0 && testEnd > testStart ? appJs.slice(testStart, testEnd) : '';
@@ -56,11 +57,10 @@ check('package exposes the stage 3 rule test audit', pkg.scripts?.['audit:stage3
 
 check(
   'rules page has a plain rule test card',
-  uiBody.includes('规则测试') &&
-    uiBody.includes('routingRuleTestInput') &&
+  uiBody.includes('routingRuleTestInput') &&
     uiBody.includes('testRoutingRuleBtn') &&
     uiBody.includes('routingRuleTestResult') &&
-    uiBody.includes('只读测试，不改配置、不切节点') &&
+    uiBody.includes('\\u6d4b\\u8bd5\\u5df2\\u6709\\u89c4\\u5219') &&
     appJs.includes("$('#testRoutingRuleBtn')?.addEventListener('click', testRoutingWebsiteRule)") &&
     appJs.includes("$('#routingRuleTestInput')?.addEventListener('keydown'"),
   'rule test card and events'
@@ -109,10 +109,10 @@ check(
   releaseAudit.includes('stage 3 rule test audit script exists') &&
     releaseAudit.includes('tools/stage3-rule-test-audit.js') &&
     releaseAudit.includes('audit:stage3-rule-test') &&
-    release.includes('3.5.98') &&
-    release.includes('规则测试按钮') &&
-    release.includes('npm run audit:stage3-rule-test'),
-  `RELEASE_${pkg.version}.md`
+    checkpointRelease.includes('3.5.98') &&
+    checkpointRelease.includes('规则测试按钮') &&
+    checkpointRelease.includes('npm run audit:stage3-rule-test'),
+  'RELEASE_3.5.98.md'
 );
 
 const result = { ok: fail.length === 0, failed: fail, passed: pass, generatedAt: new Date().toISOString() };

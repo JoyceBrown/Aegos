@@ -19,7 +19,7 @@
 
 html, body {
   width: 100%;
-  min-width: 1120px;
+  min-width: 980px;
   height: 100%;
   margin: 0;
   overflow: hidden;
@@ -768,6 +768,20 @@ h1 {
   animation: aegosMetricBusyPulse .9s ease-in-out infinite alternate;
 }
 
+@media (max-width: 1000px) {
+  .metric-grid article {
+    grid-template-columns: 22px minmax(0, 1fr);
+    gap: 1px 5px;
+    padding-inline: 6px;
+  }
+
+  .metric-delay-action {
+    width: 100%;
+    min-width: 0;
+    padding-inline: 1px;
+  }
+}
+
 .row-actions button.is-pending .aegos-icon {
   animation: aegosIconBusySpin .75s linear infinite;
 }
@@ -1252,7 +1266,7 @@ h1 {
   gap: 12px;
   padding: 10px 12px;
   border: 1px solid rgba(130, 154, 187, .14);
-  border-radius: 12px;
+  border-radius: 8px;
   background: #fbfdff;
 }
 
@@ -1603,6 +1617,30 @@ h1 {
 .empty {
   margin: 0;
   color: var(--muted);
+}
+
+.connection-empty {
+  align-self: center;
+  justify-self: center;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  max-width: 420px;
+  padding: 24px;
+  text-align: center;
+}
+
+.connection-empty b {
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.connection-empty span {
+  line-height: 1.65;
+}
+
+.connection-empty button {
+  margin-top: 4px;
 }
 
 .connection-table {
@@ -2495,6 +2533,50 @@ h1 {
 
 .routing-test-card {
   transition: box-shadow .16s ease, background .16s ease;
+}
+
+#profileRows .list-card {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  align-items: center;
+}
+
+#profileRows .profile-usage-summary {
+  min-width: 0;
+  color: #51627d;
+  white-space: nowrap;
+}
+
+#profileRows .profile-health-summary {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(42, 197, 116, .08);
+  color: #28794f;
+}
+
+#profileRows .card-actions {
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 1100px) {
+  #profileRows .list-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #profileRows .profile-source-summary,
+  #profileRows .profile-usage-summary {
+    margin-left: 0;
+    text-align: left;
+    white-space: normal;
+  }
+
+  #profileRows .card-actions {
+    justify-content: flex-start;
+  }
 }
 
 .routing-test-summary {
@@ -3876,6 +3958,54 @@ h1 {
   font-size: 10px;
 }
 
+.fixed-node-context-menu {
+  width: min(280px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  border-radius: 8px;
+}
+
+.fixed-node-context-menu:not(.hidden) {
+  animation: aegosContextMenuIn var(--motion-fast) var(--ease-standard) both;
+}
+
+@keyframes aegosContextMenuIn {
+  from { opacity: .72; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fixed-node-context-menu button.danger b {
+  color: #b94d55;
+}
+
+.fixed-node-dialer-control {
+  display: grid;
+  gap: 5px;
+  padding: 3px 8px 7px;
+}
+
+.fixed-node-dialer-control select {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid rgba(126, 151, 182, .28);
+  border-radius: 7px;
+  background: #fff;
+  color: #30415e;
+  font-size: 12px;
+}
+
+.fixed-node-dialer-control small {
+  min-height: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #8491a4;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
 .row {
   display: grid;
   grid-template-columns: 24px 26px minmax(148px, 1.45fr) minmax(104px, .76fr) 72px 72px 140px;
@@ -3946,6 +4076,13 @@ h1 {
   height: 17px;
   border: 1.5px solid #8ecbff;
   border-radius: 50%;
+}
+
+.node-select-control {
+  min-width: 17px;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .row.selected .radio {
@@ -4536,6 +4673,10 @@ dd {
   color: #53627c;
   font-size: 12px;
   font-weight: 800;
+}
+
+.editor-grid .editor-wide {
+  grid-column: 1 / -1;
 }
 
 .editor-grid > [hidden] {

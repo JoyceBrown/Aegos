@@ -5,8 +5,7 @@ use serde_yaml::{Mapping, Value as YamlValue};
 use crate::{
     app_config::{Profile, Settings},
     config_domain::{ManualNodeConfig, ProfileCatalog, RuntimeConfigReport},
-    core_runtime, subscription_runtime, AEGOS_OUTBOUND_IP_GROUP,
-    OUTBOUND_IP_RULE_DOMAINS,
+    core_runtime, subscription_runtime, AEGOS_OUTBOUND_IP_GROUP, OUTBOUND_IP_RULE_DOMAINS,
 };
 
 pub(crate) struct RuntimeConfigPlan {
@@ -832,7 +831,11 @@ pub(crate) fn harden_runtime_dns(config: &mut Mapping, settings: &Settings) -> R
         set_yaml(dns_map, "enable", YamlValue::Bool(false));
         set_yaml(dns_map, "listen", yaml_str(AEGOS_DNS_LISTEN));
         set_yaml(dns_map, "nameserver", YamlValue::Sequence(Vec::new()));
-        set_yaml(dns_map, "proxy-server-nameserver", YamlValue::Sequence(Vec::new()));
+        set_yaml(
+            dns_map,
+            "proxy-server-nameserver",
+            YamlValue::Sequence(Vec::new()),
+        );
         return Ok(());
     }
     let nameservers = if settings.dns_mode == "custom" {
@@ -841,7 +844,10 @@ pub(crate) fn harden_runtime_dns(config: &mut Mapping, settings: &Settings) -> R
         }
         settings.dns_custom_nameservers.clone()
     } else {
-        default_nameservers.iter().map(|value| value.to_string()).collect()
+        default_nameservers
+            .iter()
+            .map(|value| value.to_string())
+            .collect()
     };
     set_yaml(dns_map, "enable", YamlValue::Bool(true));
     set_yaml(dns_map, "ipv6", YamlValue::Bool(false));

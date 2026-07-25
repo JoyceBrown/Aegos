@@ -23,6 +23,7 @@ pub struct JobRecord {
     pub error: Option<String>,
     pub issue: Option<JsonValue>,
     pub cancel_requested: bool,
+    pub cancellable: bool,
 }
 
 pub fn now_secs() -> u64 {
@@ -34,6 +35,7 @@ pub fn now_secs() -> u64 {
 
 pub fn new_job_record(id: String, kind: String, label: String) -> JobRecord {
     let now = now_secs();
+    let cancellable = kind == "updateAllProfiles";
     JobRecord {
         id,
         kind,
@@ -48,6 +50,7 @@ pub fn new_job_record(id: String, kind: String, label: String) -> JobRecord {
         error: None,
         issue: None,
         cancel_requested: false,
+        cancellable,
     }
 }
 
@@ -90,6 +93,13 @@ pub fn finish_cancelled(jobs: &JobStore, id: &str, message: &str) {
 
 pub fn finish_job(jobs: &JobStore, id: &str, result: Result<JsonValue, String>) {
     if let Some(job) = jobs.lock().unwrap().get_mut(id) {
+        if job.cancel_requested {
+            job.state = "cancelled".to_string();
+            job.message = "cancelled".to_string();
+            job.updated_at = now_secs();
+            job.error = None;
+            return;
+        }
         job.updated_at = now_secs();
         match result {
             Ok(value) => {
@@ -140,6 +150,9 @@ pub fn request_job_cancel(jobs: &JobStore, id: &str) -> Result<JsonValue, String
     let job = jobs
         .get_mut(id)
         .ok_or_else(|| "Job not found".to_string())?;
+    if !job.cancellable {
+        return Err("This task cannot be cancelled safely after it starts.".to_string());
+    }
     job.cancel_requested = true;
     if job.state == "queued" {
         job.state = "cancelled".to_string();
@@ -158,14 +171,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn job_store_cancels_and_prunes_finished_jobs() {
+    fn cancellable_job_stays_cancelled_after_worker_finishes() {
         let jobs: JobStore = Arc::new(Mutex::new(HashMap::new()));
         jobs.lock().unwrap().insert(
             "job-1".to_string(),
             new_job_record(
                 "job-1".to_string(),
-                "diagnostics".to_string(),
-                "diagnostics".to_string(),
+                "updateAllProfiles".to_string(),
+                "update subscriptions".to_string(),
             ),
         );
 
@@ -175,8 +188,42 @@ mod tests {
             Some("cancelled")
         );
         assert!(job_cancel_requested(&jobs, "job-1"));
+        finish_job(&jobs, "job-1", Ok(json!({ "updated": 1 })));
+        let finished = job_status_snapshot(&jobs, Some("job-1".to_string())).expect("finished");
+        assert_eq!(
+            finished.get("state").and_then(JsonValue::as_str),
+            Some("cancelled")
+        );
+        assert!(finished.get("result").is_none() || finished["result"].is_null());
 
         let snapshot = job_status_snapshot(&jobs, None).expect("status");
         assert_eq!(snapshot.as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn non_cancellable_job_rejects_cancel_request() {
+        let jobs: JobStore = Arc::new(Mutex::new(HashMap::new()));
+        jobs.lock().unwrap().insert(
+            "job-2".to_string(),
+            new_job_record(
+                "job-2".to_string(),
+                "diagnostics".to_string(),
+                "diagnostics".to_string(),
+            ),
+        );
+
+        let error = request_job_cancel(&jobs, "job-2").expect_err("cancel must be rejected");
+        assert!(error.contains("cannot be cancelled safely"));
+        let snapshot = job_status_snapshot(&jobs, Some("job-2".to_string())).expect("status");
+        assert_eq!(
+            snapshot.get("state").and_then(JsonValue::as_str),
+            Some("queued")
+        );
+        assert_eq!(
+            snapshot
+                .get("cancel_requested")
+                .and_then(JsonValue::as_bool),
+            Some(false)
+        );
     }
 }

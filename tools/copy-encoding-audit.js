@@ -51,6 +51,7 @@ const doc = exists('copy-encoding-debt.md') ? read('copy-encoding-debt.md') : ''
 const productionSuspicious = [
   ...suspiciousLines('src/index.html'),
   ...suspiciousLines('src/app.js'),
+  ...suspiciousLines('src-tauri/src/main.rs'),
 ];
 const documentedCount = Number(doc.match(/Current production suspicious line count:\s*(\d+)/)?.[1] ?? NaN);
 const dangerousProductionApis = /\b(innerHTML\s*=|outerHTML\s*=|insertAdjacentHTML\s*\(|document\.write\s*\(|eval\s*\(|new Function\s*\()/m;

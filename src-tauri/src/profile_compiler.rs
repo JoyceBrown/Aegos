@@ -156,6 +156,9 @@ mod tests {
             source_url: None,
             node_count: 1,
             proxy_group_count: 1,
+            rule_count: 0,
+            source_format: "test".to_string(),
+            subscription_usage: Default::default(),
             updated_at: "now".to_string(),
             digest: String::new(),
         }

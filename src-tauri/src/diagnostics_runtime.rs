@@ -577,7 +577,9 @@ mod tests {
             "Outbound IP requires an active or standby connection.",
         );
         assert_eq!(disconnected.code, "AEG-IP-001");
-        assert!(disconnected.public_message().contains("连接后才能查询落地 IP"));
+        assert!(disconnected
+            .public_message()
+            .contains("连接后才能查询落地 IP"));
 
         let route_sync = issue_from_failure(
             "refreshOutboundIp",

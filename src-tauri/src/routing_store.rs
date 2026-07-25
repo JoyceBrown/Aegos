@@ -80,7 +80,6 @@ impl UserRuleRecord {
             .unwrap_or(base)
     }
 
-
     pub(crate) fn runtime_rank(&self, active_profile_id: &str) -> (u8, u8, usize, u32) {
         let kind = self.kind.trim().to_ascii_uppercase();
         let class = match kind.as_str() {
@@ -162,7 +161,13 @@ mod tests {
         let store = UserRuleStore {
             version: 1,
             rules: vec![
-                record("profile", UserRuleScope::Profile { profile_id: "one".to_string() }, 2),
+                record(
+                    "profile",
+                    UserRuleScope::Profile {
+                        profile_id: "one".to_string(),
+                    },
+                    2,
+                ),
                 record("global", UserRuleScope::Global, 1),
             ],
         }
@@ -174,13 +179,23 @@ mod tests {
 
     #[test]
     fn explicit_and_profile_rules_are_ordered_before_broad_global_rules() {
-        let mut profile = record("profile", UserRuleScope::Profile { profile_id: "one".to_string() }, 9);
+        let mut profile = record(
+            "profile",
+            UserRuleScope::Profile {
+                profile_id: "one".to_string(),
+            },
+            9,
+        );
         profile.kind = "DOMAIN".to_string();
         profile.condition = "www.example.com".to_string();
         let mut broad = record("broad", UserRuleScope::Global, 1);
         broad.kind = "GEOSITE".to_string();
         broad.condition = "youtube".to_string();
-        let store = UserRuleStore { version: 1, rules: vec![broad, profile] }.normalized();
+        let store = UserRuleStore {
+            version: 1,
+            rules: vec![broad, profile],
+        }
+        .normalized();
         assert_eq!(store.active_for_profile("one")[0].id, "profile");
     }
 }

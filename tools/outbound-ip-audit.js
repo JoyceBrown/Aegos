@@ -46,10 +46,9 @@ check(
   'UI never leaves landing IP stuck or disguised as valid after failure',
   refreshUiBody.includes("setOutboundIpText('\\u67e5\\u8be2\\u4e2d')") &&
     refreshUiBody.includes('outboundIpPendingSeq = 0') &&
-    refreshUiBody.includes("outboundIpLastStable = '-'") &&
-    refreshUiBody.includes("setOutboundIpText('\\u67e5\\u8be2\\u5931\\u8d25'") &&
+    refreshUiBody.includes("previous === '-' ? '\\u67e5\\u8be2\\u5931\\u8d25' : `${previous}（旧）`") &&
     refreshUiBody.includes('lastBackgroundJobError'),
-  'failed current lookup shows a visible failure state instead of a stale IP'
+  'failed current lookup shows either an explicit failure or a visibly stale cached IP'
 );
 
 check(
@@ -83,17 +82,22 @@ check(
 check(
   'backend IP lookup uses multiple providers with validation',
   mainRs.includes('normalize_outbound_ip_response') &&
-    queryBody.includes('https://api.ipify.org') &&
-    queryBody.includes('https://checkip.amazonaws.com') &&
-    queryBody.includes('https://icanhazip.com') &&
-    queryBody.includes('http://api.ipify.org') &&
-    mainRs.includes('candidate.parse::<IpAddr>().is_ok()') &&
-    queryBody.includes('timeout(Duration::from_millis(2800))'),
-  'validated multi-provider lookup prevents long stuck states'
+    mainRs.includes('const OUTBOUND_IP_SERVICES: [&str; 6]') &&
+    mainRs.includes('https://api.ipify.org') &&
+    mainRs.includes('https://checkip.amazonaws.com') &&
+    mainRs.includes('https://icanhazip.com') &&
+    !mainRs.includes('"http://api.ipify.org"') &&
+    queryBody.includes('mpsc::channel()') &&
+    queryBody.includes('receiver.recv_timeout(remaining)') &&
+    mainRs.includes('parse::<IpAddr>()') &&
+    mainRs.includes('OUTBOUND_IP_QUERY_TIMEOUT: Duration = Duration::from_millis(2600)') &&
+    mainRs.includes('OUTBOUND_IP_QUERY_BUDGET: Duration = Duration::from_millis(3200)') &&
+    mainRs.includes('outbound_ip_query_uses_https_race_with_bounded_budget'),
+  'validated HTTPS provider race prevents long stuck states'
 );
 
 check(
-  'detached backend job keeps cached value on temporary provider failure',
+  'detached backend marks cached value stale on temporary provider failure',
   detachedBody.includes('query_outbound_ip(mixed_port)') &&
     detachedBody.includes('sync_outbound_ip_route(&controller, &mode)') &&
     detachedBody.includes('runtime_current_proxy_route(&controller, &mode)') &&
@@ -105,9 +109,11 @@ check(
     !detachedBody.includes('current_outbound_ip_proxy_name') &&
     detachedBody.includes('outbound_ip_cache') &&
     detachedBody.includes('keeping cached value') &&
-    mainRs.includes('Ok(fallback)') &&
+    detachedBody.includes('core.outbound_ip_checked_at = 0') &&
+    detachedBody.includes('retained as stale') &&
+    !detachedBody.includes('Ok(fallback)') &&
     mainRs.includes('Err(reason)'),
-  'temporary failures keep useful visible value when available'
+  'temporary failures retain the visible value but cannot report it as freshly available'
 );
 
 check(

@@ -125,8 +125,8 @@ try {
           }
         };
         const profiles = [
-          { id: 'direct', name: 'Direct', profile_type: 'builtin', updated_at: '0' },
-          { id: 'url-test', name: 'Example Sub', profile_type: 'url', source_url: 'https://example.com/sub', updated_at: '1' }
+          { id: 'direct', name: 'Direct', profile_type: 'builtin', updated_at: '0', nodeCount: 0, proxyGroupCount: 0, ruleCount: 0 },
+          { id: 'url-test', name: 'Example Sub', profile_type: 'url', source_url: 'https://example.com/sub', hasSourceUrl: true, updated_at: '1', nodeCount: 89, proxyGroupCount: 1, ruleCount: 12, sourceFormat: 'clash-yaml', subscriptionUsage: { upload: 1024, download: 2048, total: 1048576, expire: 1800000000 } }
         ];
         const groups = [{
           name: 'GLOBAL',
@@ -284,8 +284,8 @@ try {
           if (command === 'start_core') { state.running = true; state.trafficTakeover = true; if (!state.tunEnabled) state.systemProxy = true; return { ok: true, trafficTakeover: true }; }
           if (command === 'stop_core') { state.running = false; state.trafficTakeover = false; state.systemProxy = false; return { ok: true, trafficTakeover: false }; }
           if (command === 'restart_core') { state.running = true; state.trafficTakeover = true; return { ok: true }; }
-          if (command === 'proxy_groups') return groups;
-          if (command === 'preview_profile_groups') return groups;
+          if (command === 'proxy_groups') return structuredClone(groups);
+          if (command === 'preview_profile_groups') return structuredClone(groups);
           if (command === 'start_job') {
             const id = 'job-' + (jobs.size + 1);
             let result = {};
@@ -346,7 +346,18 @@ try {
               result = { ok: true, profileChanged: false, result: { action: 'switchProxy', group: 'GLOBAL', proxy: 'HK 02', delay: 48 } };
             }
             if (args.kind === 'updateProfile') result = { profile: profiles.find((item) => item.id === args.payload?.id) };
-            if (args.kind === 'updateAllProfiles') result = { updated: profiles.filter((item) => item.sourceUrl), failed: [], total: 1 };
+            if (args.kind === 'editProfileSource') {
+              const profile = profiles.find((item) => item.id === args.payload?.id);
+              if (profile) profile.source_url = args.payload?.url;
+              result = { profile };
+            }
+            if (args.kind === 'importProfileFile') {
+              const profile = { id: 'file-test', name: args.payload?.name || 'local.yaml', profile_type: 'file', updated_at: '2', nodeCount: 1, proxyGroupCount: 1, ruleCount: 1, sourceFormat: 'clash-yaml' };
+              profiles.push(profile);
+              result = { profile };
+            }
+            if (args.kind === 'providerHealthcheck') result = { report: { available: true, providers: [], validation: 'profile-preflight' }, profile: { id: args.payload?.id, validation: 'profile-preflight', nodes: 89, groups: 1, rules: 12 }, selectionUnchanged: true };
+            if (args.kind === 'updateAllProfiles') result = { updated: profiles.filter((item) => item.source_url), failed: [], total: 1 };
             if (args.kind === 'addProfileUrl') result = { profile: profiles[1] };
             if (args.kind === 'applyRoutingDrafts') result = {
               appliedCount: Array.isArray(args.payload?.drafts) ? args.payload.drafts.length : 0,
@@ -356,7 +367,8 @@ try {
             };
             if (args.kind === 'undoRoutingApply') result = { undone: true, rollbackAvailable: false };
             if (args.kind === 'applyRoutingRuleEdit') result = { ok: true, action: args.payload?.action || 'add' };
-            const job = { id, kind: args.kind, label: args.kind, state: 'succeeded', progress: 1, total: 1, message: 'done', result, error: null };
+            const keepRunning = args.kind === 'updateAllProfiles' && args.payload?.keepRunning;
+            const job = { id, kind: args.kind, label: args.kind, state: keepRunning ? 'running' : 'succeeded', progress: keepRunning ? 0 : 1, total: 1, message: keepRunning ? 'running' : 'done', result, error: null, cancellable: args.kind === 'updateAllProfiles' };
             jobs.set(id, job);
             return { ...job, state: 'running' };
           }
@@ -496,6 +508,20 @@ try {
             if (index >= 0) groups[0].items[index] = node;
             else groups[0].items.push(node);
             return { node, profileId: state.activeProfileId, settings: status().settings };
+          }
+          if (command === 'manual_node_editor') {
+            const node = args.name
+              ? groups[0].items.find((item) => item.name === args.name && item.manual)
+              : null;
+            if (args.name && !node) throw new Error('Fixed node no longer exists: ' + args.name);
+            return { node: node ? { ...node } : null, profileId: state.activeProfileId, dialerProxyGroups: ['HK Relay'] };
+          }
+          if (command === 'delete_manual_node') {
+            groups.forEach((group) => {
+              group.items = group.items.filter((item) => item.name !== args.name);
+              if (group.now === args.name) group.now = group.items[0]?.name || '';
+            });
+            return { deleted: args.name, profileId: state.activeProfileId, settings: status().settings };
           }
           if (command === 'speed_test_status') {
             if (speedTestPollsRemaining > 0) {
@@ -803,7 +829,7 @@ try {
     await navDown('[data-page="routing"]');
     await new Promise((resolve) => setTimeout(resolve, 900));
     if (!document.querySelector('#routingGroupRows .routing-row')) throw new Error('routing page did not render strategy rows after quiet load');
-    if (!document.querySelector('#routingReadonlyBadge')?.textContent.includes('安全预览')) throw new Error('routing page did not keep safe preview badge visible');
+    if (!document.querySelector('#routingReadonlyBadge')?.textContent.includes('预览阶段')) throw new Error('routing page did not keep the not-yet-applied preview state visible');
     const routingAdvanced = document.querySelector('#routingAdvancedPanel');
     if (!routingAdvanced) throw new Error('routing advanced details control is missing');
     routingAdvanced.open = true;
@@ -867,7 +893,53 @@ try {
     if (!savedFixedNodeCall) throw new Error('fixed node editor did not save through backend command');
     if (savedFixedNodeCall.args.node.username !== 'smoke-user' || savedFixedNodeCall.args.node.password !== 'smoke-password') throw new Error('authenticated SOCKS5 fixed node did not save its username and password');
     if (!document.querySelector('#homeNodeRows .row[data-node="Fixed Smoke 01"]')) throw new Error('fixed node filter did not show saved manual node');
+    const fixedHomeRow = document.querySelector('#homeNodeRows .row[data-node="Fixed Smoke 01"]');
+    const fixedHomeBox = fixedHomeRow.getBoundingClientRect();
+    fixedHomeRow.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: fixedHomeBox.left + 20, clientY: fixedHomeBox.top + 12 }));
+    const fixedMenuBeforeData = document.querySelector('#fixedNodeContextMenu');
+    if (!fixedMenuBeforeData || fixedMenuBeforeData.classList.contains('hidden')) throw new Error('fixed node context menu did not paint its stable shell immediately');
+    if (!fixedMenuBeforeData.querySelector('[data-fixed-node-action="edit"]')) throw new Error('fixed node context menu painted an incomplete loading shell');
+    const fixedMenuBeforeSize = { width: fixedMenuBeforeData.offsetWidth, height: fixedMenuBeforeData.offsetHeight };
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const fixedMenu = document.querySelector('#fixedNodeContextMenu');
+    if (!fixedMenu || fixedMenu.classList.contains('hidden')) throw new Error('fixed node context menu did not open from the home fixed-node area');
+    if (fixedMenu !== fixedMenuBeforeData) throw new Error('fixed node context menu was rebuilt after relay data arrived');
+    const fixedMenuAfterSize = { width: fixedMenu.offsetWidth, height: fixedMenu.offsetHeight };
+    if (Math.abs(fixedMenuAfterSize.width - fixedMenuBeforeSize.width) > 1 || Math.abs(fixedMenuAfterSize.height - fixedMenuBeforeSize.height) > 18) throw new Error('fixed node context menu changed geometry while relay data arrived');
+    for (const action of ['test', 'edit', 'add', 'delete']) {
+      if (!fixedMenu.querySelector('[data-fixed-node-action="' + action + '"]')) throw new Error('fixed node context menu is missing ' + action);
+    }
+    const dialerSelect = fixedMenu.querySelector('[data-fixed-node-dialer-proxy]');
+    if (![...dialerSelect.options].some((option) => option.value === 'HK Relay')) throw new Error('fixed node context menu did not show eligible relay groups');
+    dialerSelect.value = 'HK Relay';
+    dialerSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    const relaySaveCall = [...window.__aegosCalls].reverse().find((item) => item.command === 'save_manual_node' && item.args?.node?.name === 'Fixed Smoke 01');
+    if (relaySaveCall?.args?.node?.['dialer-proxy'] !== 'HK Relay') throw new Error('fixed node relay group did not save as dialer-proxy');
     await navDown('[data-page="nodes"]');
+    const fixedNodePageRow = document.querySelector('#nodeRows .row[data-node="Fixed Smoke 01"]');
+    if (!fixedNodePageRow) throw new Error('node page did not synchronize the saved fixed node');
+    const fixedNodePageBox = fixedNodePageRow.getBoundingClientRect();
+    fixedNodePageRow.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: fixedNodePageBox.left + 20, clientY: fixedNodePageBox.top + 12 }));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    document.querySelector('#fixedNodeContextMenu [data-fixed-node-action="edit"]')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    if (document.querySelector('#nodeEditUsernameInput')?.value !== 'smoke-user' || document.querySelector('#nodeEditSecretInput')?.value !== 'smoke-password') throw new Error('fixed node editor did not restore persisted credentials');
+    if (document.querySelector('#nodeEditDialerProxySelect')?.value !== 'HK Relay') throw new Error('fixed node editor did not restore the persisted relay group');
+    await click('#cancelNodeEditorBtn');
+    await navDown('[data-page="home"]');
+    await click('[data-home-mode="fixed"]');
+    const fixedDeleteRow = document.querySelector('#homeNodeRows .row[data-node="Fixed Smoke 01"]');
+    const fixedDeleteBox = fixedDeleteRow.getBoundingClientRect();
+    fixedDeleteRow.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: fixedDeleteBox.left + 20, clientY: fixedDeleteBox.top + 12 }));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    document.querySelector('#fixedNodeContextMenu [data-fixed-node-action="delete"]')?.click();
+    await click('#appDialogOkBtn');
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    if (!window.__aegosCalls.some((item) => item.command === 'delete_manual_node' && item.args?.name === 'Fixed Smoke 01')) throw new Error('fixed node delete did not call the backend command');
+    if (document.querySelector('#homeNodeRows .row[data-node="Fixed Smoke 01"]')) throw new Error('home page retained a deleted fixed node');
+    await navDown('[data-page="nodes"]');
+    if (document.querySelector('#nodeRows .row[data-node="Fixed Smoke 01"]')) throw new Error('node page retained a deleted fixed node');
     await click('[data-node-filter="low"]');
     if (!document.querySelector('[data-node-filter="low"]').classList.contains('active')) throw new Error('node filter tab did not become active');
     await new Promise((resolve) => setTimeout(resolve, 420));
@@ -965,6 +1037,10 @@ try {
     await click('#refreshConnectionsBtn');
     document.querySelector('#closeAllConnectionsBtn').click();
     await new Promise((resolve) => setTimeout(resolve, 20));
+    if (document.querySelector('#appDialogOverlay')?.classList.contains('hidden')) throw new Error('close all connections did not require confirmation');
+    if (!document.querySelector('#connectionRows .simple-row')) throw new Error('connections cleared before destructive action confirmation');
+    document.querySelector('#appDialogOkBtn')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
     if (document.querySelector('#connectionRows .simple-row')) throw new Error('connections did not clear optimistically');
     await new Promise((resolve) => setTimeout(resolve, 420));
     await click('[data-page="profiles"]');
@@ -980,6 +1056,17 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 420));
     if (!document.querySelector('[data-profile-row="url-test"]')?.textContent.includes('Renamed Smoke Sub')) throw new Error('profile rename did not update row');
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'renameProfile')) throw new Error('profile rename did not use background job');
+    if (!document.querySelector('[data-profile-row="url-test"]')?.textContent.includes('89 节点 / 1 策略组 / 12 规则')) throw new Error('profile metadata summary did not render');
+    if (!document.querySelector('[data-profile-row="url-test"]')?.textContent.includes('流量')) throw new Error('profile traffic metadata did not render');
+    await click('[data-profile-edit-source="url-test"]');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    document.querySelector('#appDialogInput').value = 'https://example.com/replaced-sub';
+    document.querySelector('#appDialogForm').dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'editProfileSource' && item.args.payload?.id === 'url-test')) throw new Error('profile source edit did not preserve identity through background job');
+    await click('[data-profile-health="url-test"]');
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    if (!document.querySelector('[data-profile-row="url-test"]')?.textContent.includes('配置预检通过')) throw new Error('inactive profile health preflight did not render');
     await click('[data-profile-update="url-test"]');
     if (!document.querySelector('[data-profile-row="url-test"]')?.classList.contains('is-pending')) throw new Error('profile update did not show row pending feedback immediately');
     if (document.querySelector('[data-profile-update="url-test"]')?.disabled) throw new Error('profile update button became disabled during pending feedback');
@@ -993,6 +1080,14 @@ try {
     if (!document.querySelector('[data-profile-row^="pending-"]')?.classList.contains('is-pending')) throw new Error('profile import did not insert a pending row immediately');
     if (document.querySelector('#addProfileBtn')?.disabled) throw new Error('profile import button became disabled during pending feedback');
     await new Promise((resolve) => setTimeout(resolve, 420));
+    const localProfileInput = document.querySelector('#profileFileInput');
+    const localProfileTransfer = new DataTransfer();
+    localProfileTransfer.items.add(new File(['proxies:\\n  - name: Local\\n    type: ss\\n    server: local.example\\n    port: 443\\n    cipher: aes-128-gcm\\n    password: fixture\\nproxy-groups:\\n  - name: Proxies\\n    type: select\\n    proxies: [Local]\\nrules: [MATCH,Proxies]\\n'], 'local-smoke.yaml', { type: 'text/yaml' }));
+    Object.defineProperty(localProfileInput, 'files', { configurable: true, value: localProfileTransfer.files });
+    localProfileInput.dispatchEvent(new Event('change', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'importProfileFile')) throw new Error('local profile file did not use verified background import');
+    if (!document.querySelector('[data-profile-row="file-test"]')) throw new Error('local profile import did not refresh profile rows');
     document.querySelector('[data-profile-remove="url-test"]').click();
     await new Promise((resolve) => setTimeout(resolve, 40));
     if (document.querySelector('#appDialogOverlay')?.classList.contains('hidden')) throw new Error('profile removal did not explain deletion impact');
@@ -1075,6 +1170,9 @@ try {
     if (window.__aegosCalls.length !== statusCenterCallsWithJobs) throw new Error('status center with jobs triggered a backend command');
     document.querySelector('#closeStatusCenterBtn').click();
     const statusCenterJobBackendDelta = window.__aegosCalls.length - statusCenterCallsWithJobs;
+    if (document.querySelector('#jobRows [data-job-cancel]')) throw new Error('non-cancellable background task exposed an unsafe cancel action');
+    const cancellableJob = await window.__TAURI__.core.invoke('start_job', { kind: 'updateAllProfiles', payload: { keepRunning: true } });
+    rememberJob(cancellableJob);
     const cancelJobButton = document.querySelector('#jobRows [data-job-cancel]');
     if (!cancelJobButton) throw new Error('background job center did not render cancel action');
     cancelJobButton.click();

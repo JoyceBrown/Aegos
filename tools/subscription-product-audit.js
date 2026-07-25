@@ -82,15 +82,17 @@ check(
     const downloadIndex = updateProfileBody.indexOf('subscription_runtime::download_source_url(&url, AEGOS_SUBSCRIPTION_USER_AGENT)?');
     const operationIndex = updateProfileBody.indexOf('lock_operation_queue(&operations, "updateProfile apply")?');
     const refreshIndex = updateProfileBody.indexOf('profile = core', operationIndex);
-    const identityIndex = updateProfileBody.indexOf('profile.source_url.as_deref() != Some(url.as_str())');
+    const identityIndex = updateProfileBody.indexOf('profile.source_url != original_source_url');
+    const pathIdentityIndex = updateProfileBody.indexOf('profile.path != original_profile_path');
     const snapshotIndex = updateProfileBody.indexOf('let previous_profile = profile.clone();');
     return downloadIndex >= 0 &&
       downloadIndex < operationIndex &&
       operationIndex < refreshIndex &&
       refreshIndex < identityIndex &&
-      identityIndex < snapshotIndex;
+      identityIndex < pathIdentityIndex &&
+      pathIdentityIndex < snapshotIndex;
   })() &&
-    updateProfileBody.indexOf('profile.source_url.as_deref() != Some(url.as_str())') <
+    updateProfileBody.indexOf('profile.source_url != original_source_url') <
       updateProfileBody.indexOf('let previous_profile = profile.clone();') &&
     updateProfileBody.includes('the downloaded result was discarded'),
   'download remains non-blocking, while apply revalidates the current subscription identity and settings'

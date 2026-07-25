@@ -1,16 +1,16 @@
 use crate::config_domain::RuntimeConfigReport;
-use crate::dataplane::{
-    approved_dataplane_manifest, assess_dataplane_candidate, DataplaneControl, ENGINE,
-    EXPECTED_SHA256, EXPECTED_VERSION,
-};
-use crate::storage_runtime::{atomic_write_text_confined, sha256_text};
-use crate::windows_process::CREATE_NO_WINDOW;
 use crate::core_domain::{
     connection_snapshots_from_controller, delay_probe_from_controller,
     proxy_groups_from_controller, recent_rule_hits, runtime_version_from_controller,
     traffic_snapshot_from_controller_line, ConnectionSnapshot, DelayProbeSnapshot, ProxyCatalog,
     ProxyGroupSnapshot, RuntimeVersionSnapshot, TrafficSnapshot,
 };
+use crate::dataplane::{
+    approved_dataplane_manifest, assess_dataplane_candidate, DataplaneControl, ENGINE,
+    EXPECTED_SHA256, EXPECTED_VERSION,
+};
+use crate::storage_runtime::{atomic_write_text_confined, sha256_text};
+use crate::windows_process::CREATE_NO_WINDOW;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -3975,6 +3975,21 @@ rules:
             Some(true)
         );
 
+        let failed_refresh_with_cached_ip =
+            network_availability_json(true, true, "203.0.113.9", 0, 900);
+        assert_eq!(
+            failed_refresh_with_cached_ip
+                .get("state")
+                .and_then(JsonValue::as_str),
+            Some("stale")
+        );
+        assert_ne!(
+            failed_refresh_with_cached_ip
+                .get("state")
+                .and_then(JsonValue::as_str),
+            Some("available")
+        );
+
         let failed = network_availability_json(true, true, "-", 100, 120);
         assert_eq!(
             failed.get("state").and_then(JsonValue::as_str),
@@ -4770,7 +4785,8 @@ rules:
     fn engine_upgrade_requires_exact_identity_and_control_plane_capabilities() {
         let manifest = approved_dataplane_manifest();
         assert!(
-            assess_dataplane_candidate(manifest.version, manifest.sha256, manifest.features).approved
+            assess_dataplane_candidate(manifest.version, manifest.sha256, manifest.features)
+                .approved
         );
         assert!(!assess_dataplane_candidate("v0.0.0", manifest.sha256, manifest.features).approved);
         assert!(!assess_dataplane_candidate(manifest.version, "bad", manifest.features).approved);

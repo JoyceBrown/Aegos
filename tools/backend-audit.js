@@ -18,6 +18,7 @@ const speedRuntimeRs = readSource('src-tauri', 'src', 'speed_runtime.rs');
 const speedSchedulerRs = readSource('src-tauri', 'src', 'speed_scheduler.rs');
 const diagnosticsRuntimeRs = readSource('src-tauri', 'src', 'diagnostics_runtime.rs');
 const subscriptionRuntimeRs = readSource('src-tauri', 'src', 'subscription_runtime.rs');
+const manualNodeRuntimeRs = readSource('src-tauri', 'src', 'manual_node_runtime.rs');
 const configDeploymentRs = readSource('src-tauri', 'src', 'config_deployment.rs');
 const runtimeCommandRs = readSource('src-tauri', 'src', 'runtime_command.rs');
 const windowsProcessRs = readSource('src-tauri', 'src', 'windows_process.rs');
@@ -262,7 +263,8 @@ check(
     taskRuntimeRs.includes('pub fn finish_job(') &&
     taskRuntimeRs.includes('pub fn job_status_snapshot(') &&
     taskRuntimeRs.includes('pub fn request_job_cancel(') &&
-    taskRuntimeRs.includes('job_store_cancels_and_prunes_finished_jobs') &&
+    taskRuntimeRs.includes('cancellable_job_stays_cancelled_after_worker_finishes') &&
+    taskRuntimeRs.includes('non_cancellable_job_rejects_cancel_request') &&
     !mainRs.includes('struct JobRecord') &&
     !mainRs.includes('fn finish_job(') &&
     !mainRs.includes('fn request_job_cancel('),
@@ -889,12 +891,12 @@ check(
     coreRuntimeRs.includes('pub fn supports_proxy_type') &&
     coreRuntimeRs.includes('pub fn protocol_capability_summary') &&
     coreRuntimeRs.includes('pub fn protocol_capabilities_json') &&
-    mainRs.includes('core_runtime::supports_proxy_type') &&
+    mainRs.includes('core_runtime::preflight_runtime_config(') &&
     coreRuntimeRs.includes('protocol_capabilities_json') &&
     coreRuntimeRs.includes('unsupported_proxy_types') &&
-    coreRuntimeRs.includes('Config preflight failed: unsupported proxy type(s)') &&
+    coreRuntimeRs.includes('Config preflight failed: unsupported proxy type(s):') &&
     mainRs.includes('preflight_rejects_core_unsupported_proxy_type') &&
-    mainRs.includes('manual_hy2_node_is_normalized_to_hysteria2') &&
+    manualNodeRuntimeRs.includes('manual_hy2_node_is_normalized_to_hysteria2') &&
     coreRuntimeRs.includes('runtime_protocol_capabilities_normalize_and_report_current_contract'),
   'parser/runtime/manual protocol support stays explicit at runtime boundary'
 );

@@ -27,6 +27,7 @@ pageNames.settings = '\u8bbe\u7f6e';
 
 let latestStatus = null;
 let latestGroups = [];
+let latestGroupNames = new Set();
 let normalizedNodeGroupsCacheSource = null;
 let normalizedNodeGroupsCache = null;
 let latestGroup = null;
@@ -325,6 +326,7 @@ const nodeVirtualRowHeight = 38;
 const nodeVirtualOverscan = 16;
 const nodeVirtualWindowStep = 12;
 const homeNodeRenderLimit = 8;
+const builtinPolicyNames = new Set(['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS', 'COMPATIBLE']);
 // The page itself switches synchronously. A short quiet window prevents a
 // rapid navigation sequence from launching stale backend reads for pages the
 // user never settled on.
@@ -605,6 +607,21 @@ function emptyState(message) {
   return el('p', { className: 'empty', textContent: message });
 }
 
+function connectionEmptyState() {
+  const connected = Boolean(latestStatus?.trafficTakeover);
+  return el('div', { className: 'empty connection-empty' }, [
+    el('b', { textContent: connected ? '\u6682\u65e0\u6d3b\u52a8\u8fde\u63a5' : '\u5c1a\u672a\u5efa\u7acb\u8fde\u63a5' }),
+    el('span', {
+      textContent: connected
+        ? '\u5f53\u524d\u6ca1\u6709\u5e94\u7528\u4ea7\u751f\u4ee3\u7406\u6d41\u91cf\uff0c\u5f00\u59cb\u8bbf\u95ee\u7f51\u7edc\u540e\u4f1a\u81ea\u52a8\u51fa\u73b0\u3002'
+        : '\u8fde\u63a5\u540e\u624d\u80fd\u67e5\u770b\u54ea\u4e9b\u5e94\u7528\u6b63\u5728\u4f7f\u7528\u4ee3\u7406\u3002'
+    }),
+    connected
+      ? null
+      : el('button', { className: 'ghost compact', dataset: { pageJump: 'home' }, attrs: { type: 'button' }, textContent: '\u8fd4\u56de\u9996\u9875\u8fde\u63a5' })
+  ]);
+}
+
 function replaceChildrenSafe(target, children = []) {
   if (!target) return;
   target.replaceChildren(...children.filter(Boolean));
@@ -681,6 +698,40 @@ function isGlobalMode() {
 
 function activeProfileStorageKey() {
   return latestStatus?.settings?.activeProfileId || latestStatus?.activeProfile?.id || 'default';
+}
+
+function nodePreferenceKey(name, profileId = activeProfileStorageKey()) {
+  return `${profileId}\u0000${String(name || '').trim()}`;
+}
+
+function migrateLegacyNodePreferences() {
+  const profileId = activeProfileStorageKey();
+  let changed = false;
+  [...favoriteNodes].forEach((name) => {
+    if (name.includes('\u0000')) return;
+    favoriteNodes.delete(name);
+    favoriteNodes.add(nodePreferenceKey(name, profileId));
+    changed = true;
+  });
+  [...nodeUsageCounts.entries()].forEach(([name, count]) => {
+    if (name.includes('\u0000')) return;
+    nodeUsageCounts.delete(name);
+    const key = nodePreferenceKey(name, profileId);
+    nodeUsageCounts.set(key, Number(nodeUsageCounts.get(key) || 0) + Number(count || 0));
+    changed = true;
+  });
+  if (changed) {
+    saveFavoriteNodes();
+    saveNodeUsageCounts();
+  }
+}
+
+function isFavoriteNode(name) {
+  return favoriteNodes.has(nodePreferenceKey(name));
+}
+
+function nodeUsageCount(name) {
+  return Number(nodeUsageCounts.get(nodePreferenceKey(name)) || 0);
 }
 
 function saveNodeGroupOrderOverrides() {
@@ -905,6 +956,9 @@ function preferredProxyGroup(groups = latestGroups, preferredName = selectedProx
 
 function setLatestGroups(groups = [], preferredName = selectedProxyGroupName) {
   latestGroups = Array.isArray(groups) ? groups : [];
+  latestGroupNames = new Set(latestGroups
+    .map((group) => String(group?.name || '').trim())
+    .filter(Boolean));
   const group = preferredProxyGroup(latestGroups, preferredName);
   selectedProxyGroupName = group?.name || '';
   setLatestGroup(group);
@@ -1812,9 +1866,9 @@ function normalizeRows(items = []) {
           score,
           Boolean(dynamic.recommended),
           Number(dynamic.failureStreak ?? 0),
-          favoriteNodes.has(item.name),
+          isFavoriteNode(item.name),
           isFixedNodeItem(item),
-          Number(nodeUsageCounts.get(item.name) || 0),
+          nodeUsageCount(item.name),
           healthConfidence,
           Number(dynamic.lastTestedAt ?? 0),
           dynamic.lastFailureReason || dynamic.last_failure_reason || '',
@@ -2019,9 +2073,9 @@ function normalizeNodeItem(item = {}, index = 0) {
     score,
     Boolean(dynamic.recommended),
     Number(dynamic.failureStreak ?? 0),
-    favoriteNodes.has(name),
+    isFavoriteNode(name),
     isFixedNodeItem(item),
-    Number(nodeUsageCounts.get(name) || 0),
+    nodeUsageCount(name),
     healthConfidence,
     Number(dynamic.lastTestedAt ?? 0),
     dynamic.lastFailureReason || dynamic.last_failure_reason || '',
@@ -2065,9 +2119,9 @@ function normalizeNodeItemCached(item = {}, index = 0) {
     score,
     Boolean(dynamic.recommended),
     Number(dynamic.failureStreak ?? 0),
-    favoriteNodes.has(cached.name),
+    isFavoriteNode(cached.name),
     cached.fixed,
-    Number(nodeUsageCounts.get(cached.name) || 0),
+    nodeUsageCount(cached.name),
     healthConfidence,
     Number(dynamic.lastTestedAt ?? 0),
     dynamic.lastFailureReason || dynamic.last_failure_reason || '',
@@ -2076,23 +2130,17 @@ function normalizeNodeItemCached(item = {}, index = 0) {
 }
 
 function isProxyGroupReferenceItem(item = {}) {
+  if (item.group || item.isGroup || Array.isArray(item.all) || Array.isArray(item.items)) return true;
+  if (!latestGroupNames.size) return false;
   const type = String(item.type || item.protocol || '').toLowerCase();
-  const name = String(item.name || '').trim();
-  const groupNames = new Set((latestGroups || []).map((group) => String(group?.name || '').trim()).filter(Boolean));
-  const groupLikeType = /^(group|selector|urltest|url-test|fallback|loadbalance|load-balance|relay)$/i.test(type);
-  return Boolean(
-    item.group
-    || item.isGroup
-    || Array.isArray(item.all)
-    || Array.isArray(item.items)
-    || (groupLikeType && groupNames.has(name))
-  );
+  if (!/^(group|selector|urltest|url-test|fallback|loadbalance|load-balance|relay)$/i.test(type)) return false;
+  return latestGroupNames.has(String(item.name || '').trim());
 }
 
 function isBuiltinPolicyItem(item = {}) {
   const name = String(item.name || '').trim().toUpperCase();
   const type = String(item.type || item.protocol || '').trim().toUpperCase();
-  return Boolean(item.builtin || ['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS', 'COMPATIBLE'].includes(name) || ['DIRECT', 'REJECT', 'REJECT-DROP', 'PASS', 'COMPATIBLE'].includes(type));
+  return Boolean(item.builtin || builtinPolicyNames.has(name) || builtinPolicyNames.has(type));
 }
 
 function isRealProxyNodeItem(item = {}) {
@@ -2512,11 +2560,13 @@ function renderNodeRow(row) {
   ]);
   return el('div', {
     className: `row ${active ? 'selected' : ''}`,
-    dataset: { node: name, backendGroup },
-    attrs: { tabindex: '0', role: 'button' },
-    ariaLabel: `选择节点 ${name}`
+    dataset: { node: name, backendGroup }
   }, [
-    el('span', { className: 'radio' }),
+    el('button', {
+      className: 'radio node-select-control',
+      ariaLabel: `选择节点 ${name}`,
+      attrs: { type: 'button', title: `选择节点 ${name}` }
+    }),
     icon(`star ${favorite ? 'icon-star-filled' : 'icon-star'}`),
     title,
     el('span', { className: 'node-address', textContent: address.label, attrs: { title: address.title } }),
@@ -2540,11 +2590,13 @@ function renderHomeNodeRow(row) {
   ]);
   return el('div', {
     className: `row home-row ${active ? 'selected' : ''}`,
-    dataset: { node: name, backendGroup },
-    attrs: { tabindex: '0', role: 'button' },
-    ariaLabel: `选择节点 ${name}`
+    dataset: { node: name, backendGroup }
   }, [
-    el('span', { className: 'radio' }),
+    el('button', {
+      className: 'radio node-select-control',
+      ariaLabel: `选择节点 ${name}`,
+      attrs: { type: 'button', title: `选择节点 ${name}` }
+    }),
     icon(`star ${favorite ? 'icon-star-filled' : 'icon-star'}`),
     title,
     el('span', { className: 'node-address', textContent: address.label, attrs: { title: address.title } }),
@@ -2848,7 +2900,7 @@ function renderJobCenter() {
   }
   replaceChildrenSafe(box, jobs.map((job) => {
     const state = terminalJobStates.has(job.state) ? job.state : 'running';
-    const action = state === 'running'
+    const action = state === 'running' && job.cancellable
       ? el('button', { dataset: { jobCancel: job.id }, textContent: '\u53d6\u6d88' })
       : state !== 'succeeded'
         ? el('button', { dataset: { jobRetry: job.id }, textContent: '\u91cd\u8bd5' })
@@ -3443,12 +3495,43 @@ function profilePendingText(label = 'syncing') {
 function profileSummaryText(profile) {
   const nodes = Number(profile.node_count ?? profile.nodeCount ?? 0);
   const groups = Number(profile.proxy_group_count ?? profile.proxyGroupCount ?? 0);
+  const rules = Number(profile.rule_count ?? profile.ruleCount ?? 0);
   const suffix = profile.metadataStatus === 'repaired'
     ? ` / ${'\u5df2\u4fee\u590d'}`
     : profile.metadataStatus === 'stale'
       ? ` / ${'\u9700\u66f4\u65b0'}`
       : '';
-  return groups > 0 ? `${nodes} nodes / ${groups} groups${suffix}` : `${nodes} nodes${suffix}`;
+  return `${nodes} \u8282\u70b9 / ${groups} \u7b56\u7565\u7ec4 / ${rules} \u89c4\u5219${suffix}`;
+}
+
+function formatProfileBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let amount = bytes;
+  let index = 0;
+  while (amount >= 1024 && index < units.length - 1) {
+    amount /= 1024;
+    index += 1;
+  }
+  const digits = amount >= 100 || index === 0 ? 0 : amount >= 10 ? 1 : 2;
+  return `${amount.toFixed(digits)} ${units[index]}`;
+}
+
+function profileUsageText(profile) {
+  const usage = profile.subscriptionUsage || profile.subscription_usage || {};
+  const upload = Number(usage.upload);
+  const download = Number(usage.download);
+  const total = Number(usage.total);
+  const used = (Number.isFinite(upload) ? upload : 0) + (Number.isFinite(download) ? download : 0);
+  const traffic = Number.isFinite(total) && total > 0
+    ? `\u6d41\u91cf ${formatProfileBytes(used)} / ${formatProfileBytes(total)}`
+    : '';
+  const expire = Number(usage.expire);
+  const expiry = Number.isFinite(expire) && expire > 0
+    ? `\u5230\u671f ${new Date(expire * 1000).toLocaleDateString('zh-CN')}`
+    : '';
+  return [traffic, expiry].filter(Boolean).join(' / ');
 }
 
 function ensureTakeoverControls() {
@@ -3479,6 +3562,8 @@ function renderProfiles() {
     const id = profile.id || '';
     const active = id === latestStatus?.settings?.activeProfileId;
     const health = providerHealthCache.get(id);
+    const hasSourceUrl = Boolean(profile.hasSourceUrl ?? profile.source_url ?? profile.sourceUrl);
+    const usage = profileUsageText(profile);
     const className = `list-card ${active ? 'active' : ''} ${pending ? 'is-pending' : ''}`;
     return el('article', {
       className,
@@ -3487,20 +3572,22 @@ function renderProfiles() {
     }, [
       el('div', {}, [
         el('b', { textContent: profile.name || id || '-' }),
-        el('small', { textContent: `${profile.profile_type || '-'} / ${profile.updated_at || '-'}` })
+        el('small', { textContent: `\u66f4\u65b0 ${profile.updated_at || '-'} / ${profile.sourceFormat || profile.profile_type || '-'}` })
       ]),
       el('small', { className: 'profile-source-summary', textContent: summary }),
+      usage ? el('small', { className: 'profile-usage-summary', textContent: usage }) : null,
       health ? el('small', { className: 'profile-health-summary', textContent: health }) : null,
       el('div', { className: 'card-actions' }, [
         el('button', { dataset: { profileSwitch: id }, textContent: '\u542f\u7528' }),
         el('button', { dataset: { profileRename: id }, textContent: '\u91cd\u547d\u540d', disabled: id === 'direct' }),
-        el('button', { dataset: { profileUpdate: id }, textContent: '\u66f4\u65b0' }),
-        el('button', { dataset: { profileHealth: id }, textContent: '\u5065\u5eb7\u68c0\u6d4b', disabled: id === 'direct' || !active, attrs: { title: active ? '\u4ec5\u68c0\u67e5\u5f53\u524d\u5df2\u542f\u7528\u8ba2\u9605\uff0c\u4e0d\u4f1a\u5207\u6362\u8282\u70b9' : '\u8bf7\u5148\u542f\u7528\u8be5\u8ba2\u9605' } }),
+        el('button', { dataset: { profileEditSource: id }, textContent: '\u7f16\u8f91\u5730\u5740', disabled: id === 'direct' || !hasSourceUrl }),
+        el('button', { dataset: { profileUpdate: id }, textContent: '\u66f4\u65b0', disabled: id === 'direct' || !hasSourceUrl }),
+        el('button', { dataset: { profileHealth: id }, textContent: '\u5065\u5eb7\u68c0\u6d4b', disabled: id === 'direct', attrs: { title: active ? '\u68c0\u67e5\u8fd0\u884c\u72b6\u6001\uff0c\u4e0d\u4f1a\u5207\u6362\u8282\u70b9' : '\u4ec5\u9884\u68c0\u4fdd\u5b58\u7684\u914d\u7f6e\uff0c\u4e0d\u4f1a\u542f\u7528\u8be5\u8ba2\u9605' } }),
         el('button', { dataset: { profileRemove: id }, textContent: '\u5220\u9664', disabled: id === 'direct' })
       ])
     ]);
   });
-  replaceChildrenSafe($('#profileRows'), rows.length ? rows : [emptyState('\u6682\u65e0\u8ba2\u9605\u3002')]);
+  replaceChildrenSafe($('#profileRows'), rows.length ? rows : [emptyState('\u5c1a\u672a\u5bfc\u5165\u8ba2\u9605\uff0c\u53ef\u7c98\u8d34\u94fe\u63a5\u6216\u5bfc\u5165\u672c\u5730 Clash/Mihomo \u914d\u7f6e\u3002')]);
 }
 
 function renderProfilesIfVisible() {
@@ -3857,6 +3944,7 @@ function renderStatus(status) {
   const signature = statusUiSignature(status);
   const fullRender = signature !== lastStatusUiSignature;
   latestStatus = status;
+  migrateLegacyNodePreferences();
   const traffic = status.traffic || {};
   renderTrafficMetrics(traffic);
   if (!fullRender) {
@@ -3965,7 +4053,8 @@ function applyOptimisticProfile(profileId) {
 function applyOptimisticNode(name) {
   selectedNode = name;
   if (name) {
-    nodeUsageCounts.set(name, Number(nodeUsageCounts.get(name) || 0) + 1);
+    const usageKey = nodePreferenceKey(name);
+    nodeUsageCounts.set(usageKey, Number(nodeUsageCounts.get(usageKey) || 0) + 1);
     saveNodeUsageCounts();
   }
   if (latestGroup) setLatestGroup({ ...latestGroup, now: name });
@@ -4099,7 +4188,7 @@ function removeConnectionElement(button) {
   const row = button?.closest('.simple-row');
   if (row) row.remove();
   if (!$('#connectionRows')?.querySelector('.simple-row')) {
-    replaceChildrenSafe($('#connectionRows'), [emptyState('\u5f53\u524d\u6ca1\u6709\u6d3b\u52a8\u8fde\u63a5\u3002')]);
+    replaceChildrenSafe($('#connectionRows'), [connectionEmptyState()]);
   }
 }
 
@@ -4302,6 +4391,9 @@ async function previewProfileNodes(profileId) {
     const stillActive = latestStatus?.settings?.activeProfileId === profileId;
     if (previewSeq !== profilePreviewSeq || !stillActive) return;
     latestGroups = Array.isArray(groups) ? groups : [];
+    latestGroupNames = new Set(latestGroups
+      .map((group) => String(group?.name || '').trim())
+      .filter(Boolean));
     const group = preferredProxyGroup(latestGroups, selectedProxyGroupName);
     if (!group || !Array.isArray(group.items) || !group.items.length) return;
     selectedProxyGroupName = group.name || '';
@@ -4320,7 +4412,7 @@ async function initializeAppData() {
   const nodesReady = refreshNodes(true, { delay: 0, target: 'home' });
   // The home screen is useful as soon as status and the first node list are
   // available. Rules are a separate surface and must never delay that paint.
-  await Promise.allSettled([
+  await Promise.all([
     statusReady,
     nodesReady
   ]);
@@ -4388,10 +4480,16 @@ function scheduleSpeedRuntimeWarmup() {
 
 function markAllSpeedTargetsTesting() {
   const items = latestGroup?.items || [];
-  for (const item of items) {
-    if (!isRealProxyNodeItem(item)) continue;
+  const priorityNames = new Set(speedPriorityNames());
+  const visibleChanges = new Map();
+  const visited = new Set();
+  for (const priorityName of priorityNames) {
+    const index = nodeIndexForName(priorityName);
+    const item = index == null ? null : items[index];
+    if (!item || !isRealProxyNodeItem(item)) continue;
     const realName = item.realProxyName || item.name || '';
-    if (!realName) continue;
+    if (!realName || visited.has(realName)) continue;
+    visited.add(realName);
     const current = speedResultOverlay.get(realName) || item;
     const testing = {
       ...current,
@@ -4403,12 +4501,11 @@ function markAllSpeedTargetsTesting() {
     };
     speedResultOverlay.set(realName, testing);
     if (item.name && item.name !== realName) speedResultOverlay.set(item.name, testing);
+    visibleChanges.set(realName, { delay: 0, reason: '' });
+    if (item.name && item.name !== realName) visibleChanges.set(item.name, { delay: 0, reason: '' });
   }
-  scheduleRowsRender(items, {
-    force: true,
-    target: activeNodeRenderTarget(),
-    delay: 0
-  });
+  updateVisibleNodeDelays(visibleChanges);
+  renderHomeNodeSummary(summaryRowsFromLatestGroup());
 }
 
 function scheduleStartupAutoSpeedTest() {
@@ -4674,6 +4771,7 @@ function resetSpeedUiForProfileSwitch() {
   selectedNode = '';
   selectedProxyGroupName = '';
   latestGroups = [];
+  latestGroupNames.clear();
   beginNodeListTransition();
   if (rowRenderFrame) cancelAnimationFrame(rowRenderFrame);
   if (rowRenderTimer) clearTimeout(rowRenderTimer);
@@ -4782,8 +4880,13 @@ async function refreshOutboundIpAfterNodeChange(options = {}) {
   if (seq !== outboundIpRequestSeq) return null;
   if (!result) {
     outboundIpPendingSeq = 0;
-    outboundIpLastStable = '-';
-    setOutboundIpText('\u67e5\u8be2\u5931\u8d25', lastBackgroundJobError || '\u65e0\u6cd5\u83b7\u53d6\u843d\u5730 IP');
+    await refreshStatus(true);
+    const previous = latestStatus?.network?.outboundIp || outboundIpLastStable || '-';
+    outboundIpLastStable = previous;
+    setOutboundIpText(
+      previous === '-' ? '\u67e5\u8be2\u5931\u8d25' : `${previous}（旧）`,
+      lastBackgroundJobError || '\u65e0\u6cd5\u83b7\u53d6\u843d\u5730 IP'
+    );
   }
   return result;
 }
@@ -4836,8 +4939,8 @@ async function updateProfileJob(id) {
   });
 }
 
-async function providerHealthcheckJob() {
-  return runBackgroundJob('providerHealthcheck', {}, {
+async function providerHealthcheckJob(id) {
+  return runBackgroundJob('providerHealthcheck', { id }, {
     label: '\u8ba2\u9605\u5065\u5eb7\u68c0\u6d4b',
     pendingMessage: '\u6b63\u5728\u68c0\u67e5\u8ba2\u9605\u5065\u5eb7\uff0c\u4e0d\u4f1a\u5207\u6362\u8282\u70b9...'
   });
@@ -5265,8 +5368,29 @@ function closeNodeEditor() {
   $('#nodeEditorOverlay')?.classList.add('hidden');
 }
 
-function openNodeEditor(name = '') {
-  const item = name ? findNodeItem(name) : null;
+function populateNodeDialerProxyGroups(groups = [], selected = '') {
+  const select = $('#nodeEditDialerProxySelect');
+  if (!select) return;
+  const options = [el('option', { attrs: { value: '' }, textContent: '\u76f4\u8fde / \u4e0d\u4f7f\u7528' })];
+  [...new Set((groups || []).map((group) => String(group || '').trim()).filter(Boolean))]
+    .forEach((group) => options.push(el('option', { attrs: { value: group }, textContent: group })));
+  replaceChildrenSafe(select, options);
+  select.value = selected || '';
+}
+
+async function openNodeEditor(name = '', options = {}) {
+  const catalogItem = name ? findNodeItem(name) : null;
+  const fixed = !name || isFixedNodeItem(catalogItem || {});
+  let editorData = { node: null, dialerProxyGroups: [] };
+  if (fixed) {
+    try {
+      editorData = await invoke('manual_node_editor', { name });
+    } catch (err) {
+      setNotice(`\u65e0\u6cd5\u8bfb\u53d6\u56fa\u5b9a\u8282\u70b9\u914d\u7f6e\uff1a${err.message || err}`);
+      return;
+    }
+  }
+  const item = editorData?.node || catalogItem;
   const protocol = (item?.type || item?.protocol || 'ss').toLowerCase();
   setEditorValue('#nodeOriginalNameInput', item?.name || '');
   setEditorValue('#nodeEditNameInput', item?.name || '');
@@ -5290,9 +5414,10 @@ function openNodeEditor(name = '') {
   if (skipCert) skipCert.checked = Boolean(item?.['skip-cert-verify']);
   const udp = $('#nodeEditUdpToggle');
   if (udp) udp.checked = item?.udp !== false;
+  populateNodeDialerProxyGroups(editorData?.dialerProxyGroups || [], item?.['dialer-proxy'] || '');
   refreshNodeEditorProtocolFields();
   $('#nodeEditorOverlay')?.classList.remove('hidden');
-  $('#nodeEditNameInput')?.focus();
+  (options.focusDialerProxy ? $('#nodeEditDialerProxySelect') : $('#nodeEditNameInput'))?.focus();
   setNotice(item ? `\u7f16\u8f91\u8282\u70b9\uff1a${item.name}` : '\u6dfb\u52a0\u56fa\u5b9a\u8282\u70b9');
 }
 
@@ -5318,6 +5443,8 @@ function collectNodeEditorPayload() {
   if ((type === 'socks5' || type === 'http') && username) payload.username = username;
   if (type === 'tuic') payload.password = $('#nodeEditTuicPasswordInput')?.value.trim() || '';
   if (cipher) payload.cipher = cipher;
+  const dialerProxy = $('#nodeEditDialerProxySelect')?.value.trim() || '';
+  if (dialerProxy) payload['dialer-proxy'] = dialerProxy;
   const advanced = [
     ['servername', '#nodeEditSniInput'],
     ['flow', '#nodeEditFlowInput'],
@@ -5341,6 +5468,13 @@ function collectNodeEditorPayload() {
   return payload;
 }
 
+async function refreshFixedNodeSurfaces() {
+  const deadline = Date.now() + 3000;
+  while (nodeBusy && Date.now() < deadline) await sleep(20);
+  await refreshNodes(true, { target: 'all', delay: 0 });
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
 async function saveNodeEditor(event) {
   event.preventDefault();
   const button = $('#saveNodeEditorBtn');
@@ -5353,7 +5487,7 @@ async function saveNodeEditor(event) {
     }
     const savedNode = { ...payload, ...(result?.node || {}), alive: true, delay: -1, manual: true, fixed: true, static: true, source: 'manual' };
     closeNodeEditor();
-    await refreshNodes(true);
+    await refreshFixedNodeSurfaces();
     if (latestGroup) {
       const originalName = payload.originalName || savedNode.name;
       const items = latestGroup.items || [];
@@ -5369,13 +5503,213 @@ async function saveNodeEditor(event) {
   });
 }
 
+async function importProfileFileJob(name, content) {
+  return runBackgroundJob('importProfileFile', { name, content }, {
+    pendingNotice: '\u6b63\u5728\u6821\u9a8c\u5e76\u5bfc\u5165\u672c\u5730\u914d\u7f6e...',
+    successNotice: '\u672c\u5730\u914d\u7f6e\u5df2\u5bfc\u5165\u3002',
+    failureNotice: (err) => `\u672c\u5730\u914d\u7f6e\u5bfc\u5165\u5931\u8d25\uff1a${err.message || err}`
+  });
+}
+
+async function editProfileSourceJob(id, url) {
+  return runBackgroundJob('editProfileSource', { id, url }, {
+    pendingNotice: '\u6b63\u5728\u9a8c\u8bc1\u65b0\u7684\u8ba2\u9605\u5730\u5740...',
+    successNotice: '\u8ba2\u9605\u5730\u5740\u5df2\u66f4\u65b0\u3002',
+    failureNotice: (err) => `\u8ba2\u9605\u5730\u5740\u66f4\u65b0\u5931\u8d25\uff1a${err.message || err}`
+  });
+}
+
+let fixedNodeContextState = null;
+let fixedNodeContextSeq = 0;
+
+function ensureFixedNodeContextMenu() {
+  if ($('#fixedNodeContextMenu')) return;
+  const menu = el('div', {
+    id: 'fixedNodeContextMenu',
+    className: 'node-group-context-menu fixed-node-context-menu hidden',
+    attrs: { role: 'menu', 'aria-label': '\u56fa\u5b9a\u8282\u70b9\u64cd\u4f5c' }
+  });
+  menu.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-fixed-node-action]');
+    if (!button || !fixedNodeContextState) return;
+    const { name } = fixedNodeContextState;
+    const action = button.dataset.fixedNodeAction || '';
+    closeFixedNodeContextMenu();
+    if (action === 'test') void testSingleNode(name, button);
+    if (action === 'edit') void openNodeEditor(name);
+    if (action === 'add') void openNodeEditor('');
+    if (action === 'delete') void deleteFixedNode(name);
+  });
+  menu.addEventListener('change', (event) => {
+    const select = event.target.closest('[data-fixed-node-dialer-proxy]');
+    if (!select || !fixedNodeContextState) return;
+    void updateFixedNodeDialerProxy(select.value || '');
+  });
+  document.body.append(menu);
+}
+
+function closeFixedNodeContextMenu() {
+  fixedNodeContextSeq += 1;
+  fixedNodeContextState = null;
+  $('#fixedNodeContextMenu')?.classList.add('hidden');
+}
+
+function positionFixedNodeContextMenu(clientX, clientY) {
+  const menu = $('#fixedNodeContextMenu');
+  if (!menu) return;
+  const gap = 12;
+  const left = Math.max(gap, Math.min(clientX, window.innerWidth - menu.offsetWidth - gap));
+  const top = Math.max(gap, Math.min(clientY, window.innerHeight - menu.offsetHeight - gap));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+}
+
+function fixedNodeMenuButton(action, label, detail, danger = false) {
+  return el('button', {
+    className: danger ? 'danger' : '',
+    dataset: { fixedNodeAction: action },
+    attrs: { type: 'button', role: 'menuitem' }
+  }, [el('b', { textContent: label }), el('small', { textContent: detail })]);
+}
+
+function renderFixedNodeContextMenu(editorData = {}, options = {}) {
+  const menu = $('#fixedNodeContextMenu');
+  if (!menu || !fixedNodeContextState) return;
+  const node = editorData.node || fixedNodeContextState.item || {};
+  const groups = editorData.dialerProxyGroups || [];
+  const selected = node['dialer-proxy'] || '';
+  const loading = Boolean(options.loading);
+  const selectOptions = [el('option', {
+    attrs: { value: '' },
+    textContent: loading ? '\u8bfb\u53d6\u524d\u7f6e\u4ee3\u7406\u7ec4...' : '\u76f4\u8fde / \u4e0d\u4f7f\u7528'
+  })];
+  groups.forEach((group) => selectOptions.push(el('option', { attrs: { value: group }, textContent: group })));
+  replaceChildrenSafe(menu, [
+    el('div', { className: 'node-group-context-title' }, [
+      el('b', { textContent: fixedNodeContextState.name }),
+      el('small', { textContent: '\u56fa\u5b9a\u8282\u70b9' })
+    ]),
+    fixedNodeMenuButton('test', '\u6d4b\u901f', '\u4ec5\u6d4b\u8bd5\u5f53\u524d\u8282\u70b9\uff0c\u4e0d\u5207\u6362'),
+    fixedNodeMenuButton('edit', '\u7f16\u8f91', '\u4fee\u6539\u8fde\u63a5\u53c2\u6570'),
+    fixedNodeMenuButton('add', '\u6dfb\u52a0\u56fa\u5b9a\u8282\u70b9', '\u65b0\u5efa\u53e6\u4e00\u4e2a\u8282\u70b9'),
+    el('div', { className: 'node-group-context-section', textContent: '\u524d\u7f6e\u4ee3\u7406\u7ec4' }),
+    el('label', { className: 'fixed-node-dialer-control' }, [
+      el('select', {
+        dataset: { fixedNodeDialerProxy: '1' },
+        ariaLabel: '\u9009\u62e9\u524d\u7f6e\u4ee3\u7406\u7ec4',
+        disabled: loading ? 'disabled' : undefined
+      }, selectOptions),
+      el('small', { id: 'fixedNodeDialerHint', textContent: loading ? '\u6b63\u5728\u8bfb\u53d6\u53ef\u7528\u524d\u7f6e\u7ec4...' : (groups.length ? '\u53d8\u66f4\u540e\u7acb\u5373\u91cd\u8f7d\u5f53\u524d\u8fd0\u884c\u914d\u7f6e' : '\u5f53\u524d\u8ba2\u9605\u6ca1\u6709\u53ef\u7528\u7684\u65e0\u73af\u524d\u7f6e\u7ec4') })
+    ]),
+    fixedNodeMenuButton('delete', '\u5220\u9664', '\u4ece\u5f53\u524d\u8ba2\u9605\u79fb\u9664\u8be5\u8282\u70b9', true)
+  ]);
+  const select = menu.querySelector('[data-fixed-node-dialer-proxy]');
+  if (select && !loading) select.value = selected;
+}
+
+function hydrateFixedNodeContextMenu(editorData = {}) {
+  const menu = $('#fixedNodeContextMenu');
+  if (!menu || !fixedNodeContextState) return;
+  const node = editorData.node || fixedNodeContextState.item || {};
+  const groups = Array.isArray(editorData.dialerProxyGroups) ? editorData.dialerProxyGroups : [];
+  const select = menu.querySelector('[data-fixed-node-dialer-proxy]');
+  if (!select) return;
+  const options = [el('option', { attrs: { value: '' }, textContent: '\u76f4\u8fde / \u4e0d\u4f7f\u7528' })];
+  groups.forEach((group) => options.push(el('option', { attrs: { value: group }, textContent: group })));
+  replaceChildrenSafe(select, options);
+  select.value = node['dialer-proxy'] || '';
+  select.disabled = false;
+  const hint = $('#fixedNodeDialerHint');
+  if (hint) hint.textContent = groups.length
+    ? '\u53d8\u66f4\u540e\u7acb\u5373\u91cd\u8f7d\u5f53\u524d\u8fd0\u884c\u914d\u7f6e'
+    : '\u5f53\u524d\u8ba2\u9605\u6ca1\u6709\u53ef\u7528\u7684\u65e0\u73af\u524d\u7f6e\u7ec4';
+}
+
+async function openFixedNodeContextMenu(event) {
+  const row = event.target.closest('.row[data-node]');
+  if (!row) return;
+  const name = row.dataset.node || '';
+  const item = findNodeItem(name);
+  if (!isFixedNodeItem(item || {})) return;
+  event.preventDefault();
+  event.stopPropagation();
+  ensureFixedNodeContextMenu();
+  const menu = $('#fixedNodeContextMenu');
+  const seq = ++fixedNodeContextSeq;
+  fixedNodeContextState = { name, item, editorData: null };
+  renderFixedNodeContextMenu({ node: item }, { loading: true });
+  menu.classList.remove('hidden');
+  positionFixedNodeContextMenu(event.clientX, event.clientY);
+  try {
+    const editorData = await invoke('manual_node_editor', { name });
+    if (seq !== fixedNodeContextSeq || !fixedNodeContextState) return;
+    fixedNodeContextState.editorData = editorData;
+    hydrateFixedNodeContextMenu(editorData);
+  } catch (err) {
+    const hint = $('#fixedNodeDialerHint');
+    const select = menu.querySelector('[data-fixed-node-dialer-proxy]');
+    if (select) select.disabled = true;
+    if (hint) hint.textContent = '\u524d\u7f6e\u7ec4\u8bfb\u53d6\u5931\u8d25\uff0c\u53ef\u7ee7\u7eed\u7f16\u8f91\u6216\u6d4b\u901f';
+    setNotice(`\u65e0\u6cd5\u8bfb\u53d6\u56fa\u5b9a\u8282\u70b9\u914d\u7f6e\uff1a${err.message || err}`);
+  }
+}
+
+async function updateFixedNodeDialerProxy(group) {
+  const context = fixedNodeContextState;
+  if (!context?.editorData?.node) return;
+  const payload = { ...context.editorData.node, originalName: context.name };
+  if (group) payload['dialer-proxy'] = group;
+  else delete payload['dialer-proxy'];
+  closeFixedNodeContextMenu();
+  setNotice('\u6b63\u5728\u66f4\u65b0\u524d\u7f6e\u4ee3\u7406\u7ec4...');
+  try {
+    const result = await invoke('save_manual_node', { node: payload });
+    if (result?.settings && latestStatus?.settings) latestStatus = { ...latestStatus, settings: result.settings };
+    await refreshFixedNodeSurfaces();
+    setNotice(group ? `\u5df2\u5c06 ${context.name} \u7684\u524d\u7f6e\u4ee3\u7406\u8bbe\u4e3a ${group}` : `\u5df2\u53d6\u6d88 ${context.name} \u7684\u524d\u7f6e\u4ee3\u7406`);
+  } catch (err) {
+    setNotice(`\u66f4\u65b0\u524d\u7f6e\u4ee3\u7406\u5931\u8d25\uff1a${err.message || err}`);
+  }
+}
+
+async function deleteFixedNode(name) {
+  const confirmed = await requestAppConfirm({
+    title: '\u5220\u9664\u56fa\u5b9a\u8282\u70b9',
+    message: `\u786e\u5b9a\u5220\u9664\u201c${name}\u201d\uff1f\u8fd0\u884c\u914d\u7f6e\u4f1a\u7acb\u5373\u91cd\u8f7d\u3002`,
+    okText: '\u5220\u9664',
+    danger: true
+  });
+  if (!confirmed) return;
+  setNotice(`\u6b63\u5728\u5220\u9664\u56fa\u5b9a\u8282\u70b9\uff1a${name}`);
+  try {
+    const result = await invoke('delete_manual_node', { name });
+    if (result?.settings && latestStatus?.settings) latestStatus = { ...latestStatus, settings: result.settings };
+    favoriteNodes.delete(nodePreferenceKey(name));
+    nodeUsageCounts.delete(nodePreferenceKey(name));
+    speedResultOverlay.delete(name);
+    saveFavoriteNodes();
+    saveNodeUsageCounts();
+    if (selectedNode === name) selectedNode = '';
+    if (latestGroup?.items) {
+      const items = latestGroup.items.filter((item) => item.name !== name && item.realProxyName !== name);
+      setLatestGroup({ ...latestGroup, items, now: latestGroup.now === name ? '' : latestGroup.now });
+      scheduleRowsRender(items, { force: true, target: 'all', delay: 0 });
+    }
+    await refreshFixedNodeSurfaces();
+    setNotice(`\u56fa\u5b9a\u8282\u70b9\u5df2\u5220\u9664\uff1a${name}`);
+  } catch (err) {
+    setNotice(`\u5220\u9664\u56fa\u5b9a\u8282\u70b9\u5931\u8d25\uff1a${err.message || err}`);
+  }
+}
+
 function toggleFavoriteNode(name) {
   if (!name) return;
-  if (favoriteNodes.has(name)) {
-    favoriteNodes.delete(name);
+  const key = nodePreferenceKey(name);
+  if (favoriteNodes.has(key)) {
+    favoriteNodes.delete(key);
     setNotice(`\u5df2\u53d6\u6d88\u6536\u85cf\uff1a${name}`);
   } else {
-    favoriteNodes.add(name);
+    favoriteNodes.add(key);
     setNotice(`\u5df2\u6536\u85cf\u8282\u70b9\uff1a${name}`);
   }
   saveFavoriteNodes();
@@ -5456,7 +5790,7 @@ async function refreshConnections(token = null) {
         ])
       ]);
     });
-    replaceChildrenSafe($('#connectionRows'), rows.length ? rows : [emptyState('\u5f53\u524d\u6ca1\u6709\u6d3b\u52a8\u8fde\u63a5\u3002')]);
+    replaceChildrenSafe($('#connectionRows'), rows.length ? rows : [connectionEmptyState()]);
     markPageCache('connections');
   } catch (err) {
     if (!isCurrentPageTask(token, 'connections')) return;
@@ -5493,9 +5827,9 @@ function normalizeRoutingStaticText() {
   const title = panel.querySelector('.section-head h2');
   const subtitle = panel.querySelector('.section-head p');
   if (title) title.textContent = '\u89c4\u5219';
-  if (subtitle) subtitle.textContent = '\u4e0d\u7528\u5199 YAML\uff1a\u6307\u5b9a\u54ea\u4e2a\u7f51\u7ad9\u6216\u5e94\u7528\u8d70\u54ea\u6761\u7ebf\u8def\uff0c\u7cfb\u7edf\u89c4\u5219\u53ea\u8bfb\u4e14\u4f1a\u8bf4\u660e\u7528\u9014\u3002';
+  if (subtitle) subtitle.textContent = '\u4e3a\u7f51\u7ad9\u6216\u5e94\u7528\u6307\u5b9a\u7ebf\u8def\u3002\u66f4\u6539\u4ec5\u5728\u70b9\u51fb\u201c\u5e94\u7528\u8349\u7a3f\u201d\u540e\u751f\u6548\u3002';
   const badge = $('#routingReadonlyBadge');
-  if (badge) badge.textContent = '\u5b89\u5168\u9884\u89c8\uff0c\u4e0d\u6539\u914d\u7f6e';
+  if (badge) badge.textContent = '\u9884\u89c8\u9636\u6bb5\uff0c\u5c1a\u672a\u751f\u6548';
   const refresh = $('#refreshRoutingBtn');
   if (refresh) refresh.textContent = '\u5237\u65b0';
   const summaryLabels = panel.querySelectorAll('.routing-summary article span');
@@ -5563,157 +5897,15 @@ function ensureRoutingAssistantUi() {
   const autoCount = $('#routingAutoCount');
   if (autoCount) autoCount.id = 'routingSystemRuleCount';
   normalizeRoutingStaticText();
-  const actionOptions = () => [
-    el('option', { textContent: '\u9009\u62e9\u7ebf\u8def\u6216\u8282\u70b9', attrs: { value: 'proxy' } }),
-    el('option', { textContent: '\u76f4\u8fde\uff08\u4e0d\u8d70\u4ee3\u7406\uff09', attrs: { value: 'direct' } }),
-    el('option', { textContent: '\u963b\u6b62\u8bbf\u95ee', attrs: { value: 'reject' } })
-  ];
-  const targetField = (id) => el('label', { className: 'routing-field routing-proxy-target-field' }, [
-    el('span', { textContent: '\u7ebf\u8def\u6216\u8282\u70b9' }),
-    el('select', { id, attrs: { 'aria-label': '\u7ebf\u8def\u6216\u8282\u70b9' } }, [])
-  ]);
-  const scopeField = (id) => el('label', { className: 'routing-field routing-scope-field' }, [
-    el('span', { textContent: '作用范围' }),
-    el('select', { id, attrs: { 'aria-label': '规则作用范围' } }, [
-      el('option', { textContent: '所有订阅', attrs: { value: 'global' } }),
-      el('option', { textContent: '仅当前订阅', attrs: { value: 'profile' } })
-    ])
-  ]);
-  const kindButton = (kind, title, detail) => el('button', {
-    className: kind === routingAssistantKind ? 'active' : '',
-    dataset: { routingKind: kind },
-    attrs: { type: 'button' }
-  }, [
-    el('b', { textContent: title }),
-    // Keep the extra explanation available to assistive technology without
-    // making the primary route picker read like a manual.
-    el('small', { className: 'sr-only', textContent: detail })
-  ]);
-  const panelHeader = (title, detail) => el('div', { className: 'routing-panel-title' }, [
-    el('b', { textContent: title }),
-    el('small', { textContent: detail })
-  ]);
-  const systemEntry = (title, detail) => el('div', { className: 'routing-system-entry' }, [
-    el('b', { textContent: title }),
-    el('small', { textContent: detail })
-  ]);
-  const assistant = el('div', {
-    className: 'routing-assistant',
-    dataset: { view: routingAssistantView, kind: routingAssistantKind },
-    attrs: { 'aria-label': '\u5206\u6d41\u89c4\u5219\u8349\u7a3f\u9884\u89c8' }
-  }, [
-    el('div', { className: 'routing-assistant-head' }, [
-      el('div', {}, [
-        el('h3', { textContent: '\u5206\u6d41\u89c4\u5219' }),
-        el('p', { textContent: '\u4e3a\u7f51\u7ad9\u6216\u5e94\u7528\u6307\u5b9a\u7ebf\u8def' })
-      ]),
-      el('div', { className: 'routing-safety-strip' }, [
-        el('span', { textContent: '\u5148\u9884\u89c8\uff0c\u53ef\u64a4\u9500\uff0c\u4e0d\u5f71\u54cd\u5f53\u524d\u8fde\u63a5' })
-      ])
-    ]),
-    el('div', { className: 'routing-builder' }, [
-      el('nav', { className: 'routing-kind-list', attrs: { 'aria-label': '\u9009\u62e9\u89c4\u5219\u5165\u53e3' } }, [
-        kindButton('website', '\u7f51\u7ad9\u89c4\u5219', '\u8f93\u5165 youtube.com \u8fd9\u7c7b\u57df\u540d'),
-        kindButton('app', '\u5e94\u7528\u89c4\u5219', '\u9009\u62e9 Telegram.exe \u8fd9\u7c7b\u7a0b\u5e8f'),
-        kindButton('system', '\u7cfb\u7edf\u89c4\u5219', '\u67e5\u770b Aegos \u81ea\u52a8\u7ef4\u62a4\u7684\u89c4\u5219')
-      ]),
-      el('section', { className: 'routing-builder-panel is-active', id: 'routingPanelWebsite', dataset: { routingPanel: 'website' }, attrs: { 'aria-label': '\u7f51\u7ad9\u89c4\u5219\u5411\u5bfc' } }, [
-        panelHeader('\u7f51\u7ad9\u89c4\u5219', '\u7c98\u8d34\u57df\u540d\u6216\u94fe\u63a5\uff0c\u9009\u62e9\u7ebf\u8def'),
-        el('label', { className: 'routing-field' }, [
-          el('span', { textContent: '\u76ee\u6807\u7f51\u7ad9' }),
-          el('input', { id: 'routingWebsiteInput', attrs: { placeholder: 'youtube.com 或 https://www.youtube.com/watch?v=...', autocomplete: 'off', spellcheck: 'false' } }),
-        ]),
-        el('div', { className: 'routing-service-presets', attrs: { 'aria-label': '常用服务规则' } }, [
-          el('span', { textContent: '常用服务' }),
-          el('button', { className: 'ghost compact', dataset: { routingService: 'youtube' }, attrs: { type: 'button' }, textContent: 'YouTube' }),
-          el('button', { className: 'ghost compact', dataset: { routingService: 'telegram' }, attrs: { type: 'button' }, textContent: 'Telegram' }),
-          el('button', { className: 'ghost compact', dataset: { routingService: 'netflix' }, attrs: { type: 'button' }, textContent: 'Netflix' })
-        ]),
-        el('div', { className: 'routing-draft-form' }, [
-          el('label', { className: 'routing-field' }, [
-            el('span', { textContent: '\u8fd9\u4e2a\u7f51\u7ad9' }),
-            el('select', { id: 'routingWebsiteAction', attrs: { 'aria-label': '\u8d70\u5411' } }, actionOptions())
-          ]),
-          targetField('routingWebsiteTargetSelect'),
-          scopeField('routingWebsiteScope'),
-          el('button', { id: 'previewWebsiteRuleBtn', className: 'primary compact', attrs: { type: 'button' }, textContent: '\u9884\u89c8\u89c4\u5219' })
-        ]),
-        el('p', { id: 'routingDraftPreview', className: 'routing-draft-preview', textContent: '\u8f93\u5165\u7f51\u7ad9\u540e\uff0c\u8fd9\u91cc\u4f1a\u544a\u8bc9\u4f60\u5b83\u5c06\u8d70\u54ea\u6761\u7ebf\u8def\u3002' })
-      ]),
-      el('section', { className: 'routing-builder-panel', id: 'routingPanelApp', dataset: { routingPanel: 'app' }, attrs: { 'aria-label': '\u5e94\u7528\u89c4\u5219\u5411\u5bfc' } }, [
-        panelHeader('\u5e94\u7528\u89c4\u5219', '\u8f93\u5165\u8fdb\u7a0b\u540d\u6216 .exe \u8def\u5f84'),
-        el('label', { className: 'routing-field' }, [
-          el('span', { textContent: '\u76ee\u6807\u5e94\u7528' }),
-          el('input', { id: 'routingAppInput', attrs: { placeholder: 'Telegram.exe 或 C:\\Program Files\\App\\app.exe', autocomplete: 'off', spellcheck: 'false' } }),
-          el('small', { className: 'sr-only', textContent: '\u4e0d\u5fc5\u77e5\u9053\u8fdb\u7a0b\u89c4\u5219\uff1b\u8f93\u5165 Telegram \u4e5f\u4f1a\u81ea\u52a8\u8865\u6210 Telegram.exe\u3002' })
-        ]),
-        el('div', { className: 'routing-draft-form' }, [
-          el('label', { className: 'routing-field' }, [
-            el('span', { textContent: '\u8fd9\u4e2a\u5e94\u7528' }),
-            el('select', { id: 'routingAppAction', attrs: { 'aria-label': '\u8d70\u5411' } }, actionOptions())
-          ]),
-          targetField('routingAppTargetSelect'),
-          scopeField('routingAppScope'),
-          el('button', { id: 'previewAppRuleBtn', className: 'primary compact', attrs: { type: 'button' }, textContent: '\u9884\u89c8\u89c4\u5219' })
-        ]),
-        el('p', { id: 'routingAppDraftPreview', className: 'routing-draft-preview', textContent: '\u8f93\u5165\u5e94\u7528\u540e\uff0c\u8fd9\u91cc\u4f1a\u544a\u8bc9\u4f60\u5b83\u5c06\u8d70\u54ea\u6761\u7ebf\u8def\u3002' })
-      ]),
-      el('section', { className: 'routing-builder-panel', id: 'routingPanelSystem', dataset: { routingPanel: 'system' } }, [
-        panelHeader('\u7cfb\u7edf\u89c4\u5219', '\u8fd9\u4e9b\u89c4\u5219\u7531 Aegos \u81ea\u52a8\u7ef4\u62a4\uff0c\u7528\u6765\u4fdd\u8bc1\u68c0\u6d4b\u3001\u8bca\u65ad\u548c\u9632\u6cc4\u9732\u884c\u4e3a\u53ef\u63a7\u3002'),
-        el('div', { className: 'routing-system-entry-grid' }, [
-          systemEntry('\u843d\u5730 IP \u67e5\u8be2', '\u8ba9 IP \u68c0\u6d4b\u8d70\u5f53\u524d\u8282\u70b9\uff0c\u4e0d\u6539\u53d8\u4f60\u7684\u8fde\u63a5\u3002'),
-          systemEntry('Aegos \u81ea\u8eab\u670d\u52a1', '\u4fdd\u8bc1\u8ba2\u9605\u3001\u8bca\u65ad\u3001\u72b6\u6001\u67e5\u8be2\u80fd\u88ab\u8bc6\u522b\u548c\u89e3\u91ca\u3002'),
-          systemEntry('\u9632\u6cc4\u9732\u4fdd\u62a4', '\u9632\u6b62\u68c0\u6d4b\u6216\u7cfb\u7edf\u63a5\u7ba1\u65f6\u51fa\u73b0\u4e0d\u53ef\u89c1\u7684\u7ed5\u8fc7\u3002')
-        ]),
-        el('p', { id: 'routingSystemEntryHint', className: 'routing-draft-preview ok', textContent: '\u7cfb\u7edf\u89c4\u5219\u53ea\u8bfb\uff0c\u4e0d\u4f1a\u8981\u6c42\u4f60\u624b\u52a8\u7f16\u8f91\uff1b\u5982\u679c\u5f71\u54cd\u7528\u6237\u89c4\u5219\uff0cAegos \u4f1a\u8bf4\u660e\u539f\u56e0\u3002' }),
-        el('button', { id: 'routingShowSystemRulesBtn', className: 'ghost compact', attrs: { type: 'button' }, textContent: '\u67e5\u770b\u7cfb\u7edf\u89c4\u5219\u660e\u7ec6' })
-      ])
-    ]),
-    el('section', { id: 'routingDraftListCard', className: 'routing-draft-card routing-draft-list-card' }, [
-      el('div', { className: 'routing-draft-head' }, [
-        el('div', {}, [
-          el('b', { textContent: '\u8349\u7a3f\u4e0e\u9a8c\u8bc1' }),
-          el('small', { id: 'routingDraftListHint', textContent: '\u672a\u5e94\u7528\u7684\u53d8\u66f4' })
-        ])
-      ]),
-      el('div', { id: 'routingDraftList', className: 'routing-draft-list' }, []),
-      el('p', { id: 'routingConflictSummary', className: 'routing-draft-preview', textContent: '\u6682\u65e0\u8349\u7a3f\u3002' }),
-      el('div', { className: 'routing-draft-actions' }, [
-        el('button', { id: 'undoRoutingDraftBtn', className: 'ghost compact', attrs: { type: 'button' }, textContent: '\u64a4\u9500\u4e0a\u4e00\u6761' }),
-        el('button', { id: 'verifyAllRoutingDraftsBtn', className: 'ghost compact', attrs: { type: 'button' }, textContent: '\u9a8c\u8bc1\u5168\u90e8' }),
-        el('button', { id: 'applyRoutingDraftsBtn', className: 'primary compact', attrs: { type: 'button' }, textContent: '\u5e94\u7528\u8349\u7a3f' }),
-        el('button', { id: 'undoRoutingApplyBtn', className: 'ghost compact', attrs: { type: 'button' }, textContent: '\u64a4\u9500\u6700\u8fd1\u5e94\u7528' })
-      ])
-    ]),
-    el('details', { id: 'routingRuleTestCard', className: 'routing-draft-card routing-test-card' }, [
-      el('summary', { className: 'routing-draft-head routing-test-summary' }, [
-        el('div', {}, [
-          el('b', { textContent: '测试已有规则' }),
-          el('small', { textContent: '可选：查看网站会走哪条线路' })
-        ])
-      ]),
-      el('div', { className: 'routing-draft-form wide routing-test-form' }, [
-        el('label', { className: 'routing-field' }, [
-          el('span', { textContent: '测试网站' }),
-          el('input', { id: 'routingRuleTestInput', attrs: { placeholder: '例如 youtube.com', autocomplete: 'off', spellcheck: 'false' } })
-        ]),
-        el('button', { id: 'testRoutingRuleBtn', className: 'primary compact', attrs: { type: 'button' }, textContent: '测试当前规则' })
-      ]),
-      el('div', { className: 'routing-test-examples', attrs: { 'aria-label': '规则测试示例' } }, [
-        el('span', { textContent: '示例' }),
-        el('button', { className: 'ghost compact', dataset: { routingTestExample: 'youtube.com' }, attrs: { type: 'button' }, textContent: 'youtube.com' }),
-        el('button', { className: 'ghost compact', dataset: { routingTestExample: 'openai.com' }, attrs: { type: 'button' }, textContent: 'openai.com' }),
-        el('button', { className: 'ghost compact', dataset: { routingTestExample: 'telegram.org' }, attrs: { type: 'button' }, textContent: 'telegram.org' })
-      ]),
-      el('p', { id: 'routingRuleTestResult', className: 'routing-draft-preview', textContent: '输入网站后，Aegos 会告诉你当前会命中哪条规则。' })
-    ]),
-    el('section', { id: 'routingApplyStatus', className: 'routing-apply-status hidden', attrs: { 'aria-live': 'polite' } }, [])
-  ]);
-  const detail = el('section', {
-    id: 'routingSummaryDetail',
-    className: 'routing-summary-detail',
-    attrs: { 'aria-live': 'polite' }
-  }, []);
+  const routingUi = window.AegosRoutingUi;
+  if (!routingUi?.createRoutingAssistantUi) {
+    throw new Error('Routing UI module is unavailable');
+  }
+  const { assistant, detail } = routingUi.createRoutingAssistantUi({
+    el,
+    view: routingAssistantView,
+    kind: routingAssistantKind
+  });
   summary.after(detail, assistant);
   $('#previewWebsiteRuleBtn')?.addEventListener('click', previewWebsiteRoutingDraft);
   $('#previewAppRuleBtn')?.addEventListener('click', previewAppRoutingDraft);
@@ -5819,7 +6011,7 @@ function routingTargetOptions() {
     if (!name || options.some((item) => item.value === name)) return;
     const prefix = isFixedNodeItem(node)
       ? '\u56fa\u5b9a\u8282\u70b9'
-      : favoriteNodes.has(name)
+      : isFavoriteNode(name)
         ? '\u6536\u85cf\u8282\u70b9'
         : '\u8282\u70b9';
     options.push({ label: `${prefix}\uff1a${name}`, value: name, kind: 'node' });
@@ -7481,15 +7673,24 @@ $('#quickRestartBtn').onclick = (event) => runButtonAction(event.currentTarget, 
 $('#lockAutoGroupBtn')?.addEventListener('click', (event) => runButtonAction(event.currentTarget, '...', lockAutoGroupJob));
 $('#refreshConnectionsBtn').onclick = refreshConnections;
 $('#refreshRoutingBtn')?.addEventListener('click', (event) => runDetachedButtonAction(event.currentTarget, '刷新中...', () => refreshRoutingSnapshot()));
-$('#closeAllConnectionsBtn').onclick = (event) => runButtonAction(event.currentTarget, '关闭中...', () => runOptimisticAction({
-  apply: () => { replaceChildrenSafe($('#connectionRows'), [emptyState('\u5f53\u524d\u6ca1\u6709\u6d3b\u52a8\u8fde\u63a5\u3002')]); },
-  commit: () => invoke('close_connections'),
-  refresh: () => refreshConnections(),
-  rollback: () => refreshConnections(),
-  pendingNotice: '正在关闭连接...',
-  successNotice: '已关闭连接',
-  failureNotice: (err) => `关闭连接失败：${err.message || err}`
-}));
+$('#closeAllConnectionsBtn').onclick = async (event) => {
+  const confirmed = await requestAppConfirm({
+    title: '关闭全部连接',
+    message: '当前由 Aegos 接管的活动连接会立即中断，应用可能需要重新加载。是否继续？',
+    okText: '全部关闭',
+    danger: true
+  });
+  if (!confirmed) return;
+  runButtonAction(event.currentTarget, '关闭中...', () => runOptimisticAction({
+    apply: () => { replaceChildrenSafe($('#connectionRows'), [connectionEmptyState()]); },
+    commit: () => invoke('close_connections'),
+    refresh: () => refreshConnections(),
+    rollback: () => refreshConnections(),
+    pendingNotice: '正在关闭连接...',
+    successNotice: '已关闭全部连接',
+    failureNotice: (err) => `关闭连接失败：${err.message || err}`
+  }));
+};
 $('#runDiagBtn').onclick = (event) => runDetachedButtonAction(event.currentTarget, '诊断中...', () => runDiagnostics());
 const copyDiagBtn = $('#copyDiagBtn');
 if (copyDiagBtn) copyDiagBtn.onclick = (event) => runButtonAction(event.currentTarget, '...', async () => {
@@ -7569,6 +7770,29 @@ $('#addProfileBtn').onclick = (event) => runButtonAction(event.currentTarget, '.
     pendingNotice: '正在导入订阅...',
     successNotice: '已添加',
     failureNotice: (err) => `订阅导入失败：${err.message || err}`
+  });
+});
+const profileFileInput = $('#profileFileInput');
+$('#importProfileFileBtn')?.addEventListener('click', () => {
+  if (profileFileInput) {
+    profileFileInput.value = '';
+    profileFileInput.click();
+  }
+});
+profileFileInput?.addEventListener('change', async () => {
+  const file = profileFileInput.files?.[0];
+  if (!file) return;
+  if (file.size > 16 * 1024 * 1024) {
+    setNotice('\u6587\u4ef6\u8d85\u8fc7 16 MiB\uff0c\u4e3a\u907f\u514d\u5360\u7528\u8fc7\u591a\u5185\u5b58\u5df2\u53d6\u6d88\u5bfc\u5165\u3002');
+    return;
+  }
+  const button = $('#importProfileFileBtn');
+  await runButtonAction(button, '\u5bfc\u5165\u4e2d...', async () => {
+    const content = await file.text();
+    const result = await importProfileFileJob(file.name, content);
+    if (!result) throw new Error(lastBackgroundJobError || 'local profile import failed');
+    await refreshProfileSurfaces({ refreshOutboundIp: true });
+    return result;
   });
 });
 const copyEndpointBtn = $('#copyEndpointBtn');
@@ -7740,6 +7964,7 @@ window.addEventListener('keydown', (event) => {
     return;
   }
   if (event.key === 'Escape') closeNodeGroupContextMenu();
+  if (event.key === 'Escape') closeFixedNodeContextMenu();
   if (event.key === 'Escape') closeNodeGroupMemberEditor();
   if (event.key === 'Escape') closeNodeGroupTargetEditor();
   if (event.key === 'Escape' && !$('#nodeEditorOverlay')?.classList.contains('hidden')) {
@@ -7762,7 +7987,10 @@ document.body.addEventListener('click', (event) => {
     return;
   }
   if (!event.target.closest('#nodeGroupContextMenu')) closeNodeGroupContextMenu();
+  if (!event.target.closest('#fixedNodeContextMenu')) closeFixedNodeContextMenu();
 });
+
+$('#nodeRows').addEventListener('contextmenu', (event) => { void openFixedNodeContextMenu(event); });
 
 $('#nodeRows').addEventListener('click', (event) => {
   const actionButton = event.target.closest('[data-node-action]');
@@ -7797,13 +8025,7 @@ $('#homeNodeRows').addEventListener('click', (event) => {
   selectNode(row.dataset.node, row.dataset.backendGroup || '');
 });
 
-$('#nodeRows').addEventListener('keydown', (event) => {
-  if (event.key !== 'Enter' && event.key !== ' ') return;
-  const row = event.target.closest('.row[data-node]');
-  if (!row) return;
-  event.preventDefault();
-  selectNode(row.dataset.node, row.dataset.backendGroup || '');
-});
+$('#homeNodeRows').addEventListener('contextmenu', (event) => { void openFixedNodeContextMenu(event); });
 
 document.body.addEventListener('click', async (event) => {
   try {
@@ -7962,6 +8184,43 @@ document.body.addEventListener('click', async (event) => {
       });
       return;
     }
+    const profileEditSource = event.target.closest('[data-profile-edit-source]')?.dataset.profileEditSource;
+    if (profileEditSource) {
+      const nextUrl = await requestAppInput({
+        title: '\u7f16\u8f91\u8ba2\u9605\u5730\u5740',
+        message: '\u65b0\u5730\u5740\u4f1a\u5148\u4e0b\u8f7d\u3001\u6821\u9a8c\u548c\u9884\u68c0\uff0c\u5168\u90e8\u901a\u8fc7\u540e\u624d\u66ff\u6362\u539f\u8ba2\u9605\u3002',
+        label: '\u65b0\u8ba2\u9605\u5730\u5740',
+        value: '',
+        placeholder: 'https://example.com/subscription',
+        hint: '\u4e3a\u4fdd\u62a4\u8ba2\u9605\u4ee4\u724c\uff0c\u4e0d\u663e\u793a\u5df2\u4fdd\u5b58\u7684\u5b8c\u6574\u5730\u5740\u3002',
+        okText: '\u9a8c\u8bc1\u5e76\u66ff\u6362'
+      });
+      if (nextUrl == null) return;
+      let parsedUrl;
+      try {
+        parsedUrl = new URL(nextUrl.trim());
+      } catch {
+        setNotice('\u8bf7\u8f93\u5165\u5b8c\u6574\u7684 HTTP/HTTPS \u8ba2\u9605\u5730\u5740\u3002');
+        return;
+      }
+      if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+        setNotice('\u8ba2\u9605\u5730\u5740\u53ea\u652f\u6301 HTTP/HTTPS\u3002');
+        return;
+      }
+      await runOptimisticAction({
+        apply: () => applyOptimisticProfilePending(profileEditSource, 'updating'),
+        commit: async () => {
+          const result = await editProfileSourceJob(profileEditSource, parsedUrl.href);
+          if (!result) throw new Error(lastBackgroundJobError || 'subscription source update failed');
+          return result;
+        },
+        refresh: () => refreshProfileSurfaces({ refreshOutboundIp: true }),
+        pendingNotice: '\u6b63\u5728\u9a8c\u8bc1\u65b0\u7684\u8ba2\u9605\u5730\u5740...',
+        successNotice: '\u8ba2\u9605\u5730\u5740\u5df2\u66ff\u6362\uff0c\u8ba2\u9605\u548c\u5206\u6d41\u89c4\u5219\u4fdd\u6301\u4e0d\u53d8\u3002',
+        failureNotice: (err) => `\u66ff\u6362\u5931\u8d25\uff0c\u539f\u8ba2\u9605\u672a\u6539\u53d8\uff1a${err.message || err}`
+      });
+      return;
+    }
     const profileUpdate = event.target.closest('[data-profile-update]')?.dataset.profileUpdate;
     if (profileUpdate) {
       await runOptimisticAction({
@@ -7982,19 +8241,21 @@ document.body.addEventListener('click', async (event) => {
     }
     const profileHealth = event.target.closest('[data-profile-health]')?.dataset.profileHealth;
     if (profileHealth) {
-      const result = await providerHealthcheckJob();
+      const result = await providerHealthcheckJob(profileHealth);
+      if (!result) return;
       const report = result?.report || {};
+      const profileReport = result?.profile || {};
       const providers = report.providers || [];
       const available = providers.filter((provider) => provider.ok).length;
       const unavailable = providers.length - available;
       const hasRemoteProviders = Boolean(report.available && providers.length);
       providerHealthCache.set(profileHealth, hasRemoteProviders
         ? `Provider 检查：可用 ${available}/${providers.length}${unavailable ? `，${unavailable} 个未响应` : ''}`
-        : '内置节点配置，请使用批量测速检查节点');
+        : `配置预检通过：${profileReport.nodes || 0} 节点 / ${profileReport.groups || 0} 策略组 / ${profileReport.rules || 0} 规则`);
       renderProfilesIfVisible();
       setTransientNotice(hasRemoteProviders
         ? `Provider 检查完成：可用 ${available}/${providers.length}`
-        : '当前订阅使用内置节点，请用批量测速检查实际可用性。');
+        : '配置预检通过，未切换订阅或节点。');
       return;
     }
     const profileRemove = event.target.closest('[data-profile-remove]')?.dataset.profileRemove;

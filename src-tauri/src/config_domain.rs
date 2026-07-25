@@ -200,12 +200,20 @@ impl ManualNodeConfig {
         let uuid = text_value(map, "uuid");
         let password = text_value(map, "password");
         if matches!(normalized_protocol.as_str(), "vmess" | "vless" | "tuic") && uuid.is_empty() {
-            return Err(format!("{} manual node UUID is required", normalized_protocol.to_uppercase()));
+            return Err(format!(
+                "{} manual node UUID is required",
+                normalized_protocol.to_uppercase()
+            ));
         }
-        if matches!(normalized_protocol.as_str(), "ss" | "trojan" | "hysteria2" | "hy2" | "anytls" | "tuic")
-            && password.is_empty()
+        if matches!(
+            normalized_protocol.as_str(),
+            "ss" | "trojan" | "hysteria2" | "hy2" | "anytls" | "tuic"
+        ) && password.is_empty()
         {
-            return Err(format!("{} manual node password is required", normalized_protocol.to_uppercase()));
+            return Err(format!(
+                "{} manual node password is required",
+                normalized_protocol.to_uppercase()
+            ));
         }
         if let Some(reality_options) = map.get("reality-opts") {
             let public_key = reality_options
@@ -213,7 +221,9 @@ impl ManualNodeConfig {
                 .map(|options| text_value(options, "public-key"))
                 .unwrap_or_default();
             if normalized_protocol == "vless" && public_key.is_empty() {
-                return Err("VLESS Reality public key is required when Reality is configured".to_string());
+                return Err(
+                    "VLESS Reality public key is required when Reality is configured".to_string(),
+                );
             }
         }
         let mut options = JsonMap::new();
@@ -233,6 +243,7 @@ impl ManualNodeConfig {
             "obfs",
             "obfs-password",
             "reality-opts",
+            "dialer-proxy",
         ] {
             if let Some(value) = map.get(key) {
                 if !value
@@ -434,6 +445,23 @@ rules:
     }
 
     #[test]
+    fn manual_node_keeps_dialer_proxy_in_runtime_config() {
+        let input = json!({
+            "name": "Chained SOCKS5",
+            "server": "198.51.100.20",
+            "port": 1080,
+            "username": "fixture-user",
+            "password": "fixture-password",
+            "dialer-proxy": "Hong Kong Relay"
+        });
+        let node = ManualNodeConfig::from_input(&input, "socks5".to_string())
+            .expect("chained SOCKS5 node");
+        let runtime = serde_yaml::to_string(&node.runtime_yaml().expect("runtime YAML"))
+            .expect("runtime text");
+        assert!(runtime.contains("dialer-proxy: Hong Kong Relay"));
+    }
+
+    #[test]
     fn manual_vless_reality_node_keeps_required_runtime_options() {
         let input = json!({
             "name": "Fixed Reality",
@@ -448,8 +476,8 @@ rules:
             "manual": true,
             "source": "manual"
         });
-        let node = ManualNodeConfig::from_input(&input, "vless".to_string())
-            .expect("manual Reality node");
+        let node =
+            ManualNodeConfig::from_input(&input, "vless".to_string()).expect("manual Reality node");
         let runtime = serde_yaml::to_string(&node.runtime_yaml().expect("runtime YAML"))
             .expect("runtime text");
         for expected in [
@@ -459,7 +487,10 @@ rules:
             "public-key: public-key",
             "short-id: abcd",
         ] {
-            assert!(runtime.contains(expected), "missing {expected} from {runtime}");
+            assert!(
+                runtime.contains(expected),
+                "missing {expected} from {runtime}"
+            );
         }
         assert!(!runtime.contains("manual:"));
         assert!(!runtime.contains("source:"));
