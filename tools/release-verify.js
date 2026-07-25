@@ -32,6 +32,10 @@ function run(command, args) {
   const result = spawnSync(command, args, {
     cwd: root,
     encoding: 'utf8',
+    env: {
+      ...process.env,
+      AEGOS_WRITE_EVIDENCE: prepublish ? '1' : '0'
+    },
     shell: process.platform === 'win32',
     stdio: 'pipe'
   });

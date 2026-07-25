@@ -61,6 +61,8 @@ const evidence = {
   generatedAt: new Date().toISOString()
 };
 
-if (ok) fs.writeFileSync(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
+if (ok && process.env.AEGOS_WRITE_EVIDENCE !== '0') {
+  fs.writeFileSync(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
+}
 console.log(JSON.stringify({ ...evidence, evidencePath }, null, 2));
 process.exit(ok ? 0 : 2);

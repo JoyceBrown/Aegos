@@ -40,6 +40,9 @@
   panicking, allowing the UI to retain its last verified snapshot.
 - Release gates now cover dynamic node identity, truthful stale status,
   empty-state commands, context-menu accessibility, and staggered polling.
+- Final post-push verification preserves the committed performance, soak, and
+  product evidence instead of rewriting timestamped evidence before checking
+  that the release worktree is clean.
 
 ## Verification
 

@@ -909,7 +909,9 @@ try {
   const evidenceFile = headed
     ? `PERFORMANCE_GPU_${pkg.version}.json`
     : `PERFORMANCE_PRESSURE_${pkg.version}.json`;
-  if (result.ok) fs.writeFileSync(path.join(root, evidenceFile), `${JSON.stringify(result, null, 2)}\n`);
+  if (result.ok && process.env.AEGOS_WRITE_EVIDENCE !== '0') {
+    fs.writeFileSync(path.join(root, evidenceFile), `${JSON.stringify(result, null, 2)}\n`);
+  }
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) process.exitCode = 2;
 } finally {

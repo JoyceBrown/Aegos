@@ -353,7 +353,9 @@ try {
       dom: report.dom,
       failures: []
     };
-    fs.writeFileSync(path.join(root, `PERFORMANCE_SOAK_${pkg.version}.json`), `${JSON.stringify(evidence, null, 2)}\n`);
+    if (process.env.AEGOS_WRITE_EVIDENCE !== '0') {
+      fs.writeFileSync(path.join(root, `PERFORMANCE_SOAK_${pkg.version}.json`), `${JSON.stringify(evidence, null, 2)}\n`);
+    }
   }
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) process.exitCode = 2;
