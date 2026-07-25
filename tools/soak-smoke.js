@@ -234,7 +234,10 @@ try {
     `
   });
   await page.send('Page.navigate', { url: appUrl });
-  await delay(900);
+  // Establish the baseline after deferred page caches have settled, but before
+  // the 3.2s startup measurement. The first foreground cycle then also proves
+  // that startup measurement yields instead of contaminating the soak baseline.
+  await delay(2600);
   await page.send('Performance.enable');
   const domBefore = await page.send('Memory.getDOMCounters');
   const report = await evaluate(page, `(async () => {

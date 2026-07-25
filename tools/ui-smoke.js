@@ -301,6 +301,34 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
     const profileTableRow = box('#profileRows .profile-table-row');
     const profileRows = document.querySelector('#profileRows');
     const profileTableOverflowX = profileRows ? profileRows.scrollWidth - profileRows.clientWidth : 0;
+    const profileRowBoxes = all('#profileRows .profile-table-row').map((row) => row.getBoundingClientRect());
+    const profileRowLayoutIssues = all('#profileRows .profile-table-row').flatMap((row, index) => {
+      const rowBox = row.getBoundingClientRect();
+      const statusBox = row.querySelector('.profile-status-column')?.getBoundingClientRect();
+      const actionsBox = row.querySelector('.card-actions')?.getBoundingClientRect();
+      const childrenEscape = [...row.children].filter(visible).some((child) => {
+        const childBox = child.getBoundingClientRect();
+        return childBox.top < rowBox.top - 1 || childBox.bottom > rowBox.bottom + 1;
+      });
+      const columnsOverlap = statusBox && actionsBox && statusBox.width > 0 && actionsBox.width > 0
+        && statusBox.right > actionsBox.left + 1;
+      return childrenEscape || columnsOverlap ? ['row-' + index] : [];
+    });
+    for (let index = 1; index < profileRowBoxes.length; index += 1) {
+      if (profileRowBoxes[index - 1].bottom > profileRowBoxes[index].top + 1) {
+        profileRowLayoutIssues.push('row-overlap-' + index);
+      }
+    }
+    const profileInvalidCopy = [
+      '\u672a\u63d0\u4f9b\u6d41\u91cf\u4e0e\u5230\u671f\u4fe1\u606f',
+      '\u5c1a\u672a\u68c0\u6d4b',
+      '178',
+      'profile-file'
+    ].filter((text) => profileRows?.textContent.includes(text));
+    const profileWrappedActions = all('#profileRows .profile-enable-button')
+      .filter(visible)
+      .filter((button) => button.getBoundingClientRect().height > 34 || button.scrollWidth > button.clientWidth + 1)
+      .map((button) => button.closest('[data-profile-row]')?.dataset.profileRow || 'unknown');
     document.querySelector('[data-page="settings"]').click();
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const settingsBase = collectBase();
@@ -357,6 +385,10 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       profileTableHead,
       profileTableRow,
       profileTableOverflowX,
+      profileRowCount: profileRowBoxes.length,
+      profileRowLayoutIssues,
+      profileInvalidCopy,
+      profileWrappedActions,
       maxMetricIcon: Math.max(...metricIcons),
       brandFontSize: parseFloat(getComputedStyle(document.querySelector('.brand-name')).fontSize),
       brandLogoLoaded: Boolean(document.querySelector('.brand-logo')?.complete && document.querySelector('.brand-logo')?.naturalWidth >= 48),
@@ -492,7 +524,14 @@ try {
         selected: index === 0,
         lastTestedAt: Math.floor(Date.now() / 1000)
       }));
-      const profile = { id: 'ui-smoke', name: 'UI Smoke', type: 'remote', profile_type: 'remote', updated_at: 'now', nodeCount: items.length, proxyGroupCount: 1 };
+      const profile = { id: 'ui-smoke', name: 'UI Smoke', type: 'remote', profile_type: 'remote', source_url: 'https://example.com/main.yaml', hasSourceUrl: true, updated_at: 1784555106000, nodeCount: items.length, proxyGroupCount: 1, ruleCount: 4276, subscriptionUsage: { upload: 1024, download: 2048, total: 1048576, expire: 1800000000 } };
+      const profiles = [
+        { id: 'direct', name: 'Direct', profile_type: 'builtin', updated_at: 0, nodeCount: 0, proxyGroupCount: 0, ruleCount: 0 },
+        { id: 'local-tuic', name: '肯德基 tuic', profile_type: 'file', updated_at: 1784555090000, nodeCount: 23, proxyGroupCount: 0, ruleCount: 0 },
+        { id: 'local-anytls', name: '肯德基 anytls', profile_type: 'file', updated_at: 1784555106000, nodeCount: 42, proxyGroupCount: 0, ruleCount: 0 },
+        { id: 'local-vless', name: '肯德基 vless', profile_type: 'file', updated_at: 1784555122000, nodeCount: 17, proxyGroupCount: 0, ruleCount: 0 },
+        profile
+      ];
       const status = () => ({
         product: 'Aegos', appVersion: '${pkg.version}', running: false, coreReady: false,
         trafficTakeover: false, standby: false, mode: 'rule', traffic: { up: 0, down: 0 }, logs: [],
@@ -500,7 +539,7 @@ try {
         network: { lanIp: '192.168.1.8', proxyEndpoint: '127.0.0.1:7891', outboundIp: '188.253.127.200', availability: { state: 'unverified', label: '未验证', detail: '尚未连接' } },
         permissions: { isAdmin: true, requiresAdminFor: ['TUN', '断网保护'] },
         protection: { label: '未开启' },
-        settings: { activeProfileId: profile.id, profiles: [profile], mixedPort: 7891, controllerPort: 19091, systemProxy: false, tunEnabled: false, startWithSystemProxy: true, dnsHijackEnabled: true, killSwitchEnabled: false, ipv6Enabled: false, allowLan: false, tunStack: 'mixed', logLevel: 'info', reliability: { auto: true, profileFailover: true, failureThreshold: 2, maxDelayMs: 800, candidateLimit: 24 } }
+        settings: { activeProfileId: profile.id, profiles, mixedPort: 7891, controllerPort: 19091, systemProxy: false, tunEnabled: false, startWithSystemProxy: true, dnsHijackEnabled: true, killSwitchEnabled: false, ipv6Enabled: false, allowLan: false, tunStack: 'mixed', logLevel: 'info', reliability: { auto: true, profileFailover: true, failureThreshold: 2, maxDelayMs: 800, candidateLimit: 24 } }
       });
       const invoke = async (command, args = {}) => {
         if (command === 'app_status') return status();
@@ -545,6 +584,10 @@ try {
     if (!report.routingAssistantHeadMissing || !report.routingToolbarMissing) failures.push(`${report.width}x${report.height}: routing assistant retained duplicate heading or controls`);
     if (!report.profileTableHead || !report.profileTableRow) failures.push(`${report.width}x${report.height}: subscription comparison table is incomplete`);
     if (report.profileTableOverflowX > 1) failures.push(`${report.width}x${report.height}: subscription table horizontal overflow ${report.profileTableOverflowX}px`);
+    if (report.profileRowCount !== 5) failures.push(`${report.width}x${report.height}: subscription stress fixture rendered ${report.profileRowCount} rows`);
+    if (report.profileRowLayoutIssues.length) failures.push(`${report.width}x${report.height}: subscription rows overlap or escape: ${report.profileRowLayoutIssues.join(', ')}`);
+    if (report.profileInvalidCopy.length) failures.push(`${report.width}x${report.height}: subscription page retained low-value/raw copy: ${report.profileInvalidCopy.join(', ')}`);
+    if (report.profileWrappedActions.length) failures.push(`${report.width}x${report.height}: subscription actions wrapped: ${report.profileWrappedActions.join(', ')}`);
     if (!report.settingsActive) failures.push(`${report.width}x${report.height}: settings page did not activate`);
     if (!report.settingsSummary || report.settingsSummary.height < 48) failures.push(`${report.width}x${report.height}: settings summary did not render with stable height`);
     if (report.settingsSections < 5) failures.push(`${report.width}x${report.height}: settings sections missing, found ${report.settingsSections}`);

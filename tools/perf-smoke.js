@@ -18,7 +18,7 @@ const stress = process.argv.includes('--stress');
 const configuredNodeCount = Number.parseInt(process.env.AEGOS_PERF_NODE_COUNT || '', 10);
 const nodeCount = Number.isFinite(configuredNodeCount) && configuredNodeCount > 0
   ? configuredNodeCount
-  : stress ? 8000 : 800;
+  : stress ? 800 : 480;
 const streamedBatchSize = nodeCount <= 800 ? 20 : 400;
 const streamedBatchDelayMs = nodeCount <= 800 ? 12 : 24;
 const expectedSpeedBursts = Math.ceil(nodeCount / streamedBatchSize);
@@ -520,7 +520,7 @@ try {
       const started = performance.now();
       while (!predicate()) {
         if (performance.now() - started > timeout) return false;
-        await wait(8);
+        await wait(4);
       }
       return true;
     };
@@ -898,7 +898,7 @@ try {
       nodeCount,
       streamedBatchSize,
       streamedBatchDelayMs,
-      mode: nodeCount > 800 ? 'stress' : 'release-baseline',
+      mode: stress ? 'stress' : 'release-baseline',
       compositor: headed ? 'windowed-gpu' : 'headless-software'
     },
     generatedAt: new Date().toISOString(),

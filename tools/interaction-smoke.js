@@ -942,11 +942,11 @@ try {
     const tunToggle = document.querySelector('#tunHomeToggle');
     tunToggle.click();
     await new Promise((resolve) => setTimeout(resolve, 420));
-    if (!tunToggle.checked || document.querySelector('#tunState')?.textContent.trim() !== '\u5df2\u5f00\u542f') throw new Error('TUN preference did not reconcile before connection');
+    if (!tunToggle.checked || document.querySelector('#tunState')?.textContent.trim() !== '\u8fde\u63a5\u65f6\u542f\u7528') throw new Error('TUN preference was presented as active takeover before connection');
     await click('#connectBtn');
     await new Promise((resolve) => setTimeout(resolve, 1000));
     if (document.querySelector('#connectBtn')?.textContent.trim() !== '\u65ad\u5f00\u8fde\u63a5') throw new Error('TUN-on connection did not reach connected state');
-    if (!document.querySelector('#tunHomeToggle')?.checked || document.querySelector('#tunState')?.textContent.trim() !== '\u5df2\u5f00\u542f') throw new Error('TUN-on connection lost TUN runtime truth');
+    if (!document.querySelector('#tunHomeToggle')?.checked || document.querySelector('#tunState')?.textContent.trim() !== '\u5df2\u63a5\u7ba1') throw new Error('TUN-on connection did not render verified takeover truth');
     journeys.tunOnConnection = true;
     await click('#connectBtn');
     await new Promise((resolve) => setTimeout(resolve, 700));
@@ -1261,7 +1261,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 420));
     if (!document.querySelector('[data-profile-row="url-test"]')?.textContent.includes('Renamed Smoke Sub')) throw new Error('profile rename did not update row');
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'renameProfile')) throw new Error('profile rename did not use background job');
-    if (!document.querySelector('[data-profile-row="url-test"]')?.textContent.includes('89 节点 / 1 策略组 / 12 规则')) throw new Error('profile metadata summary did not render');
+    if (!document.querySelector('[data-profile-row="url-test"]')?.textContent.includes('89 \u4e2a\u8282\u70b9 \u00b7 1 \u4e2a\u7b56\u7565\u7ec4 \u00b7 12 \u6761\u89c4\u5219')) throw new Error('profile metadata summary did not render');
     if (!document.querySelector('[data-profile-row="url-test"]')?.textContent.includes('流量')) throw new Error('profile traffic metadata did not render');
     await click('[data-profile-edit-source="url-test"]');
     await new Promise((resolve) => setTimeout(resolve, 40));
@@ -1383,7 +1383,7 @@ try {
     journeys.nonBlockingBackgroundWork = true;
     const commands = window.__aegosCalls.map((item) => item.command);
     const advancedSettingsCall = window.__aegosCalls.find((item) => item.command === 'start_job' && item.args.kind === 'updateSettings');
-    const required = ['start_job', 'job_status', 'cancel_job', 'prepare_speed_runtime', 'start_proxy_delay_test', 'relaunch_as_admin', 'connections', 'close_connections'];
+    const required = ['start_job', 'job_status', 'cancel_job', 'start_proxy_delay_test', 'cancel_proxy_delay_test', 'relaunch_as_admin', 'connections', 'close_connections'];
     const jobKinds = window.__aegosCalls.filter((item) => item.command === 'start_job').map((item) => item.args.kind);
     return {
       commands,

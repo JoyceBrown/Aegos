@@ -9,6 +9,7 @@ mod core_runtime;
 mod dataplane;
 mod diagnostics_runtime;
 mod manual_node_runtime;
+mod network_runtime;
 mod profile_compiler;
 mod routing_domain;
 mod routing_store;
@@ -76,7 +77,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, State, Window, WindowEvent,
 };
-use windows_process::{run_powershell, run_powershell_with_timeout};
+use windows_process::{run_powershell, run_powershell_with_timeout, stop_stale_managed_core};
 
 const AEGOS_DEFAULT_MIXED_PORT: u16 = 7891;
 const AEGOS_DEFAULT_CONTROLLER_PORT: u16 = 19091;
@@ -600,6 +601,7 @@ struct CoreManager {
     proxy_snapshot_path: PathBuf,
     settings: Settings,
     process: Option<Child>,
+    managed_stop_verified: bool,
     runtime_profile_id: Option<String>,
     runtime_config_digest: Option<String>,
     traffic_takeover: bool,
@@ -4714,50 +4716,6 @@ fn takeover_failure_message(
     }
 }
 
-fn windows_tun_evidence() -> Result<JsonValue, String> {
-    let output = run_powershell(
-        r#"
-$pattern = '(?i)^aegos$'
-$adapters = @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue |
-  Where-Object { $_.Name -match $pattern } |
-  Select-Object Name,InterfaceDescription,Status,ifIndex)
-$routes = @()
-foreach ($adapter in $adapters) {
-  $routes += @(Get-NetRoute -InterfaceIndex $adapter.ifIndex -ErrorAction SilentlyContinue |
-    Where-Object { $_.DestinationPrefix -in @('0.0.0.0/0','0.0.0.0/1','128.0.0.0/1','::/0','::/1','8000::/1') } |
-    Select-Object DestinationPrefix,InterfaceIndex,RouteMetric)
-}
-[pscustomobject]@{
-  adapter_count = $adapters.Count
-  active_adapter_count = @($adapters | Where-Object { $_.Status -eq 'Up' }).Count
-  route_count = $routes.Count
-  adapters = $adapters
-  routes = $routes
-} | ConvertTo-Json -Depth 5 -Compress
-"#,
-    )?;
-    serde_json::from_str(&output).map_err(|err| format!("TUN evidence parse failed: {err}"))
-}
-
-fn stop_stale_managed_core(core_path: &Path) -> Result<(), String> {
-    let core_literal = core_runtime::powershell_single_quoted_literal(
-        core_runtime::normalize_windows_program_path_text(&core_path.to_string_lossy()),
-    );
-    run_powershell(&format!(
-        r#"
-$target = {core_literal}
-$processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-  Where-Object {{ $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq [IO.Path]::GetFullPath($target)) }})
-foreach ($process in $processes) {{ Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop }}
-Start-Sleep -Milliseconds 250
-$remaining = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-  Where-Object {{ $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq [IO.Path]::GetFullPath($target)) }})
-if ($remaining.Count -gt 0) {{ throw 'The interrupted Aegos network engine is still running' }}
-"#
-    ))?;
-    Ok(())
-}
-
 fn windows_network_conflict_report(
     mixed_port: u16,
     controller_port: u16,
@@ -4911,34 +4869,6 @@ foreach ($adapter in $adapters) {{
     })
 }
 
-fn direct_connectivity_probe() -> Result<String, String> {
-    let client = Client::builder()
-        .no_proxy()
-        .connect_timeout(Duration::from_millis(1800))
-        .timeout(Duration::from_millis(3200))
-        .user_agent("Aegos/3 tun-verification")
-        .build()
-        .map_err(|err| format!("TUN connectivity client failed: {err}"))?;
-    let endpoints = [
-        "https://www.msftconnecttest.com/connecttest.txt",
-        "https://cp.cloudflare.com/generate_204",
-    ];
-    let mut last_error = String::new();
-    for endpoint in endpoints {
-        match client
-            .get(endpoint)
-            .send()
-            .and_then(|res| res.error_for_status())
-        {
-            Ok(_) => return Ok(endpoint.to_string()),
-            Err(err) => last_error = err.to_string(),
-        }
-    }
-    Err(format!(
-        "TUN direct connectivity verification failed: {last_error}"
-    ))
-}
-
 impl CoreManager {
     fn new(app: &AppHandle) -> Result<Self, String> {
         let startup_started = Instant::now();
@@ -4979,6 +4909,7 @@ impl CoreManager {
             proxy_snapshot_path,
             settings,
             process: None,
+            managed_stop_verified: false,
             runtime_profile_id: None,
             runtime_config_digest: None,
             traffic_takeover: false,
@@ -5069,7 +5000,7 @@ impl CoreManager {
             }
             "tun" => {
                 stop_stale_managed_core(&self.core_path)?;
-                let evidence = windows_tun_evidence()?;
+                let evidence = network_runtime::windows_tun_evidence()?;
                 let active = evidence
                     .get("active_adapter_count")
                     .and_then(JsonValue::as_u64)
@@ -5301,7 +5232,7 @@ impl CoreManager {
                     .to_string(),
             );
         }
-        let evidence = windows_tun_evidence()?;
+        let evidence = network_runtime::windows_tun_evidence()?;
         let active_adapters = evidence
             .get("active_adapter_count")
             .and_then(JsonValue::as_u64)
@@ -5319,7 +5250,7 @@ impl CoreManager {
             return Err("TUN disable verification failed: an active Aegos TUN adapter still owns takeover routes".to_string());
         }
         let connectivity = if expected_enabled {
-            Some(direct_connectivity_probe()?)
+            Some(network_runtime::direct_connectivity_probe()?)
         } else {
             None
         };
@@ -6935,6 +6866,7 @@ impl CoreManager {
         self.runtime_config_digest = Some(result.digest.clone());
         if self.traffic_takeover
             && (self.settings.start_with_system_proxy || self.settings.system_proxy)
+            && !system_takeover::active_takeover_state(&self.app_data).system_proxy
         {
             if let Err(err) = self.set_system_proxy(true) {
                 self.add_log(
@@ -7171,12 +7103,14 @@ impl CoreManager {
             return Err(core_runtime::core_missing_message(&self.core_path));
         }
         if self.process.is_none() {
-            self.stop_orphaned_core_processes().map_err(|err| {
-                self.start_failure_message(
-                    None,
-                    &format!("Interrupted managed core recovery failed: {err}"),
-                )
-            })?;
+            if !std::mem::take(&mut self.managed_stop_verified) {
+                self.stop_orphaned_core_processes().map_err(|err| {
+                    self.start_failure_message(
+                        None,
+                        &format!("Interrupted managed core recovery failed: {err}"),
+                    )
+                })?;
+            }
         }
         self.ensure_runtime_ports().map_err(|err| {
             self.start_failure_message(None, &format!("Port preparation failed: {err}"))
@@ -7300,10 +7234,12 @@ impl CoreManager {
     }
 
     fn terminate_core_process(&mut self, message: &str) {
+        self.managed_stop_verified = false;
         if let Some(mut child) = self.process.take() {
             self.add_log(message, "warn");
-            let _ = child.kill();
-            let _ = child.wait();
+            let killed = child.kill().is_ok();
+            let reaped = child.wait().is_ok();
+            self.managed_stop_verified = killed && reaped;
         }
         self.runtime_profile_id = None;
         self.runtime_config_digest = None;
@@ -7563,6 +7499,17 @@ impl CoreManager {
                 "info",
             );
             return Ok(enable);
+        }
+        if !enable
+            && !self.settings.system_proxy
+            && !self.proxy_snapshot_path.exists()
+            && !system_takeover::active_takeover_state(&self.app_data).system_proxy
+        {
+            self.add_log(
+                "System proxy restore skipped; Aegos never took it over",
+                "info",
+            );
+            return Ok(false);
         }
         let previous_settings = self.settings.clone();
         let previous_takeover = self.traffic_takeover;
@@ -7954,9 +7901,47 @@ impl CoreManager {
         Ok(())
     }
 
+    fn apply_single_setting_runtime(
+        &mut self,
+        was_running: bool,
+        was_connected: bool,
+        restart: bool,
+        tun_change: bool,
+        desired_tun: bool,
+    ) -> Result<(), String> {
+        if !restart || !was_running || (tun_change && !was_connected) {
+            return Ok(());
+        }
+        if tun_change {
+            if let Some(profile) = self.active_profile() {
+                match self.hot_reload_profile(&profile) {
+                    Ok(_) => {
+                        let wants_proxy =
+                            self.settings.system_proxy || self.settings.start_with_system_proxy;
+                        if !desired_tun
+                            && wants_proxy
+                            && !system_takeover::active_takeover_state(&self.app_data).system_proxy
+                        {
+                            self.set_system_proxy(true)?;
+                        }
+                        self.traffic_takeover = desired_tun
+                            || system_takeover::active_takeover_state(&self.app_data).system_proxy;
+                        return Ok(());
+                    }
+                    Err(err) => self.add_log(
+                        format!("TUN hot reload failed; falling back to managed restart: {err}"),
+                        "warn",
+                    ),
+                }
+            }
+        }
+        self.restart_core_preserving_proxy(120).map(|_| ())
+    }
+
     fn update_setting(&mut self, key: &str, value: JsonValue) -> Result<JsonValue, String> {
         let previous_settings = self.settings.clone();
         let was_running = self.process.is_some();
+        let was_connected = self.traffic_takeover;
         let tun_change = key == "tunEnabled"
             && value.as_bool().unwrap_or(false) != previous_settings.tun_enabled;
         let desired_tun = value.as_bool().unwrap_or(previous_settings.tun_enabled);
@@ -8012,7 +7997,13 @@ impl CoreManager {
                     err,
                 ));
             }
-            if let Err(err) = self.restart_after_settings_if_needed(was_running, restart) {
+            if let Err(err) = self.apply_single_setting_runtime(
+                was_running,
+                was_connected,
+                restart,
+                tun_change,
+                desired_tun,
+            ) {
                 return Err(self.rollback_settings_after_failure(
                     previous_settings.clone(),
                     was_running,
@@ -8020,7 +8011,7 @@ impl CoreManager {
                 ));
             }
             if tun_change {
-                let report = match self.verify_tun_state(desired_tun, was_running) {
+                let report = match self.verify_tun_state(desired_tun, was_connected) {
                     Ok(report) => report,
                     Err(err) => {
                         return Err(self.rollback_settings_after_failure(
@@ -8041,7 +8032,7 @@ impl CoreManager {
                 system_takeover::set_component_active(
                     &self.app_data,
                     "tun",
-                    desired_tun && was_running,
+                    desired_tun && was_connected,
                 )?;
             }
             Ok(self.public_settings())
@@ -8050,7 +8041,7 @@ impl CoreManager {
             Ok(result) => {
                 if let Some(transaction) = tun_transaction {
                     transaction.complete_verified(
-                        if was_running {
+                        if was_connected {
                             "TUN configuration, controller, Windows route/adapter evidence and connectivity were verified."
                         } else {
                             "TUN candidate configuration was verified; Windows takeover remains deferred until connection."
@@ -8063,7 +8054,7 @@ impl CoreManager {
                             let active_state_restore = system_takeover::set_component_active(
                                 &self.app_data,
                                 "tun",
-                                previous_settings.tun_enabled && was_running,
+                                previous_settings.tun_enabled && was_connected,
                             )
                             .map(|_| ());
                             combine_restore_results(
@@ -8080,7 +8071,7 @@ impl CoreManager {
             Err(err) => {
                 if let Some(transaction) = tun_transaction {
                     let rollback_ok = self.settings.tun_enabled == previous_settings.tun_enabled
-                        && (!was_running
+                        && (!was_connected
                             || self
                                 .verify_tun_state(previous_settings.tun_enabled, true)
                                 .is_ok());
@@ -8089,7 +8080,7 @@ impl CoreManager {
                 let _ = system_takeover::set_component_active(
                     &self.app_data,
                     "tun",
-                    previous_settings.tun_enabled && was_running,
+                    previous_settings.tun_enabled && was_connected,
                 );
                 Err(err)
             }
@@ -8102,6 +8093,7 @@ impl CoreManager {
             .ok_or_else(|| "Settings update must be an object".to_string())?;
         let previous_settings = self.settings.clone();
         let was_running = self.process.is_some();
+        let was_connected = self.traffic_takeover;
         let desired_tun = map
             .get("tunEnabled")
             .and_then(JsonValue::as_bool)
@@ -8158,7 +8150,17 @@ impl CoreManager {
                     err,
                 ));
             }
-            if let Err(err) = self.restart_after_settings_if_needed(was_running, restart) {
+            if let Err(err) = if tun_change {
+                self.apply_single_setting_runtime(
+                    was_running,
+                    was_connected,
+                    restart,
+                    true,
+                    desired_tun,
+                )
+            } else {
+                self.restart_after_settings_if_needed(was_running, restart)
+            } {
                 return Err(self.rollback_settings_after_failure(
                     previous_settings.clone(),
                     was_running,
@@ -8166,7 +8168,7 @@ impl CoreManager {
                 ));
             }
             if tun_change {
-                let report = match self.verify_tun_state(desired_tun, was_running) {
+                let report = match self.verify_tun_state(desired_tun, was_connected) {
                     Ok(report) => report,
                     Err(err) => {
                         return Err(self.rollback_settings_after_failure(
@@ -8187,7 +8189,7 @@ impl CoreManager {
                 system_takeover::set_component_active(
                     &self.app_data,
                     "tun",
-                    desired_tun && was_running,
+                    desired_tun && was_connected,
                 )?;
             }
             Ok(self.public_settings())
@@ -8196,7 +8198,7 @@ impl CoreManager {
             Ok(result) => {
                 if let Some(transaction) = tun_transaction {
                     transaction.complete_verified(
-                        if was_running {
+                        if was_connected {
                             "Batch settings applied; TUN runtime and Windows takeover were verified."
                         } else {
                             "Batch settings applied; TUN candidate is valid and takeover is deferred until connection."
@@ -8227,7 +8229,7 @@ impl CoreManager {
                             let tun_state_restore = system_takeover::set_component_active(
                                 &self.app_data,
                                 "tun",
-                                previous_settings.tun_enabled && was_running,
+                                previous_settings.tun_enabled && was_connected,
                             )
                             .map(|_| ());
                             let system_restore = combine_restore_results(
@@ -8259,7 +8261,7 @@ impl CoreManager {
                 }
                 if let Some(transaction) = tun_transaction {
                     let rollback_ok = self.settings.tun_enabled == previous_settings.tun_enabled
-                        && (!was_running
+                        && (!was_connected
                             || self
                                 .verify_tun_state(previous_settings.tun_enabled, true)
                                 .is_ok());
@@ -8268,7 +8270,7 @@ impl CoreManager {
                 let _ = system_takeover::set_component_active(
                     &self.app_data,
                     "tun",
-                    previous_settings.tun_enabled && was_running,
+                    previous_settings.tun_enabled && was_connected,
                 );
                 Err(err)
             }
@@ -8555,6 +8557,11 @@ impl CoreManager {
         priority_names: Vec<String>,
     ) -> Result<JsonValue, String> {
         let prepare_started = Instant::now();
+        if let Some(run_id) = expected_run_id {
+            if !speed_test_run_is_current(&self.speed_test, run_id) {
+                return Ok(self.speed_test_snapshot());
+            }
+        }
         if let Err(err) = self.ensure_core_for_delay_test() {
             let message = format!("speed-test-prepare-failed: {err}");
             if let Some(run_id) = expected_run_id {

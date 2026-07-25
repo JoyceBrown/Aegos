@@ -2,6 +2,7 @@
 
 use std::{
     io::Read,
+    path::Path,
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -88,6 +89,25 @@ pub(crate) fn run_powershell_with_timeout(
             message
         })
     }
+}
+
+pub(crate) fn stop_stale_managed_core(core_path: &Path) -> Result<(), String> {
+    let core_literal = crate::core_runtime::powershell_single_quoted_literal(
+        crate::core_runtime::normalize_windows_program_path_text(&core_path.to_string_lossy()),
+    );
+    run_powershell(&format!(
+        r#"
+$target = {core_literal}
+$processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+  Where-Object {{ $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq [IO.Path]::GetFullPath($target)) }})
+foreach ($process in $processes) {{ Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop }}
+Start-Sleep -Milliseconds 250
+$remaining = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+  Where-Object {{ $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq [IO.Path]::GetFullPath($target)) }})
+if ($remaining.Count -gt 0) {{ throw 'The interrupted Aegos network engine is still running' }}
+"#
+    ))?;
+    Ok(())
 }
 
 #[cfg(test)]

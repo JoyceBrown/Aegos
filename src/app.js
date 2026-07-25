@@ -135,6 +135,7 @@ let nodeGroupContextName = '';
 let nodeGroupMemberEditorState = null;
 let nodeGroupTargetEditorState = null;
 const speedTestButtons = new Set();
+const settingUpdatePending = new Set();
 let lastSpeedNodeRefreshAt = 0;
 let latestSpeedStatus = null;
 let speedResultOverlay = new Map();
@@ -142,6 +143,8 @@ let lastAppliedSpeedSignature = '';
 let latestRecommendedName = '';
 let startupAutoSpeedScheduled = false;
 let startupAutoSpeedStarted = false;
+let startupAutoSpeedResumeTimer = null;
+let activeSpeedAutomatic = false;
 let outboundIpRequestSeq = 0;
 let outboundIpPendingSeq = 0;
 let outboundIpLastStable = '-';
@@ -170,6 +173,15 @@ let queuedNodeRefresh = null;
 const jobRecords = new Map();
 const locallyPolledJobIds = new Set();
 const terminalJobStates = new Set(['succeeded', 'failed', 'cancelled']);
+const foregroundJobKinds = new Set([
+  'startCore', 'stopCore', 'restartCore', 'updateSettings', 'updateSetting',
+  'setMode', 'changeProxy', 'selectBestProxy', 'repairSystemProxy', 'recoverNetwork',
+  'setActiveProfile', 'removeProfile', 'updateProfile', 'updateAllProfiles',
+  'addProfileUrl', 'importProfileFile', 'editProfileSource', 'renameProfile',
+  'providerHealthcheck', 'applyRoutingDrafts', 'undoRoutingApply',
+  'applyRoutingGroupEdit', 'applyRoutingRuleEdit', 'resolveUnboundRoutingRule',
+  'repairDiagnostic'
+]);
 const recentInvokes = [];
 const uiPerformanceTrace = [];
 const uiPerformanceTraceLimit = 180;
@@ -3418,11 +3430,29 @@ async function retryJob(id) {
   await runBackgroundJob(job.kind, job.payload || {});
 }
 
+async function preemptSpeedTestForForegroundJob(kind) {
+  if (!foregroundJobKinds.has(kind) || !isSpeedTestActive()) return;
+  const shouldResumeStartupTest = activeSpeedAutomatic;
+  await invoke('cancel_proxy_delay_test').catch(() => {});
+  stopSpeedTestPolling();
+  if (!shouldResumeStartupTest) return;
+  startupAutoSpeedStarted = false;
+  if (startupAutoSpeedResumeTimer) clearTimeout(startupAutoSpeedResumeTimer);
+  startupAutoSpeedResumeTimer = setTimeout(() => {
+    startupAutoSpeedResumeTimer = null;
+    startupAutoSpeedScheduled = false;
+    scheduleStartupAutoSpeedTest();
+  }, 3000);
+}
+
 async function runBackgroundJob(kind, payload = {}, options = {}) {
   const blockRefresh = options.blockRefresh === true;
+  const foregroundJob = foregroundJobKinds.has(kind);
   let locallyPolledJobId = '';
   if (blockRefresh) backgroundJobBusy += 1;
+  if (foregroundJob) foregroundBusy += 1;
   try {
+    await preemptSpeedTestForForegroundJob(kind);
     if (options.pendingNotice) setNotice(options.pendingNotice);
     const started = await invoke('start_job', { kind, payload });
     rememberJob({ ...started, payload });
@@ -3470,6 +3500,7 @@ async function runBackgroundJob(kind, payload = {}, options = {}) {
   } finally {
     if (locallyPolledJobId) locallyPolledJobIds.delete(locallyPolledJobId);
     if (blockRefresh) backgroundJobBusy = Math.max(0, backgroundJobBusy - 1);
+    if (foregroundJob) foregroundBusy = Math.max(0, foregroundBusy - 1);
   }
 }
 
@@ -3960,12 +3991,33 @@ function profileSummaryText(profile) {
   const nodes = Number(profile.node_count ?? profile.nodeCount ?? 0);
   const groups = Number(profile.proxy_group_count ?? profile.proxyGroupCount ?? 0);
   const rules = Number(profile.rule_count ?? profile.ruleCount ?? 0);
-  const suffix = profile.metadataStatus === 'repaired'
-    ? ` / ${'\u5df2\u4fee\u590d'}`
-    : profile.metadataStatus === 'stale'
-      ? ` / ${'\u9700\u66f4\u65b0'}`
-      : '';
-  return `${nodes} \u8282\u70b9 / ${groups} \u7b56\u7565\u7ec4 / ${rules} \u89c4\u5219${suffix}`;
+  const parts = [];
+  if (nodes > 0) parts.push(`${nodes} \u4e2a\u8282\u70b9`);
+  if (groups > 0) parts.push(`${groups} \u4e2a\u7b56\u7565\u7ec4`);
+  if (rules > 0) parts.push(`${rules} \u6761\u89c4\u5219`);
+  if (!parts.length) parts.push(profile.id === 'direct' ? '\u76f4\u8fde\u914d\u7f6e' : '\u6682\u65e0\u53ef\u7528\u8282\u70b9');
+  if (profile.metadataStatus === 'repaired') parts.push('\u5df2\u4fee\u590d');
+  if (profile.metadataStatus === 'stale') parts.push('\u9700\u66f4\u65b0');
+  return parts.join(' \u00b7 ');
+}
+
+function profileSourceLabel(profile, hasSourceUrl) {
+  if (profile.id === 'direct') return '\u5185\u7f6e';
+  if (hasSourceUrl) return '\u8fdc\u7a0b\u8ba2\u9605';
+  return '\u672c\u5730\u914d\u7f6e';
+}
+
+function profileUpdatedLabel(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return '';
+  const date = new Date(numeric < 1000000000000 ? numeric * 1000 : numeric);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).format(date);
 }
 
 function formatProfileBytes(value) {
@@ -4028,6 +4080,28 @@ function renderProfiles() {
     const health = providerHealthCache.get(id);
     const hasSourceUrl = Boolean(profile.hasSourceUrl ?? profile.source_url ?? profile.sourceUrl);
     const usage = profileUsageText(profile);
+    const sourceLabel = profileSourceLabel(profile, hasSourceUrl);
+    const updatedLabel = profileUpdatedLabel(profile.updated_at);
+    const statusItems = [];
+    if (usage) statusItems.push(el('small', { className: 'profile-usage-summary', textContent: usage }));
+    if (health || active) {
+      statusItems.push(el('small', {
+        className: `profile-health-summary ${active ? 'is-active' : ''}`,
+        textContent: health || '\u4f7f\u7528\u4e2d'
+      }));
+    }
+    const menuItems = [];
+    if (hasSourceUrl) menuItems.push(el('button', { dataset: { profileUpdate: id }, textContent: '\u66f4\u65b0\u8ba2\u9605' }));
+    if (id !== 'direct') {
+      menuItems.push(el('button', {
+        dataset: { profileHealth: id },
+        textContent: '\u5065\u5eb7\u68c0\u6d4b',
+        attrs: { title: active ? '\u68c0\u67e5\u5f53\u524d\u8fd0\u884c\u72b6\u6001' : '\u4ec5\u68c0\u67e5\u4fdd\u5b58\u7684\u914d\u7f6e' }
+      }));
+      menuItems.push(el('button', { dataset: { profileRename: id }, textContent: '\u91cd\u547d\u540d' }));
+      if (hasSourceUrl) menuItems.push(el('button', { dataset: { profileEditSource: id }, textContent: '\u7f16\u8f91\u5730\u5740' }));
+      menuItems.push(el('button', { className: 'danger', dataset: { profileRemove: id }, textContent: '\u5220\u9664\u8ba2\u9605' }));
+    }
     const className = `list-card profile-table-row ${active ? 'active' : ''} ${pending ? 'is-pending' : ''}`;
     return el('article', {
       className,
@@ -4039,34 +4113,27 @@ function renderProfiles() {
           el('span', { className: 'profile-active-indicator', attrs: { 'aria-hidden': 'true' } }),
           el('b', { textContent: profile.name || id || '-' })
         ]),
-        el('small', { textContent: `\u66f4\u65b0 ${profile.updated_at || '-'} / ${profile.sourceFormat || profile.profile_type || '-'}` }),
+        el('small', {
+          className: 'profile-meta-summary',
+          textContent: [sourceLabel, updatedLabel].filter(Boolean).join(' \u00b7 ')
+        }),
       ]),
       el('small', { className: 'profile-source-summary', textContent: summary }),
-      el('div', { className: 'profile-status-column' }, [
-        el('small', { className: 'profile-usage-summary', textContent: usage || '\u672a\u63d0\u4f9b\u6d41\u91cf\u4e0e\u5230\u671f\u4fe1\u606f' }),
-        el('small', { className: 'profile-health-summary', textContent: health || (active ? '\u5f53\u524d\u8fd0\u884c' : '\u5c1a\u672a\u68c0\u6d4b') })
-      ]),
+      el('div', { className: 'profile-status-column' }, statusItems),
       el('div', { className: 'card-actions' }, [
-        el('button', {
+        !active && id !== 'direct' ? el('button', {
+          className: 'profile-enable-button',
           dataset: { profileSwitch: id },
-          textContent: active ? '\u5f53\u524d\u4f7f\u7528' : '\u542f\u7528',
-          disabled: active,
-          attrs: { 'aria-current': active ? 'true' : null }
-        }),
-        el('button', { dataset: { profileUpdate: id }, textContent: '\u66f4\u65b0', disabled: id === 'direct' || !hasSourceUrl }),
-        el('button', { dataset: { profileHealth: id }, textContent: '\u5065\u5eb7\u68c0\u6d4b', disabled: id === 'direct', attrs: { title: active ? '\u68c0\u67e5\u8fd0\u884c\u72b6\u6001\uff0c\u4e0d\u4f1a\u5207\u6362\u8282\u70b9' : '\u4ec5\u9884\u68c0\u4fdd\u5b58\u7684\u914d\u7f6e\uff0c\u4e0d\u4f1a\u542f\u7528\u8be5\u8ba2\u9605' } }),
-        id !== 'direct' ? el('details', { className: 'profile-actions-menu' }, [
+          textContent: '\u542f\u7528'
+        }) : null,
+        menuItems.length ? el('details', { className: 'profile-actions-menu' }, [
           el('summary', {
             className: 'profile-actions-menu-trigger',
             attrs: { 'aria-label': '\u66f4\u591a\u8ba2\u9605\u64cd\u4f5c', title: '\u66f4\u591a\u64cd\u4f5c' }
           }, [
             el('span', { attrs: { 'aria-hidden': 'true' }, textContent: '\u22ee' })
           ]),
-          el('div', { className: 'profile-actions-menu-popover' }, [
-            el('button', { dataset: { profileRename: id }, textContent: '\u91cd\u547d\u540d' }),
-            el('button', { dataset: { profileEditSource: id }, textContent: '\u7f16\u8f91\u5730\u5740', disabled: !hasSourceUrl }),
-            el('button', { className: 'danger', dataset: { profileRemove: id }, textContent: '\u5220\u9664\u8ba2\u9605' })
-          ])
+          el('div', { className: 'profile-actions-menu-popover' }, menuItems)
         ]) : null
       ])
     ]);
@@ -4479,7 +4546,10 @@ function renderStatus(status) {
   $('#networkAvailabilityState').setAttribute('title', availability.detail || availability.label);
   $('#protectMode').textContent = protection.label || STATUS_TEXT.disabled;
   $('#dnsState').textContent = settings.dnsHijackEnabled === false ? STATUS_TEXT.disabled : STATUS_TEXT.enabled;
-  $('#tunState').textContent = enabledLabel(settings.tunEnabled);
+  const tunPreferred = Boolean(settings.tunEnabled);
+  const tunActive = tunPreferred && trafficTakeover;
+  $('#tunState').textContent = tunActive ? '已接管' : tunPreferred ? '连接时启用' : STATUS_TEXT.disabled;
+  $('#tunState').className = tunActive ? 'ok' : tunPreferred ? 'pending' : '';
   $('#killState').textContent = enabledLabel(settings.killSwitchEnabled);
   $('#quickKillBtn')?.classList.toggle('active', Boolean(settings.killSwitchEnabled));
   $('#proxyState').textContent = systemProxyApplied ? STATUS_TEXT.enabled : systemProxyWanted ? STATUS_TEXT.pending : STATUS_TEXT.disabled;
@@ -4885,6 +4955,16 @@ function scheduleNodePagePrewarm() {
   if (nodePagePrewarmTimer) clearTimeout(nodePagePrewarmTimer);
   const prewarm = () => {
     nodePagePrewarmTimer = null;
+    if (routingPrefetchPromise) {
+      void routingPrefetchPromise.finally(() => {
+        nodePagePrewarmTimer = setTimeout(prewarm, 650);
+      });
+      return;
+    }
+    if (isForegroundHot() || foregroundBusy > 0 || backgroundJobBusy > 0 || isSpeedTestActive()) {
+      nodePagePrewarmTimer = setTimeout(prewarm, 900);
+      return;
+    }
     const items = latestGroup?.items?.length ? latestGroup.items : pendingRowItems;
     if (isPageActive('nodes') || !items?.length) return;
     const panel = document.querySelector('[data-page-panel="nodes"]');
@@ -4910,30 +4990,11 @@ function scheduleNodePagePrewarm() {
   // optional warm cache for the next surface.
   if (routingPrefetchPromise) {
     void routingPrefetchPromise.finally(() => {
-      nodePagePrewarmTimer = setTimeout(prewarm, 160);
+      nodePagePrewarmTimer = setTimeout(prewarm, 650);
     });
     return;
   }
-  nodePagePrewarmTimer = setTimeout(prewarm, 180);
-}
-
-function scheduleSpeedRuntimeWarmup() {
-  let retries = 0;
-  const warm = () => {
-    requestAnimationFrame(() => runWhenIdle(() => {
-      // Preparing the next speed test is opportunistic. It must yield to any
-      // visible interaction instead of adding work while the user navigates.
-      if (isForegroundHot() || foregroundBusy > 0 || backgroundJobBusy > 0 || isSpeedTestActive()) {
-        if (retries < 4) {
-          retries += 1;
-          setTimeout(warm, 700);
-        }
-        return;
-      }
-      invoke('prepare_speed_runtime').catch(() => {});
-    }, 1200));
-  };
-  setTimeout(warm, 900);
+  nodePagePrewarmTimer = setTimeout(prewarm, 1800);
 }
 
 function markAllSpeedTargetsTesting() {
@@ -4981,20 +5042,15 @@ function scheduleStartupAutoSpeedTest() {
         retry();
         return;
       }
-      const prepared = await invoke('prepare_speed_runtime').then(() => true).catch(() => false);
-      if (!prepared) {
-        retry();
-        return;
-      }
       startupAutoSpeedStarted = true;
       const started = await testNodes(null, { automatic: true });
       if (!started) {
         startupAutoSpeedStarted = false;
         retry();
       }
-    }, 500));
+    }, 900));
   };
-  setTimeout(start, 350);
+  setTimeout(start, 3200);
 }
 
 function stopSpeedTestPolling() {
@@ -5005,6 +5061,7 @@ function stopSpeedTestPolling() {
   speedVisibleUpdateAt = 0;
   activeSpeedRunId = 0;
   activeSpeedProfileId = '';
+  activeSpeedAutomatic = false;
   if (speedResultFrame) cancelAnimationFrame(speedResultFrame);
   speedResultFrame = null;
   pendingSpeedResults.clear();
@@ -5277,6 +5334,7 @@ async function testNodes(button = null, options = {}) {
   if (isSpeedTestActive()) return;
   if (!options.automatic) startupAutoSpeedStarted = true;
   speedTestStarting = true;
+  activeSpeedAutomatic = Boolean(options.automatic);
   latestSpeedStatus = null;
   lastAppliedSpeedSignature = '';
   activeSpeedProfileId = latestStatus?.settings?.activeProfileId || latestStatus?.activeProfile?.id || '';
@@ -6219,25 +6277,51 @@ async function lockAutoGroupJob() {
 }
 
 async function updateSetting(key, value) {
+  if (settingUpdatePending.has(key)) return;
   if (value && ['tunEnabled', 'killSwitchEnabled'].includes(key) && !latestStatus?.permissions?.isAdmin) {
     await refreshStatus(true);
     setNotice('TUN 或断网保护需要管理员权限，请以管理员身份运行 Aegos');
     return;
   }
-  await runOptimisticAction({
-    apply: () => applyOptimisticSetting(key, value),
-    commit: () => runBackgroundJob('updateSetting', { key, value }, {
-      pendingNotice: '正在保存设置...',
-      failureNotice: (err) => `设置保存失败：${err.message || err}`
-    }),
-    refresh: async () => {
-      await refreshStatus(true);
-      await refreshNodes(true);
-    },
-    pendingNotice: '正在保存设置...',
-    successNotice: '设置已保存',
-    failureNotice: (err) => `操作失败：${err.message || err}`
+  const relatedControls = key === 'tunEnabled'
+    ? ['#tunHomeToggle', '#tunToggle'].map($).filter(Boolean)
+    : [];
+  const wasConnected = Boolean(latestStatus?.trafficTakeover);
+  settingUpdatePending.add(key);
+  relatedControls.forEach((control) => {
+    control.disabled = true;
+    control.setAttribute('aria-busy', 'true');
   });
+  try {
+    await runOptimisticAction({
+      apply: () => applyOptimisticSetting(key, value),
+      commit: () => runBackgroundJob('updateSetting', { key, value }, {
+        pendingNotice: key === 'tunEnabled'
+          ? (wasConnected ? '正在切换 TUN 并验证系统接管...' : '正在保存 TUN 偏好...')
+          : '正在保存设置...',
+        failureNotice: (err) => `设置保存失败：${err.message || err}`
+      }),
+      refresh: async () => {
+        await refreshStatus(true);
+        await refreshNodes(true);
+      },
+      pendingNotice: key === 'tunEnabled'
+        ? (wasConnected ? '正在切换 TUN，当前连接会短暂重载...' : '正在保存 TUN 偏好...')
+        : '正在保存设置...',
+      successNotice: key === 'tunEnabled'
+        ? (wasConnected
+          ? (value ? 'TUN 已开启并通过接管验证' : 'TUN 已关闭，连接已切换')
+          : (value ? 'TUN 已设为连接时启用' : 'TUN 已关闭'))
+        : '设置已保存',
+      failureNotice: (err) => `操作失败：${err.message || err}`
+    });
+  } finally {
+    settingUpdatePending.delete(key);
+    relatedControls.forEach((control) => {
+      control.disabled = false;
+      control.removeAttribute('aria-busy');
+    });
+  }
 }
 
 function isCurrentPageTask(token, page) {
@@ -7824,14 +7908,15 @@ async function loadRoutingPage(token = null) {
   await refreshRoutingSnapshot(token);
 }
 
-function scheduleRoutingSnapshotPrefetch(delay = 40) {
+function scheduleRoutingSnapshotPrefetch(delay = 1400) {
   if (routingPrefetchTimer) clearTimeout(routingPrefetchTimer);
   routingPrefetchTimer = setTimeout(() => {
     routingPrefetchTimer = null;
-    // Rules are parsed in the backend and do not repaint the home screen.
-    // Start the cache fill immediately after first data settles so the first
-    // real visit does not inherit the YAML/config parse delay.
     if (pageCacheState.routing.loaded || prefetchedRoutingSnapshot || routingPrefetchPromise) return;
+    if (isForegroundHot() || foregroundBusy > 0 || backgroundJobBusy > 0 || isSpeedTestActive()) {
+      scheduleRoutingSnapshotPrefetch(900);
+      return;
+    }
     void prefetchRoutingSnapshot();
   }, Math.max(0, Number(delay) || 0));
 }
@@ -8715,7 +8800,6 @@ document.body.addEventListener('click', async (event) => {
         commit: () => setActiveProfileJob(profileTarget),
         refresh: async () => {
           await refreshProfileSurfaces({ refreshOutboundIp: true });
-          scheduleSpeedRuntimeWarmup();
         },
         pendingNotice: '正在切换订阅...',
         successNotice: '订阅已切换',

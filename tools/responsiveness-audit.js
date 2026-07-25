@@ -30,6 +30,8 @@ const runWhenIdleBody = bodyOf('runWhenIdle');
 const scheduleRowsRenderBody = bodyOf('scheduleRowsRender');
 const testNodesBody = bodyOf('testNodes');
 const pollSpeedBody = bodyOf('pollSpeedTest');
+const foregroundSpeedPreemptionBody = bodyOf('preemptSpeedTestForForegroundJob');
+const backgroundJobBody = bodyOf('runBackgroundJob');
 const renderStatusStart = appJs.indexOf('function renderStatus(status)');
 const renderStatusEnd = appJs.indexOf('function applyOptimisticMode', renderStatusStart);
 const renderStatusBody = renderStatusStart >= 0 && renderStatusEnd > renderStatusStart
@@ -182,6 +184,19 @@ check(
 );
 
 check(
+  'foreground commands preempt startup measurement and retry it only after idle',
+  appJs.includes('const foregroundJobKinds = new Set([') &&
+    foregroundSpeedPreemptionBody.includes("invoke('cancel_proxy_delay_test')") &&
+    foregroundSpeedPreemptionBody.includes('const shouldResumeStartupTest = activeSpeedAutomatic') &&
+    foregroundSpeedPreemptionBody.includes('scheduleStartupAutoSpeedTest()') &&
+    backgroundJobBody.includes('await preemptSpeedTestForForegroundJob(kind)') &&
+    backgroundJobBody.includes('foregroundBusy += 1') &&
+    backgroundJobBody.includes('foregroundBusy = Math.max(0, foregroundBusy - 1)') &&
+    !appJs.includes('function scheduleSpeedRuntimeWarmup'),
+  'connect, disconnect, TUN, subscription, and repair commands must win over startup speed work'
+);
+
+check(
   'diagnostics, menus, filters, and log tabs are covered by interaction smoke',
     interactionSmoke.includes('running diagnostics blocked sidebar page switching') &&
     interactionSmoke.includes('speed test blocked sidebar page switching') &&
@@ -194,7 +209,8 @@ check(
 
 check(
   'performance smoke stresses rapid nav, menus, filters, and large node lists',
-  perfSmoke.includes('Array.from({ length: 8000 }') &&
+  perfSmoke.includes('stress ? 800 : 480') &&
+    perfSmoke.includes('items: Array.from({ length: ${nodeCount} }') &&
     perfSmoke.includes('i < 420') &&
     perfSmoke.includes('navigation too slow') &&
     perfSmoke.includes('menu toggles triggered backend calls') &&

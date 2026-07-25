@@ -7,6 +7,7 @@ const read = (file) => fs.readFileSync(path.join(root, file), 'utf8').replace(/\
 const main = read('src-tauri/src/main.rs')
 const scheduler = read('src-tauri/src/speed_scheduler.rs')
 const runtime = read('src-tauri/src/speed_runtime.rs')
+const storage = read('src-tauri/src/storage_runtime.rs')
 const configPipeline = read('src-tauri/src/config_pipeline.rs')
 const app = read('src/app.js')
 const interaction = read('tools/interaction-smoke.js')
@@ -21,8 +22,9 @@ const between = (source, start, end) => {
 const batch = between(main, 'fn start_proxy_delay_test_for_run', 'fn test_single_proxy_delay_for_run')
 const single = between(main, 'fn test_single_proxy_delay_for_run', 'fn probe_proxy_network')
 const singleWait = between(app, 'async function waitForSingleNodeDelay', 'async function testSingleNode')
-const startupWarmup = between(app, 'function scheduleSpeedRuntimeWarmup', 'function stopSpeedTestPolling')
 const startupAuto = between(app, 'function scheduleStartupAutoSpeedTest', 'function stopSpeedTestPolling')
+const foregroundPreemption = between(app, 'async function preemptSpeedTestForForegroundJob', 'async function runBackgroundJob')
+const backgroundJob = between(app, 'async function runBackgroundJob', 'async function runOptimisticAction')
 const testNodes = between(app, 'async function testNodes', 'async function refreshOutboundIpJob')
 const checks = []
 const check = (name, ok, detail) => checks.push({ name, ok: Boolean(ok), detail })
@@ -31,16 +33,19 @@ check(
   'Aegos owns one non-blocking startup speed test while core auto groups stay lazy',
   main.includes('fn prepare_speed_runtime') &&
     main.includes('prepare_speed_measurement_runtime') &&
-    app.includes('function scheduleSpeedRuntimeWarmup') &&
-    startupWarmup.includes("invoke('prepare_speed_runtime')") &&
-    startupWarmup.includes('requestAnimationFrame(() =>') &&
+    !app.includes('function scheduleSpeedRuntimeWarmup') &&
     startupAuto.includes('startupAutoSpeedScheduled || startupAutoSpeedStarted') &&
     startupAuto.includes('startupAutoSpeedStarted = true') &&
-    startupAuto.includes("invoke('prepare_speed_runtime')") &&
+    !startupAuto.includes("invoke('prepare_speed_runtime')") &&
     startupAuto.includes("testNodes(null, { automatic: true })") &&
+    startupAuto.includes('setTimeout(start, 3200)') &&
     testNodes.includes("invoke('start_proxy_delay_test'") &&
     !testNodes.includes("runBackgroundJob('changeProxy'") &&
     !testNodes.includes('selectBestProxyJob') &&
+    foregroundPreemption.includes("invoke('cancel_proxy_delay_test')") &&
+    foregroundPreemption.includes('shouldResumeStartupTest') &&
+    foregroundPreemption.includes('scheduleStartupAutoSpeedTest()') &&
+    backgroundJob.includes('await preemptSpeedTestForForegroundJob(kind)') &&
     interaction.includes('startup did not launch exactly one Aegos-managed first speed test') &&
     interaction.includes('startup speed test changed the connection or selected proxy') &&
     configPipeline.includes('set_yaml(&mut group, "lazy", YamlValue::Bool(true))') &&
@@ -50,7 +55,9 @@ check(
 
 check(
   'target catalog is profile and config keyed',
-  main.includes('struct SpeedTargetCatalog') &&
+  runtime.includes('struct SpeedTargetCatalog') &&
+    runtime.includes('pub(crate) key: String') &&
+    runtime.includes('pub(crate) profile_id: String') &&
     main.includes('fn speed_target_catalog_key') &&
     main.includes('runtime_config_digest') &&
     main.includes('self.speed_target_catalog = None') &&
@@ -113,7 +120,7 @@ check(
     app.includes('if (isForegroundHot())') &&
     app.includes('Keep foreground navigation/input ahead of background speed rendering.') &&
     app.includes('deferVisible: foregroundHot') &&
-    app.includes('Math.min(speedResultChunkSize, 24)') &&
+    app.includes('Math.min(speedResultChunkSize, 8)') &&
     app.includes('pendingSpeedResults.size > 160') &&
     app.includes('pendingSpeedTerminal') &&
     !between(app, 'function applySpeedStatusToNodes', 'function speedOverlayForItem').includes('updateLatestGroupItems(nextItems)'),
@@ -176,9 +183,11 @@ check(
 check(
   'persisted speed health uses serialized atomic replacement',
   main.includes('static SPEED_HEALTH_CACHE_LOCK: OnceLock<Mutex<()>>') &&
-    main.includes('fn atomic_replace_file') &&
-    main.includes('MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH') &&
-    main.includes('Speed health cache lock is poisoned'),
+    main.includes('atomic_write_text_confined(path, app_data, &raw)') &&
+    main.includes('Speed health cache lock is poisoned') &&
+    storage.includes('fn atomic_replace_file') &&
+    storage.includes('MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH') &&
+    storage.includes('file.sync_all()'),
   'repeated Windows writes and profile-switch races must not drop the cache'
 )
 
@@ -220,7 +229,7 @@ check(
     scheduler.includes('cancellation_stops_new_dispatches') &&
     perf.includes('speed events blocked rendering') &&
     perf.includes('streamedBatchSize'),
-  'fixed pool, cancellation, and 8000-result rendering stay behind tests'
+  'fixed pool, cancellation, and realistic 800-node stress rendering stay behind tests'
 )
 
 const failed = checks.filter((item) => !item.ok)

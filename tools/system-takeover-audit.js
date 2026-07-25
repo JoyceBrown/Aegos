@@ -6,6 +6,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
 const coreRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'core_runtime.rs'), 'utf8');
 const systemTakeoverRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'system_takeover.rs'), 'utf8');
+const networkRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'network_runtime.rs'), 'utf8');
 const appJs = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
 const interactionSmoke = fs.readFileSync(path.join(root, 'tools', 'interaction-smoke.js'), 'utf8');
 const backendAudit = fs.readFileSync(path.join(root, 'tools', 'backend-audit.js'), 'utf8');
@@ -29,8 +30,10 @@ const proxyScriptBody = sliceBetween(mainRs, 'fn build_proxy_script', 'fn build_
 const killScriptBody = sliceBetween(mainRs, 'fn build_kill_switch_script', 'fn takeover_failure_message');
 const setSystemProxyBody = sliceBetween(mainRs, 'fn set_system_proxy', 'fn set_kill_switch');
 const settingsUpdateBody = sliceBetween(mainRs, 'fn update_settings', 'fn set_mode');
+const settingUpdateBody = sliceBetween(mainRs, 'fn update_setting', 'fn update_settings');
 const settingsRollbackBody = sliceBetween(mainRs, 'fn rollback_settings_after_failure', 'fn active_profile');
 const lifecycleBody = sliceBetween(mainRs, 'fn start_with_takeover', 'fn terminate_core_process');
+const terminateBody = sliceBetween(mainRs, 'fn terminate_core_process', 'fn restore_system_proxy_preference');
 const diagnosticsBody = sliceBetween(mainRs, 'fn diagnostics_from_snapshot', 'fn diagnostics_detached');
 
 check(
@@ -82,7 +85,8 @@ check(
   'manual system proxy preference does not auto-connect traffic takeover',
   setSystemProxyBody.includes('if enable && !self.traffic_takeover') &&
     setSystemProxyBody.includes('System proxy preference enabled; connect before applying Windows proxy takeover') &&
-    appJs.includes("updateSetting('systemProxy'") &&
+    appJs.includes('const systemProxyWanted = Boolean(') &&
+    appJs.includes("systemProxyApplied ? STATUS_TEXT.enabled : systemProxyWanted ? STATUS_TEXT.pending") &&
     interactionSmoke.includes('manual system proxy toggle auto-connected traffic takeover') &&
     releaseAudit.includes('manual system proxy toggle does not auto-connect'),
   'turning on the preference is not the same as connecting'
@@ -143,6 +147,35 @@ check(
     settingsRollbackBody.includes('settings rolled back') &&
     backendAudit.includes('settings port updates validate before save and rollback on failure'),
   'bad TUN/protection/proxy changes must not leave half-applied settings'
+);
+
+check(
+  'TUN preference distinguishes standby measurement runtime from connected takeover',
+  settingUpdateBody.includes('let was_connected = self.traffic_takeover') &&
+    settingUpdateBody.includes('self.apply_single_setting_runtime(') &&
+    settingUpdateBody.includes('self.verify_tun_state(desired_tun, was_connected)') &&
+    settingUpdateBody.includes('desired_tun && was_connected') &&
+    settingsUpdateBody.includes('let was_connected = self.traffic_takeover') &&
+    settingsUpdateBody.includes('self.apply_single_setting_runtime(') &&
+    settingsUpdateBody.includes('self.verify_tun_state(desired_tun, was_connected)') &&
+    settingsUpdateBody.includes('desired_tun && was_connected') &&
+    appJs.includes("tunActive ? '已接管' : tunPreferred ? '连接时启用'") &&
+    interactionSmoke.includes('TUN preference was presented as active takeover before connection') &&
+    interactionSmoke.includes('TUN-on connection did not render verified takeover truth'),
+  'a speed-test standby process must not trigger a full TUN restart or claim Windows takeover'
+);
+
+check(
+  'disconnect and restart avoid unnecessary Windows and process recovery work',
+  setSystemProxyBody.includes('System proxy restore skipped; Aegos never took it over') &&
+    setSystemProxyBody.includes('!self.proxy_snapshot_path.exists()') &&
+    lifecycleBody.includes('if !std::mem::take(&mut self.managed_stop_verified)') &&
+    terminateBody.includes('let killed = child.kill().is_ok()') &&
+    terminateBody.includes('let reaped = child.wait().is_ok()') &&
+    terminateBody.includes('self.managed_stop_verified = killed && reaped') &&
+    networkRuntimeRs.indexOf('https://cp.cloudflare.com/generate_204') <
+      networkRuntimeRs.indexOf('https://www.msftconnecttest.com/connecttest.txt'),
+  'a verified managed stop and TUN-only disconnect should take the short path'
 );
 
 check(
