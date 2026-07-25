@@ -292,6 +292,13 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
     const routingBase = collectBase();
     const routingDraftCardHidden = document.querySelector('#routingDraftListCard')?.classList.contains('hidden') || false;
     const routingSummaryDetailHidden = document.querySelector('#routingSummaryDetail')?.classList.contains('hidden') || false;
+    const routingSummaryHidden = !visible(document.querySelector('.routing-summary'));
+    const routingKindButtons = all('[data-routing-kind]').filter(visible);
+    const routingKindBoxes = routingKindButtons.map((button) => button.getBoundingClientRect());
+    const routingKindsVertical = routingKindBoxes.length === 3
+      && routingKindBoxes[1].top >= routingKindBoxes[0].bottom - 1
+      && routingKindBoxes[2].top >= routingKindBoxes[1].bottom - 1;
+    const routingActivePanels = all('[data-routing-panel].is-active').filter(visible).length;
     const routingAssistantHeadMissing = !document.querySelector('.routing-assistant-head');
     const routingToolbarMissing = !document.querySelector('.routing-draft-toolbar');
     document.querySelector('[data-page="profiles"]').click();
@@ -337,9 +344,17 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
     const settingsActive = settingsPanel?.classList.contains('active') || false;
     const tunToggleVisible = Boolean(tunToggle && visible(tunToggle));
     const settingsBox = box('[data-page-panel="settings"] .page-card');
-    const settingsSummary = box('[data-page-panel="settings"] .settings-summary-grid');
-    const settingsSections = all('[data-page-panel="settings"] .settings-section').filter(visible).length;
-    const settingsSubsections = all('[data-page-panel="settings"] .settings-subsection').filter(visible).length;
+    const settingsSummaryHidden = !visible(document.querySelector('[data-page-panel="settings"] .settings-summary-grid'));
+    const settingsCategoryCount = all('[data-settings-category]').filter(visible).length;
+    const settingsVisiblePanels = all('[data-settings-panel].active').filter(visible).length;
+    const settingsNavBox = box('.settings-category-nav');
+    const settingsContentBox = box('.settings-category-content');
+    const settingsWorkspaceAligned = Boolean(
+      settingsNavBox
+      && settingsContentBox
+      && settingsNavBox.right <= settingsContentBox.left + 1
+      && Math.abs(settingsNavBox.top - settingsContentBox.top) <= 4
+    );
     const primaryStyle = getComputedStyle(document.querySelector('button.primary'));
     const primaryUsesGradient = primaryStyle.backgroundImage !== 'none';
     const primaryRadius = parseFloat(primaryStyle.borderRadius);
@@ -380,6 +395,10 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       nodeToolbarSplit,
       routingDraftCardHidden,
       routingSummaryDetailHidden,
+      routingSummaryHidden,
+      routingKindCount: routingKindButtons.length,
+      routingKindsVertical,
+      routingActivePanels,
       routingAssistantHeadMissing,
       routingToolbarMissing,
       profileTableHead,
@@ -436,9 +455,10 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       nodes: homeNodesBox,
       settings: settingsBox,
       settingsActive,
-      settingsSummary,
-      settingsSections,
-      settingsSubsections,
+      settingsSummaryHidden,
+      settingsCategoryCount,
+      settingsVisiblePanels,
+      settingsWorkspaceAligned,
       primaryUsesGradient,
       primaryRadius,
       tunToggleVisible,
@@ -581,6 +601,8 @@ try {
     if (!report.nodeToolbarSplit) failures.push(`${report.width}x${report.height}: node toolbar is not split into stable command and filter rows`);
     if (!report.routingDraftCardHidden) failures.push(`${report.width}x${report.height}: empty routing draft area is visible`);
     if (!report.routingSummaryDetailHidden) failures.push(`${report.width}x${report.height}: routing summary detail expanded without a user request`);
+    if (!report.routingSummaryHidden) failures.push(`${report.width}x${report.height}: low-value routing dashboard remained visible`);
+    if (report.routingKindCount !== 3 || !report.routingKindsVertical || report.routingActivePanels !== 1) failures.push(`${report.width}x${report.height}: routing types are not a clear single-panel workflow`);
     if (!report.routingAssistantHeadMissing || !report.routingToolbarMissing) failures.push(`${report.width}x${report.height}: routing assistant retained duplicate heading or controls`);
     if (!report.profileTableHead || !report.profileTableRow) failures.push(`${report.width}x${report.height}: subscription comparison table is incomplete`);
     if (report.profileTableOverflowX > 1) failures.push(`${report.width}x${report.height}: subscription table horizontal overflow ${report.profileTableOverflowX}px`);
@@ -589,9 +611,8 @@ try {
     if (report.profileInvalidCopy.length) failures.push(`${report.width}x${report.height}: subscription page retained low-value/raw copy: ${report.profileInvalidCopy.join(', ')}`);
     if (report.profileWrappedActions.length) failures.push(`${report.width}x${report.height}: subscription actions wrapped: ${report.profileWrappedActions.join(', ')}`);
     if (!report.settingsActive) failures.push(`${report.width}x${report.height}: settings page did not activate`);
-    if (!report.settingsSummary || report.settingsSummary.height < 48) failures.push(`${report.width}x${report.height}: settings summary did not render with stable height`);
-    if (report.settingsSections < 5) failures.push(`${report.width}x${report.height}: settings sections missing, found ${report.settingsSections}`);
-    if (report.settingsSubsections !== 3) failures.push(`${report.width}x${report.height}: network settings semantic groups changed, found ${report.settingsSubsections}`);
+    if (!report.settingsSummaryHidden) failures.push(`${report.width}x${report.height}: low-value settings dashboard remained visible`);
+    if (report.settingsCategoryCount !== 6 || report.settingsVisiblePanels !== 1 || !report.settingsWorkspaceAligned) failures.push(`${report.width}x${report.height}: settings category hierarchy is incomplete or misaligned`);
     if (report.primaryUsesGradient) failures.push(`${report.width}x${report.height}: primary command uses a decorative gradient`);
     if (report.primaryRadius > 6.1) failures.push(`${report.width}x${report.height}: primary command radius is ${report.primaryRadius}px`);
     if (!report.diagnosticsActive) failures.push(`${report.width}x${report.height}: diagnostics page did not activate`);

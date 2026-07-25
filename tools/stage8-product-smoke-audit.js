@@ -33,9 +33,19 @@ check('runtime evidence belongs to the current source version', evidence?.versio
 check('all ordinary-user journeys passed', requiredJourneys.every((name) => evidence?.journeys?.[name] === true), requiredJourneys.filter((name) => evidence?.journeys?.[name] !== true).join(', '));
 check('forbidden side effects stayed at zero', evidence && Object.values(evidence.forbiddenSideEffects || {}).every((count) => Number(count) === 0), JSON.stringify(evidence?.forbiddenSideEffects || {}));
 check('journey returned complete command evidence', evidence?.ok === true && Number(evidence?.commandCount || 0) > 20 && !(evidence?.missingCommands || []).length && !(evidence?.missingJobKinds || []).length, `${evidence?.commandCount || 0} commands`);
-check('TUN-off and TUN-on connection paths are distinct in interaction smoke', interaction.includes('TUN-on connection did not reach connected state') && interaction.includes('connected TUN-off system proxy metric'));
+check(
+  'TUN-off and TUN-on connection paths are distinct in interaction smoke',
+  interaction.includes('journeys.tunOffConnection = true') &&
+    interaction.includes('TUN-on connection did not reach connected state') &&
+    interaction.includes('journeys.tunOnConnection = true')
+);
 check('rules are previewed, verified, and safely applied', interaction.includes('verifyAllRoutingDraftsBtn') && interaction.includes('applyRoutingDraftsBtn') && interaction.includes("args.kind === 'applyRoutingDrafts'"));
-check('environment readiness is a rendered user path', interaction.includes("command === 'environment_readiness'") && interaction.includes('environment readiness did not render actionable checks'));
+check(
+  'environment readiness is a rendered user path',
+  interaction.includes("command === 'environment_readiness'") &&
+    interaction.includes('system check did not expose detailed checks on demand') &&
+    interaction.includes('journeys.settingsAndEnvironment = true')
+);
 check('mainline defines every Stage 8 checkpoint', Array.from({ length: 10 }, (_, index) => `3.6.${31 + index}`).every((version) => mainline.includes(version)));
 check('release records scope and real limitations', release.includes('complete product smoke') && release.includes('Real airport connectivity') && release.includes('npm run smoke:product'));
 check('Stage 8 gate is exposed and known by release audit', pkg.scripts?.['audit:stage8-product-smoke'] === 'node tools/stage8-product-smoke-audit.js' && releaseAudit.includes('stage 8 product smoke gate'));

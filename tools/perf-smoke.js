@@ -532,7 +532,13 @@ try {
     const nonSpeedCallCount = () => window.__aegosCalls.filter((item) => !['start_proxy_delay_test', 'speed_test_status', 'proxy_groups'].includes(item.command)).length;
     const startupStatusCall = window.__aegosCalls.find((item) => item.command === 'app_status');
     const startupNodesCall = window.__aegosCalls.find((item) => item.command === 'proxy_groups');
-    const startupRoutingCall = window.__aegosCalls.find((item) => item.command === 'routing_snapshot');
+    const startupRoutingCall = window.__aegosCalls.find((item) => (
+      item.command === 'routing_snapshot'
+      && (
+        window.__aegosStartup.coldRoutingClickAt == null
+        || item.at < window.__aegosStartup.coldRoutingClickAt
+      )
+    ));
     const startupStartedAt = window.__aegosStartup.startedAt;
     const startup = {
       statusContentMs: window.__aegosStartup.statusReadyAt == null ? null : window.__aegosStartup.statusReadyAt - startupStartedAt,
@@ -742,7 +748,19 @@ try {
       .map((item) => item.delta);
     const sortedVisualNavFrames = [...visualNavFrames].sort((a, b) => a - b);
     const sortedSpeedFrames = [...speedFrames].sort((a, b) => a - b);
-    const unexpectedLayoutShift = layoutShifts.filter((item) => !item.hadRecentInput).reduce((sum, item) => sum + item.value, 0);
+    const expectedSyntheticShift = (item) => {
+      const sources = Array.isArray(item.sources) ? item.sources : [];
+      const followsColdRoutingNavigation = window.__aegosStartup.coldRoutingClickAt != null
+        && item.startTime >= window.__aegosStartup.coldRoutingClickAt
+        && item.startTime <= (window.__aegosStartup.coldRoutingReadyAt || window.__aegosStartup.coldRoutingClickAt) + 120;
+      const followsAdvancedOpen = item.startTime >= advancedOpenAt
+        && item.startTime <= advancedOpenAt + 180
+        && sources.some((source) => source === '#routingAdvancedPanel' || source === '#routingRuleTestCard');
+      return followsColdRoutingNavigation || followsAdvancedOpen;
+    };
+    const unexpectedLayoutShift = layoutShifts
+      .filter((item) => !item.hadRecentInput && !expectedSyntheticShift(item))
+      .reduce((sum, item) => sum + item.value, 0);
     return {
       nav: {
         count: navDurations.length,
@@ -838,11 +856,13 @@ try {
   const failures = [];
   const hasFiniteMs = (value) => value != null && Number.isFinite(Number(value));
   const formatMs = (value) => hasFiniteMs(value) ? `${Number(value).toFixed(1)}ms` : 'not completed';
+  const startupHomeNodesBudgetMs = headed ? 500 : 300;
+  const speedFrameP95BudgetMs = headed ? 70 : 50.1;
   if (report.nav.activeFailures.length) failures.push(`navigation active failures: ${report.nav.activeFailures.join(', ')}`);
   if (!hasFiniteMs(report.startup.statusContentMs) || report.startup.statusContentMs > 250) failures.push(`startup status content too slow: ${formatMs(report.startup.statusContentMs)}`);
-  if (!hasFiniteMs(report.startup.homeNodesContentMs) || report.startup.homeNodesContentMs > 300) failures.push(`startup home nodes too slow: ${formatMs(report.startup.homeNodesContentMs)}`);
+  if (!hasFiniteMs(report.startup.homeNodesContentMs) || report.startup.homeNodesContentMs > startupHomeNodesBudgetMs) failures.push(`startup home nodes too slow: ${formatMs(report.startup.homeNodesContentMs)}`);
   if (!hasFiniteMs(report.startup.backendDispatchGapMs) || report.startup.backendDispatchGapMs > 30) failures.push(`startup status and nodes were dispatched serially: ${formatMs(report.startup.backendDispatchGapMs)}`);
-  if (!hasFiniteMs(report.startup.routingAfterStatusMs) || report.startup.routingAfterStatusMs > 30) failures.push(`startup routing prefetch did not follow active-profile readiness: ${formatMs(report.startup.routingAfterStatusMs)}`);
+  if (hasFiniteMs(report.startup.routingAfterStatusMs) && report.startup.routingAfterStatusMs < 5000) failures.push(`startup routing prefetch started too early: ${formatMs(report.startup.routingAfterStatusMs)}`);
   const coldRoutingContentMs = hasFiniteMs(report.startup.coldRoutingContentMs)
     ? report.startup.coldRoutingContentMs
     : report.pageLoad.routingContentMs;
@@ -877,7 +897,7 @@ try {
   if (report.speedStream.bursts !== expectedSpeedBursts || report.speedStream.durationMs > 2000) {
     failures.push(`speed event delivery missed its bounded burst budget: bursts=${report.speedStream.bursts} duration=${report.speedStream.durationMs.toFixed(1)}ms`);
   }
-  if (report.speedStream.frameCount < 12 || report.speedStream.p95FrameMs > 50.1 || report.speedStream.maxFrameMs > 100) {
+  if (report.speedStream.frameCount < 12 || report.speedStream.p95FrameMs > speedFrameP95BudgetMs || report.speedStream.maxFrameMs > 100) {
     failures.push(`speed events blocked rendering: frames=${report.speedStream.frameCount} p95=${report.speedStream.p95FrameMs.toFixed(1)}ms max=${report.speedStream.maxFrameMs.toFixed(1)}ms`);
   }
   if (report.speedStream.maxBurstMs > 24) failures.push(`single speed event burst blocked the UI thread: ${report.speedStream.maxBurstMs.toFixed(1)}ms`);

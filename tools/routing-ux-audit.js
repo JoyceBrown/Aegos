@@ -35,7 +35,15 @@ const previewBody = previewStart >= 0 ? appJs.slice(previewStart, previewEnd > p
 
 check('package version keeps 3.x routing UX gate active', /^3\.\d+\.\d+$/.test(pkg.version), pkg.version);
 check('routing UX audit is exposed as package script', pkg.scripts?.['audit:routing-ux'] === 'node tools/routing-ux-audit.js', 'npm run audit:routing-ux');
-check('routing static text is normalized at runtime for readable Chinese', appJs.includes('function normalizeRoutingStaticText') && appJs.includes('\\u9884\\u89c8\\u9636\\u6bb5') && appJs.includes('routingSystemRuleCount'), 'runtime text normalization');
+check(
+  'routing static text is normalized at runtime without redundant preview copy',
+  appJs.includes('function normalizeRoutingStaticText') &&
+    appJs.includes("title.textContent = '\\u89c4\\u5219'") &&
+    appJs.includes('routingSystemRuleCount') &&
+    stylesCss.includes('#routingReadonlyBadge') &&
+    stylesCss.includes('.routing-summary'),
+  'runtime text normalization and hidden legacy summary'
+);
 check('website routing preview exists and is draft-only', appJs.includes('function ensureRoutingAssistantUi') && routingUiJs.includes('routingWebsiteInput') && routingUiJs.includes('routingDraftPreview') && previewBody.includes('DOMAIN-SUFFIX') && !previewBody.includes('invoke('), 'draft-only website wizard');
 check('website preview validates user input before draft', appJs.includes('function normalizeWebsiteRuleInput') && appJs.includes('example.com') && appJs.includes('routingWebsiteAction'), 'domain validation');
 check('system rules are separated into a user-readable summary', appJs.includes('function splitRoutingRules') && appJs.includes('function routingSystemRuleBuckets') && routingUiJs.includes('routingSummaryDetail') && stylesCss.includes('.routing-summary-detail'), 'system rule summary');

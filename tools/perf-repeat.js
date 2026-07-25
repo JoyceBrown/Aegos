@@ -14,7 +14,11 @@ for (let index = 0; index < runCount; index += 1) {
     cwd: root,
     encoding: 'utf8',
     maxBuffer: 8 * 1024 * 1024,
-    windowsHide: true
+    windowsHide: true,
+    env: {
+      ...process.env,
+      AEGOS_WRITE_EVIDENCE: '0'
+    }
   });
   let report = null;
   try {
@@ -29,7 +33,11 @@ for (let index = 0; index < runCount; index += 1) {
   }
 }
 
-const values = (selector) => reports.map(selector).map(Number).filter(Number.isFinite);
+const values = (selector) => reports
+  .map(selector)
+  .filter((value) => value != null && value !== '')
+  .map(Number)
+  .filter(Number.isFinite);
 const median = (items) => {
   const sorted = [...items].sort((a, b) => a - b);
   return sorted.length ? sorted[Math.floor(sorted.length / 2)] : Infinity;
@@ -42,7 +50,9 @@ const metric = (selector) => {
 
 const statusContent = metric((report) => report.startup?.statusContentMs);
 const homeNodesContent = metric((report) => report.startup?.homeNodesContentMs);
-const coldRoutingContent = metric((report) => report.startup?.coldRoutingContentMs);
+const coldRoutingContent = metric((report) => (
+  report.startup?.coldRoutingContentMs ?? report.pageLoad?.routingContentMs
+));
 const routingAfterStatus = metric((report) => report.startup?.routingAfterStatusMs);
 const visualNavP95 = metric((report) => report.visualFluidity?.visualNavP95FrameMs);
 const visualNavMax = metric((report) => report.visualFluidity?.visualNavMaxFrameMs);
@@ -54,7 +64,7 @@ if (reports.length !== runCount) failures.push(`only ${reports.length}/${runCoun
 if (statusContent.median > 250 || statusContent.worst > 350) failures.push(`startup status variability exceeded budget: ${JSON.stringify(statusContent)}`);
 if (homeNodesContent.median > 300 || homeNodesContent.worst > 420) failures.push(`home node variability exceeded budget: ${JSON.stringify(homeNodesContent)}`);
 if (coldRoutingContent.median > 260 || coldRoutingContent.worst > 350) failures.push(`cold routing variability exceeded budget: ${JSON.stringify(coldRoutingContent)}`);
-if (routingAfterStatus.worst > 30) failures.push(`routing prefetch did not immediately follow status: ${JSON.stringify(routingAfterStatus)}`);
+if (routingAfterStatus.samples.length) failures.push(`routing snapshot started without an explicit rules-page visit: ${JSON.stringify(routingAfterStatus)}`);
 if (visualNavP95.median > 35 || visualNavP95.worst > 50 || visualNavMax.worst > 100) failures.push(`visual navigation variability exceeded budget: p95=${JSON.stringify(visualNavP95)} max=${JSON.stringify(visualNavMax)}`);
 if (layoutShift.worst > 0.02) failures.push(`layout shift variability exceeded budget: ${JSON.stringify(layoutShift)}`);
 if (speedStreamP95.median > 50.1 || speedStreamP95.worst > 50.1 || speedStreamMax.worst > 100) failures.push(`speed stream variability exceeded budget: p95=${JSON.stringify(speedStreamP95)} max=${JSON.stringify(speedStreamMax)}`);

@@ -8319,6 +8319,444 @@ body::before {
   }
 }
 
+/* Rules: task-first navigation with one visible editor and no dashboard block. */
+[data-page-panel="routing"] .section-head p,
+#routingReadonlyBadge,
+.routing-summary {
+  display: none;
+}
+
+.routing-card {
+  gap: 8px;
+}
+
+.routing-card > .section-head {
+  min-height: 38px;
+  padding-bottom: 2px;
+}
+
+.routing-card > .section-head h2 {
+  font-size: 18px;
+}
+
+.routing-assistant {
+  min-height: 0;
+}
+
+.routing-builder {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 172px minmax(0, 1fr);
+  gap: 22px;
+  align-items: start;
+}
+
+.routing-kind-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 4px;
+  padding: 3px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--surface-row-soft);
+}
+
+.routing-kind-list button {
+  min-width: 0;
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  justify-content: start;
+  gap: 10px;
+  padding: 8px 10px;
+  text-align: left;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.routing-kind-list button:hover {
+  transform: none;
+  background: rgba(255, 255, 255, .52);
+  box-shadow: none;
+}
+
+.routing-kind-list button.active {
+  color: var(--status-info);
+  background: var(--surface-panel-strong);
+  box-shadow: inset 3px 0 0 var(--status-info);
+}
+
+.routing-kind-list .aegos-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.routing-kind-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.routing-kind-list .routing-kind-copy b,
+.routing-kind-list .routing-kind-copy small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.routing-kind-list .routing-kind-copy b {
+  font-size: 13px;
+}
+
+.routing-kind-list .routing-kind-copy small {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.routing-builder-panel {
+  min-width: 0;
+  min-height: 0;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+.routing-panel-title {
+  gap: 3px;
+  padding-bottom: 4px;
+}
+
+.routing-panel-title b {
+  font-size: 15px;
+}
+
+.routing-panel-title small {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.routing-draft-form {
+  grid-template-columns:
+    minmax(132px, .34fr)
+    minmax(190px, .66fr)
+    minmax(112px, 126px)
+    minmax(126px, auto);
+  gap: 8px;
+}
+
+.routing-draft-form > button {
+  min-width: 126px;
+  white-space: nowrap;
+}
+
+.routing-service-presets {
+  min-height: 28px;
+}
+
+.routing-draft-preview {
+  min-height: 30px;
+  color: var(--text-tertiary);
+}
+
+.routing-system-entry-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+}
+
+.routing-system-entry {
+  min-height: 48px;
+  grid-template-columns: 116px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: var(--surface-row-soft);
+}
+
+.routing-system-entry + .routing-system-entry {
+  border-left: 0;
+}
+
+.routing-system-entry small {
+  font-size: 11px;
+}
+
+.routing-system-actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.routing-system-actions > span {
+  min-width: 0;
+  margin-right: auto;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.routing-summary-detail {
+  margin-top: 8px;
+}
+
+/* Settings: one category at a time instead of a full-page wall of controls. */
+[data-page-panel="settings"] .section-head p,
+.settings-overview {
+  display: none;
+}
+
+[data-page-panel="settings"] .page-card {
+  gap: 8px;
+}
+
+[data-page-panel="settings"] .page-card > .section-head {
+  min-height: 38px;
+  padding-bottom: 2px;
+}
+
+[data-page-panel="settings"] .page-card > .section-head h2 {
+  font-size: 18px;
+}
+
+.settings-layout {
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  padding-right: 0;
+}
+
+.settings-workspace {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 172px minmax(0, 1fr);
+  gap: 24px;
+}
+
+.settings-category-nav {
+  min-width: 0;
+  align-self: start;
+  display: grid;
+  gap: 3px;
+  padding: 3px;
+  border-radius: var(--radius-control);
+  background: var(--surface-row-soft);
+}
+
+.settings-category-nav button {
+  min-width: 0;
+  min-height: 50px;
+  display: grid;
+  grid-template-columns: 19px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  color: var(--text-secondary);
+  text-align: left;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.settings-category-nav button:hover {
+  background: rgba(255, 255, 255, .52);
+}
+
+.settings-category-nav button.active {
+  color: var(--status-info);
+  background: var(--surface-panel-strong);
+  box-shadow: inset 3px 0 0 var(--status-info);
+}
+
+.settings-category-nav .aegos-icon {
+  width: 17px;
+  height: 17px;
+}
+
+.settings-category-nav button > span:last-child {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.settings-category-nav b,
+.settings-category-nav small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-category-nav b {
+  font-size: 12px;
+}
+
+.settings-category-nav small {
+  color: var(--text-tertiary);
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.settings-category-content {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.settings-category-panel {
+  min-width: 0;
+  min-height: 0;
+  display: none;
+  align-content: start;
+  gap: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 2px 8px 18px 0;
+}
+
+.settings-category-panel.active {
+  display: grid;
+}
+
+.settings-workspace-head {
+  min-width: 0;
+  min-height: 34px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 0 2px 6px;
+}
+
+.settings-workspace-head h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.settings-workspace-head > span {
+  display: none;
+}
+
+.settings-category-panel .settings-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.settings-category-panel .switch-row,
+.settings-category-panel .input-row {
+  min-width: 0;
+  min-height: 58px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--surface-row-soft);
+  box-shadow: none;
+}
+
+.settings-category-panel .switch-row:hover,
+.settings-category-panel .input-row:hover {
+  background: var(--surface-control-pressed);
+}
+
+.settings-category-panel .switch-row small,
+.settings-category-panel .input-row small {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.settings-category-panel .settings-wide-row,
+.settings-category-panel .settings-subsection-actions {
+  grid-column: 1 / -1;
+}
+
+.settings-category-panel .settings-subsection-actions {
+  min-height: 36px;
+}
+
+.settings-environment-content,
+.settings-advanced-content {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.settings-category-panel .environment-list {
+  min-height: 0;
+  gap: 5px;
+}
+
+.settings-category-panel .environment-row {
+  min-height: 52px;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: var(--surface-row-soft);
+}
+
+.settings-category-panel .form-grid {
+  gap: 10px 12px;
+}
+
+.settings-category-panel .form-grid label {
+  min-width: 0;
+  padding: 10px;
+  border-radius: var(--radius-control);
+  background: var(--surface-row-soft);
+}
+
+.settings-category-panel .settings-actions {
+  margin: 0;
+  justify-content: flex-end;
+}
+
+@media (max-width: 1040px) {
+  .routing-builder,
+  .settings-workspace {
+    grid-template-columns: 152px minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .routing-kind-list button {
+    min-height: 54px;
+  }
+
+  .routing-kind-list .routing-kind-copy small,
+  .settings-category-nav small {
+    display: none;
+  }
+
+  .settings-category-nav button {
+    min-height: 43px;
+  }
+
+  .routing-draft-form,
+  .settings-category-panel .settings-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .routing-draft-form > button,
+  .routing-draft-form .routing-scope-field,
+  .settings-category-panel .settings-wide-row,
+  .settings-category-panel .settings-subsection-actions {
+    grid-column: auto;
+  }
+
+  .routing-draft-form > button {
+    width: fit-content;
+    justify-self: end;
+  }
+}
+
 @media (forced-colors: active) {
   .sidebar,
   .node-status-card.metric-grid,

@@ -30,6 +30,7 @@ const runWhenIdleBody = bodyOf('runWhenIdle');
 const scheduleRowsRenderBody = bodyOf('scheduleRowsRender');
 const testNodesBody = bodyOf('testNodes');
 const pollSpeedBody = bodyOf('pollSpeedTest');
+const foregroundSpeedPreemptionCoreBody = bodyOf('preemptSpeedTestForForeground');
 const foregroundSpeedPreemptionBody = bodyOf('preemptSpeedTestForForegroundJob');
 const backgroundJobBody = bodyOf('runBackgroundJob');
 const renderStatusStart = appJs.indexOf('function renderStatus(status)');
@@ -186,9 +187,10 @@ check(
 check(
   'foreground commands preempt startup measurement and retry it only after idle',
   appJs.includes('const foregroundJobKinds = new Set([') &&
-    foregroundSpeedPreemptionBody.includes("invoke('cancel_proxy_delay_test')") &&
-    foregroundSpeedPreemptionBody.includes('const shouldResumeStartupTest = activeSpeedAutomatic') &&
-    foregroundSpeedPreemptionBody.includes('scheduleStartupAutoSpeedTest()') &&
+    foregroundSpeedPreemptionCoreBody.includes("invoke('cancel_proxy_delay_test')") &&
+    foregroundSpeedPreemptionCoreBody.includes('const shouldResumeStartupTest = activeSpeedAutomatic') &&
+    foregroundSpeedPreemptionCoreBody.includes('scheduleStartupAutoSpeedTest()') &&
+    foregroundSpeedPreemptionBody.includes('await preemptSpeedTestForForeground(kind)') &&
     backgroundJobBody.includes('await preemptSpeedTestForForegroundJob(kind)') &&
     backgroundJobBody.includes('foregroundBusy += 1') &&
     backgroundJobBody.includes('foregroundBusy = Math.max(0, foregroundBusy - 1)') &&

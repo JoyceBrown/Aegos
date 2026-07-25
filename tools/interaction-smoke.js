@@ -409,6 +409,9 @@ try {
               profileId: state.activeProfileId,
               status: speedStatusSnapshot(true, 0)
             }), 0);
+            if (window.__aegosHoldSpeedTest) {
+              return speedStatusSnapshot(true, 0);
+            }
             const values = [31, 48, 116, 132, 99];
             groups[0].items.forEach((item, index) => {
               setTimeout(() => {
@@ -1232,6 +1235,23 @@ try {
     await click('[data-page="connections"]');
     await click('#refreshConnectionsBtn');
     await new Promise((resolve) => setTimeout(resolve, 420));
+    window.__aegosHoldSpeedTest = true;
+    invalidatePageCache('routing');
+    await testNodes(null, { automatic: true });
+    const routingRaceCallsBefore = window.__aegosCalls.length;
+    const routingNavigationStarted = performance.now();
+    document.querySelector('[data-page="routing"]')?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
+    const routingNavigationMs = performance.now() - routingNavigationStarted;
+    if (!document.querySelector('[data-page-panel="routing"]')?.classList.contains('active') || routingNavigationMs > 16) throw new Error('automatic speed test blocked routing navigation');
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    if (!document.querySelector('.routing-assistant')) throw new Error('routing editor did not paint before snapshot loading');
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    const routingRaceCalls = window.__aegosCalls.slice(routingRaceCallsBefore);
+    const routingCancelIndex = routingRaceCalls.findIndex((item) => item.command === 'cancel_proxy_delay_test');
+    const routingSnapshotIndex = routingRaceCalls.findIndex((item) => item.command === 'routing_snapshot');
+    if (routingCancelIndex < 0 || routingSnapshotIndex < 0 || routingCancelIndex > routingSnapshotIndex) throw new Error('routing load did not preempt the automatic speed test before snapshot loading');
+    window.__aegosHoldSpeedTest = false;
+    await click('[data-page="connections"]');
     const callsBeforeConnectionDraft = window.__aegosCalls.length;
     await click('#connectionRows [data-routing-draft-target]');
     await new Promise((resolve) => setTimeout(resolve, 120));
@@ -1334,13 +1354,20 @@ try {
     const environmentCallsBeforeSettings = window.__aegosCalls.filter((item) => item.command === 'environment_readiness').length;
     await click('[data-page="settings"]');
     await new Promise((resolve) => setTimeout(resolve, 220));
-    if (!document.querySelector('.settings-summary-grid')) throw new Error('settings runtime summary did not render');
-    if (document.querySelectorAll('[data-page-panel="settings"] .settings-section').length < 4) throw new Error('settings grouped sections did not render');
+    if (document.querySelectorAll('[data-settings-category]').length !== 6) throw new Error('settings category navigation did not render');
+    if (document.querySelectorAll('[data-settings-panel].active').length !== 1) throw new Error('settings displayed more than one category at once');
+    if (!document.querySelector('[data-settings-panel="takeover"]')?.classList.contains('active')) throw new Error('settings did not open on takeover controls');
+    if (getComputedStyle(document.querySelector('.settings-overview')).display !== 'none') throw new Error('low-value settings dashboard remained visible');
     if (!document.querySelector('#settingsTakeoverSummary')) throw new Error('settings takeover summary did not render');
     const environmentCallsAfterSettings = window.__aegosCalls.filter((item) => item.command === 'environment_readiness').length;
     if (environmentCallsAfterSettings !== environmentCallsBeforeSettings) throw new Error('opening settings automatically started the heavy system check');
+    const callsBeforeCategoryChange = window.__aegosCalls.length;
+    await click('[data-settings-category="dns"]');
+    if (!document.querySelector('[data-settings-panel="dns"]')?.classList.contains('active')) throw new Error('DNS settings category did not activate');
+    if (document.querySelectorAll('[data-settings-panel].active').length !== 1) throw new Error('settings category switch left multiple panels visible');
+    if (window.__aegosCalls.length !== callsBeforeCategoryChange) throw new Error('settings category switch triggered backend calls');
+    await click('[data-settings-category="environment"]');
     if (getComputedStyle(document.querySelector('#environmentRows')).overflowY === 'auto' || getComputedStyle(document.querySelector('#environmentRows')).overflowY === 'scroll') throw new Error('system check kept a nested scroll container');
-    if (document.querySelector('.settings-advanced')?.open) throw new Error('advanced settings were expanded by default');
     document.querySelector('#refreshEnvironmentBtn')?.click();
     await new Promise((resolve) => setTimeout(resolve, 30));
     const settingsExitStarted = performance.now();
@@ -1350,13 +1377,16 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 20));
     await new Promise((resolve) => setTimeout(resolve, 900));
     await navDown('[data-page="settings"]');
+    await click('[data-settings-category="environment"]');
     if (!document.querySelector('#environmentRows .environment-clear-state')) throw new Error('successful system check did not render a concise result');
     document.querySelector('#environmentDetailsBtn')?.click();
     if (document.querySelectorAll('#environmentRows .environment-row').length < 4) throw new Error('system check did not expose detailed checks on demand');
     if ([...document.querySelectorAll('#environmentRows .environment-row')].some((item) => /Administrator|Proxy port|Controller port/.test(item.textContent))) throw new Error('system check leaked technical English labels');
     journeys.settingsAndEnvironment = true;
+    await click('[data-settings-category="takeover"]');
     await click('#repairProxyBtn');
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'repairSystemProxy')) throw new Error('repair proxy button did not use repairSystemProxy job');
+    await click('[data-settings-category="advanced"]');
     await click('#elevateBtn');
     document.querySelector('#mixedPortInput').value = '7891';
     document.querySelector('#controllerPortInput').value = '19091';

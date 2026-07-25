@@ -220,12 +220,12 @@ check(
 check(
   'routing assistant is task-focused around website, app, and system rules',
   routingUiJs.includes("className: 'routing-kind-list'") &&
-    appJs.includes('data-routing-kind') &&
-    appJs.includes('data-routing-panel') &&
+    appJs.includes('[data-routing-kind]') &&
+    appJs.includes('[data-routing-panel]') &&
     appJs.includes('function setRoutingAssistantKind') &&
-    routingUiJs.includes("kindButton('website', '\\u7f51\\u7ad9\\u89c4\\u5219'") &&
-    routingUiJs.includes("kindButton('app', '\\u5e94\\u7528\\u89c4\\u5219'") &&
-    routingUiJs.includes("kindButton('system', '\\u7cfb\\u7edf\\u89c4\\u5219'") &&
+    routingUiJs.includes("kindButton('website', '\\u7f51\\u7ad9'") &&
+    routingUiJs.includes("kindButton('app', '\\u5e94\\u7528'") &&
+    routingUiJs.includes("kindButton('system', '\\u7cfb\\u7edf'") &&
     !routingUiJs.includes("kindButton('region'"),
   'website/app/system task selector'
 );

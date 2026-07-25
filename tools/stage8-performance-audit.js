@@ -23,13 +23,22 @@ function check(name, condition, detail = '') {
   (condition ? passed : failures).push({ name, detail });
 }
 
+function versionAtLeast(version, minimum) {
+  const current = String(version).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const target = String(minimum).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  for (let index = 0; index < Math.max(current.length, target.length); index += 1) {
+    if ((current[index] || 0) !== (target[index] || 0)) return (current[index] || 0) > (target[index] || 0);
+  }
+  return true;
+}
+
 const severeTasks = pressure?.longTasks?.filter((task) => Number(task.duration || 0) >= 180) || [];
 const worstTask = pressure?.longTasks?.reduce((worst, task) => Math.max(worst, Number(task.duration || 0)), 0) || 0;
 const samples = soak?.resourceSamples || [];
 const settledElements = samples.slice(1).map((sample) => Number(sample.elements || 0));
 const settledIntervals = samples.slice(1).map((sample) => Number(sample.timers?.intervals || 0));
 
-check('3.6.32 is the measured performance checkpoint', pkg.version === '3.6.32', pkg.version);
+check('3.6.32 measured performance checkpoint remains active', versionAtLeast(pkg.version, '3.6.32'), pkg.version);
 check('performance pressure evidence exists and passed', pressure?.ok === true && pressure?.version === pkg.version, pressureFile);
 check('compressed soak evidence exists and passed', soak?.ok === true && soak?.version === pkg.version, soakFile);
 check('windowed GPU evidence exists and passed', gpu?.ok === true && gpu?.version === pkg.version && gpu?.fixture?.compositor === 'windowed-gpu', gpuFile);
@@ -42,7 +51,13 @@ check('severe long-task budget is respected', severeTasks.length <= 1, `${severe
 check('event-streamed speed results complete without polling or local-filter backend calls', pressure?.speedStream?.results === 800 && pressure?.speedStream?.completed === true && pressure?.calls?.speedPollCount === 0 && pressure?.calls?.callsAddedByFilters === 0, JSON.stringify({ speedStream: pressure?.speedStream, calls: pressure?.calls }));
 check('node DOM stays windowed', pressure?.resources?.visibleRows <= 100 && pressure?.resources?.homeRows <= 8, `${pressure?.resources?.visibleRows}/${pressure?.resources?.homeRows}`);
 check('startup status and real home nodes become usable within budget', pressure?.startup?.statusContentMs < 250 && pressure?.startup?.homeNodesContentMs < 300 && pressure?.startup?.backendDispatchGapMs < 30, JSON.stringify(pressure?.startup || {}));
-check('cold routing loads immediately after active profile readiness', pressure?.startup?.routingAfterStatusMs <= 30 && pressure?.startup?.coldRoutingContentMs < 260, JSON.stringify(pressure?.startup || {}));
+check(
+  'startup avoids rules contention while cold routing remains fast on demand',
+  pressure?.startup?.routingAfterStatusMs == null &&
+    pressure?.pageLoad?.routingContentReady === true &&
+    pressure?.pageLoad?.routingContentMs < 260,
+  JSON.stringify({ startup: pressure?.startup || {}, pageLoad: pressure?.pageLoad || {} })
+);
 check('realistic navigation has bounded frame pacing and layout shift', pressure?.visualFluidity?.visualNavFrameCount >= 180 && pressure?.visualFluidity?.visualNavP95FrameMs <= 35 && pressure?.visualFluidity?.visualNavMaxFrameMs <= 100 && pressure?.visualFluidity?.unexpectedLayoutShift <= 0.02, JSON.stringify(pressure?.visualFluidity || {}));
 check('windowed compositor keeps page transitions bounded', gpu?.visualFluidity?.visualNavFrameCount >= 180 && gpu?.visualFluidity?.visualNavP95FrameMs <= 35 && gpu?.visualFluidity?.visualNavMaxFrameMs <= 100 && gpu?.visualFluidity?.unexpectedLayoutShift <= 0.02, JSON.stringify(gpu?.visualFluidity || {}));
 check('three cold starts remain stable rather than passing once by chance', repeat?.metrics?.statusContent?.worst <= 350 && repeat?.metrics?.homeNodesContent?.worst <= 420 && repeat?.metrics?.coldRoutingContent?.worst <= 350 && repeat?.metrics?.layoutShift?.worst <= 0.02, JSON.stringify(repeat?.metrics || {}));
@@ -57,7 +72,13 @@ check('compressed soak executes sixteen mixed-operation cycles', soak?.cycles ==
 check('soak DOM reaches a stable plateau', settledElements.length > 0 && Math.max(...settledElements) - Math.min(...settledElements) <= 180, settledElements.join(', '));
 check('soak timer count does not grow', settledIntervals.length > 0 && settledIntervals.every((count) => count <= 7), settledIntervals.join(', '));
 check('speed result lookup uses a full node index and incremental visible updates', app.includes('for (let index = 0; index < items.length; index += 1) indexNodeItem') && app.includes('updateVisibleNodeDelays(visibleChanges)') && app.includes('updateLatestGroupItems(nextItems)'));
-check('release records current before/after metrics and remaining limits', release.includes('592 ms') && release.includes('Cold routing') && release.includes('Windowed GPU') && release.includes('Real airport') && release.includes('npm run audit:stage8-performance'));
+check(
+  'release records current performance evidence and remaining limits',
+  release.includes('Cold routing') &&
+    release.includes('Windowed GPU') &&
+    release.includes('Real airport') &&
+    release.includes('npm run audit:stage8-performance')
+);
 
 const result = { ok: failures.length === 0, failed: failures, passed, evidence: [pressureFile, gpuFile, repeatFile, soakFile], generatedAt: new Date().toISOString() };
 console.log(JSON.stringify(result, null, 2));

@@ -124,6 +124,8 @@ let routingRuleTestRequestSeq = 0;
 let expandedRoutingDraftId = '';
 let routingApplyStatus = null;
 let routingRuleEditRaw = '';
+let settingsWorkspaceReady = false;
+let settingsCategory = 'takeover';
 let nodeGroupSortMode = false;
 let nodeGroupDragName = '';
 let nodeGroupDragPointerId = null;
@@ -3430,8 +3432,8 @@ async function retryJob(id) {
   await runBackgroundJob(job.kind, job.payload || {});
 }
 
-async function preemptSpeedTestForForegroundJob(kind) {
-  if (!foregroundJobKinds.has(kind) || !isSpeedTestActive()) return;
+async function preemptSpeedTestForForeground(reason = 'foreground') {
+  if (!isSpeedTestActive()) return;
   const shouldResumeStartupTest = activeSpeedAutomatic;
   await invoke('cancel_proxy_delay_test').catch(() => {});
   stopSpeedTestPolling();
@@ -3443,6 +3445,11 @@ async function preemptSpeedTestForForegroundJob(kind) {
     startupAutoSpeedScheduled = false;
     scheduleStartupAutoSpeedTest();
   }, 3000);
+}
+
+async function preemptSpeedTestForForegroundJob(kind) {
+  if (!foregroundJobKinds.has(kind)) return;
+  await preemptSpeedTestForForeground(kind);
 }
 
 async function runBackgroundJob(kind, payload = {}, options = {}) {
@@ -3669,6 +3676,9 @@ function scheduleVisiblePagePaint(page) {
       recordUiPerformance('node-group-switcher-rendered', {
         duration: Math.round((performance.now() - startedAt) * 10) / 10
       });
+    }
+    if (page === 'routing') {
+      ensureRoutingAssistantUi();
     }
     if (page === 'profiles') {
       renderProfiles();
@@ -4060,7 +4070,8 @@ function ensureTakeoverControls() {
     );
     summaryGrid.appendChild(item);
   }
-  const proxySection = $('#systemProxyToggle')?.closest('.settings-section');
+  const proxySection = $('#systemProxyToggle')?.closest('[data-settings-panel="takeover"]')
+    || $('#systemProxyToggle')?.closest('.settings-section');
   if (proxySection && !$('#repairProxyBtn')) {
     const actions = document.createElement('div');
     actions.className = 'settings-actions';
@@ -4068,6 +4079,113 @@ function ensureTakeoverControls() {
     proxySection.appendChild(actions);
     $('#repairProxyBtn').onclick = (event) => runButtonAction(event.currentTarget, '\u4fee\u590d\u4e2d...', repairSystemProxyJob);
   }
+}
+
+function settingsPanelHeader(title, summary = null) {
+  return el('header', { className: 'settings-workspace-head' }, [
+    el('h3', { textContent: title }),
+    summary
+  ].filter(Boolean));
+}
+
+function setSettingsCategory(category = 'takeover', options = {}) {
+  const allowed = new Set(['takeover', 'dns', 'security', 'reliability', 'environment', 'advanced']);
+  settingsCategory = allowed.has(category) ? category : 'takeover';
+  document.querySelectorAll('[data-settings-category]').forEach((button) => {
+    const active = button.dataset.settingsCategory === settingsCategory;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+    if (active && options.focus) button.focus();
+  });
+  document.querySelectorAll('[data-settings-panel]').forEach((panel) => {
+    const active = panel.dataset.settingsPanel === settingsCategory;
+    panel.classList.toggle('active', active);
+    panel.hidden = !active;
+  });
+}
+
+function ensureSettingsWorkspace() {
+  if (settingsWorkspaceReady) return;
+  const layout = document.querySelector('[data-page-panel="settings"] .settings-layout');
+  const overview = layout?.querySelector('.settings-overview');
+  const primary = layout?.querySelector('.settings-primary-grid');
+  const network = primary?.querySelector('.settings-network-section');
+  const subsections = network ? [...network.querySelectorAll(':scope > .settings-subsection')] : [];
+  const reliability = primary?.querySelector('.settings-reliability-section');
+  const environment = layout?.querySelector('.environment-section');
+  const advanced = layout?.querySelector('.settings-advanced');
+  if (!layout || subsections.length < 3 || !reliability || !environment || !advanced) return;
+
+  const panel = (kind, title, content, summary = null) => el('section', {
+    className: 'settings-category-panel',
+    dataset: { settingsPanel: kind },
+    attrs: { 'aria-label': title }
+  }, [
+    settingsPanelHeader(title, summary),
+    content
+  ]);
+  const categories = [
+    ['takeover', '\u63a5\u7ba1', '\u7cfb\u7edf\u4ee3\u7406\u4e0e TUN', 'icon-proxy'],
+    ['dns', 'DNS', '\u89e3\u6790\u4e0e\u9632\u6cc4\u9732', 'icon-dns'],
+    ['security', '\u5b89\u5168', '\u65ad\u7f51\u4fdd\u62a4\u4e0e\u517c\u5bb9', 'icon-shield'],
+    ['reliability', '\u81ea\u52a8\u6062\u590d', '\u5f02\u5e38\u65f6\u81ea\u52a8\u5904\u7406', 'icon-refresh'],
+    ['environment', '\u7cfb\u7edf\u68c0\u67e5', '\u6743\u9650\u4e0e\u7aef\u53e3\u51b2\u7a81', 'icon-diagnostics'],
+    ['advanced', '\u9ad8\u7ea7', '\u7aef\u53e3\u3001\u65e5\u5fd7\u4e0e\u7ef4\u62a4', 'icon-settings']
+  ];
+  const nav = el('nav', { className: 'settings-category-nav', attrs: { 'aria-label': '\u8bbe\u7f6e\u5206\u7c7b', role: 'tablist' } },
+    categories.map(([kind, title, detail, iconName]) => el('button', {
+      className: kind === settingsCategory ? 'active' : '',
+      dataset: { settingsCategory: kind },
+      attrs: { type: 'button', 'aria-selected': kind === settingsCategory ? 'true' : 'false' }
+    }, [
+      icon(iconName),
+      el('span', {}, [
+        el('b', { textContent: title }),
+        el('small', { textContent: detail })
+      ])
+    ]))
+  );
+  const content = el('div', { className: 'settings-category-content' }, []);
+  const takeoverGrid = subsections[0].querySelector('.settings-grid');
+  const dnsGrid = subsections[1].querySelector('.settings-grid');
+  const securityGrid = subsections[2].querySelector('.settings-grid');
+  const reliabilityGrid = reliability.querySelector('.settings-grid');
+  const environmentList = environment.querySelector('.environment-list');
+  const environmentActions = environment.querySelector('.environment-actions');
+  const advancedForm = advanced.querySelector('.form-grid');
+  const advancedActions = advanced.querySelector('.settings-actions');
+  [
+    panel('takeover', '\u63a5\u7ba1', takeoverGrid, $('#settingsProxySummary')),
+    panel('dns', 'DNS', dnsGrid),
+    panel('security', '\u5b89\u5168\u4e0e\u517c\u5bb9', securityGrid),
+    panel('reliability', '\u81ea\u52a8\u6062\u590d', reliabilityGrid, $('#settingsReliabilitySummary')),
+    panel('environment', '\u7cfb\u7edf\u68c0\u67e5', el('div', { className: 'settings-environment-content' }, [environmentList, environmentActions]), $('#environmentSummary')),
+    panel('advanced', '\u9ad8\u7ea7\u8bbe\u7f6e', el('div', { className: 'settings-advanced-content' }, [advancedForm, advancedActions]))
+  ].forEach((item) => content.appendChild(item));
+  const workspace = el('div', { className: 'settings-workspace' }, [nav, content]);
+  overview?.classList.add('hidden');
+  layout.appendChild(workspace);
+  primary.remove();
+  environment.remove();
+  advanced.remove();
+  nav.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-settings-category]');
+    if (button) setSettingsCategory(button.dataset.settingsCategory || 'takeover');
+  });
+  nav.addEventListener('keydown', (event) => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const buttons = [...nav.querySelectorAll('[data-settings-category]')];
+    const current = Math.max(0, buttons.indexOf(document.activeElement));
+    const index = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? buttons.length - 1
+        : (current + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+    event.preventDefault();
+    setSettingsCategory(buttons[index].dataset.settingsCategory, { focus: true });
+  });
+  settingsWorkspaceReady = true;
+  setSettingsCategory(settingsCategory);
 }
 
 function renderProfiles() {
@@ -4186,6 +4304,7 @@ function renderSettings(status) {
   const settings = status.settings || {};
   const reliability = settings.reliability || {};
   const permissions = status.permissions || {};
+  ensureSettingsWorkspace();
   ensureTakeoverControls();
   const adminState = $('#adminState');
   if (adminState) {
@@ -6468,7 +6587,7 @@ function ensureRoutingAssistantUi() {
     view: routingAssistantView,
     kind: routingAssistantKind
   });
-  summary.after(detail, assistant);
+  summary.after(assistant, detail);
   $('#previewWebsiteRuleBtn')?.addEventListener('click', previewWebsiteRoutingDraft);
   $('#previewAppRuleBtn')?.addEventListener('click', previewAppRoutingDraft);
   $('#routingShowSystemRulesBtn')?.addEventListener('click', () => setRoutingSummaryDetail('system'));
@@ -7222,7 +7341,9 @@ function setRoutingAssistantKind(kind = 'website') {
   const assistant = document.querySelector('.routing-assistant');
   if (assistant) assistant.dataset.kind = routingAssistantKind;
   document.querySelectorAll('[data-routing-kind]').forEach((button) => {
-    button.classList.toggle('active', button.dataset.routingKind === routingAssistantKind);
+    const active = button.dataset.routingKind === routingAssistantKind;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
   });
   document.querySelectorAll('[data-routing-panel]').forEach((panel) => {
     panel.classList.toggle('is-active', panel.dataset.routingPanel === routingAssistantKind);
@@ -7896,6 +8017,9 @@ async function prefetchRoutingSnapshot() {
 }
 
 async function loadRoutingPage(token = null) {
+  if (activeSpeedAutomatic && isSpeedTestActive()) {
+    await preemptSpeedTestForForeground('routing');
+  }
   if (!prefetchedRoutingSnapshot && routingPrefetchPromise) await routingPrefetchPromise;
   if (!isCurrentPageTask(token, 'routing')) return;
   if (prefetchedRoutingSnapshot) {
@@ -7908,7 +8032,7 @@ async function loadRoutingPage(token = null) {
   await refreshRoutingSnapshot(token);
 }
 
-function scheduleRoutingSnapshotPrefetch(delay = 1400) {
+function scheduleRoutingSnapshotPrefetch(delay = 9000) {
   if (routingPrefetchTimer) clearTimeout(routingPrefetchTimer);
   routingPrefetchTimer = setTimeout(() => {
     routingPrefetchTimer = null;
