@@ -36,8 +36,9 @@ check(
   ['additional_rules_enabled', 'additional_rules', 'override_script_enabled', 'override_script']
     .every((field) => appConfig.includes(`pub(crate) ${field}`)) &&
     (appConfig.match(/#\[serde\(default\)\]/g) || []).length >= 8 &&
-    main.includes('additional_rules_enabled: false') &&
-    main.includes('override_script: String::new()'),
+    appConfig.includes('additional_rules_enabled: false') &&
+    appConfig.includes('override_script: String::new()') &&
+    main.includes('Settings::product_default('),
   'Settings remains the persisted product boundary'
 );
 
@@ -81,10 +82,10 @@ check(
 
 check(
   'settings transaction validates, applies, restarts, and can roll back extensions',
-  main.includes('Self::apply_config_extension_candidate_value(&mut candidate, key, value)?;') &&
-    main.includes('config_extensions::validate_settings(&candidate)?;') &&
-    main.includes('"additionalRulesEnabled"') &&
-    main.includes('"overrideScript"') &&
+  main.includes('config_extensions::apply_candidate_value(&mut candidate, key, value)?;') &&
+    extensions.includes('validate_settings(settings)') &&
+    extensions.includes('"additionalRulesEnabled"') &&
+    extensions.includes('"overrideScript"') &&
     main.includes('fn rollback_settings_after_failure') &&
     coreRuntime.includes('"configExtensions": config_extensions'),
   'existing updateSettings transaction'

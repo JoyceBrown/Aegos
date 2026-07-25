@@ -24,9 +24,8 @@ mod task_runtime;
 mod windows_process;
 
 use app_config::{
-    default_dns_mode, default_reliability_auto, default_reliability_candidate_limit,
-    default_reliability_failure_threshold, default_reliability_max_delay_ms,
-    default_reliability_profile_failover, Profile, Settings,
+    default_reliability_candidate_limit, default_reliability_failure_threshold,
+    default_reliability_max_delay_ms, Profile, Settings,
 };
 #[cfg(test)]
 use base64::{engine::general_purpose, Engine as _};
@@ -4191,36 +4190,11 @@ rules:
 }
 
 fn default_settings() -> Settings {
-    Settings {
-        active_profile_id: "direct".to_string(),
-        mixed_port: AEGOS_DEFAULT_MIXED_PORT,
-        controller_port: AEGOS_DEFAULT_CONTROLLER_PORT,
-        secret: hex_random(24),
-        mode: "rule".to_string(),
-        system_proxy: false,
-        start_with_system_proxy: true,
-        kill_switch_enabled: false,
-        tun_enabled: false,
-        tun_stack: "mixed".to_string(),
-        dns_hijack_enabled: true,
-        dns_mode: default_dns_mode(),
-        dns_custom_nameservers: Vec::new(),
-        ipv6_enabled: false,
-        allow_lan: false,
-        log_level: "info".to_string(),
-        reliability_auto: default_reliability_auto(),
-        reliability_profile_failover: default_reliability_profile_failover(),
-        reliability_failure_threshold: default_reliability_failure_threshold(),
-        reliability_max_delay_ms: default_reliability_max_delay_ms(),
-        reliability_candidate_limit: default_reliability_candidate_limit(),
-        selected_proxy_map: HashMap::new(),
-        manual_nodes: HashMap::new(),
-        additional_rules_enabled: false,
-        additional_rules: Vec::new(),
-        override_script_enabled: false,
-        override_script: String::new(),
-        profiles: Vec::new(),
-    }
+    Settings::product_default(
+        AEGOS_DEFAULT_MIXED_PORT,
+        AEGOS_DEFAULT_CONTROLLER_PORT,
+        hex_random(24),
+    )
 }
 
 fn load_settings(path: &Path) -> Settings {
@@ -5381,11 +5355,8 @@ impl CoreManager {
             | "reliabilityFailureThreshold"
             | "reliabilityMaxDelayMs"
             | "reliabilityCandidateLimit"
-            | "additionalRulesEnabled"
-            | "additionalRules"
-            | "overrideScriptEnabled"
-            | "overrideScript"
             | "killSwitchEnabled" => {}
+            _ if config_extensions::is_setting_key(key) => {}
             _ => return Err(format!("Unsupported setting: {key}")),
         }
         Ok(())
@@ -5399,9 +5370,8 @@ impl CoreManager {
         let mut candidate = self.settings.clone();
         Self::apply_port_candidate_value(&mut candidate, key, value)?;
         Self::apply_dns_candidate_value(&mut candidate, key, value)?;
-        Self::apply_config_extension_candidate_value(&mut candidate, key, value)?;
+        config_extensions::apply_candidate_value(&mut candidate, key, value)?;
         Self::validate_dns_candidate(&candidate)?;
-        config_extensions::validate_settings(&candidate)?;
         Self::validate_port_settings_snapshot(&candidate)
     }
 
@@ -5413,51 +5383,10 @@ impl CoreManager {
         for (key, value) in map {
             Self::apply_port_candidate_value(&mut candidate, key, value)?;
             Self::apply_dns_candidate_value(&mut candidate, key, value)?;
-            Self::apply_config_extension_candidate_value(&mut candidate, key, value)?;
+            config_extensions::apply_candidate_value(&mut candidate, key, value)?;
         }
         Self::validate_dns_candidate(&candidate)?;
-        config_extensions::validate_settings(&candidate)?;
         Self::validate_port_settings_snapshot(&candidate)
-    }
-
-    fn apply_config_extension_candidate_value(
-        settings: &mut Settings,
-        key: &str,
-        value: &JsonValue,
-    ) -> Result<(), String> {
-        match key {
-            "additionalRulesEnabled" => {
-                settings.additional_rules_enabled = value.as_bool().ok_or_else(|| {
-                    "Additional Rules enabled state must be true or false.".to_string()
-                })?;
-            }
-            "additionalRules" => {
-                let values = value
-                    .as_array()
-                    .ok_or_else(|| "Additional Rules must be a list of rule lines.".to_string())?;
-                settings.additional_rules = values
-                    .iter()
-                    .map(|item| {
-                        item.as_str()
-                            .map(str::to_string)
-                            .ok_or_else(|| "Each Additional Rule must be text.".to_string())
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-            }
-            "overrideScriptEnabled" => {
-                settings.override_script_enabled = value.as_bool().ok_or_else(|| {
-                    "Override Script enabled state must be true or false.".to_string()
-                })?;
-            }
-            "overrideScript" => {
-                settings.override_script = value
-                    .as_str()
-                    .ok_or_else(|| "Override Script must be YAML text.".to_string())?
-                    .to_string();
-            }
-            _ => {}
-        }
-        Ok(())
     }
 
     fn apply_dns_candidate_value(
@@ -7505,13 +7434,7 @@ impl CoreManager {
             self.settings.allow_lan,
             &self.settings.log_level,
             json!(&self.settings.selected_proxy_map),
-            json!({
-                "additionalRulesEnabled": self.settings.additional_rules_enabled,
-                "additionalRules": &self.settings.additional_rules,
-                "overrideScriptEnabled": self.settings.override_script_enabled,
-                "overrideScript": &self.settings.override_script,
-                "format": "yaml"
-            }),
+            config_extensions::public_surface(&self.settings),
             self.settings.reliability_auto,
             self.settings.reliability_profile_failover,
             self.settings.reliability_failure_threshold,
@@ -7920,12 +7843,8 @@ impl CoreManager {
                     .unwrap_or(default_reliability_candidate_limit())
                     .clamp(3, 200)
             }
-            "additionalRulesEnabled"
-            | "additionalRules"
-            | "overrideScriptEnabled"
-            | "overrideScript" => {
-                Self::apply_config_extension_candidate_value(&mut self.settings, key, value)?;
-                config_extensions::validate_settings(&self.settings)?;
+            _ if config_extensions::is_setting_key(key) => {
+                config_extensions::apply_candidate_value(&mut self.settings, key, value)?;
             }
             "mixedPort" => {
                 self.settings.mixed_port =
@@ -7954,11 +7873,7 @@ impl CoreManager {
                 | "ipv6Enabled"
                 | "allowLan"
                 | "logLevel"
-                | "additionalRulesEnabled"
-                | "additionalRules"
-                | "overrideScriptEnabled"
-                | "overrideScript"
-        ))
+        ) || config_extensions::is_setting_key(key))
     }
 
     fn restart_after_settings_if_needed(
@@ -10018,13 +9933,7 @@ fn diagnostics_public_settings(snapshot: &DiagnosticsSnapshot) -> JsonValue {
         snapshot.settings.allow_lan,
         &snapshot.settings.log_level,
         json!(&snapshot.settings.selected_proxy_map),
-        json!({
-            "additionalRulesEnabled": snapshot.settings.additional_rules_enabled,
-            "additionalRuleCount": snapshot.settings.additional_rules.len(),
-            "overrideScriptEnabled": snapshot.settings.override_script_enabled,
-            "overrideScriptConfigured": !snapshot.settings.override_script.trim().is_empty(),
-            "format": "yaml"
-        }),
+        config_extensions::diagnostic_surface(&snapshot.settings),
         snapshot.settings.reliability_auto,
         snapshot.settings.reliability_profile_failover,
         snapshot.settings.reliability_failure_threshold,

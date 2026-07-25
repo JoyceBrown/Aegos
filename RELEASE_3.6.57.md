@@ -84,8 +84,8 @@
 ## Artifact
 
 - Installer: `src-tauri/target/release/bundle/nsis/Aegos_3.6.57_x64-setup.exe`
-- Size: `16231026` bytes
-- SHA-256: `da10ec87eaffbf178ef281d8713f61424f9a37b97241db717aaacc25e1d98384`
+- Size: `16220944` bytes
+- SHA-256: `881fb438447eed294f9377679cc9b90bcf36d3a7e7cd05072c9ebc793834e146`
 - Signature: unsigned open-source build
 
 ## Known Limits

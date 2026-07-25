@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use serde_json::{json, Value as JsonValue};
 use serde_yaml::{Mapping, Value as YamlValue};
 
 use crate::app_config::Settings;
@@ -29,6 +30,73 @@ const PROTECTED_ROOT_KEYS: [&str; 17] = [
     "find-process-mode",
     "profile",
 ];
+
+pub(crate) fn is_setting_key(key: &str) -> bool {
+    matches!(
+        key,
+        "additionalRulesEnabled" | "additionalRules" | "overrideScriptEnabled" | "overrideScript"
+    )
+}
+
+pub(crate) fn apply_candidate_value(
+    settings: &mut Settings,
+    key: &str,
+    value: &JsonValue,
+) -> Result<(), String> {
+    match key {
+        "additionalRulesEnabled" => {
+            settings.additional_rules_enabled = value.as_bool().ok_or_else(|| {
+                "Additional Rules enabled state must be true or false.".to_string()
+            })?;
+        }
+        "additionalRules" => {
+            let values = value
+                .as_array()
+                .ok_or_else(|| "Additional Rules must be a list of rule lines.".to_string())?;
+            settings.additional_rules = values
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| "Each Additional Rule must be text.".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+        }
+        "overrideScriptEnabled" => {
+            settings.override_script_enabled = value.as_bool().ok_or_else(|| {
+                "Override Script enabled state must be true or false.".to_string()
+            })?;
+        }
+        "overrideScript" => {
+            settings.override_script = value
+                .as_str()
+                .ok_or_else(|| "Override Script must be YAML text.".to_string())?
+                .to_string();
+        }
+        _ => return Ok(()),
+    }
+    validate_settings(settings)
+}
+
+pub(crate) fn public_surface(settings: &Settings) -> JsonValue {
+    json!({
+        "additionalRulesEnabled": settings.additional_rules_enabled,
+        "additionalRules": &settings.additional_rules,
+        "overrideScriptEnabled": settings.override_script_enabled,
+        "overrideScript": &settings.override_script,
+        "format": "yaml"
+    })
+}
+
+pub(crate) fn diagnostic_surface(settings: &Settings) -> JsonValue {
+    json!({
+        "additionalRulesEnabled": settings.additional_rules_enabled,
+        "additionalRuleCount": settings.additional_rules.len(),
+        "overrideScriptEnabled": settings.override_script_enabled,
+        "overrideScriptConfigured": !settings.override_script.trim().is_empty(),
+        "format": "yaml"
+    })
+}
 
 pub(crate) fn validate_settings(settings: &Settings) -> Result<(), String> {
     normalized_additional_rules(settings)?;

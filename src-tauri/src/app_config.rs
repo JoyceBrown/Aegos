@@ -113,6 +113,41 @@ pub(crate) struct Settings {
     pub(crate) profiles: Vec<Profile>,
 }
 
+impl Settings {
+    pub(crate) fn product_default(mixed_port: u16, controller_port: u16, secret: String) -> Self {
+        Self {
+            active_profile_id: "direct".to_string(),
+            mixed_port,
+            controller_port,
+            secret,
+            mode: "rule".to_string(),
+            system_proxy: false,
+            start_with_system_proxy: true,
+            kill_switch_enabled: false,
+            tun_enabled: false,
+            tun_stack: "mixed".to_string(),
+            dns_hijack_enabled: true,
+            dns_mode: default_dns_mode(),
+            dns_custom_nameservers: Vec::new(),
+            ipv6_enabled: false,
+            allow_lan: false,
+            log_level: "info".to_string(),
+            reliability_auto: default_reliability_auto(),
+            reliability_profile_failover: default_reliability_profile_failover(),
+            reliability_failure_threshold: default_reliability_failure_threshold(),
+            reliability_max_delay_ms: default_reliability_max_delay_ms(),
+            reliability_candidate_limit: default_reliability_candidate_limit(),
+            selected_proxy_map: HashMap::new(),
+            manual_nodes: HashMap::new(),
+            additional_rules_enabled: false,
+            additional_rules: Vec::new(),
+            override_script_enabled: false,
+            override_script: String::new(),
+            profiles: Vec::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
