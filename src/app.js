@@ -126,6 +126,7 @@ let routingApplyStatus = null;
 let routingRuleEditRaw = '';
 let settingsWorkspaceReady = false;
 let settingsCategory = 'takeover';
+let configExtensionsDirty = false;
 let nodeGroupSortMode = false;
 let nodeGroupDragName = '';
 let nodeGroupDragPointerId = null;
@@ -4089,7 +4090,7 @@ function settingsPanelHeader(title, summary = null) {
 }
 
 function setSettingsCategory(category = 'takeover', options = {}) {
-  const allowed = new Set(['takeover', 'dns', 'security', 'reliability', 'environment', 'advanced']);
+  const allowed = new Set(['takeover', 'dns', 'security', 'reliability', 'environment', 'extensions', 'advanced']);
   settingsCategory = allowed.has(category) ? category : 'takeover';
   document.querySelectorAll('[data-settings-category]').forEach((button) => {
     const active = button.dataset.settingsCategory === settingsCategory;
@@ -4102,6 +4103,136 @@ function setSettingsCategory(category = 'takeover', options = {}) {
     panel.classList.toggle('active', active);
     panel.hidden = !active;
   });
+}
+
+function createConfigExtensionsPanel() {
+  const editor = (kind, title, detail, toggleId, textareaId, placeholder, rows) => el('section', {
+    className: 'config-extension-editor',
+    dataset: { configExtensionEditor: kind }
+  }, [
+    el('header', { className: 'config-extension-head' }, [
+      el('div', {}, [
+        el('b', { textContent: title }),
+        el('small', { textContent: detail })
+      ]),
+      el('label', { className: 'config-extension-toggle' }, [
+        el('input', { id: toggleId, attrs: { type: 'checkbox' } }),
+        el('span', { textContent: '\u542f\u7528' })
+      ])
+    ]),
+    el('textarea', {
+      id: textareaId,
+      attrs: {
+        rows: String(rows),
+        maxlength: '131072',
+        placeholder,
+        autocomplete: 'off',
+        spellcheck: 'false'
+      }
+    }),
+    el('small', {
+      id: `${textareaId}Meta`,
+      className: 'config-extension-meta',
+      textContent: kind === 'rules' ? '0 \u6761\u89c4\u5219' : '0 \u4e2a\u5b57\u7b26'
+    })
+  ]);
+  return el('div', { className: 'config-extensions-content' }, [
+    editor(
+      'rules',
+      '\u9644\u52a0\u89c4\u5219',
+      '\u6bcf\u884c\u4e00\u6761\uff0c\u4fdd\u5b58\u540e\u653e\u5728\u8ba2\u9605\u515c\u5e95\u89c4\u5219\u4e4b\u524d',
+      'additionalRulesToggle',
+      'additionalRulesInput',
+      'DOMAIN-SUFFIX,example.com,Proxies\nPROCESS-NAME,example.exe,DIRECT',
+      7
+    ),
+    editor(
+      'override',
+      'YAML \u8986\u5199\u811a\u672c',
+      '\u9012\u5f52\u5408\u5e76\u5230\u8fd0\u884c\u914d\u7f6e\uff0c\u4f7f\u7528 null \u5220\u9664\u6307\u5b9a\u952e',
+      'overrideScriptToggle',
+      'overrideScriptInput',
+      'sniffer:\n  enable: true\n  force-dns-mapping: true',
+      9
+    ),
+    el('div', { className: 'config-extension-actions' }, [
+      el('span', {
+        id: 'configExtensionsStatus',
+        className: 'config-extension-status',
+        textContent: '\u5c1a\u672a\u542f\u7528'
+      }),
+      el('button', {
+        id: 'resetConfigExtensionsBtn',
+        className: 'ghost compact',
+        attrs: { type: 'button' },
+        textContent: '\u6e05\u7a7a'
+      }),
+      el('button', {
+        id: 'saveConfigExtensionsBtn',
+        className: 'primary compact',
+        attrs: { type: 'button' },
+        textContent: '\u6821\u9a8c\u5e76\u4fdd\u5b58'
+      })
+    ])
+  ]);
+}
+
+function configExtensionRuleLines() {
+  return String($('#additionalRulesInput')?.value || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'));
+}
+
+function updateConfigExtensionEditorState() {
+  const rules = configExtensionRuleLines();
+  const script = String($('#overrideScriptInput')?.value || '');
+  const rulesEnabled = Boolean($('#additionalRulesToggle')?.checked);
+  const scriptEnabled = Boolean($('#overrideScriptToggle')?.checked);
+  const rulesMeta = $('#additionalRulesInputMeta');
+  const scriptMeta = $('#overrideScriptInputMeta');
+  if (rulesMeta) rulesMeta.textContent = `${rules.length} \u6761\u89c4\u5219`;
+  if (scriptMeta) scriptMeta.textContent = `${script.length} \u4e2a\u5b57\u7b26`;
+  document.querySelector('[data-config-extension-editor="rules"]')?.classList.toggle('is-disabled', !rulesEnabled);
+  document.querySelector('[data-config-extension-editor="override"]')?.classList.toggle('is-disabled', !scriptEnabled);
+  const status = $('#configExtensionsStatus');
+  if (status) {
+    const active = [];
+    if (rulesEnabled) active.push(`${rules.length} \u6761\u9644\u52a0\u89c4\u5219`);
+    if (scriptEnabled) active.push('YAML \u8986\u5199');
+    status.textContent = active.length ? active.join(' / ') : '\u5c1a\u672a\u542f\u7528';
+  }
+}
+
+function syncConfigExtensionEditors(settings = {}) {
+  if (configExtensionsDirty) return;
+  const extensions = settings.configExtensions || {};
+  const rulesToggle = $('#additionalRulesToggle');
+  const rulesInput = $('#additionalRulesInput');
+  const scriptToggle = $('#overrideScriptToggle');
+  const scriptInput = $('#overrideScriptInput');
+  if (rulesToggle) rulesToggle.checked = Boolean(extensions.additionalRulesEnabled);
+  if (rulesInput) rulesInput.value = Array.isArray(extensions.additionalRules)
+    ? extensions.additionalRules.join('\n')
+    : '';
+  if (scriptToggle) scriptToggle.checked = Boolean(extensions.overrideScriptEnabled);
+  if (scriptInput) scriptInput.value = String(extensions.overrideScript || '');
+  updateConfigExtensionEditorState();
+}
+
+async function saveConfigExtensions() {
+  const updates = {
+    additionalRulesEnabled: Boolean($('#additionalRulesToggle')?.checked),
+    additionalRules: configExtensionRuleLines(),
+    overrideScriptEnabled: Boolean($('#overrideScriptToggle')?.checked),
+    overrideScript: String($('#overrideScriptInput')?.value || '').trim()
+  };
+  const result = await updateSettingsJob(updates);
+  if (!result) throw new Error(lastBackgroundJobError || '\u914d\u7f6e\u6269\u5c55\u4fdd\u5b58\u5931\u8d25');
+  configExtensionsDirty = false;
+  await refreshStatus(true);
+  setNotice('\u914d\u7f6e\u6269\u5c55\u5df2\u901a\u8fc7\u6821\u9a8c\u5e76\u5e94\u7528\u3002');
+  return result;
 }
 
 function ensureSettingsWorkspace() {
@@ -4130,6 +4261,7 @@ function ensureSettingsWorkspace() {
     ['security', '\u5b89\u5168', '\u65ad\u7f51\u4fdd\u62a4\u4e0e\u517c\u5bb9', 'icon-shield'],
     ['reliability', '\u81ea\u52a8\u6062\u590d', '\u5f02\u5e38\u65f6\u81ea\u52a8\u5904\u7406', 'icon-refresh'],
     ['environment', '\u7cfb\u7edf\u68c0\u67e5', '\u6743\u9650\u4e0e\u7aef\u53e3\u51b2\u7a81', 'icon-diagnostics'],
+    ['extensions', '\u914d\u7f6e\u6269\u5c55', '\u9644\u52a0\u89c4\u5219\u4e0e YAML \u8986\u5199', 'icon-routing'],
     ['advanced', '\u9ad8\u7ea7', '\u7aef\u53e3\u3001\u65e5\u5fd7\u4e0e\u7ef4\u62a4', 'icon-settings']
   ];
   const nav = el('nav', { className: 'settings-category-nav', attrs: { 'aria-label': '\u8bbe\u7f6e\u5206\u7c7b', role: 'tablist' } },
@@ -4160,6 +4292,7 @@ function ensureSettingsWorkspace() {
     panel('security', '\u5b89\u5168\u4e0e\u517c\u5bb9', securityGrid),
     panel('reliability', '\u81ea\u52a8\u6062\u590d', reliabilityGrid, $('#settingsReliabilitySummary')),
     panel('environment', '\u7cfb\u7edf\u68c0\u67e5', el('div', { className: 'settings-environment-content' }, [environmentList, environmentActions]), $('#environmentSummary')),
+    panel('extensions', '\u914d\u7f6e\u6269\u5c55', createConfigExtensionsPanel()),
     panel('advanced', '\u9ad8\u7ea7\u8bbe\u7f6e', el('div', { className: 'settings-advanced-content' }, [advancedForm, advancedActions]))
   ].forEach((item) => content.appendChild(item));
   const workspace = el('div', { className: 'settings-workspace' }, [nav, content]);
@@ -4183,6 +4316,29 @@ function ensureSettingsWorkspace() {
         : (current + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
     event.preventDefault();
     setSettingsCategory(buttons[index].dataset.settingsCategory, { focus: true });
+  });
+  ['additionalRulesToggle', 'overrideScriptToggle'].forEach((id) => {
+    $(`#${id}`)?.addEventListener('change', () => {
+      configExtensionsDirty = true;
+      updateConfigExtensionEditorState();
+    });
+  });
+  ['additionalRulesInput', 'overrideScriptInput'].forEach((id) => {
+    $(`#${id}`)?.addEventListener('input', () => {
+      configExtensionsDirty = true;
+      updateConfigExtensionEditorState();
+    });
+  });
+  $('#resetConfigExtensionsBtn')?.addEventListener('click', () => {
+    $('#additionalRulesToggle').checked = false;
+    $('#additionalRulesInput').value = '';
+    $('#overrideScriptToggle').checked = false;
+    $('#overrideScriptInput').value = '';
+    configExtensionsDirty = true;
+    updateConfigExtensionEditorState();
+  });
+  $('#saveConfigExtensionsBtn')?.addEventListener('click', (event) => {
+    runButtonAction(event.currentTarget, '\u6821\u9a8c\u4e2d...', saveConfigExtensions);
   });
   settingsWorkspaceReady = true;
   setSettingsCategory(settingsCategory);
@@ -4356,6 +4512,7 @@ function renderSettings(status) {
   $('#profileFailoverToggle').checked = reliability.profileFailover !== false;
   $('#reliabilityMaxDelayInput').value = reliability.maxDelayMs || 800;
   $('#reliabilityCandidateLimitInput').value = reliability.candidateLimit || 24;
+  syncConfigExtensionEditors(settings);
   renderEnvironmentReadiness();
   if (latestIpv6DnsSafety) renderIpv6DnsSafety(latestIpv6DnsSafety);
 }
@@ -7337,7 +7494,7 @@ function renderRoutingSummaryDetail() {
 }
 
 function setRoutingAssistantKind(kind = 'website') {
-  routingAssistantKind = ['website', 'app', 'system'].includes(kind) ? kind : 'website';
+  routingAssistantKind = ['website', 'app', 'system', 'test'].includes(kind) ? kind : 'website';
   const assistant = document.querySelector('.routing-assistant');
   if (assistant) assistant.dataset.kind = routingAssistantKind;
   document.querySelectorAll('[data-routing-kind]').forEach((button) => {
@@ -7351,7 +7508,8 @@ function setRoutingAssistantKind(kind = 'website') {
   const focusTarget = {
     website: '#routingWebsiteInput',
     app: '#routingAppInput',
-    system: '#routingShowSystemRulesBtn'
+    system: '#routingShowSystemRulesBtn',
+    test: '#routingRuleTestInput'
   }[routingAssistantKind];
   runWhenIdle(() => $(focusTarget)?.focus?.());
 }

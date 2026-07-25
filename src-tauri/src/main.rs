@@ -3,6 +3,7 @@
 mod app_config;
 mod config_deployment;
 mod config_domain;
+mod config_extensions;
 mod config_pipeline;
 mod core_domain;
 mod core_runtime;
@@ -4214,6 +4215,10 @@ fn default_settings() -> Settings {
         reliability_candidate_limit: default_reliability_candidate_limit(),
         selected_proxy_map: HashMap::new(),
         manual_nodes: HashMap::new(),
+        additional_rules_enabled: false,
+        additional_rules: Vec::new(),
+        override_script_enabled: false,
+        override_script: String::new(),
         profiles: Vec::new(),
     }
 }
@@ -5376,6 +5381,10 @@ impl CoreManager {
             | "reliabilityFailureThreshold"
             | "reliabilityMaxDelayMs"
             | "reliabilityCandidateLimit"
+            | "additionalRulesEnabled"
+            | "additionalRules"
+            | "overrideScriptEnabled"
+            | "overrideScript"
             | "killSwitchEnabled" => {}
             _ => return Err(format!("Unsupported setting: {key}")),
         }
@@ -5390,7 +5399,9 @@ impl CoreManager {
         let mut candidate = self.settings.clone();
         Self::apply_port_candidate_value(&mut candidate, key, value)?;
         Self::apply_dns_candidate_value(&mut candidate, key, value)?;
+        Self::apply_config_extension_candidate_value(&mut candidate, key, value)?;
         Self::validate_dns_candidate(&candidate)?;
+        config_extensions::validate_settings(&candidate)?;
         Self::validate_port_settings_snapshot(&candidate)
     }
 
@@ -5402,9 +5413,51 @@ impl CoreManager {
         for (key, value) in map {
             Self::apply_port_candidate_value(&mut candidate, key, value)?;
             Self::apply_dns_candidate_value(&mut candidate, key, value)?;
+            Self::apply_config_extension_candidate_value(&mut candidate, key, value)?;
         }
         Self::validate_dns_candidate(&candidate)?;
+        config_extensions::validate_settings(&candidate)?;
         Self::validate_port_settings_snapshot(&candidate)
+    }
+
+    fn apply_config_extension_candidate_value(
+        settings: &mut Settings,
+        key: &str,
+        value: &JsonValue,
+    ) -> Result<(), String> {
+        match key {
+            "additionalRulesEnabled" => {
+                settings.additional_rules_enabled = value.as_bool().ok_or_else(|| {
+                    "Additional Rules enabled state must be true or false.".to_string()
+                })?;
+            }
+            "additionalRules" => {
+                let values = value
+                    .as_array()
+                    .ok_or_else(|| "Additional Rules must be a list of rule lines.".to_string())?;
+                settings.additional_rules = values
+                    .iter()
+                    .map(|item| {
+                        item.as_str()
+                            .map(str::to_string)
+                            .ok_or_else(|| "Each Additional Rule must be text.".to_string())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+            }
+            "overrideScriptEnabled" => {
+                settings.override_script_enabled = value.as_bool().ok_or_else(|| {
+                    "Override Script enabled state must be true or false.".to_string()
+                })?;
+            }
+            "overrideScript" => {
+                settings.override_script = value
+                    .as_str()
+                    .ok_or_else(|| "Override Script must be YAML text.".to_string())?
+                    .to_string();
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn apply_dns_candidate_value(
@@ -7452,6 +7505,13 @@ impl CoreManager {
             self.settings.allow_lan,
             &self.settings.log_level,
             json!(&self.settings.selected_proxy_map),
+            json!({
+                "additionalRulesEnabled": self.settings.additional_rules_enabled,
+                "additionalRules": &self.settings.additional_rules,
+                "overrideScriptEnabled": self.settings.override_script_enabled,
+                "overrideScript": &self.settings.override_script,
+                "format": "yaml"
+            }),
             self.settings.reliability_auto,
             self.settings.reliability_profile_failover,
             self.settings.reliability_failure_threshold,
@@ -7860,6 +7920,13 @@ impl CoreManager {
                     .unwrap_or(default_reliability_candidate_limit())
                     .clamp(3, 200)
             }
+            "additionalRulesEnabled"
+            | "additionalRules"
+            | "overrideScriptEnabled"
+            | "overrideScript" => {
+                Self::apply_config_extension_candidate_value(&mut self.settings, key, value)?;
+                config_extensions::validate_settings(&self.settings)?;
+            }
             "mixedPort" => {
                 self.settings.mixed_port =
                     core_runtime::mixed_port_from_value(value, self.settings.mixed_port)?
@@ -7887,6 +7954,10 @@ impl CoreManager {
                 | "ipv6Enabled"
                 | "allowLan"
                 | "logLevel"
+                | "additionalRulesEnabled"
+                | "additionalRules"
+                | "overrideScriptEnabled"
+                | "overrideScript"
         ))
     }
 
@@ -9947,6 +10018,13 @@ fn diagnostics_public_settings(snapshot: &DiagnosticsSnapshot) -> JsonValue {
         snapshot.settings.allow_lan,
         &snapshot.settings.log_level,
         json!(&snapshot.settings.selected_proxy_map),
+        json!({
+            "additionalRulesEnabled": snapshot.settings.additional_rules_enabled,
+            "additionalRuleCount": snapshot.settings.additional_rules.len(),
+            "overrideScriptEnabled": snapshot.settings.override_script_enabled,
+            "overrideScriptConfigured": !snapshot.settings.override_script.trim().is_empty(),
+            "format": "yaml"
+        }),
         snapshot.settings.reliability_auto,
         snapshot.settings.reliability_profile_failover,
         snapshot.settings.reliability_failure_threshold,

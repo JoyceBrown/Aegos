@@ -115,6 +115,10 @@ try {
             controllerPort: 19091,
             tunStack: 'mixed',
             logLevel: 'info',
+            additionalRulesEnabled: false,
+            additionalRules: [],
+            overrideScriptEnabled: false,
+            overrideScript: '',
             reliability: {
               auto: true,
               profileFailover: true,
@@ -241,6 +245,13 @@ try {
             allowLan: false,
             tunStack: state.settings.tunStack,
             logLevel: state.settings.logLevel,
+            configExtensions: {
+              additionalRulesEnabled: state.settings.additionalRulesEnabled,
+              additionalRules: state.settings.additionalRules,
+              overrideScriptEnabled: state.settings.overrideScriptEnabled,
+              overrideScript: state.settings.overrideScript,
+              format: 'yaml'
+            },
             reliability: state.settings.reliability,
             proxyTakeover: {
               endpoint: '127.0.0.1:' + state.settings.mixedPort,
@@ -1036,23 +1047,29 @@ try {
     routingAdvanced.open = true;
     routingAdvanced.dispatchEvent(new Event('toggle'));
     await new Promise((resolve) => setTimeout(resolve, 40));
+    if (routingAdvanced.querySelector('summary em')?.textContent !== '\u6536\u8d77') throw new Error('routing advanced disclosure did not show the collapse action');
     if (!document.querySelector('#routingRuleRows .routing-rule-row')?.textContent.includes('url-test.example.com')) throw new Error('routing page rendered a stale profile snapshot after subscription switch');
     if (document.querySelector('#routingRuleRows')?.textContent.includes('api.ipify.org')) throw new Error('routing page leaked Aegos internal landing IP rule into ordinary rules');
     if (document.querySelectorAll('#routingRuleRows .routing-rule-row').length > 80) throw new Error('routing advanced details exceeded the bounded row window');
     routingAdvanced.open = false;
     routingAdvanced.dispatchEvent(new Event('toggle'));
+    if (routingAdvanced.querySelector('summary em')?.textContent !== '\u5c55\u5f00') throw new Error('routing advanced disclosure did not restore the expand action');
     if (document.querySelector('#routingSystemRuleCount')?.textContent.trim() !== '1') throw new Error('routing page did not count hidden system rules');
+    await click('[data-routing-kind="test"]');
+    if (!document.querySelector('[data-routing-panel="test"]')?.classList.contains('is-active')) throw new Error('rule test did not activate as a first-level task');
     document.querySelector('#routingRuleTestInput').value = 'www.url-test.example.com';
     await click('#testRoutingRuleBtn');
     if (!document.querySelector('#routingRuleTestResult')?.textContent.includes('GLOBAL')) throw new Error('routing rule test did not explain the matched target');
     await click('[data-routing-test-example="openai.com"]');
     if (document.querySelector('#routingRuleTestInput')?.value !== 'openai.com') throw new Error('routing rule test example did not fill the input');
+    await click('[data-routing-kind="website"]');
     document.querySelector('#routingWebsiteInput').value = 'https://openai.com/docs';
     document.querySelector('#previewWebsiteRuleBtn').click();
     await new Promise((resolve) => setTimeout(resolve, 40));
     if (!document.querySelector('#routingDraftPreview')?.dataset.rule?.includes('DOMAIN-SUFFIX,openai.com')) throw new Error('website routing preview did not create a safe draft');
     if (document.querySelector('#routingDraftListCard')?.classList.contains('hidden')) throw new Error('routing draft area did not appear after preview');
     const callsBeforeAppDraft = window.__aegosCalls.length;
+    await click('[data-routing-kind="app"]');
     document.querySelector('#routingAppInput').value = 'Telegram';
     document.querySelector('#previewAppRuleBtn').click();
     await new Promise((resolve) => setTimeout(resolve, 40));
@@ -1354,7 +1371,7 @@ try {
     const environmentCallsBeforeSettings = window.__aegosCalls.filter((item) => item.command === 'environment_readiness').length;
     await click('[data-page="settings"]');
     await new Promise((resolve) => setTimeout(resolve, 220));
-    if (document.querySelectorAll('[data-settings-category]').length !== 6) throw new Error('settings category navigation did not render');
+    if (document.querySelectorAll('[data-settings-category]').length !== 7) throw new Error('settings category navigation did not render');
     if (document.querySelectorAll('[data-settings-panel].active').length !== 1) throw new Error('settings displayed more than one category at once');
     if (!document.querySelector('[data-settings-panel="takeover"]')?.classList.contains('active')) throw new Error('settings did not open on takeover controls');
     if (getComputedStyle(document.querySelector('.settings-overview')).display !== 'none') throw new Error('low-value settings dashboard remained visible');
@@ -1383,6 +1400,24 @@ try {
     if (document.querySelectorAll('#environmentRows .environment-row').length < 4) throw new Error('system check did not expose detailed checks on demand');
     if ([...document.querySelectorAll('#environmentRows .environment-row')].some((item) => /Administrator|Proxy port|Controller port/.test(item.textContent))) throw new Error('system check leaked technical English labels');
     journeys.settingsAndEnvironment = true;
+    const callsBeforeExtensionsCategory = window.__aegosCalls.length;
+    await click('[data-settings-category="extensions"]');
+    if (!document.querySelector('[data-settings-panel="extensions"]')?.classList.contains('active')) throw new Error('configuration extensions category did not activate');
+    if (window.__aegosCalls.length !== callsBeforeExtensionsCategory) throw new Error('configuration extensions category switch triggered backend calls');
+    document.querySelector('#additionalRulesToggle').checked = true;
+    document.querySelector('#additionalRulesToggle').dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('#additionalRulesInput').value = 'DOMAIN-SUFFIX,example.com,Proxies';
+    document.querySelector('#additionalRulesInput').dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#overrideScriptToggle').checked = true;
+    document.querySelector('#overrideScriptToggle').dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('#overrideScriptInput').value = 'sniffer:\\n  enable: true';
+    document.querySelector('#overrideScriptInput').dispatchEvent(new Event('input', { bubbles: true }));
+    await click('#saveConfigExtensionsBtn');
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const savedConfigExtensionsCall = [...window.__aegosCalls].reverse().find((item) => item.command === 'start_job' && item.args.kind === 'updateSettings' && item.args.payload?.updates?.additionalRulesEnabled === true);
+    if (!savedConfigExtensionsCall) throw new Error('configuration extensions did not save through the settings background job');
+    if (savedConfigExtensionsCall.args.payload.updates.additionalRules?.[0] !== 'DOMAIN-SUFFIX,example.com,Proxies') throw new Error('additional rules were not preserved as ordered rule lines');
+    if (!savedConfigExtensionsCall.args.payload.updates.overrideScript?.includes('sniffer:')) throw new Error('override YAML was not preserved');
     await click('[data-settings-category="takeover"]');
     await click('#repairProxyBtn');
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'repairSystemProxy')) throw new Error('repair proxy button did not use repairSystemProxy job');
@@ -1412,7 +1447,8 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 20));
     journeys.nonBlockingBackgroundWork = true;
     const commands = window.__aegosCalls.map((item) => item.command);
-    const advancedSettingsCall = window.__aegosCalls.find((item) => item.command === 'start_job' && item.args.kind === 'updateSettings');
+    const advancedSettingsCall = window.__aegosCalls.find((item) => item.command === 'start_job' && item.args.kind === 'updateSettings' && item.args.payload?.updates?.mixedPort);
+    const configExtensionsCall = window.__aegosCalls.find((item) => item.command === 'start_job' && item.args.kind === 'updateSettings' && item.args.payload?.updates?.additionalRulesEnabled === true);
     const required = ['start_job', 'job_status', 'cancel_job', 'start_proxy_delay_test', 'cancel_proxy_delay_test', 'relaunch_as_admin', 'connections', 'close_connections'];
     const jobKinds = window.__aegosCalls.filter((item) => item.command === 'start_job').map((item) => item.args.kind);
     return {
@@ -1428,6 +1464,7 @@ try {
         statusCenterJobBackendCalls: statusCenterJobBackendDelta
       },
       advancedSettings: advancedSettingsCall?.args?.payload?.updates || null,
+      configExtensions: configExtensionsCall?.args?.payload?.updates || null,
       jobCenterText,
       notice: document.querySelector('#protectionNotice')?.textContent || ''
     };

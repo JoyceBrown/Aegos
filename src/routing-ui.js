@@ -50,7 +50,8 @@
         el('nav', { className: 'routing-kind-list', attrs: { 'aria-label': '\u89c4\u5219\u7c7b\u578b', role: 'tablist' } }, [
           kindButton('website', '\u7f51\u7ad9', '\u6309\u57df\u540d\u6307\u5b9a\u7ebf\u8def', 'icon-routing'),
           kindButton('app', '\u5e94\u7528', '\u6309\u7a0b\u5e8f\u6216\u8def\u5f84\u5206\u6d41', 'icon-connections'),
-          kindButton('system', '\u7cfb\u7edf', '\u67e5\u770b\u53ea\u8bfb\u4fdd\u62a4\u89c4\u5219', 'icon-shield')
+          kindButton('system', '\u7cfb\u7edf', '\u67e5\u770b\u53ea\u8bfb\u4fdd\u62a4\u89c4\u5219', 'icon-shield'),
+          kindButton('test', '\u6d4b\u8bd5', '\u67e5\u770b\u7f51\u7ad9\u4f1a\u8d70\u54ea\u6761\u7ebf\u8def', 'icon-speed')
         ]),
         el('section', { className: 'routing-builder-panel is-active', id: 'routingPanelWebsite', dataset: { routingPanel: 'website' }, attrs: { 'aria-label': '\u7f51\u7ad9\u89c4\u5219\u5411\u5bfc' } }, [
           panelHeader('\u6dfb\u52a0\u7f51\u7ad9\u89c4\u5219', '\u8f93\u5165\u57df\u540d\uff0c\u9009\u62e9\u8fd9\u4e2a\u7f51\u7ad9\u5e94\u8be5\u4f7f\u7528\u7684\u7ebf\u8def\u3002'),
@@ -104,6 +105,28 @@
             el('span', { id: 'routingSystemEntryHint', textContent: '\u7528\u6237\u89c4\u5219\u4e0e\u7cfb\u7edf\u4fdd\u62a4\u51b2\u7a81\u65f6\uff0cAegos \u4f1a\u660e\u786e\u8bf4\u660e\u539f\u56e0\u3002' }),
             el('button', { id: 'routingShowSystemRulesBtn', className: 'ghost compact', attrs: { type: 'button' }, textContent: '\u67e5\u770b\u660e\u7ec6' })
           ])
+        ]),
+        el('section', {
+          id: 'routingRuleTestCard',
+          className: 'routing-builder-panel routing-test-card',
+          dataset: { routingPanel: 'test' },
+          attrs: { 'aria-label': '\u6d4b\u8bd5\u5f53\u524d\u89c4\u5219' }
+        }, [
+          panelHeader('\u6d4b\u8bd5', '\u67e5\u770b\u7f51\u7ad9\u5728\u5f53\u524d\u914d\u7f6e\u4e2d\u4f1a\u547d\u4e2d\u54ea\u6761\u89c4\u5219\u3002'),
+          el('div', { className: 'routing-draft-form wide routing-test-form' }, [
+            el('label', { className: 'routing-field' }, [
+              el('span', { textContent: '\u7f51\u7ad9' }),
+              el('input', { id: 'routingRuleTestInput', attrs: { placeholder: '\u4f8b\u5982 youtube.com', autocomplete: 'off', spellcheck: 'false' } })
+            ]),
+            el('button', { id: 'testRoutingRuleBtn', className: 'primary compact', attrs: { type: 'button' }, textContent: '\u5f00\u59cb\u6d4b\u8bd5' })
+          ]),
+          el('div', { className: 'routing-test-examples', attrs: { 'aria-label': '\u89c4\u5219\u6d4b\u8bd5\u793a\u4f8b' } }, [
+            el('span', { textContent: '\u793a\u4f8b' }),
+            el('button', { className: 'ghost compact', dataset: { routingTestExample: 'youtube.com' }, attrs: { type: 'button' }, textContent: 'youtube.com' }),
+            el('button', { className: 'ghost compact', dataset: { routingTestExample: 'openai.com' }, attrs: { type: 'button' }, textContent: 'openai.com' }),
+            el('button', { className: 'ghost compact', dataset: { routingTestExample: 'telegram.org' }, attrs: { type: 'button' }, textContent: 'telegram.org' })
+          ]),
+          el('p', { id: 'routingRuleTestResult', className: 'routing-draft-preview', textContent: '\u8f93\u5165\u7f51\u7ad9\u540e\uff0cAegos \u4f1a\u544a\u8bc9\u4f60\u5f53\u524d\u4f1a\u547d\u4e2d\u54ea\u6761\u89c4\u5219\u3002' })
         ])
       ]),
       el('section', { id: 'routingDraftListCard', className: 'routing-draft-card routing-draft-list-card hidden', attrs: { 'aria-live': 'polite' } }, [
@@ -121,28 +144,6 @@
           el('button', { id: 'applyRoutingDraftsBtn', className: 'primary compact', attrs: { type: 'button' }, textContent: '\u5e94\u7528\u8349\u7a3f' }),
           el('button', { id: 'undoRoutingApplyBtn', className: 'ghost compact', attrs: { type: 'button' }, textContent: '\u64a4\u9500\u6700\u8fd1\u5e94\u7528' })
         ])
-      ]),
-      el('details', { id: 'routingRuleTestCard', className: 'routing-draft-card routing-test-card' }, [
-        el('summary', { className: 'routing-draft-head routing-test-summary' }, [
-          el('div', {}, [
-            el('b', { textContent: '\u6d4b\u8bd5\u5df2\u6709\u89c4\u5219' }),
-            el('small', { textContent: '\u53ef\u9009\uff1a\u67e5\u770b\u7f51\u7ad9\u4f1a\u8d70\u54ea\u6761\u7ebf\u8def' })
-          ])
-        ]),
-        el('div', { className: 'routing-draft-form wide routing-test-form' }, [
-          el('label', { className: 'routing-field' }, [
-            el('span', { textContent: '\u6d4b\u8bd5\u7f51\u7ad9' }),
-            el('input', { id: 'routingRuleTestInput', attrs: { placeholder: '\u4f8b\u5982 youtube.com', autocomplete: 'off', spellcheck: 'false' } })
-          ]),
-          el('button', { id: 'testRoutingRuleBtn', className: 'primary compact', attrs: { type: 'button' }, textContent: '\u6d4b\u8bd5\u5f53\u524d\u89c4\u5219' })
-        ]),
-        el('div', { className: 'routing-test-examples', attrs: { 'aria-label': '\u89c4\u5219\u6d4b\u8bd5\u793a\u4f8b' } }, [
-          el('span', { textContent: '\u793a\u4f8b' }),
-          el('button', { className: 'ghost compact', dataset: { routingTestExample: 'youtube.com' }, attrs: { type: 'button' }, textContent: 'youtube.com' }),
-          el('button', { className: 'ghost compact', dataset: { routingTestExample: 'openai.com' }, attrs: { type: 'button' }, textContent: 'openai.com' }),
-          el('button', { className: 'ghost compact', dataset: { routingTestExample: 'telegram.org' }, attrs: { type: 'button' }, textContent: 'telegram.org' })
-        ]),
-        el('p', { id: 'routingRuleTestResult', className: 'routing-draft-preview', textContent: '\u8f93\u5165\u7f51\u7ad9\u540e\uff0cAegos \u4f1a\u544a\u8bc9\u4f60\u5f53\u524d\u4f1a\u547d\u4e2d\u54ea\u6761\u89c4\u5219\u3002' })
       ]),
       el('section', { id: 'routingApplyStatus', className: 'routing-apply-status hidden', attrs: { 'aria-live': 'polite' } }, [])
     ]);

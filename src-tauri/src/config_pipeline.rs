@@ -5,7 +5,8 @@ use serde_yaml::{Mapping, Value as YamlValue};
 use crate::{
     app_config::{Profile, Settings},
     config_domain::{ManualNodeConfig, ProfileCatalog, RuntimeConfigReport},
-    core_runtime, subscription_runtime, AEGOS_OUTBOUND_IP_GROUP, OUTBOUND_IP_RULE_DOMAINS,
+    config_extensions, core_runtime, subscription_runtime, AEGOS_OUTBOUND_IP_GROUP,
+    OUTBOUND_IP_RULE_DOMAINS,
 };
 
 pub(crate) struct RuntimeConfigPlan {
@@ -373,6 +374,7 @@ pub(crate) fn patch_config(
         YamlValue::Mapping(map) => map,
         _ => Mapping::new(),
     };
+    config_extensions::apply_to_runtime(&mut config, settings)?;
     for key in [
         "port",
         "socks-port",

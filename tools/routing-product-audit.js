@@ -218,7 +218,7 @@ check(
   'execution record must not pretend old work passed'
 );
 check(
-  'routing assistant is task-focused around website, app, and system rules',
+  'routing assistant is task-focused around website, app, system, and test',
   routingUiJs.includes("className: 'routing-kind-list'") &&
     appJs.includes('[data-routing-kind]') &&
     appJs.includes('[data-routing-panel]') &&
@@ -226,8 +226,10 @@ check(
     routingUiJs.includes("kindButton('website', '\\u7f51\\u7ad9'") &&
     routingUiJs.includes("kindButton('app', '\\u5e94\\u7528'") &&
     routingUiJs.includes("kindButton('system', '\\u7cfb\\u7edf'") &&
+    routingUiJs.includes("kindButton('test', '\\u6d4b\\u8bd5'") &&
+    routingUiJs.includes("dataset: { routingPanel: 'test' }") &&
     !routingUiJs.includes("kindButton('region'"),
-  'website/app/system task selector'
+  'website/app/system/test task selector'
 );
 check(
   'advanced engineering data is folded by default below the main task',
@@ -237,6 +239,8 @@ check(
     appJs.includes('tables[1]') &&
     stylesCss.includes('.routing-advanced-panel') &&
     stylesCss.includes('.routing-advanced-summary') &&
+    stylesCss.includes('.routing-advanced-summary em::before') &&
+    stylesCss.includes('content: none') &&
     stylesCss.includes('.routing-advanced-note') &&
     stylesCss.includes('min-height: 56px') &&
     stylesCss.includes('.routing-advanced-summary:focus-visible') &&

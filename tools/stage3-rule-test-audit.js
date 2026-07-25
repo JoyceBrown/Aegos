@@ -56,14 +56,16 @@ check('version keeps the 3.5.98+ rule test checkpoint active', versionAtLeast(pk
 check('package exposes the stage 3 rule test audit', pkg.scripts?.['audit:stage3-rule-test'] === 'node tools/stage3-rule-test-audit.js', 'npm run audit:stage3-rule-test');
 
 check(
-  'rules page has a plain rule test card',
+  'rule test is a first-level single-panel task beside website, app, and system',
   uiBody.includes('routingRuleTestInput') &&
     uiBody.includes('testRoutingRuleBtn') &&
     uiBody.includes('routingRuleTestResult') &&
-    uiBody.includes('\\u6d4b\\u8bd5\\u5df2\\u6709\\u89c4\\u5219') &&
+    uiBody.includes("dataset: { routingPanel: 'test' }") &&
+    routingUiJs.includes("kindButton('test', '\\u6d4b\\u8bd5'") &&
+    !routingUiJs.includes("el('details', { id: 'routingRuleTestCard'") &&
     appJs.includes("$('#testRoutingRuleBtn')?.addEventListener('click', testRoutingWebsiteRule)") &&
     appJs.includes("$('#routingRuleTestInput')?.addEventListener('keydown'"),
-  'rule test card and events'
+  'four-task rule workspace and events'
 );
 
 check(

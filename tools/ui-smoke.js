@@ -295,9 +295,10 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
     const routingSummaryHidden = !visible(document.querySelector('.routing-summary'));
     const routingKindButtons = all('[data-routing-kind]').filter(visible);
     const routingKindBoxes = routingKindButtons.map((button) => button.getBoundingClientRect());
-    const routingKindsVertical = routingKindBoxes.length === 3
+    const routingKindsVertical = routingKindBoxes.length === 4
       && routingKindBoxes[1].top >= routingKindBoxes[0].bottom - 1
-      && routingKindBoxes[2].top >= routingKindBoxes[1].bottom - 1;
+      && routingKindBoxes[2].top >= routingKindBoxes[1].bottom - 1
+      && routingKindBoxes[3].top >= routingKindBoxes[2].bottom - 1;
     const routingActivePanels = all('[data-routing-panel].is-active').filter(visible).length;
     const routingAssistantHeadMissing = !document.querySelector('.routing-assistant-head');
     const routingToolbarMissing = !document.querySelector('.routing-draft-toolbar');
@@ -491,6 +492,37 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       fs.writeFileSync(pagePath, Buffer.from(pageShot.data, 'base64'));
       report.pageScreenshots.push(pagePath);
     }
+    await evaluate(page, `
+      document.querySelector('[data-page="routing"]').click();
+      document.querySelector('[data-routing-kind="system"]').click();
+    `);
+    await delay(120);
+    for (const [state, setup] of [
+      ['routing-system', ''],
+      ['routing-test', `document.querySelector('[data-routing-kind="test"]').click();`],
+      ['routing-advanced', `
+        document.querySelector('[data-routing-kind="website"]').click();
+        const detail = document.querySelector('#routingAdvancedPanel');
+        detail.open = true;
+        detail.dispatchEvent(new Event('toggle'));
+      `]
+    ]) {
+      if (setup) await evaluate(page, setup);
+      await delay(120);
+      const stateShot = await page.send('Page.captureScreenshot', { format: 'png' });
+      const statePath = path.join(screenshotDir, `stage7-${state}-1280x820.png`);
+      fs.writeFileSync(statePath, Buffer.from(stateShot.data, 'base64'));
+      report.pageScreenshots.push(statePath);
+    }
+    await evaluate(page, `
+      document.querySelector('[data-page="settings"]').click();
+      document.querySelector('[data-settings-category="extensions"]').click();
+    `);
+    await delay(120);
+    const extensionShot = await page.send('Page.captureScreenshot', { format: 'png' });
+    const extensionPath = path.join(screenshotDir, 'stage7-settings-extensions-1280x820.png');
+    fs.writeFileSync(extensionPath, Buffer.from(extensionShot.data, 'base64'));
+    report.pageScreenshots.push(extensionPath);
     await evaluate(page, `document.querySelector('#titlebarStatusCenterBtn').click()`);
     await delay(180);
     const statusCenterShot = await page.send('Page.captureScreenshot', { format: 'png' });
@@ -507,6 +539,23 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       const pagePath = path.join(screenshotDir, `stage7-${pageName}-920x640.png`);
       fs.writeFileSync(pagePath, Buffer.from(pageShot.data, 'base64'));
       report.pageScreenshots.push(pagePath);
+    }
+    for (const [state, setup] of [
+      ['routing-test', `
+        document.querySelector('[data-page="routing"]').click();
+        document.querySelector('[data-routing-kind="test"]').click();
+      `],
+      ['settings-extensions', `
+        document.querySelector('[data-page="settings"]').click();
+        document.querySelector('[data-settings-category="extensions"]').click();
+      `]
+    ]) {
+      await evaluate(page, setup);
+      await delay(120);
+      const stateShot = await page.send('Page.captureScreenshot', { format: 'png' });
+      const statePath = path.join(screenshotDir, `stage7-${state}-920x640.png`);
+      fs.writeFileSync(statePath, Buffer.from(stateShot.data, 'base64'));
+      report.pageScreenshots.push(statePath);
     }
   }
   return report;
@@ -559,7 +608,7 @@ try {
         network: { lanIp: '192.168.1.8', proxyEndpoint: '127.0.0.1:7891', outboundIp: '188.253.127.200', availability: { state: 'unverified', label: '未验证', detail: '尚未连接' } },
         permissions: { isAdmin: true, requiresAdminFor: ['TUN', '断网保护'] },
         protection: { label: '未开启' },
-        settings: { activeProfileId: profile.id, profiles, mixedPort: 7891, controllerPort: 19091, systemProxy: false, tunEnabled: false, startWithSystemProxy: true, dnsHijackEnabled: true, killSwitchEnabled: false, ipv6Enabled: false, allowLan: false, tunStack: 'mixed', logLevel: 'info', reliability: { auto: true, profileFailover: true, failureThreshold: 2, maxDelayMs: 800, candidateLimit: 24 } }
+        settings: { activeProfileId: profile.id, profiles, mixedPort: 7891, controllerPort: 19091, systemProxy: false, tunEnabled: false, startWithSystemProxy: true, dnsHijackEnabled: true, killSwitchEnabled: false, ipv6Enabled: false, allowLan: false, tunStack: 'mixed', logLevel: 'info', configExtensions: { additionalRulesEnabled: false, additionalRules: [], overrideScriptEnabled: false, overrideScript: '', format: 'yaml' }, reliability: { auto: true, profileFailover: true, failureThreshold: 2, maxDelayMs: 800, candidateLimit: 24 } }
       });
       const invoke = async (command, args = {}) => {
         if (command === 'app_status') return status();
@@ -602,7 +651,7 @@ try {
     if (!report.routingDraftCardHidden) failures.push(`${report.width}x${report.height}: empty routing draft area is visible`);
     if (!report.routingSummaryDetailHidden) failures.push(`${report.width}x${report.height}: routing summary detail expanded without a user request`);
     if (!report.routingSummaryHidden) failures.push(`${report.width}x${report.height}: low-value routing dashboard remained visible`);
-    if (report.routingKindCount !== 3 || !report.routingKindsVertical || report.routingActivePanels !== 1) failures.push(`${report.width}x${report.height}: routing types are not a clear single-panel workflow`);
+    if (report.routingKindCount !== 4 || !report.routingKindsVertical || report.routingActivePanels !== 1) failures.push(`${report.width}x${report.height}: routing types are not a clear single-panel workflow`);
     if (!report.routingAssistantHeadMissing || !report.routingToolbarMissing) failures.push(`${report.width}x${report.height}: routing assistant retained duplicate heading or controls`);
     if (!report.profileTableHead || !report.profileTableRow) failures.push(`${report.width}x${report.height}: subscription comparison table is incomplete`);
     if (report.profileTableOverflowX > 1) failures.push(`${report.width}x${report.height}: subscription table horizontal overflow ${report.profileTableOverflowX}px`);
@@ -612,7 +661,7 @@ try {
     if (report.profileWrappedActions.length) failures.push(`${report.width}x${report.height}: subscription actions wrapped: ${report.profileWrappedActions.join(', ')}`);
     if (!report.settingsActive) failures.push(`${report.width}x${report.height}: settings page did not activate`);
     if (!report.settingsSummaryHidden) failures.push(`${report.width}x${report.height}: low-value settings dashboard remained visible`);
-    if (report.settingsCategoryCount !== 6 || report.settingsVisiblePanels !== 1 || !report.settingsWorkspaceAligned) failures.push(`${report.width}x${report.height}: settings category hierarchy is incomplete or misaligned`);
+    if (report.settingsCategoryCount !== 7 || report.settingsVisiblePanels !== 1 || !report.settingsWorkspaceAligned) failures.push(`${report.width}x${report.height}: settings category hierarchy is incomplete or misaligned`);
     if (report.primaryUsesGradient) failures.push(`${report.width}x${report.height}: primary command uses a decorative gradient`);
     if (report.primaryRadius > 6.1) failures.push(`${report.width}x${report.height}: primary command radius is ${report.primaryRadius}px`);
     if (!report.diagnosticsActive) failures.push(`${report.width}x${report.height}: diagnostics page did not activate`);

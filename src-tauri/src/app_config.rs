@@ -102,6 +102,14 @@ pub(crate) struct Settings {
     pub(crate) selected_proxy_map: HashMap<String, String>,
     #[serde(default)]
     pub(crate) manual_nodes: HashMap<String, HashMap<String, ManualNodeConfig>>,
+    #[serde(default)]
+    pub(crate) additional_rules_enabled: bool,
+    #[serde(default)]
+    pub(crate) additional_rules: Vec<String>,
+    #[serde(default)]
+    pub(crate) override_script_enabled: bool,
+    #[serde(default)]
+    pub(crate) override_script: String,
     pub(crate) profiles: Vec<Profile>,
 }
 

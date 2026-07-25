@@ -3042,22 +3042,6 @@ h1 {
   color: #7d8aa0;
 }
 
-.routing-advanced-panel[open] .routing-advanced-summary em::before {
-  content: "收起";
-}
-
-.routing-advanced-panel[open] .routing-advanced-summary em {
-  font-size: 0;
-}
-
-.routing-advanced-panel[open] .routing-advanced-summary em::before {
-  font-size: 12px;
-}
-
-.routing-advanced-panel[open] .routing-advanced-summary em::before {
-  content: "收起";
-}
-
 .routing-table-card {
   min-height: 0;
   padding: 8px;
@@ -8505,6 +8489,55 @@ body::before {
   margin-top: 8px;
 }
 
+.routing-test-card {
+  transition: none;
+}
+
+.routing-test-card:hover,
+.routing-test-card:focus-within {
+  background: transparent;
+  box-shadow: none;
+}
+
+.routing-advanced-panel {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.routing-advanced-panel[open] {
+  overflow: hidden;
+}
+
+.routing-advanced-summary {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.routing-advanced-summary > span {
+  min-width: 0;
+}
+
+.routing-advanced-summary em,
+.routing-advanced-panel[open] .routing-advanced-summary em {
+  min-width: 36px;
+  font-size: 12px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.routing-advanced-summary em::before,
+.routing-advanced-panel[open] .routing-advanced-summary em::before {
+  content: none;
+}
+
+.routing-advanced-panel .routing-table-card {
+  min-width: 0;
+  max-width: calc(100% - 20px);
+  overflow: auto;
+}
+
 /* Settings: one category at a time instead of a full-page wall of controls. */
 [data-page-panel="settings"] .section-head p,
 .settings-overview {
@@ -8717,6 +8750,115 @@ body::before {
 .settings-category-panel .settings-actions {
   margin: 0;
   justify-content: flex-end;
+}
+
+.config-extensions-content {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.config-extension-editor {
+  min-width: 0;
+  display: grid;
+  gap: 9px;
+  padding: 11px 12px;
+  border-radius: var(--radius-control);
+  background: var(--surface-row-soft);
+}
+
+.config-extension-head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.config-extension-head > div {
+  min-width: 0;
+  margin-right: auto;
+}
+
+.config-extension-head b,
+.config-extension-head small {
+  display: block;
+  min-width: 0;
+}
+
+.config-extension-head b {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.config-extension-head small {
+  margin-top: 2px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.config-extension-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.config-extension-toggle input {
+  width: 34px;
+  height: 20px;
+}
+
+.config-extension-editor textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 104px;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control);
+  color: var(--text-primary);
+  background: var(--surface-panel-strong);
+  font: 11px/1.55 var(--font-mono);
+  letter-spacing: 0;
+  tab-size: 2;
+}
+
+.config-extension-editor textarea:focus {
+  border-color: var(--status-info);
+  outline: 2px solid var(--status-info-soft);
+  outline-offset: 0;
+}
+
+.config-extension-editor.is-disabled textarea {
+  opacity: .64;
+}
+
+.config-extension-meta {
+  min-height: 16px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  text-align: right;
+}
+
+.config-extension-actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.config-extension-status {
+  min-width: 0;
+  margin-right: auto;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 1040px) {

@@ -877,6 +877,7 @@ pub fn public_settings_surface_json(
     allow_lan: bool,
     log_level: &str,
     selected_proxy_map: JsonValue,
+    config_extensions: JsonValue,
     reliability_auto: bool,
     reliability_profile_failover: bool,
     reliability_failure_threshold: u64,
@@ -905,6 +906,7 @@ pub fn public_settings_surface_json(
         "allowLan": allow_lan,
         "logLevel": log_level,
         "selectedProxyMap": selected_proxy_map,
+        "configExtensions": config_extensions,
         "reliability": {
             "auto": reliability_auto,
             "profileFailover": reliability_profile_failover,
@@ -4526,6 +4528,13 @@ rules:
             false,
             "warning",
             json!({ "Proxies": "HK 1" }),
+            json!({
+                "additionalRulesEnabled": true,
+                "additionalRules": ["DOMAIN-SUFFIX,example.com,Proxies"],
+                "overrideScriptEnabled": false,
+                "overrideScript": "",
+                "format": "yaml"
+            }),
             true,
             true,
             3,
@@ -4548,6 +4557,12 @@ rules:
             Some(7890)
         );
         assert!(settings.get("manualNodes").is_none());
+        assert_eq!(
+            settings
+                .pointer("/configExtensions/additionalRulesEnabled")
+                .and_then(JsonValue::as_bool),
+            Some(true)
+        );
         assert_eq!(
             settings
                 .pointer("/reservedPorts/reason")

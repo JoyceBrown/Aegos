@@ -1,0 +1,102 @@
+# Aegos 3.6.57
+
+## Scope
+
+- Make rule testing a first-class Rules workspace beside Website, Application,
+  and System.
+- Repair the generated-rule detail disclosure at normal and minimum window
+  sizes.
+- Add FlClash-style additional rules and controlled YAML override support
+  without surrendering Aegos runtime ownership or executing arbitrary scripts.
+
+## Changes
+
+- Renamed "Test existing rules" to "Test" and moved it into the same vertical
+  task selector as Website, Application, and System.
+- Rule testing keeps the existing hit explanation while avoiding an extra
+  nested panel.
+- Generated-rule details now use one explicit Expand/Collapse label source.
+  The expanded content is width-bounded and scrolls internally, so the
+  collapse action stays visible.
+- Settings adds a focused Configuration Extensions category:
+  - Additional rules accept one Mihomo rule per line, deduplicate entries, and
+    insert them before the terminal MATCH/FINAL fallback.
+  - YAML override recursively merges supported configuration keys; `null`
+    removes a key.
+  - Aegos-owned ports, controller credentials, takeover, TUN, DNS, and rules
+    remain protected.
+  - YAML tags, oversized input, excessive nesting, excessive node counts, and
+    additional MATCH/FINAL rules are rejected before runtime deployment.
+- Extension changes use the existing background settings transaction,
+  preflight, runtime deployment, and rollback path. Subscription sources are
+  never rewritten.
+- Diagnostics expose only extension counts and enabled/configured state, never
+  the user's rule or override contents.
+
+## Verification
+
+- 192 Rust unit tests passed.
+- Configuration extension, routing rule test, routing product, interaction,
+  UI, responsiveness, settings security, architecture, Stage 7 visual, and
+  release gates passed.
+- The complete product smoke passed all ten ordinary-user journeys with zero
+  forbidden side effects: `npm run smoke:product`.
+- The 800-node pressure run completed 420 rapid page changes with 0.30ms
+  navigation P95. Cold routing content was ready in 222.3ms.
+- Three repeated cold runs kept Cold routing at or below 220.9ms.
+- Windowed GPU navigation stayed at 33.5ms P95 and 66.7ms maximum on the
+  current 30Hz compositor.
+- The 16-cycle soak completed 277 mixed commands with stable DOM and timer
+  counts.
+- Performance evidence passed `npm run audit:stage8-performance`.
+- Mainline evidence for `3.5.71 - 3.6.40` passed
+  `npm run audit:current-mainline` and
+  `cargo check --manifest-path src-tauri/Cargo.toml`.
+- Pressure coverage retains the 3.5.86 checkpoint through
+  `npm run smoke:interactions`, `npm run smoke:perf`, and
+  `npm run audit:phase2-pressure`.
+- Historical Stage 3 behavior remains covered by the 3.5.95
+  "规则列表可管理", 3.5.96 "系统规则解释", 3.5.97 node-rule link, and
+  3.5.99 historical gate / UX polish gates. The product keeps "用户规则优先"
+  and reports "目标不存在" before apply.
+- Stage 3 gates:
+  `npm run audit:stage3-rules-page`,
+  `npm run audit:stage3-website-rules`,
+  `npm run audit:stage3-app-rules`,
+  `npm run audit:stage3-strategy-selector`,
+  `npm run audit:stage3-conflict-explanation`,
+  `npm run audit:stage3-rule-preview`,
+  `npm run audit:stage3-preapply-check`,
+  `npm run audit:stage3-rule-list-management`,
+  `npm run audit:stage3-system-rules`,
+  `npm run audit:stage3-node-rule-link`, and
+  `npm run audit:stage3-ux-polish`.
+- FlClash was not stopped, restarted, or modified.
+
+## Evidence
+
+- `PERFORMANCE_PRESSURE_3.6.57.json`
+- `PERFORMANCE_GPU_3.6.57.json`
+- `PERFORMANCE_REPEAT_3.6.57.json`
+- `PERFORMANCE_SOAK_3.6.57.json`
+- `PRODUCT_SMOKE_3.6.57.json`
+
+## Artifact
+
+- Installer: `src-tauri/target/release/bundle/nsis/Aegos_3.6.57_x64-setup.exe`
+- Size: `16231026` bytes
+- SHA-256: `da10ec87eaffbf178ef281d8713f61424f9a37b97241db717aaacc25e1d98384`
+- Signature: unsigned open-source build
+
+## Known Limits
+
+- Real airport connectivity is not simulated by deterministic test fixtures.
+  Existing user validation remains the real-network acceptance source.
+- The override editor intentionally accepts controlled YAML rather than
+  arbitrary JavaScript. This prevents configuration scripts from escaping the
+  product's validation, ownership, and rollback boundaries.
+- The installer is not Authenticode-signed, so Windows may show a reputation
+  warning until a trusted signing certificate is configured.
+- Real-device long-duration stability is not a release blocker on the current
+  resource-constrained host; deterministic pressure, repeat, Windowed GPU,
+  soak, and product-journey gates remain mandatory.
