@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
+const appConfigRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'app_config.rs'), 'utf8');
 const configPipelineRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'config_pipeline.rs'), 'utf8');
 const coreRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'core_runtime.rs'), 'utf8');
 const diagnosticsRuntimeRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'diagnostics_runtime.rs'), 'utf8');
@@ -136,8 +137,9 @@ check(
     patchConfigBody.includes('127.0.0.1:{}') &&
     patchConfigBody.includes('"bind-address"') &&
     patchConfigBody.includes('settings.allow_lan { "*" } else { "127.0.0.1" }') &&
-    mainRs.includes('allow_lan: false') &&
-    mainRs.includes('secret: hex_random(24)') &&
+    appConfigRs.includes('allow_lan: false') &&
+    appConfigRs.includes('pub(crate) fn product_default(') &&
+    mainRs.includes('hex_random(24)') &&
     releaseAudit.includes('Aegos defaults avoid FlClash/Codex port 7890'),
   'controller must bind locally, allow-lan must be opt-in, and secret must be generated'
 );
