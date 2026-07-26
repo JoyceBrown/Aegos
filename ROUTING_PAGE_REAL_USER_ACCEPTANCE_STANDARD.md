@@ -1,5 +1,12 @@
 # Aegos 分流页真实用户验收标准
 
+execution_authority: none
+
+> Historical archive status (2026-07-26): this 3.4.20 acceptance standard is
+> retained as completed routing evidence. It cannot authorize work, override
+> `PLANS.md`, or reopen a routing milestone. Reproduced routing defects belong
+> to the active Windows Maturity milestone.
+
 本标准用于约束分流页后续开发。它的优先级高于普通审计脚本、版本清单和安装包构建结果。
 
 如果本标准未通过，不能宣称“分流页成熟”“产品成熟度通过”或“达到真实用户可用标准”。

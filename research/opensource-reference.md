@@ -1,5 +1,9 @@
 # Aegos 开源参考研究与吸收任务表
 
+> 历史研究快照（2026-07-26）：本文保留 2.9.x 时的公开资料和评估方法，执行权为
+> none。表内版本号、优先级和“以后做”不是当前任务来源；当前竞争对比和主路线见
+> `docs/decisions/windows-maturity-mainline.md`、`docs/roadmap.md` 与 `PLANS.md`。
+
 更新时间：2026-07-12
 
 当前 Aegos 基准：2.9.52

@@ -97,6 +97,17 @@ pub const SUPPORTED_PROXY_TYPES: &[&str] = &[
     "ssh",
 ];
 
+pub fn consume_core_log_lines<R, F>(reader: R, mut on_line: F) -> Result<(), String>
+where
+    R: BufRead,
+    F: FnMut(String),
+{
+    for entry in reader.lines() {
+        on_line(entry.map_err(|err| format!("core log pipe read failed: {err}"))?);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub struct CoreRuntimePaths {
     pub core_path: PathBuf,
@@ -402,6 +413,9 @@ pub fn core_start_result_json(
     }
     result
 }
+
+pub const SYSTEM_PROXY_TAKEOVER_STANDBY_MESSAGE: &str =
+    "系统代理接管未完成，核心已保持待命。请在诊断中检查 Windows 系统代理后重试连接。";
 
 pub fn core_stop_result_json() -> JsonValue {
     json!({ "ok": true })
@@ -2668,47 +2682,6 @@ pub fn firewall_program_paths(paths: impl IntoIterator<Item = PathBuf>) -> Vec<S
         .collect()
 }
 
-pub fn orphaned_core_cleanup_script(core_path: &Path) -> String {
-    let expected_path = normalize_windows_program_path_text(
-        &fs::canonicalize(core_path)
-            .unwrap_or_else(|_| core_path.to_path_buf())
-            .to_string_lossy(),
-    );
-    let expected_literal = powershell_single_quoted_literal(expected_path);
-    let process_name_literal = powershell_single_quoted_literal(
-        Path::new(BINARY_NAME)
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or(BINARY_NAME),
-    );
-    format!(
-        r#"
-$expectedPath = {expected_literal}
-function ConvertTo-AegosComparablePath([string]$path) {{
-  if ([string]::IsNullOrWhiteSpace($path)) {{ return '' }}
-  $normalized = $path.Replace('/', '\')
-  if ($normalized.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {{
-    return '\\' + $normalized.Substring(8)
-  }}
-  if ($normalized.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {{
-    return $normalized.Substring(4)
-  }}
-  return $normalized
-}}
-$stopped = 0
-Get-Process -Name {process_name_literal} -ErrorAction SilentlyContinue |
-  ForEach-Object {{
-    $candidatePath = try {{ $_.Path }} catch {{ '' }}
-    if ((ConvertTo-AegosComparablePath $candidatePath) -ieq $expectedPath) {{
-      Stop-Process -Id $_.Id -Force -ErrorAction Stop
-      $stopped++
-    }}
-  }}
-"stopped=$stopped"
-"#
-    )
-}
-
 pub fn windows_proxy_server(mixed_port: u16) -> String {
     format!("127.0.0.1:{mixed_port}")
 }
@@ -2893,6 +2866,29 @@ pub fn digest_prefix(digest: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{self, Read};
+
+    struct ScriptedLogReader {
+        reads: Vec<Result<&'static [u8], io::ErrorKind>>,
+        index: usize,
+    }
+
+    impl Read for ScriptedLogReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let entry = self
+                .reads
+                .get(self.index)
+                .expect("reader must not retry after its first scripted error");
+            self.index += 1;
+            match entry {
+                Ok(bytes) => {
+                    buffer[..bytes.len()].copy_from_slice(bytes);
+                    Ok(bytes.len())
+                }
+                Err(kind) => Err(io::Error::from(*kind)),
+            }
+        }
+    }
 
     #[test]
     fn runtime_protocol_capabilities_normalize_and_report_current_contract() {
@@ -3223,18 +3219,19 @@ mod tests {
     }
 
     #[test]
-    fn orphaned_core_cleanup_is_limited_to_the_managed_core_path() {
-        let script = orphaned_core_cleanup_script(Path::new("C:/Aegos/Core/mihomo.exe"));
-        assert!(script.contains("Get-Process -Name 'mihomo'"));
-        assert!(script.contains("$_.Path"));
-        assert!(script.contains("-ieq $expectedPath"));
-        assert!(script.contains("Stop-Process -Id $_.Id -Force"));
-        assert!(script.contains("stopped=$stopped"));
-        assert!(script.contains("C:\\Aegos\\Core\\mihomo.exe"));
-        assert!(script.contains("$path.Replace('/', '\\')"));
-        assert!(script.contains("StartsWith('\\\\?\\UNC\\'"));
-        assert!(script.contains("StartsWith('\\\\?\\'"));
-        assert!(!script.contains("Get-CimInstance"));
+    fn core_log_reader_stops_after_first_error_without_a_retry() {
+        let reader = ScriptedLogReader {
+            reads: vec![
+                Ok(b"password=fixture-secret\n"),
+                Err(io::ErrorKind::BrokenPipe),
+            ],
+            index: 0,
+        };
+        let mut lines = Vec::new();
+        let error = consume_core_log_lines(BufReader::new(reader), |line| lines.push(line))
+            .expect_err("the first pipe error is terminal");
+        assert!(error.contains("core log pipe read failed"));
+        assert_eq!(lines, vec!["password=fixture-secret"]);
     }
 
     #[test]
@@ -4133,6 +4130,25 @@ rules:
         assert_eq!(
             reused.get("standby").and_then(JsonValue::as_bool),
             Some(true)
+        );
+
+        let standby_after_takeover_failure = core_start_result_json(
+            Some(SYSTEM_PROXY_TAKEOVER_STANDBY_MESSAGE),
+            false,
+            false,
+            connection_status_json(true, false, true, false),
+        );
+        assert_eq!(
+            standby_after_takeover_failure
+                .get("trafficTakeover")
+                .and_then(JsonValue::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            standby_after_takeover_failure
+                .get("message")
+                .and_then(JsonValue::as_str),
+            Some(SYSTEM_PROXY_TAKEOVER_STANDBY_MESSAGE)
         );
 
         let stopped = core_stop_result_json();

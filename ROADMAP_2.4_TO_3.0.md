@@ -1,5 +1,8 @@
 # Aegos 2.4 to 3.0 Roadmap
 
+> Historical archive status (2026-07-26): this versioned roadmap has no
+> execution authority. See docs/roadmap.md and PLANS.md for the current route.
+
 ## Goal
 
 Surpass FlClash in the user's target workflow: Windows desktop use, Codex/FlClash coexistence, stable subscription switching, fast node evaluation, clear diagnostics, and non-blocking operation.

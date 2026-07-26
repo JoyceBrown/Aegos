@@ -35,9 +35,11 @@ const tauri = readJson('src-tauri/tauri.conf.json');
 const mainRs = read('src-tauri/src/main.rs');
 const coreDomainRs = read('src-tauri/src/core_domain.rs');
 const coreRuntimeRs = read('src-tauri/src/core_runtime.rs');
+const windowsProcessRs = read('src-tauri/src/windows_process.rs');
 const dataplaneRs = read('src-tauri/src/dataplane.rs');
 const storageRuntimeRs = read('src-tauri/src/storage_runtime.rs');
 const configPipelineRs = read('src-tauri/src/config_pipeline.rs');
+const nodeSelectionRs = read('src-tauri/src/node_selection.rs');
 const releaseAudit = read('tools/release-audit.js');
 const activeConnectionCommandBody = mainRs.match(/fn active_connection_count\(state: State<AppState>\) -> Result<JsonValue, String> \{([\s\S]*?)\n\}/)?.[1] || '';
 const startWithTakeoverBody = mainRs.match(/fn start_with_takeover\(&mut self, enable_takeover: bool\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn terminate_core_process/)?.[1] || '';
@@ -45,7 +47,7 @@ const stopBody = mainRs.match(/fn stop\(&mut self\) -> Result<JsonValue, String>
 const probeProxyNetworkBody = mainRs.match(/fn probe_proxy_network\(&self, timeout_ms: u64\) -> JsonValue \{([\s\S]*?)\n    fn recovery_candidates/)?.[1] || '';
 const recoveryCandidatesBody = mainRs.match(/fn recovery_candidates\(&self\) -> Vec<\(String, String, i64\)> \{([\s\S]*?)\n    fn recovery_suggestions_from_groups/)?.[1] || '';
 const tryRecoverCurrentProfileBody = mainRs.match(/fn try_recover_current_profile\(&mut self\) -> Result<Option<JsonValue>, String> \{([\s\S]*?)\n    fn recover_network/)?.[1] || '';
-const recoverNetworkBody = mainRs.match(/fn recover_network\(&mut self, force: bool\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn change_proxy/)?.[1] || '';
+const recoverNetworkBody = mainRs.match(/fn recover_network\(&mut self, force: bool\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn set_active_profile/)?.[1] || '';
 const repairSystemProxyTakeoverBody = mainRs.match(/fn repair_system_proxy_takeover\(&mut self\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn apply_setting_value/)?.[1] || '';
 const hotReloadProfileBody = mainRs.match(/fn hot_reload_profile\(&mut self, profile: &Profile\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn ensure_runtime_ports/)?.[1] || '';
 const restartCorePreservingProxyBody = mainRs.match(/fn restart_core_preserving_proxy\(&mut self, delay_ms: u64\) -> Result<JsonValue, String> \{([\s\S]*?)\n    fn start_from_restart_plan/)?.[1] || '';
@@ -264,7 +266,7 @@ check(
     mainRs.includes('fn sync_outbound_ip_route(') &&
     mainRs.includes('.apply_auxiliary_proxy_selection(AEGOS_OUTBOUND_IP_GROUP, &proxy)') &&
     !speedTestBody.includes('apply_auxiliary_proxy_selection(') &&
-    mainRs.includes('.apply_proxy_selection_with_cleanup(group, proxy)') &&
+    nodeSelectionRs.includes('.apply_proxy_selection_with_cleanup(group, proxy)') &&
     !mainRs.includes('.apply_proxy_selection(group, proxy)') &&
     !mainRs.includes('.cleanup_stale_connections_after_selection()') &&
     !mainRs.includes('.select_proxy(AEGOS_OUTBOUND_IP_GROUP, &proxy, 1500)') &&
@@ -281,11 +283,12 @@ check(
     coreRuntimeRs.includes('pub fn validate_proxy_selection_from_groups') &&
     coreRuntimeRs.includes('Node switch preflight failed') &&
     !mainRs.includes('fn validate_proxy_selection_from_groups') &&
-    mainRs.includes('core_runtime::validate_proxy_selection_from_groups(&groups, group, proxy)?') &&
-    mainRs.includes('previous runtime node rollback also failed:') &&
-    mainRs.includes('Node preference save failed:') &&
-    mainRs.indexOf('apply_proxy_selection_with_cleanup(group, proxy)') <
-      mainRs.indexOf('.selected_proxy_map\n            .insert(group.to_string(), proxy.to_string())'),
+    !mainRs.includes('fn change_proxy(') &&
+    nodeSelectionRs.includes('core_runtime::validate_proxy_selection_from_groups(&groups, group, proxy)?') &&
+    nodeSelectionRs.includes('previous runtime node rollback also failed:') &&
+    nodeSelectionRs.includes('Node preference save failed:') &&
+    nodeSelectionRs.indexOf('apply_proxy_selection_with_cleanup(group, proxy)') <
+      nodeSelectionRs.indexOf('.selected_proxy_map\n            .insert(group.to_string(), proxy.to_string())'),
   'node selection must apply, commit, and restore in a defined order',
 );
 check(
@@ -371,20 +374,20 @@ check(
 );
 check(
   'unclean core recovery stops only the exact managed executable before a fresh launch',
-  coreRuntimeRs.includes('pub fn orphaned_core_cleanup_script') &&
-    coreRuntimeRs.includes("Get-Process -Name {process_name_literal}") &&
-    coreRuntimeRs.includes('$_.Path') &&
-    coreRuntimeRs.includes('-ieq $expectedPath') &&
-    coreRuntimeRs.includes('Stop-Process -Id $_.Id -Force') &&
-    !coreRuntimeRs.includes('Get-CimInstance Win32_Process -Filter "Name = {binary_literal}"') &&
-    coreRuntimeRs.includes('orphaned_core_cleanup_is_limited_to_the_managed_core_path') &&
+  windowsProcessRs.includes('fn managed_core_cleanup_script') &&
+    windowsProcessRs.includes('Get-CimInstance Win32_Process') &&
+    windowsProcessRs.includes('$_.CommandLine -match $argumentPattern') &&
+    windowsProcessRs.includes('Stop-Process -Id $process.ProcessId -Force') &&
+    windowsProcessRs.includes('pub(crate) fn stop_managed_core_for_root') &&
+    windowsProcessRs.includes('managed_core_cleanup_requires_the_exact_runtime_root_argument') &&
+    !windowsProcessRs.includes('Get-Process -Name {process_name_literal}') &&
     mainRs.includes('fn stop_orphaned_core_processes') &&
-    mainRs.includes('run_powershell_with_timeout(&script, Duration::from_secs(3))') &&
+    mainRs.includes('stop_managed_core_for_root(&self.core_path, &self.home_dir)') &&
     startWithTakeoverBody.includes('if self.process.is_none()') &&
     startWithTakeoverBody.includes('self.stop_orphaned_core_processes()') &&
     startWithTakeoverBody.indexOf('self.stop_orphaned_core_processes()') <
       startWithTakeoverBody.indexOf('self.ensure_runtime_ports()'),
-  'stale Mihomo processes must be path scoped, CIM independent, timeout bounded, and cleared before port preparation',
+  'stale Mihomo processes must match the exact executable and -d root, remain timeout bounded, and clear before port preparation',
 );
 check(
   'Aegos normalizes runtime profile YAML through the core runtime boundary',
@@ -456,7 +459,7 @@ check(
   coreRuntimeRs.includes('pub fn classify_failure_reason') &&
     coreRuntimeRs.includes('pub fn classified_error') &&
     coreRuntimeRs.includes('runtime_failure_reason_classifier_covers_common_connection_failures') &&
-    mainRs.includes('core_runtime::classified_error("Node switch", apply_error)') &&
+    nodeSelectionRs.includes('core_runtime::classified_error("Node switch", apply_error)') &&
     mainRs.includes('core_runtime::classify_failure_reason(&entry.line)') &&
     !mainRs.includes('fn classify_failure_reason') &&
     !mainRs.includes('fn classified_error'),

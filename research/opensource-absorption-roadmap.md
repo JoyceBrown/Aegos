@@ -1,8 +1,12 @@
 # Aegos Open-Source Absorption Roadmap
 
+> Historical archive status (2026-07-26): this is a reference-only research
+> map with no execution authority. The current route is docs/roadmap.md.
+
 Updated: 2026-07-13
 
-Canonical execution plan: `ROADMAP_3.0.0_TO_3.6.4.md`
+Historical execution plan: ROADMAP_3.0.0_TO_3.6.4.md. It has no current
+execution authority; see docs/roadmap.md and PLANS.md.
 
 This document is a research and absorption map. It does not define independent
 version numbers. If a capability here needs implementation, it must first be
@@ -14,7 +18,7 @@ The previous draft conflicted with the canonical roadmap by assigning 3.3.x to
 manual-node and protocol-field maturity while the canonical roadmap assigns
 3.3.x to the routing assistant. That conflict is resolved as follows:
 
-- `ROADMAP_3.0.0_TO_3.6.4.md` is the only execution contract.
+- `ROADMAP_3.0.0_TO_3.6.4.md` was the historical execution contract.
 - 3.3.x remains the routing-assistant lane.
 - Manual-node and protocol-field maturity moves to 3.6.x.
 - v2rayN migration research moves to the later 4.x migration lane.
@@ -153,6 +157,7 @@ Continue from the canonical roadmap:
 
 Before 3.3.4 implementation starts, verify:
 
-- `ROADMAP_3.0.0_TO_3.6.4.md` remains the single source of truth.
+- Historical work remains traceable through ROADMAP_3.0.0_TO_3.6.4.md; current
+  work is governed only by PLANS.md.
 - No research document contains a conflicting 3.3.x route.
 - Routing assistant remains draft-first and write-disabled.

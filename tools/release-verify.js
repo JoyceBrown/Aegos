@@ -25,6 +25,8 @@ const commands = [
   ['npm', ['run', 'audit:status-vocabulary']],
   ['npm', ['run', 'audit:subscription-product']],
   ['npm', ['run', 'audit:outbound-ip']],
+  ['npm', ['run', 'audit:local-backup']],
+  ['npm', ['run', 'audit:release-trust', '--', '--require-signed']],
   ['npm', ['run', 'audit:release']]
 ];
 

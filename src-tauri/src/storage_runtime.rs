@@ -7,15 +7,35 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+pub(crate) fn application_data_root(default_path: PathBuf) -> PathBuf {
+    #[cfg(feature = "native-measurement")]
+    {
+        if let Some(root) = native_measurement_data_root() {
+            return root;
+        }
+    }
+    default_path
+}
+
+#[cfg(feature = "native-measurement")]
+fn native_measurement_data_root() -> Option<PathBuf> {
+    let root = PathBuf::from(std::env::var_os("AEGOS_NATIVE_PERF_DATA_ROOT")?);
+    root.is_absolute().then_some(root)
+}
+
 pub(crate) fn sha256_text(text: &str) -> String {
-    format!("{:x}", Sha256::digest(text.as_bytes()))
+    sha256_bytes(text.as_bytes())
+}
+
+pub(crate) fn sha256_bytes(content: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(content))
 }
 
 pub(crate) fn ensure_dir(path: &Path) -> Result<(), String> {
@@ -55,6 +75,14 @@ pub(crate) fn atomic_write_text_confined(
     root: &Path,
     content: &str,
 ) -> Result<(), String> {
+    atomic_write_bytes_confined(path, root, content.as_bytes())
+}
+
+pub(crate) fn atomic_write_bytes_confined(
+    path: &Path,
+    root: &Path,
+    content: &[u8],
+) -> Result<(), String> {
     ensure_path_within(path, root)?;
     let parent = path
         .parent()
@@ -75,7 +103,7 @@ pub(crate) fn atomic_write_text_confined(
     {
         let mut file = fs::File::create(&temp_path)
             .map_err(|err| format!("atomic temp create failed {}: {err}", temp_path.display()))?;
-        file.write_all(content.as_bytes())
+        file.write_all(content)
             .map_err(|err| format!("atomic temp write failed {}: {err}", temp_path.display()))?;
         file.sync_all()
             .map_err(|err| format!("atomic temp sync failed {}: {err}", temp_path.display()))?;
@@ -168,5 +196,14 @@ mod tests {
     fn text_digest_is_deterministic() {
         assert_eq!(sha256_text("aegos"), sha256_text("aegos"));
         assert_ne!(sha256_text("aegos"), sha256_text("mihomo"));
+    }
+
+    #[cfg(feature = "native-measurement")]
+    #[test]
+    fn native_measurement_ignores_relative_data_root() {
+        std::env::set_var("AEGOS_NATIVE_PERF_DATA_ROOT", "relative-native-data");
+        let fallback = PathBuf::from(r"C:\\aegos-fallback");
+        assert_eq!(application_data_root(fallback.clone()), fallback);
+        std::env::remove_var("AEGOS_NATIVE_PERF_DATA_ROOT");
     }
 }

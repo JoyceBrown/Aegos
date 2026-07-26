@@ -1,28 +1,64 @@
 # Aegos
 
-Aegos is a Windows proxy client built with Tauri, Rust, WebView2, and a managed Mihomo data plane. The product layer owns connection truth, background task scheduling, configuration transactions, Windows network takeover, diagnostics, rule editing, and recovery.
+Aegos is a Windows desktop proxy client built with Tauri, Rust, and WebView2.
+It owns product state, configuration transactions, Windows network takeover,
+diagnostics, and recovery. Mihomo remains the managed data plane.
 
-Current candidate: **3.6.54**
+## Current Direction
 
-## Product Guarantees
+- Verified: repository and package version markers are 3.6.65.
+- Verified: CHANGE-027 closed WR-01 with an executable, source-bound host-safe
+  matrix. The current unsigned x64 NSIS candidate is
+  `Aegos_3.6.65_x64-setup.exe` (16,325,000 bytes, SHA-256
+  `93d5691de31c5fe436b596c2075a5e0f62697464d998f5ec8a51b23fef462323`).
+- Decided: the only development mainline is Windows real-use reliability. The
+  target is a trustworthy import, connect, observe, switch, disconnect, and
+  recover workflow under slow, failed, and interrupted operations, not feature
+  breadth.
+- Decided: Aegos is the product control plane and Mihomo is the managed data
+  plane. Aegos will not reimplement protocols, DNS, TUN, forwarding, or a
+  rules engine.
+- Not planned: signing, public-release automation, automatic updates, WebDAV
+  or cloud sync, a second core, Windows ARM64, and non-Windows platforms. They
+  require a future explicit route decision.
 
-- Speed tests are measurement-only. They do not connect, switch the selected node, or enable system proxy/TUN.
-- Startup runs one Aegos-managed background first test after runtime and node data are ready.
-- System proxy, TUN, and disconnect protection changes use verified transaction and recovery paths.
-- Subscription, node, and routing changes are preflighted, applied, verified, and rolled back on failure.
-- User-facing status is derived from Aegos runtime snapshots instead of exposing raw core state.
-- Ordinary subscriptions show every node; very large lists use complete, scroll-reachable virtualization.
-- Diagnostic and exported log data are redacted by default.
+Long-term sequencing is in docs/roadmap.md. `PLANS.md` is the only repository
+plan that may authorize work when active; it is currently completed. The
+current work checkpoint is docs/work/current.md.
 
-## Repository Layout
+## Product Capability Baseline
 
-- `src/`: desktop UI and product interaction state.
-- `src-tauri/src/`: Rust control plane, runtime domains, task scheduling, configuration deployment, diagnostics, and Windows takeover.
-- `resources/core/`: approved managed Mihomo runtime asset.
-- `tools/`: executable product, security, performance, and regression audits.
-- `RELEASE_3.6.54.md`: current candidate release notes, verification, installer hash, and known limits.
+- Subscription import and update, ordinary and fixed node management, upstream
+  proxy support, and user-facing routing.
+- Transactional connect, disconnect, system proxy, TUN, kill-switch,
+  configuration deployment, and startup recovery.
+- Measurement-only node testing, outlet identity, DNS and IPv6 effective-state
+  reporting, diagnostics, and redacted evidence export.
+- Controlled configuration extensions with preflight, intent preview, runtime
+  validation, rollback, and protected fields.
+- Local Windows-user DPAPI backup and disconnected restore for selected user
+  data; no network transfer or synchronization.
 
-## Build
+The capability baseline is not a claim that every real Windows environment has
+been proven. The Windows Real-Use Reliability mainline starts from that gap:
+it collects evidence, reproduces genuine defects, and fixes them without
+changing the shared host network.
+
+## Repository Map
+
+- src/: desktop UI and user workflows.
+- src-tauri/src/: Rust control plane, runtime domains, deployment,
+  diagnostics, and Windows takeover.
+- resources/core/: approved managed Mihomo runtime resources.
+- tools/: product, security, performance, architecture, and package audits.
+- docs/: authoritative product, architecture, route, and historical records.
+- docs/decisions/windows-reliability-mainline.md: analysis, competitor
+  comparison, and durable mainline decision.
+
+See docs/architecture.md for module and data-flow boundaries, and docs/INDEX.md
+for the document authority map.
+
+## Development
 
 Requirements:
 
@@ -30,42 +66,45 @@ Requirements:
 - Node.js and npm
 - Rust stable with the MSVC target
 - Visual Studio C++ Build Tools
-- WebView2 runtime
+- WebView2 Runtime
 
-```powershell
+~~~powershell
 npm install
 npm run check
+npm run dev
+~~~
+
+Build an NSIS installer locally:
+
+~~~powershell
 npm run build
-```
+~~~
 
-The NSIS installer is written to:
-
-```text
-src-tauri/target/release/bundle/nsis/Aegos_3.6.54_x64-setup.exe
-```
-
-Build outputs are intentionally excluded from Git. Signed release artifacts belong in GitHub Releases.
+The output is under src-tauri/target/release/bundle/nsis/. A local build does
+not authorize a Git commit, GitHub push, Release publication, signing action,
+or automatic update channel unless the user grants that action explicitly.
 
 ## Verification
 
-The release gate includes Rust unit tests plus executable UI, interaction, performance, security, recovery, and installer audits.
+Run checks proportional to the changed behavior. The Windows Real-Use
+Reliability plan defines its current acceptance matrix; its baseline includes:
 
-```powershell
+~~~powershell
 cargo test --manifest-path src-tauri/Cargo.toml
 npm run smoke:interactions
-npm run smoke:perf
+npm run smoke:ui
+npm run audit:backend
+npm run audit:responsiveness
 npm run audit:security
-npm run audit:runtime-regression
-npm run audit:installer
-npm run audit:release
-```
+npm run audit:control-plane
+npm run audit:planning-context
+~~~
 
-The 3.6.54 candidate keeps the 3.6.53 visual and workflow baseline, makes current-node and runtime status presentation truthful under transient failures, disables actions without valid targets, improves keyboard customization, and staggers background observations.
+Current evidence and known gaps are recorded in docs/work/current.md.
 
 ## Security
 
-Do not commit real subscription URLs, tokens, node credentials, private keys, diagnostic exports, or local settings. Report files and release notes must contain sanitized fixtures only.
-
-## License Notice
-
-Third-party components retain their original licenses. See `docs/ui/LICENSE_AUDIT.md`, `third_party/`, and the managed core metadata before redistribution.
+Do not commit real subscription URLs, tokens, node credentials, private keys,
+diagnostic exports, or local settings. Logs, fixtures, screenshots, release
+notes, and exported reports must redact sensitive data. Preserve third-party
+licenses; do not copy GPL code, icons, or UI assets.

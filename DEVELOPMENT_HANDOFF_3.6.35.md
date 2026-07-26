@@ -1,5 +1,8 @@
 # Aegos 3.6.35 开发交接文档
 
+> 历史归档状态（2026-07-26）：该交接仅记录 3.6.35 的当时事实，执行权为 none。
+> 不得从本文件恢复任务；当前权威见 PLANS.md 和 docs/work/current.md。
+
 - 更新时间：2026-07-19
 - 软件代码基线：`v3.6.35` / `4491695090ff90bec7007ca4965d32b71cbdb5d8`
 - 远端仓库：`https://github.com/JoyceBrown/Aegos`

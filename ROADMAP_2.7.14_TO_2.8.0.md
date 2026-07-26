@@ -1,5 +1,8 @@
 # Aegos 2.7.14 to 2.8.0 Roadmap
 
+> Historical archive status (2026-07-26): this versioned roadmap has no
+> execution authority. See docs/roadmap.md and PLANS.md for the current route.
+
 ## Baseline
 
 - Stable baseline: `2.7.14`.

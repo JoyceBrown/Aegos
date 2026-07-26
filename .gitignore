@@ -25,5 +25,6 @@ settings.local.json
 # Editor and operating-system state
 .idea/
 .vscode/
+.vs/
 .DS_Store
 Thumbs.db

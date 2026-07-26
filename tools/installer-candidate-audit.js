@@ -54,6 +54,7 @@ check('installer defaults avoid port 7890 conflict', mainRs.includes('const AEGO
 check('window remains resizable and non-transparent', tauri.app?.windows?.[0]?.resizable === true && tauri.app?.windows?.[0]?.transparent === false, `resizable=${tauri.app?.windows?.[0]?.resizable} transparent=${tauri.app?.windows?.[0]?.transparent}`);
 check('installer launches the supported minimum window size', tauri.app?.windows?.[0]?.width === tauri.app?.windows?.[0]?.minWidth && tauri.app?.windows?.[0]?.height === tauri.app?.windows?.[0]?.minHeight, `${tauri.app?.windows?.[0]?.width}x${tauri.app?.windows?.[0]?.height}`);
 check('release audit knows installer audit exists', releaseAudit.includes('audit:installer') && releaseAudit.includes('installer candidate audit script exists'), 'release gate includes installer lane');
+check('release verification fails closed on unsigned candidates', releaseAudit.includes('release trust audit script exists') && exists('tools/release-trust-audit.js') && read('tools/release-verify.js').includes("['npm', ['run', 'audit:release-trust', '--', '--require-signed']]"), 'release trust verification is required before distribution');
 
 const failed = results.filter((item) => !item.ok);
 console.log(JSON.stringify({

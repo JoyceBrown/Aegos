@@ -1,0 +1,31 @@
+{
+  "ok": true,
+  "version": "3.6.64",
+  "journeys": {
+    "startupTruth": true,
+    "tunOffConnection": true,
+    "tunOnConnection": true,
+    "measurementOnlySpeed": true,
+    "nodeAndOutboundIp": true,
+    "subscriptionLifecycle": true,
+    "routingRuleLifecycle": true,
+    "diagnosticsRepairAndExport": true,
+    "settingsAndEnvironment": true,
+    "nonBlockingBackgroundWork": true,
+    "localBackupRecovery": true,
+    "corePowerPendingUsesVerifiedState": true
+  },
+  "forbiddenSideEffects": {
+    "speedProxySwitches": 0,
+    "standbySpeedConnections": 0,
+    "standbySpeedProxySwitches": 0,
+    "statusCenterInitialBackendCalls": 0,
+    "statusCenterJobBackendCalls": 0
+  },
+  "missingJourneys": [],
+  "missingCommands": [],
+  "missingJobKinds": [],
+  "residualTestRoots": [],
+  "commandCount": 214,
+  "generatedAt": "2026-07-26T20:11:08.584Z"
+}

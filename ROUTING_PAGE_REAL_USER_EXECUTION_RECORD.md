@@ -1,5 +1,11 @@
 # Aegos 分流页真实用户执行记录
 
+execution_authority: none
+
+> Historical archive status (2026-07-26): this 3.4.20 execution record is
+> retained as completed routing evidence. It cannot authorize work, override
+> `PLANS.md`, or reopen a routing milestone.
+
 本记录按 `ROUTING_PAGE_REAL_USER_ACCEPTANCE_STANDARD.md` 执行。版本号保持 `3.4.20`，本轮不推进版本号、不打包安装包、不用旧计划替代真实验收。
 
 ## 1. 本轮基线

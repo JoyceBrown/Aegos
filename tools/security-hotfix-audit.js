@@ -64,7 +64,9 @@ check(
     mainRs.includes('path [local-path]') &&
     mainRs.includes('lan [private-ip]') &&
     addLogBody.includes('sanitize_sensitive_text(line.as_ref())') &&
-    startBody.includes('sanitize_sensitive_text(&line)') &&
+    mainRs.includes('fn spawn_core_log_reader') &&
+    mainRs.includes('core_runtime::consume_core_log_lines') &&
+    mainRs.includes('line: sanitize_sensitive_text(&line)') &&
     publicProfileBody.includes('sanitize_sensitive_text(value)') &&
     exportLogsBody.includes('logs_export_document(&items, &now_iso(), sanitize_sensitive_text)') &&
     diagnosticsRuntimeRs.includes('let line = sanitizer(&entry.line)') &&

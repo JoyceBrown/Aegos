@@ -1,0 +1,323 @@
+{
+  "ok": true,
+  "version": "3.6.62",
+  "fixture": "native-webview2-isolated-profile",
+  "hiddenWindow": {
+    "requested": true,
+    "visible": false
+  },
+  "storage": {
+    "settingsPresent": true,
+    "profileCount": 1
+  },
+  "generatedAt": "2026-07-26T10:10:18.691Z",
+  "probe": {
+    "canDirectNavigate": true,
+    "activePage": "home",
+    "directNavigation": [
+      {
+        "targetPage": "nodes",
+        "duration": 30.5,
+        "active": "nodes"
+      },
+      {
+        "targetPage": "routing",
+        "duration": 38,
+        "active": "routing",
+        "contentDuration": 111.90000002384181
+      },
+      {
+        "targetPage": "settings",
+        "duration": 16.100000023841858,
+        "active": "settings"
+      },
+      {
+        "targetPage": "home",
+        "duration": 11.300000011920929,
+        "active": "home"
+      }
+    ],
+    "traceKinds": {
+      "long-task": 2,
+      "invoke-start": 5,
+      "invoke-finish": 5,
+      "node-rows-rendered": 1,
+      "navigation-request": 4,
+      "navigation-painted": 4,
+      "node-group-switcher-rendered": 1,
+      "routing-ui-initialized": 1,
+      "page-content-ready": 2
+    },
+    "traceTail": [
+      {
+        "kind": "navigation-request",
+        "at": 1314,
+        "page": "nodes",
+        "targetPage": "routing"
+      },
+      {
+        "kind": "navigation-painted",
+        "at": 1346.3,
+        "page": "routing",
+        "targetPage": "routing"
+      },
+      {
+        "kind": "routing-ui-initialized",
+        "at": 1351.8,
+        "page": "routing",
+        "duration": 5.2
+      },
+      {
+        "kind": "long-task",
+        "at": 1346,
+        "page": "routing",
+        "duration": 63
+      },
+      {
+        "kind": "invoke-start",
+        "at": 1411.9,
+        "page": "routing",
+        "command": "routing_snapshot"
+      },
+      {
+        "kind": "invoke-finish",
+        "at": 1424.2,
+        "page": "routing",
+        "command": "routing_snapshot",
+        "duration": 12,
+        "state": "ok"
+      },
+      {
+        "kind": "page-content-ready",
+        "at": 1425.8,
+        "page": "routing",
+        "targetPage": "routing"
+      },
+      {
+        "kind": "navigation-request",
+        "at": 1436.9,
+        "page": "routing",
+        "targetPage": "settings"
+      },
+      {
+        "kind": "navigation-painted",
+        "at": 1446.4,
+        "page": "settings",
+        "targetPage": "settings"
+      },
+      {
+        "kind": "invoke-start",
+        "at": 1449.4,
+        "page": "settings",
+        "command": "local_backup_snapshot"
+      },
+      {
+        "kind": "invoke-start",
+        "at": 1499.5,
+        "page": "settings",
+        "command": "dns_policy_snapshot"
+      },
+      {
+        "kind": "page-content-ready",
+        "at": 1500.5,
+        "page": "settings",
+        "targetPage": "settings"
+      },
+      {
+        "kind": "invoke-finish",
+        "at": 1504.6,
+        "page": "settings",
+        "command": "local_backup_snapshot",
+        "duration": 55,
+        "state": "ok"
+      },
+      {
+        "kind": "invoke-finish",
+        "at": 1511.1,
+        "page": "settings",
+        "command": "dns_policy_snapshot",
+        "duration": 12,
+        "state": "ok"
+      },
+      {
+        "kind": "navigation-request",
+        "at": 1568.9,
+        "page": "settings",
+        "targetPage": "home"
+      },
+      {
+        "kind": "navigation-painted",
+        "at": 1579.9,
+        "page": "home",
+        "targetPage": "home"
+      }
+    ]
+  },
+  "navigation": {
+    "count": 4,
+    "source": "application-paint-trace",
+    "p95Ms": 32.299999999999955,
+    "maxMs": 32.299999999999955,
+    "samples": [
+      30.100000000000136,
+      32.299999999999955,
+      9.5,
+      11
+    ]
+  },
+  "routing": {
+    "firstContentMs": 111.90000002384181,
+    "backendObservationMs": {
+      "coreSnapshot": 0,
+      "groupRows": 0,
+      "profileRules": 0,
+      "profileYaml": 0,
+      "recentRules": 0,
+      "total": 1
+    },
+    "ruleCount": 8,
+    "groupCount": 0
+  },
+  "startup": {
+    "settled": true,
+    "waitedMs": 90,
+    "statusMs": 10,
+    "proxyGroupsMs": 69,
+    "pendingInvokes": [],
+    "trace": [
+      {
+        "kind": "long-task",
+        "at": 308.8,
+        "page": "home",
+        "duration": 178
+      },
+      {
+        "kind": "invoke-start",
+        "at": 568.7,
+        "page": "home",
+        "command": "app_status"
+      },
+      {
+        "kind": "invoke-start",
+        "at": 569.9,
+        "page": "home",
+        "command": "proxy_groups"
+      },
+      {
+        "kind": "invoke-finish",
+        "at": 578.8,
+        "page": "home",
+        "command": "app_status",
+        "duration": 10,
+        "state": "ok"
+      },
+      {
+        "kind": "invoke-finish",
+        "at": 639.2,
+        "page": "home",
+        "command": "proxy_groups",
+        "duration": 69,
+        "state": "ok"
+      }
+    ],
+    "runtimeStartupTimingsMs": [
+      [
+        "deployment-recovery",
+        0
+      ],
+      [
+        "takeover-recovery",
+        0
+      ],
+      [
+        "direct-profile",
+        31
+      ],
+      [
+        "profile-metadata",
+        0
+      ],
+      [
+        "settings-save",
+        5
+      ],
+      [
+        "total",
+        38
+      ]
+    ],
+    "statusCommandMs": {
+      "finalLock": 1,
+      "firstLock": 0,
+      "total": 1,
+      "traffic": 0
+    }
+  },
+  "nodeRendering": {
+    "count": 1,
+    "p95Ms": 0.4,
+    "maxMs": 0.4
+  },
+  "interaction": {
+    "settings": {
+      "firstFrameMs": 28.30000001192093,
+      "hasScroller": true,
+      "viewport": {
+        "width": 920,
+        "height": 640
+      },
+      "rect": {
+        "width": 692,
+        "height": 432
+      },
+      "scrollHeight": 432,
+      "clientHeight": 432,
+      "scrollFrameMaxMs": 10.299999952316284,
+      "scrollFrameSamples": [
+        10.299999952316284
+      ],
+      "environmentCallsDuringEntry": 0
+    },
+    "diagnostics": {
+      "firstFrameMs": 33,
+      "switches": [
+        {
+          "view": "logs",
+          "firstFrameMs": 43.200000047683716,
+          "active": "logs"
+        },
+        {
+          "view": "overview",
+          "firstFrameMs": 33.5,
+          "active": "overview"
+        },
+        {
+          "view": "logs",
+          "firstFrameMs": 33.5,
+          "active": "logs"
+        },
+        {
+          "view": "overview",
+          "firstFrameMs": 33.39999997615814,
+          "active": "overview"
+        }
+      ],
+      "maxSwitchFrameMs": 43.200000047683716,
+      "allSwitchesApplied": true
+    },
+    "navigationAway": {
+      "startedAt": 2213.899999976158,
+      "firstFrameMs": 34.30000001192093
+    }
+  },
+  "longTasks": [
+    {
+      "at": 1346,
+      "duration": 63,
+      "page": "routing"
+    }
+  ],
+  "pendingInvokes": [],
+  "warnings": [],
+  "failures": []
+}

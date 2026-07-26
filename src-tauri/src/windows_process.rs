@@ -9,9 +9,75 @@ use std::{
 };
 
 #[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+
+#[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::CloseHandle,
+    System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    },
+};
+
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// Owns a private Windows job that terminates only its assigned child when the
+/// Aegos process exits unexpectedly. It deliberately has no path-wide cleanup.
+pub(crate) struct ManagedChildJob {
+    #[cfg(windows)]
+    handle: isize,
+}
+
+impl ManagedChildJob {
+    #[cfg(windows)]
+    pub(crate) fn assign(child: &std::process::Child) -> Result<Self, String> {
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) } as isize;
+        if handle == 0 {
+            return Err("could not create managed core job object".to_string());
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = unsafe {
+            SetInformationJobObject(
+                handle as *mut std::ffi::c_void,
+                JobObjectExtendedLimitInformation,
+                &limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION as *const _,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if configured == 0 {
+            unsafe { CloseHandle(handle as *mut std::ffi::c_void) };
+            return Err("could not configure managed core job object".to_string());
+        }
+        let assigned = unsafe {
+            AssignProcessToJobObject(handle as *mut std::ffi::c_void, child.as_raw_handle())
+        };
+        if assigned == 0 {
+            unsafe { CloseHandle(handle as *mut std::ffi::c_void) };
+            return Err("could not assign managed core process to its job object".to_string());
+        }
+        Ok(Self { handle })
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn assign(_child: &std::process::Child) -> Result<Self, String> {
+        Ok(Self {})
+    }
+}
+
+impl Drop for ManagedChildJob {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        unsafe {
+            CloseHandle(self.handle as *mut std::ffi::c_void);
+        }
+    }
+}
 
 pub(crate) fn run_powershell(script: &str) -> Result<String, String> {
     run_powershell_with_timeout(script, Duration::from_secs(30))
@@ -91,23 +157,36 @@ pub(crate) fn run_powershell_with_timeout(
     }
 }
 
-pub(crate) fn stop_stale_managed_core(core_path: &Path) -> Result<(), String> {
+fn managed_core_cleanup_script(core_path: &Path, home_dir: &Path) -> String {
     let core_literal = crate::core_runtime::powershell_single_quoted_literal(
         crate::core_runtime::normalize_windows_program_path_text(&core_path.to_string_lossy()),
     );
-    run_powershell(&format!(
+    let root_literal = crate::core_runtime::powershell_single_quoted_literal(
+        crate::core_runtime::normalize_windows_program_path_text(&home_dir.to_string_lossy()),
+    );
+    format!(
         r#"
 $target = {core_literal}
+$expectedRoot = {root_literal}
+$rootPattern = [regex]::Escape($expectedRoot)
+$argumentPattern = '(?i)(?:^|\s)-d\s+(?:"' + $rootPattern + '"|' + $rootPattern + ')(?=\s|$)'
 $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-  Where-Object {{ $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq [IO.Path]::GetFullPath($target)) }})
+  Where-Object {{ $_.ExecutablePath -and $_.CommandLine -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq [IO.Path]::GetFullPath($target)) -and $_.CommandLine -match $argumentPattern }})
 foreach ($process in $processes) {{ Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop }}
 Start-Sleep -Milliseconds 250
 $remaining = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-  Where-Object {{ $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq [IO.Path]::GetFullPath($target)) }})
-if ($remaining.Count -gt 0) {{ throw 'The interrupted Aegos network engine is still running' }}
+  Where-Object {{ $_.ExecutablePath -and $_.CommandLine -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq [IO.Path]::GetFullPath($target)) -and $_.CommandLine -match $argumentPattern }})
+if ($remaining.Count -gt 0) {{ throw 'The exact interrupted Aegos network engine is still running' }}
+"stopped=$($processes.Count)"
 "#
-    ))?;
-    Ok(())
+    )
+}
+
+pub(crate) fn stop_managed_core_for_root(
+    core_path: &Path,
+    home_dir: &Path,
+) -> Result<String, String> {
+    run_powershell(&managed_core_cleanup_script(core_path, home_dir))
 }
 
 #[cfg(test)]
@@ -123,5 +202,20 @@ mod tests {
                 .expect_err("sleeping PowerShell command should time out");
         assert!(error.contains("timed out after 150 ms"));
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn managed_core_cleanup_requires_the_exact_runtime_root_argument() {
+        let script = managed_core_cleanup_script(
+            Path::new("C:/Aegos/Core/mihomo.exe"),
+            Path::new("C:/Aegos/runs/owned"),
+        );
+        assert!(script.contains("Get-CimInstance Win32_Process"));
+        assert!(script.contains("$_.CommandLine -match $argumentPattern"));
+        assert!(script.contains("$expectedRoot = 'C:\\Aegos\\runs\\owned'"));
+        assert!(script.contains("(?i)(?:^|\\s)-d\\s+"));
+        assert!(script.contains("Stop-Process -Id $process.ProcessId -Force"));
+        assert!(!script.contains("Get-Process -Name"));
+        assert!(!script.contains("$_ .Path"));
     }
 }

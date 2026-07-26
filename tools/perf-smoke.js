@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -34,15 +34,23 @@ function delay(ms) {
 }
 
 function terminatePerfChrome() {
-  if (process.platform !== 'win32') {
-    chrome.kill();
-    return;
-  }
-  if (chrome.pid) spawnSync('taskkill', ['/PID', String(chrome.pid), '/T', '/F'], { stdio: 'ignore' });
+  try { chrome.kill(); } catch {}
+  if (process.platform !== 'win32') return;
+  const detachedCleanup = (command, args) => {
+    try {
+      const child = spawn(command, args, {
+        stdio: 'ignore',
+        detached: true,
+        windowsHide: true
+      });
+      child.unref();
+    } catch {}
+  };
+  if (chrome.pid) detachedCleanup('taskkill', ['/PID', String(chrome.pid), '/T', '/F']);
   // Chrome may detach renderer descendants after its browser process exits.
   // The dedicated profile prefix cannot target a user Chrome session.
   const command = "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | Where-Object { $_.CommandLine -match 'aegos-perf-smoke-' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
-  spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { stdio: 'ignore' });
+  detachedCleanup('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command]);
 }
 
 function httpJson(route, method = 'GET') {
@@ -86,7 +94,23 @@ function createCdpClient(wsUrl) {
         socket.send(JSON.stringify({ id, method, params }));
         return new Promise((sendResolve, sendReject) => pending.set(id, { resolve: sendResolve, reject: sendReject }));
       },
-      close() { socket.close(); }
+      close() {
+        return new Promise((closeResolve) => {
+          if (socket.readyState === WebSocket.CLOSED) {
+            closeResolve();
+            return;
+          }
+          const timeout = setTimeout(closeResolve, 1000);
+          socket.addEventListener('close', () => {
+            clearTimeout(timeout);
+            closeResolve();
+          }, { once: true });
+          try { socket.close(); } catch {
+            clearTimeout(timeout);
+            closeResolve();
+          }
+        });
+      }
     }), { once: true });
     socket.addEventListener('error', reject, { once: true });
   });
@@ -108,6 +132,7 @@ const chrome = spawn(chromePath, [
   `--user-data-dir=${userDataDir}`,
   'about:blank'
 ], { stdio: 'ignore' });
+chrome.unref();
 
 let page;
 try {
@@ -932,11 +957,33 @@ try {
   if (result.ok && process.env.AEGOS_WRITE_EVIDENCE !== '0') {
     fs.writeFileSync(path.join(root, evidenceFile), `${JSON.stringify(result, null, 2)}\n`);
   }
-  console.log(JSON.stringify(result, null, 2));
+  const terminalReport = process.env.AEGOS_PERF_VERBOSE === '1'
+    ? result
+    : {
+      ok: result.ok,
+      version: result.version,
+      fixture: result.fixture,
+      generatedAt: result.generatedAt,
+      failures: result.failures,
+      evidenceFile: result.ok ? evidenceFile : null,
+      nav: result.nav,
+      visualFluidity: {
+        p95FrameMs: result.visualFluidity.p95FrameMs,
+        maxFrameMs: result.visualFluidity.maxFrameMs,
+        unexpectedLayoutShift: result.visualFluidity.unexpectedLayoutShift
+      },
+      speedStream: {
+        results: result.speedStream.results,
+        durationMs: result.speedStream.durationMs,
+        p95FrameMs: result.speedStream.p95FrameMs,
+        maxFrameMs: result.speedStream.maxFrameMs
+      }
+    };
+  console.log(JSON.stringify(terminalReport, null, 2));
   if (!result.ok) process.exitCode = 2;
 } finally {
+  try { await page?.close(); } catch {}
   terminatePerfChrome();
-  try { page?.close(); } catch {}
   await delay(300);
   try { fs.rmSync(userDataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 150 }); } catch {}
 }

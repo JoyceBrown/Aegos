@@ -98,6 +98,8 @@ check(
   mainRs.includes('fn status_observation(') &&
     mainRs.includes('fn status_from_observed_traffic(') &&
     /let observed_traffic\s*=\s*controller\s*\.status_traffic_snapshot_or_idle/.test(mainRs) &&
+    mainRs.indexOf('controller.status_traffic_snapshot_or_idle') > mainRs.indexOf('core.status_observation()') &&
+    mainRs.indexOf('controller.status_traffic_snapshot_or_idle') < mainRs.indexOf('core.status_from_observed_traffic(') &&
     mainRs.includes('fn refresh_lan_ip_detached(') &&
     mainRs.includes('refresh_lan_ip_detached(app.clone(), Arc::clone(&state.core))') &&
     mainRs.includes('fn refresh_elevation_detached(app: AppHandle)') &&
@@ -106,9 +108,10 @@ check(
     windowsProcessRs.includes('fn run_powershell_with_timeout') &&
     windowsProcessRs.includes('child.try_wait()') &&
     windowsProcessRs.includes('started.elapsed() >= timeout') &&
-    mainRs.includes('run_powershell_with_timeout(&script, Duration::from_secs(3))') &&
-    coreRuntimeRs.includes("Get-Process -Name {process_name_literal}") &&
-    !coreRuntimeRs.includes('Get-CimInstance Win32_Process -Filter "Name = {binary_literal}"') &&
+    windowsProcessRs.includes('let _ = child.kill()') &&
+    windowsProcessRs.includes('Get-CimInstance Win32_Process') &&
+    windowsProcessRs.includes('$_.CommandLine -match $argumentPattern') &&
+    !windowsProcessRs.includes('Get-Process -Name {process_name_literal}') &&
     !mainRs.includes('let refreshed_lan_ip = refresh_lan_ip.then(primary_lan_ip)') &&
     appJs.includes("listen('aegos-runtime-status'") &&
     mainRs.includes('core.status_from_observed_traffic('),

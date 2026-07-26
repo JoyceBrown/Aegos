@@ -14,6 +14,7 @@ function bodyBetween(source, startNeedle, endNeedle) {
 const pkg = JSON.parse(read('package.json'));
 const appJs = read('src/app.js');
 const mainRs = read('src-tauri/src/main.rs');
+const taskRuntimeRs = read('src-tauri/src/task_runtime.rs');
 const speedRuntimeRs = read('src-tauri/src/speed_runtime.rs');
 const interactionSmoke = read('tools/interaction-smoke.js');
 const perfSmoke = read('tools/perf-smoke.js');
@@ -38,6 +39,16 @@ const results = [];
 function check(name, ok, detail) {
   results.push({ name, ok: Boolean(ok), detail });
 }
+
+check(
+  'panicked background workers settle instead of leaving the UI permanently pending',
+  taskRuntimeRs.includes('pub fn guard_job_worker') &&
+    taskRuntimeRs.includes('catch_unwind(AssertUnwindSafe(worker))') &&
+    taskRuntimeRs.includes('Background task stopped unexpectedly. Retry the operation.') &&
+    taskRuntimeRs.includes('panicked_worker_finishes_as_failed_instead_of_staying_running') &&
+    mainRs.includes('guard_job_worker(&panic_jobs, &panic_id'),
+  'a worker panic must transition its job record out of running so buttons and pending rows can recover'
+);
 
 check(
   'stability audit is exposed as a package script',

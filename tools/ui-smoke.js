@@ -286,6 +286,17 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       && nodeFilterTabs
       && nodeToolbarPrimary.bottom <= nodeFilterTabs.top + 1
     );
+    document.querySelector('[data-page="connections"]').click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const connectionRows = all('#connectionRows .simple-row').filter(visible);
+    const connectionActionIssues = connectionRows.flatMap((row, index) => {
+      const actionBox = row.querySelector('.connection-actions')?.getBoundingClientRect();
+      const buttons = all('button', row).filter(visible).map((button) => button.getBoundingClientRect());
+      const rowBox = row.getBoundingClientRect();
+      const actionEscapes = !actionBox || actionBox.left < rowBox.left - 1 || actionBox.right > rowBox.right + 1;
+      const buttonEscapes = buttons.some((button) => button.left < actionBox.left - 1 || button.right > actionBox.right + 1 || button.width < 50);
+      return actionEscapes || buttonEscapes ? ['connection-' + index] : [];
+    });
     document.querySelector('[data-page="routing"]').click();
     await waitForSelector('#routingDraftListCard');
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -367,6 +378,7 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
     const diagnosticsPanel = document.querySelector('[data-page-panel="diagnostics"]');
     const diagnosticsActive = diagnosticsPanel?.classList.contains('active') || false;
     const diagnosticsSummary = box('#diagSummary');
+    const diagnosticCategoryFilters = box('.diagnostic-category-filters');
     const diagnosticsRows = box('#diagRows');
     const diagnosticTabs = box('.diagnostic-view-tabs');
     const diagnosticRepair = box('.diagnostic-repair-btn');
@@ -390,6 +402,7 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       textOverflow: [...homeBase.textOverflow, ...nodeBase.textOverflow, ...routingBase.textOverflow, ...profileBase.textOverflow, ...settingsBase.textOverflow, ...diagnosticsBase.textOverflow],
       quickEscapes,
       visibleRows,
+      connectionActionIssues,
       tableOverflowX: tableEl ? tableEl.scrollWidth - tableEl.clientWidth : 0,
       nodeToolbarPrimary,
       nodeFilterTabs,
@@ -465,6 +478,7 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       tunToggleVisible,
       diagnosticsActive,
       diagnosticsSummary,
+      diagnosticCategoryFilters,
       diagnosticsRows,
       diagnosticTabs,
       diagnosticRepair,
@@ -652,6 +666,7 @@ try {
     if (!report.routingSummaryDetailHidden) failures.push(`${report.width}x${report.height}: routing summary detail expanded without a user request`);
     if (!report.routingSummaryHidden) failures.push(`${report.width}x${report.height}: low-value routing dashboard remained visible`);
     if (report.routingKindCount !== 4 || !report.routingKindsVertical || report.routingActivePanels !== 1) failures.push(`${report.width}x${report.height}: routing types are not a clear single-panel workflow`);
+    if (report.connectionActionIssues.length) failures.push(`${report.width}x${report.height}: connection actions are clipped: ${report.connectionActionIssues.join(', ')}`);
     if (!report.routingAssistantHeadMissing || !report.routingToolbarMissing) failures.push(`${report.width}x${report.height}: routing assistant retained duplicate heading or controls`);
     if (!report.profileTableHead || !report.profileTableRow) failures.push(`${report.width}x${report.height}: subscription comparison table is incomplete`);
     if (report.profileTableOverflowX > 1) failures.push(`${report.width}x${report.height}: subscription table horizontal overflow ${report.profileTableOverflowX}px`);
@@ -715,6 +730,7 @@ try {
     if (!report.diagnosticsRows || report.diagnosticsRows.height < 120) failures.push(`${report.width}x${report.height}: diagnostic issue list did not receive usable space`);
     if (!report.diagnosticTabs || report.diagnosticTabs.height < 30) failures.push(`${report.width}x${report.height}: diagnostic internal tabs are missing`);
     if (!report.diagnosticRepair || report.diagnosticRepair.width < 80) failures.push(`${report.width}x${report.height}: diagnostic repair action is clipped`);
+    if (!report.diagnosticsSummary || !report.diagnosticCategoryFilters || !report.diagnosticsRows || report.diagnosticCategoryFilters.top < report.diagnosticsSummary.bottom - 1 || report.diagnosticsRows.top < report.diagnosticCategoryFilters.bottom - 1) failures.push(`${report.width}x${report.height}: diagnostic content is not vertically ordered`);
     if (!report.diagnosticView || report.diagnosticView.bottom - report.diagnosticsRows.bottom > 20) failures.push(`${report.width}x${report.height}: diagnostic issue list leaves unused vertical space`);
     if (!report.diagnosticsCard || report.height - report.diagnosticsCard.bottom > 32) failures.push(`${report.width}x${report.height}: diagnostic repair center does not fill the page height`);
     const seriousTextOverflow = report.textOverflow.filter((text) => text && !text.includes('127.0.0.1'));

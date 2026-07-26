@@ -5,7 +5,7 @@ use serde_yaml::{Mapping, Value as YamlValue};
 use crate::{
     app_config::{Profile, Settings},
     config_domain::{ManualNodeConfig, ProfileCatalog, RuntimeConfigReport},
-    config_extensions, core_runtime, subscription_runtime, AEGOS_OUTBOUND_IP_GROUP,
+    config_extensions, core_runtime, routing_domain, subscription_runtime, AEGOS_OUTBOUND_IP_GROUP,
     OUTBOUND_IP_RULE_DOMAINS,
 };
 
@@ -15,11 +15,13 @@ pub(crate) struct RuntimeConfigPlan {
 }
 
 pub(crate) const AEGOS_DNS_LISTEN: &str = "127.0.0.1:1054";
-const AEGOS_DIRECT_NAMESERVERS: [&str; 3] = [
+const AEGOS_BOOTSTRAP_NAMESERVERS: [&str; 3] = [
     "https://223.5.5.5/dns-query",
     "https://1.1.1.1/dns-query",
     "tls://8.8.8.8:853",
 ];
+const AEGOS_REMOTE_NAMESERVERS: [&str; 2] =
+    ["https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query"];
 
 fn proxy_group_names(config: &Mapping) -> Vec<String> {
     config
@@ -39,17 +41,45 @@ fn proxy_group_names(config: &Mapping) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn outbound_ip_primary_group_name(config: &Mapping, settings: &Settings) -> Option<String> {
+fn terminal_rule_group_name(config: &Mapping, groups: &[String]) -> Option<String> {
+    config
+        .get(yaml_key("rules"))
+        .and_then(YamlValue::as_sequence)
+        .into_iter()
+        .flatten()
+        .rev()
+        .filter_map(YamlValue::as_str)
+        .find_map(|rule| {
+            let mut fields = rule.split(',').map(str::trim);
+            let kind = fields.next()?;
+            let target = fields.next()?;
+            (kind.eq_ignore_ascii_case("MATCH") && groups.iter().any(|group| group == target))
+                .then(|| target.to_string())
+        })
+}
+
+pub(crate) fn outbound_ip_primary_group_name(
+    config: &Mapping,
+    settings: &Settings,
+) -> Option<String> {
     let groups = proxy_group_names(config);
-    for preferred in ["GLOBAL", "Final", "Proxy", "Proxies"] {
+    if !settings.mode.eq_ignore_ascii_case("global") {
+        if let Some(group) = terminal_rule_group_name(config, &groups) {
+            return Some(group);
+        }
+    }
+    for preferred in ["GLOBAL", "Final", "Proxy"] {
         if groups.iter().any(|name| name == preferred) {
             return Some(preferred.to_string());
         }
     }
-    for selected_group in settings.selected_proxy_map.keys() {
-        if groups.iter().any(|name| name == selected_group) {
-            return Some(selected_group.clone());
+    for group in &groups {
+        if settings.selected_proxy_map.contains_key(group) {
+            return Some(group.clone());
         }
+    }
+    if groups.iter().any(|name| name == "Proxies") {
+        return Some("Proxies".to_string());
     }
     groups.first().cloned()
 }
@@ -365,6 +395,24 @@ pub(crate) fn apply_manual_nodes_to_catalog(
     Ok(())
 }
 
+pub(crate) fn fixed_node_is_selected(
+    config: &Mapping,
+    settings: &Settings,
+    profile_id: Option<&str>,
+) -> bool {
+    let Some(manual_nodes) = profile_id.and_then(|id| settings.manual_nodes.get(id)) else {
+        return false;
+    };
+    let groups = config
+        .get(yaml_key("proxy-groups"))
+        .and_then(YamlValue::as_sequence)
+        .cloned()
+        .unwrap_or_default();
+    outbound_ip_primary_group_name(config, settings)
+        .map(|group| resolve_yaml_group_leaf(&groups, settings, &group, 0))
+        .is_some_and(|selected| manual_nodes.contains_key(&selected))
+}
+
 pub(crate) fn patch_config(
     source: YamlValue,
     settings: &Settings,
@@ -375,6 +423,10 @@ pub(crate) fn patch_config(
         _ => Mapping::new(),
     };
     config_extensions::apply_to_runtime(&mut config, settings)?;
+    if let Some(profile_id) = profile_id {
+        apply_manual_nodes(&mut config, settings, profile_id)?;
+    }
+    let strict_fixed_dns = fixed_node_is_selected(&config, settings, profile_id);
     for key in [
         "port",
         "socks-port",
@@ -427,7 +479,7 @@ pub(crate) fn patch_config(
     );
     set_yaml(&mut config, "unified-delay", YamlValue::Bool(true));
     set_yaml(&mut config, "tcp-concurrent", YamlValue::Bool(true));
-    harden_runtime_dns(&mut config, settings)?;
+    harden_runtime_dns(&mut config, settings, strict_fixed_dns)?;
     sanitize_subscription_metadata_nodes(&mut config);
 
     if settings.tun_enabled {
@@ -448,7 +500,8 @@ pub(crate) fn patch_config(
             tun_map,
             "dns-hijack",
             if settings.dns_mode == "secure"
-                || (settings.dns_mode != "system" && settings.dns_hijack_enabled)
+                || (settings.dns_mode != "system"
+                    && (settings.dns_hijack_enabled || strict_fixed_dns))
             {
                 YamlValue::Sequence(vec![YamlValue::String("any:53".to_string())])
             } else {
@@ -457,10 +510,6 @@ pub(crate) fn patch_config(
         );
     } else if let Some(tun) = config.get_mut(yaml_key("tun")) {
         set_yaml(get_mapping_mut(tun), "enable", YamlValue::Bool(false));
-    }
-
-    if let Some(profile_id) = profile_id {
-        apply_manual_nodes(&mut config, settings, profile_id)?;
     }
 
     let proxy_name_strings = proxy_node_names(&config);
@@ -600,6 +649,29 @@ fn synthesize_default_proxy_groups_if_needed(config: &mut Mapping, proxy_names: 
     }
     let mut all_with_direct = proxy_names.to_vec();
     all_with_direct.push("DIRECT".to_string());
+    if visible_count == 1 {
+        // A single subscription-defined group can be the target of its own
+        // rules. Keep it intact and add Aegos' default route alongside it;
+        // replacing it leaves a syntactically accepted but unrunnable config.
+        if existing_groups
+            .iter()
+            .any(|group| yaml_mapping_name(group) == Some("GLOBAL"))
+        {
+            return;
+        }
+        let mut groups = existing_groups;
+        let insert_index = groups
+            .iter()
+            .position(|group| {
+                yaml_mapping_name(group)
+                    .map(is_internal_proxy_group_name)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(0);
+        groups.insert(insert_index, select_proxy_group("GLOBAL", &all_with_direct));
+        set_yaml(config, "proxy-groups", YamlValue::Sequence(groups));
+        return;
+    }
     set_yaml(
         config,
         "proxy-groups",
@@ -784,6 +856,9 @@ pub(crate) fn runtime_dns_safety_report(config: &YamlValue) -> Result<String, St
         .get(yaml_key("listen"))
         .and_then(YamlValue::as_str)
         .unwrap_or("");
+    if dns.get(yaml_key("enable")).and_then(YamlValue::as_bool) == Some(false) {
+        return Ok("system DNS compatibility mode".to_string());
+    }
     if listen != AEGOS_DNS_LISTEN {
         return Err(format!(
             "runtime DNS listen should be {AEGOS_DNS_LISTEN}, got {listen}"
@@ -802,25 +877,69 @@ pub(crate) fn runtime_dns_safety_report(config: &YamlValue) -> Result<String, St
             proxy_nameservers.join(", ")
         ));
     }
-    let nameservers = yaml_value_strings(dns.get(yaml_key("nameserver")));
-    let has_direct_upstream = AEGOS_DIRECT_NAMESERVERS
+    let bootstrap_complete = AEGOS_BOOTSTRAP_NAMESERVERS
         .iter()
-        .all(|expected| nameservers.iter().any(|value| value == expected));
-    if !has_direct_upstream {
+        .all(|expected| proxy_nameservers.iter().any(|value| value == expected));
+    if !bootstrap_complete {
         return Err(format!(
-            "direct upstream DNS set is incomplete: {}",
-            nameservers.join(", ")
+            "bootstrap DNS set is incomplete: {}",
+            proxy_nameservers.join(", ")
         ));
     }
+    let encrypted_route = runtime_dns_route(config)?;
     Ok(format!(
-        "listen={}, proxy-server-nameserver={}",
+        "listen={}, encrypted-route={}, proxy-server-nameserver={}",
         listen,
+        encrypted_route,
         proxy_nameservers.join(", ")
     ))
 }
 
-pub(crate) fn harden_runtime_dns(config: &mut Mapping, settings: &Settings) -> Result<(), String> {
-    let default_nameservers = AEGOS_DIRECT_NAMESERVERS
+pub(crate) fn runtime_dns_route(config: &YamlValue) -> Result<String, String> {
+    let dns = config
+        .get(yaml_key("dns"))
+        .and_then(YamlValue::as_mapping)
+        .ok_or_else(|| "runtime DNS block missing".to_string())?;
+    if dns.get(yaml_key("enable")).and_then(YamlValue::as_bool) == Some(false) {
+        return Ok("SYSTEM".to_string());
+    }
+    let nameservers = yaml_value_strings(dns.get(yaml_key("nameserver")));
+    let route_tag = format!("#{AEGOS_OUTBOUND_IP_GROUP}");
+    let all_remote =
+        !nameservers.is_empty() && nameservers.iter().all(|value| value.ends_with(&route_tag));
+    let all_direct =
+        !nameservers.is_empty() && nameservers.iter().all(|value| value.ends_with("#DIRECT"));
+    if all_remote {
+        Ok(AEGOS_OUTBOUND_IP_GROUP.to_string())
+    } else if all_direct {
+        Ok("DIRECT".to_string())
+    } else {
+        Err(format!(
+            "encrypted DNS routes are mixed or incomplete: {}",
+            nameservers.join(", ")
+        ))
+    }
+}
+
+pub(crate) fn runtime_dns_hijack_enabled(config: &YamlValue) -> bool {
+    config
+        .get(yaml_key("tun"))
+        .and_then(|tun| tun.get(yaml_key("dns-hijack")))
+        .and_then(YamlValue::as_sequence)
+        .is_some_and(|items| items.iter().any(|item| item.as_str() == Some("any:53")))
+}
+
+fn nameserver_through_route(value: &str, route: &str) -> String {
+    let resolver = value.split_once('#').map(|(base, _)| base).unwrap_or(value);
+    format!("{resolver}#{route}")
+}
+
+pub(crate) fn harden_runtime_dns(
+    config: &mut Mapping,
+    settings: &Settings,
+    strict_fixed_dns: bool,
+) -> Result<(), String> {
+    let bootstrap_nameservers = AEGOS_BOOTSTRAP_NAMESERVERS
         .iter()
         .copied()
         .filter(|value| !is_local_or_fake_nameserver(value))
@@ -840,26 +959,37 @@ pub(crate) fn harden_runtime_dns(config: &mut Mapping, settings: &Settings) -> R
         );
         return Ok(());
     }
-    let nameservers = if settings.dns_mode == "custom" {
+    let nameservers: Vec<String> = if settings.dns_mode == "custom" {
         if settings.dns_custom_nameservers.is_empty() {
             return Err("Custom DNS mode requires at least one encrypted resolver".to_string());
         }
-        settings.dns_custom_nameservers.clone()
-    } else {
-        default_nameservers
+        settings
+            .dns_custom_nameservers
             .iter()
-            .map(|value| value.to_string())
+            .map(|value| nameserver_through_route(value, AEGOS_OUTBOUND_IP_GROUP))
+            .collect()
+    } else if strict_fixed_dns {
+        AEGOS_REMOTE_NAMESERVERS
+            .iter()
+            .map(|value| nameserver_through_route(value, AEGOS_OUTBOUND_IP_GROUP))
+            .collect()
+    } else {
+        AEGOS_BOOTSTRAP_NAMESERVERS
+            .iter()
+            .map(|value| nameserver_through_route(value, "DIRECT"))
             .collect()
     };
     set_yaml(dns_map, "enable", YamlValue::Bool(true));
     set_yaml(dns_map, "ipv6", YamlValue::Bool(false));
     set_yaml(dns_map, "listen", yaml_str(AEGOS_DNS_LISTEN));
     set_yaml(dns_map, "enhanced-mode", yaml_str("fake-ip"));
+    set_yaml(dns_map, "respect-rules", YamlValue::Bool(true));
+    set_yaml(dns_map, "prefer-h3", YamlValue::Bool(false));
     set_yaml(dns_map, "nameserver", yaml_string_sequence(&nameservers));
     set_yaml(
         dns_map,
         "proxy-server-nameserver",
-        yaml_string_sequence(&nameservers),
+        yaml_string_sequence(&bootstrap_nameservers),
     );
     Ok(())
 }
@@ -882,6 +1012,31 @@ fn preflight_config(
     )
 }
 
+fn validate_compiled_rule_targets(config: &YamlValue) -> Result<(), String> {
+    let mapping = config
+        .as_mapping()
+        .ok_or_else(|| "Config preflight failed: root YAML value must be an object".to_string())?;
+    let proxy_names = proxy_node_names(mapping)
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let proxy_group_names = proxy_group_names(mapping)
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let rules = config
+        .get(yaml_key("rules"))
+        .and_then(YamlValue::as_sequence)
+        .cloned()
+        .unwrap_or_default();
+    routing_domain::validate_runtime_rule_targets(
+        rules
+            .iter()
+            .enumerate()
+            .filter_map(|(index, rule)| rule.as_str().map(|raw| (index, raw))),
+        &proxy_names,
+        &proxy_group_names,
+    )
+}
+
 pub(crate) fn compile_runtime_catalog(
     source: YamlValue,
     profile: &Profile,
@@ -890,6 +1045,7 @@ pub(crate) fn compile_runtime_catalog(
     let config = patch_config(source, settings, Some(&profile.id))?;
     let catalog =
         ProfileCatalog::from_yaml(config, &profile.id, &profile.name, &profile.profile_type)?;
+    validate_compiled_rule_targets(catalog.config())?;
     let validation = preflight_config(catalog.config(), profile, settings)?;
     if validation.proxies != catalog.proxies().len()
         || validation.proxy_groups != catalog.groups().len()

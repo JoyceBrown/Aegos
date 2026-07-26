@@ -214,6 +214,81 @@ rules:
     }
 
     #[test]
+    fn deployment_plan_preserves_a_single_custom_group_referenced_by_match_rule() {
+        let source: YamlValue = serde_yaml::from_str(
+            r#"
+proxies:
+  - name: Node A
+    type: ss
+    server: a.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+  - name: Node B
+    type: ss
+    server: b.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: Fixture
+    type: select
+    proxies: [Node A, Node B, DIRECT]
+rules:
+  - MATCH,Fixture
+"#,
+        )
+        .expect("source");
+        let plan = compile_profile_source(source, &test_profile(), &default_settings())
+            .expect("runtime plan");
+        let runtime: YamlValue = serde_yaml::from_str(&plan.runtime_yaml).expect("runtime yaml");
+        let groups = runtime
+            .get(YamlValue::String("proxy-groups".to_string()))
+            .and_then(YamlValue::as_sequence)
+            .expect("runtime groups");
+        assert!(groups.iter().any(|group| {
+            group
+                .get(YamlValue::String("name".to_string()))
+                .and_then(YamlValue::as_str)
+                == Some("Fixture")
+        }));
+        assert!(runtime
+            .get(YamlValue::String("rules".to_string()))
+            .and_then(YamlValue::as_sequence)
+            .expect("runtime rules")
+            .iter()
+            .any(|rule| rule.as_str() == Some("MATCH,Fixture")));
+    }
+
+    #[test]
+    fn deployment_plan_rejects_a_missing_runtime_rule_target_before_launch() {
+        let source: YamlValue = serde_yaml::from_str(
+            r#"
+proxies:
+  - name: Node A
+    type: ss
+    server: a.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: Proxies
+    type: select
+    proxies: [Node A, DIRECT]
+rules:
+  - MATCH,Removed Group
+"#,
+        )
+        .expect("source");
+        let error = match compile_profile_source(source, &test_profile(), &default_settings()) {
+            Err(error) => error,
+            Ok(_) => panic!("missing rule target must fail before launch"),
+        };
+        assert!(error.contains("rule target(s) missing"));
+        assert!(error.contains("Removed Group"));
+    }
+
+    #[test]
     fn deployment_plan_rejects_non_mapping_source_without_writing() {
         let result = compile_profile_source(
             YamlValue::Sequence(Vec::new()),

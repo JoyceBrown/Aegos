@@ -2,9 +2,34 @@ use base64::{engine::general_purpose, Engine as _};
 use reqwest::blocking::Client;
 use serde_json::Value as JsonValue;
 use serde_yaml::{Mapping, Value as YamlValue};
+#[cfg(test)]
+use std::cell::Cell;
 use std::{collections::HashMap, io::Read, time::Duration};
 
 use crate::app_config::SubscriptionUsage;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_SUBSCRIPTION_DOWNLOAD_DIRECT: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) struct TestSubscriptionDownloadDirectGuard {
+    previous: bool,
+}
+
+#[cfg(test)]
+impl Drop for TestSubscriptionDownloadDirectGuard {
+    fn drop(&mut self) {
+        TEST_SUBSCRIPTION_DOWNLOAD_DIRECT.with(|enabled| enabled.set(self.previous));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn enable_test_subscription_download_direct() -> TestSubscriptionDownloadDirectGuard {
+    let previous = TEST_SUBSCRIPTION_DOWNLOAD_DIRECT.with(|enabled| enabled.replace(true));
+    TestSubscriptionDownloadDirectGuard { previous }
+}
 
 pub(crate) const MAX_SUBSCRIPTION_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -821,8 +846,14 @@ pub(crate) fn download_source_url(url: &str, user_agent: &str) -> Result<Profile
             "Aegos imports remote subscriptions through HTTP/HTTPS URLs; paste the airport subscription link instead of a local or custom scheme",
         ));
     }
-    let response = Client::builder()
-        .timeout(Duration::from_secs(20))
+    let builder = Client::builder().timeout(Duration::from_secs(20));
+    #[cfg(test)]
+    let builder = if TEST_SUBSCRIPTION_DOWNLOAD_DIRECT.with(Cell::get) {
+        builder.no_proxy()
+    } else {
+        builder
+    };
+    let response = builder
         .build()
         .map_err(|err| {
             diagnostic(

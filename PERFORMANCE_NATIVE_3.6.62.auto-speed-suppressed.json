@@ -1,0 +1,417 @@
+{
+  "ok": true,
+  "version": "3.6.62",
+  "fixture": "native-webview2-isolated-profile",
+  "automaticSpeedMode": "suppressed",
+  "hiddenWindow": {
+    "requested": true,
+    "visible": false
+  },
+  "storage": {
+    "settingsPresent": true,
+    "profileCount": 1
+  },
+  "generatedAt": "2026-07-26T12:22:12.958Z",
+  "probe": {
+    "canDirectNavigate": true,
+    "activePage": "home",
+    "directNavigation": [
+      {
+        "targetPage": "nodes",
+        "duration": 1.199999988079071,
+        "synchronousMs": 0.699999988079071,
+        "active": "nodes"
+      },
+      {
+        "targetPage": "routing",
+        "duration": 24.80000001192093,
+        "synchronousMs": 0.19999998807907104,
+        "active": "routing",
+        "contentDuration": 109.39999997615814
+      },
+      {
+        "targetPage": "settings",
+        "duration": 66.60000002384186,
+        "synchronousMs": 0.19999998807907104,
+        "active": "settings"
+      },
+      {
+        "targetPage": "home",
+        "duration": 26.69999998807907,
+        "synchronousMs": 0.30000001192092896,
+        "active": "home"
+      }
+    ],
+    "traceKinds": {
+      "long-task": 2,
+      "invoke-start": 40,
+      "invoke-finish": 41,
+      "node-rows-rendered": 3,
+      "settings-workspace-warmed": 1,
+      "navigation-request": 6,
+      "navigation-painted": 6,
+      "node-group-switcher-rendered": 2,
+      "routing-ui-initialized": 1,
+      "page-content-ready": 2,
+      "node-virtual-window-rendered": 2
+    },
+    "traceTail": [
+      {
+        "kind": "invoke-finish",
+        "at": 12298.3,
+        "page": "home",
+        "command": "job_status",
+        "duration": 6,
+        "state": "ok"
+      },
+      {
+        "kind": "invoke-start",
+        "at": 12391.2,
+        "page": "home",
+        "command": "job_status"
+      },
+      {
+        "kind": "invoke-finish",
+        "at": 12397,
+        "page": "home",
+        "command": "job_status",
+        "duration": 6,
+        "state": "ok"
+      },
+      {
+        "kind": "invoke-start",
+        "at": 12397.4,
+        "page": "home",
+        "command": "app_status"
+      },
+      {
+        "kind": "invoke-finish",
+        "at": 12542,
+        "page": "home",
+        "command": "app_status",
+        "duration": 145,
+        "state": "ok"
+      },
+      {
+        "kind": "invoke-start",
+        "at": 12542.8,
+        "page": "home",
+        "command": "proxy_groups"
+      },
+      {
+        "kind": "invoke-finish",
+        "at": 12819.5,
+        "page": "home",
+        "command": "proxy_groups",
+        "duration": 277,
+        "state": "ok"
+      },
+      {
+        "kind": "node-virtual-window-rendered",
+        "at": 12890.7,
+        "page": "home",
+        "itemCount": 800,
+        "start": 0,
+        "end": 33,
+        "renderedCount": 33
+      },
+      {
+        "kind": "node-rows-rendered",
+        "at": 12891.3,
+        "page": "home",
+        "target": "all",
+        "itemCount": 800,
+        "renderedCount": 33,
+        "duration": 38.4
+      },
+      {
+        "kind": "navigation-request",
+        "at": 12897.4,
+        "page": "home",
+        "targetPage": "nodes"
+      },
+      {
+        "kind": "navigation-painted",
+        "at": 12898,
+        "page": "nodes",
+        "targetPage": "nodes"
+      },
+      {
+        "kind": "node-group-switcher-rendered",
+        "at": 12904.5,
+        "page": "nodes",
+        "duration": 6.5
+      },
+      {
+        "kind": "node-virtual-window-rendered",
+        "at": 12928,
+        "page": "nodes",
+        "itemCount": 800,
+        "start": 0,
+        "end": 43,
+        "renderedCount": 43
+      },
+      {
+        "kind": "node-rows-rendered",
+        "at": 12928.3,
+        "page": "nodes",
+        "target": "nodes",
+        "itemCount": 800,
+        "renderedCount": 43,
+        "duration": 23.7
+      },
+      {
+        "kind": "navigation-request",
+        "at": 12928.8,
+        "page": "nodes",
+        "targetPage": "routing"
+      },
+      {
+        "kind": "navigation-painted",
+        "at": 12939.5,
+        "page": "routing",
+        "targetPage": "routing"
+      }
+    ]
+  },
+  "navigation": {
+    "count": 4,
+    "source": "application-paint-trace",
+    "p95Ms": 62,
+    "maxMs": 62,
+    "samples": [
+      0.7000000000000455,
+      18,
+      62,
+      26
+    ],
+    "synchronousP95Ms": 0.699999988079071,
+    "synchronousMaxMs": 0.699999988079071,
+    "synchronousSamples": [
+      0.699999988079071,
+      0.19999998807907104,
+      0.19999998807907104,
+      0.30000001192092896
+    ]
+  },
+  "routing": {
+    "firstContentMs": 109.39999997615814,
+    "backendObservationMs": {
+      "coreSnapshot": 157,
+      "groupRows": 88,
+      "profileRules": 4,
+      "profileYaml": 6,
+      "recentRules": 15,
+      "total": 314
+    },
+    "ruleCount": 802,
+    "groupCount": 3
+  },
+  "startup": {
+    "settled": true,
+    "waitedMs": 41.30000001192093,
+    "statusMs": 137,
+    "proxyGroupsMs": 155,
+    "pendingInvokes": [],
+    "trace": [
+      {
+        "kind": "long-task",
+        "at": 225.4,
+        "page": "home",
+        "duration": 213
+      },
+      {
+        "kind": "invoke-start",
+        "at": 533,
+        "page": "home",
+        "command": "app_status"
+      },
+      {
+        "kind": "invoke-start",
+        "at": 534.5,
+        "page": "home",
+        "command": "proxy_groups"
+      },
+      {
+        "kind": "invoke-finish",
+        "at": 669.8,
+        "page": "home",
+        "command": "app_status",
+        "duration": 137,
+        "state": "ok"
+      },
+      {
+        "kind": "invoke-finish",
+        "at": 689.3,
+        "page": "home",
+        "command": "proxy_groups",
+        "duration": 155,
+        "state": "ok"
+      }
+    ],
+    "runtimeStartupTimingsMs": [
+      [
+        "deployment-recovery",
+        0
+      ],
+      [
+        "takeover-recovery",
+        0
+      ],
+      [
+        "direct-profile",
+        33
+      ],
+      [
+        "profile-metadata",
+        0
+      ],
+      [
+        "settings-save",
+        9
+      ],
+      [
+        "total",
+        46
+      ]
+    ],
+    "statusCommandMs": {
+      "finalLock": 2,
+      "firstLock": 0,
+      "total": 138,
+      "traffic": 135
+    }
+  },
+  "nodeRendering": {
+    "count": 3,
+    "p95Ms": 38.4,
+    "maxMs": 38.4
+  },
+  "interaction": {
+    "settings": {
+      "firstFrameMs": 27,
+      "hasScroller": true,
+      "viewport": {
+        "width": 920,
+        "height": 640
+      },
+      "rect": {
+        "width": 692,
+        "height": 432
+      },
+      "scrollHeight": 432,
+      "clientHeight": 432,
+      "scrollFrameMaxMs": 17.5,
+      "scrollFrameSamples": [
+        17.5
+      ],
+      "environmentCallsDuringEntry": 0
+    },
+    "diagnostics": {
+      "firstFrameMs": 33.30000001192093,
+      "switches": [
+        {
+          "view": "logs",
+          "synchronousMs": 0.699999988079071,
+          "firstFrameMs": 71.80000001192093,
+          "settledFrameMs": 85.89999997615814,
+          "longTaskMaxMs": 0,
+          "active": "logs",
+          "renderedLogRows": 0
+        },
+        {
+          "view": "overview",
+          "synchronousMs": 0.30000001192092896,
+          "firstFrameMs": 32.90000003576279,
+          "settledFrameMs": 66.5,
+          "longTaskMaxMs": 0,
+          "active": "overview",
+          "renderedLogRows": 0
+        },
+        {
+          "view": "logs",
+          "synchronousMs": 0.19999998807907104,
+          "firstFrameMs": 33.19999998807907,
+          "settledFrameMs": 66.5,
+          "longTaskMaxMs": 0,
+          "active": "logs",
+          "renderedLogRows": 0
+        },
+        {
+          "view": "overview",
+          "synchronousMs": 0.5,
+          "firstFrameMs": 33.5,
+          "settledFrameMs": 66.69999998807907,
+          "longTaskMaxMs": 0,
+          "active": "overview",
+          "renderedLogRows": 0
+        }
+      ],
+      "maxSwitchFrameMs": 71.80000001192093,
+      "maxSwitchSynchronousMs": 0.699999988079071,
+      "maxSwitchLongTaskMs": 0,
+      "allSwitchesApplied": true
+    },
+    "navigationAway": {
+      "startedAt": 2247.800000011921,
+      "firstFrameMs": 33.89999997615814
+    }
+  },
+  "jobs": {
+    "available": true,
+    "pendingVisible": true,
+    "cancelControlVisible": true,
+    "activeWhilePending": "diagnostics",
+    "navigationWhilePendingMs": 27.5,
+    "cancelledTerminal": true,
+    "failedTerminal": true,
+    "activeAfterLeaving": "home",
+    "completedAwayTerminal": true
+  },
+  "largeList": {
+    "imported": true,
+    "total": 800,
+    "standbyCoreReady": true,
+    "nodeItemCount": 800,
+    "nodeRenderedCount": 43,
+    "nodeRenderMs": 23.7,
+    "visibleNodeRows": 43,
+    "nodeFirstFrameMs": 30.899999976158142,
+    "routingFirstFrameMs": 10.900000035762787,
+    "routingContentMs": null,
+    "routingSnapshotMs": 1163.1000000238419,
+    "routingRulePageMs": 26.100000023841858,
+    "routingGroupsRendered": 1,
+    "routingRuleCount": 802,
+    "routingPageTotal": 801,
+    "routingPageItems": 100,
+    "automaticSpeed": {
+      "mode": "suppressed",
+      "observedRunning": false,
+      "runId": 0,
+      "phase": "",
+      "observationMs": 45.90000003576279
+    },
+    "cancellation": {
+      "attempted": false,
+      "acknowledgedMs": 0,
+      "terminal": true,
+      "terminalMs": 0,
+      "phase": ""
+    },
+    "speedInvokes": []
+  },
+  "longTasks": [
+    {
+      "at": 1346.6,
+      "duration": 73,
+      "page": "routing"
+    }
+  ],
+  "pendingInvokes": [],
+  "warnings": [
+    "hidden WebView2 navigation paint sampling exceeded the 50ms target: p95=62.0ms max=62.0ms",
+    "hidden WebView2 diagnostics/log paint sampling exceeded the 50ms target: max=71.8ms"
+  ],
+  "failures": []
+}

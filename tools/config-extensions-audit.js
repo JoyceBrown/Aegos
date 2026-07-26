@@ -92,26 +92,55 @@ check(
 );
 
 check(
+  'preflight reuses the runtime validation contract and returns only safe intent metadata',
+  main.includes('config_extensions_preview') &&
+    main.includes('spawn_blocking(move || config_extensions::preview(&settings, &draft))') &&
+    extensions.includes('pub(crate) fn preview') &&
+    extensions.includes('normalized_additional_rules(&candidate)') &&
+    extensions.includes('parse_override_script(&candidate)') &&
+    extensions.includes('"line": self.line') &&
+    extensions.includes('"rulesAdded": rules_added') &&
+    !extensions.includes('"message": self.message') &&
+    !extensions.includes('"content":'),
+  'line-aware validation and redacted intent diff'
+);
+
+check(
   'settings UI exposes one configuration extensions workspace',
     app.includes("['extensions', '\\u914d\\u7f6e\\u6269\\u5c55'") &&
     app.includes("panel('extensions', '\\u914d\\u7f6e\\u6269\\u5c55'") &&
     app.includes("'additionalRulesInput',") &&
     app.includes("'overrideScriptInput',") &&
+    app.includes("id: 'configExtensionsPreflightStatus'") &&
+    app.includes("id: 'previewConfigExtensionsBtn'") &&
     app.includes("id: 'saveConfigExtensionsBtn'") &&
+    app.includes("id: 'restoreConfigExtensionsBtn'") &&
+    app.includes('configExtensionsPreviewSignature') &&
+    app.includes('configExtensionsPreviewSeq') &&
+    app.includes('requestSeq !== configExtensionsPreviewSeq') &&
+    app.includes('focusConfigExtensionIssue') &&
+    app.includes('configExtensionsAppliedSnapshot') &&
     app.includes('function saveConfigExtensions') &&
     styles.includes('.config-extensions-content') &&
-    styles.includes('.config-extension-editor textarea'),
-  'configuration extensions settings category'
+    styles.includes('.config-extension-editor textarea') &&
+    styles.includes('.config-extension-preflight') &&
+    styles.includes('.config-extension-issue'),
+  'preflight, diff, error location, apply, and known-good restore workspace'
 );
 
 check(
-  'configuration extension save is covered as a background user journey',
+  'configuration extension preflight and save are covered as a background user journey',
   interaction.includes('[data-settings-category="extensions"]') &&
     interaction.includes('DOMAIN-SUFFIX,example.com,Proxies') &&
     interaction.includes("document.querySelector('#overrideScriptInput').value = 'sniffer:") &&
+    interaction.includes("command === 'config_extensions_preview'") &&
+    interaction.includes('safe line-level issues') &&
+    interaction.includes('intent diff was not rendered') &&
+    interaction.includes('stale configuration extension preview') &&
+    interaction.includes('latest successfully applied intent') &&
     interaction.includes("item.args.kind === 'updateSettings'") &&
     interaction.includes('configuration extensions did not save through the settings background job'),
-  'interaction smoke extension save'
+  'invalid preview, valid diff, transactional apply, and restore'
 );
 
 check(

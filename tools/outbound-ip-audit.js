@@ -4,8 +4,11 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'main.rs'), 'utf8');
+const egressIdentityRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'egress_identity.rs'), 'utf8');
+const nodeSelectionRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'node_selection.rs'), 'utf8');
 const coreDomainRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'core_domain.rs'), 'utf8');
 const configPipelineRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'config_pipeline.rs'), 'utf8');
+const ipv6PolicyRs = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'ipv6_policy.rs'), 'utf8');
 const appJs = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
 const backendAudit = fs.readFileSync(path.join(root, 'tools', 'backend-audit.js'), 'utf8');
 const releaseAudit = fs.readFileSync(path.join(root, 'tools', 'release-audit.js'), 'utf8');
@@ -30,7 +33,7 @@ const queryBody = sliceBetween(mainRs, 'fn query_outbound_ip', '#[cfg(test)]');
 const ruleTestBody = sliceBetween(mainRs, 'fn outbound_ip_lookup_rules_use_internal_current_node_group', 'fn running_switch_preflight_accepts_two_local_profiles');
 const detachedIdentityIndex = detachedBody.indexOf('if !outbound_ip_query_is_current(');
 const detachedStaleReturnIndex = detachedBody.indexOf('Outbound IP query expired after node changed; retrying will use the current node.');
-const detachedFallbackIndex = detachedBody.indexOf('let fallback = core.outbound_ip_cache.trim().to_string()');
+const detachedFallbackIndex = detachedBody.indexOf('let fallback = core.outbound_observation.visible_ip()');
 
 check(
   'UI sequences outbound IP requests and ignores stale results',
@@ -54,8 +57,8 @@ check(
 check(
   'node changes and connect trigger background landing IP refresh',
   appJs.includes("runBackgroundJob('refreshOutboundIp'") &&
-    appJs.includes("if (kind === 'startCore') void refreshOutboundIpAfterNodeChange()") &&
-    appJs.includes('if (result) void refreshOutboundIpAfterNodeChange()') &&
+    appJs.includes("if (kind === 'startCore' && value?.trafficTakeover) void refreshOutboundIpAfterNodeChange()") &&
+    appJs.includes('if (result && latestStatus?.trafficTakeover) void refreshOutboundIpAfterNodeChange()') &&
     interactionSmoke.includes('node switch did not auto refresh outbound IP') &&
     interactionSmoke.includes('first connect did not auto refresh outbound IP'),
   'connect and node switch refresh IP without blocking'
@@ -99,21 +102,75 @@ check(
 check(
   'detached backend marks cached value stale on temporary provider failure',
   detachedBody.includes('query_outbound_ip(mixed_port)') &&
-    detachedBody.includes('sync_outbound_ip_route(&controller, &mode)') &&
-    detachedBody.includes('runtime_current_proxy_route(&controller, &mode)') &&
+    detachedBody.includes('core.runtime_outbound_ip_primary_group(),') &&
+    detachedBody.includes('sync_outbound_ip_route(&controller, &mode, primary_group.as_deref())') &&
+    detachedBody.includes('runtime_current_proxy_route(&controller, &mode, primary_group.as_deref())') &&
     mainRs.includes('fn outbound_ip_query_is_current(') &&
     mainRs.includes('fn outbound_ip_query_identity_rejects_stale_contexts()') &&
     detachedIdentityIndex >= 0 &&
     detachedStaleReturnIndex > detachedIdentityIndex &&
     detachedFallbackIndex > detachedStaleReturnIndex &&
     !detachedBody.includes('current_outbound_ip_proxy_name') &&
-    detachedBody.includes('outbound_ip_cache') &&
-    detachedBody.includes('keeping cached value') &&
-    detachedBody.includes('core.outbound_ip_checked_at = 0') &&
+    detachedBody.includes('outbound_observation.record(') &&
+    detachedBody.includes('cached evidence is now stale') &&
+    detachedBody.includes('core.outbound_observation.invalidate()') &&
     detachedBody.includes('retained as stale') &&
     !detachedBody.includes('Ok(fallback)') &&
     mainRs.includes('Err(reason)'),
   'temporary failures retain the visible value but cannot report it as freshly available'
+);
+
+check(
+  'outbound observation is identity-bound and invalidated by route-changing actions',
+  mainRs.includes('mod egress_identity;') &&
+    mainRs.includes('outbound_observation: egress_identity::EgressObservation') &&
+    egressIdentityRs.includes('profile_id: String') &&
+    egressIdentityRs.includes('mode: String') &&
+    egressIdentityRs.includes('runtime_node: String') &&
+    egressIdentityRs.includes('pub(super) fn matches_context(') &&
+    egressIdentityRs.includes('"fixedEgressVerified"') &&
+    egressIdentityRs.includes('"identityState"') &&
+    mainRs.includes('if previous_mode != mode {\n            self.invalidate_egress_observation();') &&
+    mainRs.includes('if previous_profile_id != id {\n            self.invalidate_egress_observation();') &&
+    nodeSelectionRs.includes('if preflight.previous_proxy != proxy {\n            self.invalidate_egress_observation();') &&
+    mainRs.includes('fn terminate_core_process(&mut self, message: &str) {\n        self.invalidate_egress_observation();'),
+  'profile, mode, runtime node and observation freshness form one product contract'
+);
+
+check(
+  'public IP remains visible in status but is not written to runtime logs',
+  detachedBody.includes('core.add_log("Outbound IP refreshed.", "info")') &&
+    !detachedBody.includes('Outbound IP refreshed: {ip}') &&
+    !detachedBody.includes('cached value {fallback}'),
+  'the explicit status surface may show the IP while logs and exports stay redacted'
+);
+
+check(
+  'fixed egress report combines identity, DNS, TUN and IPv6 evidence without optimistic success',
+  egressIdentityRs.includes('pub(super) fn consistency_report(') &&
+    egressIdentityRs.includes('let ipv4_matches =') &&
+    egressIdentityRs.includes('let dns_route_consistent =') &&
+    egressIdentityRs.includes('let ipv6_consistent =') &&
+    egressIdentityRs.includes('"fixedEgressVerified": state == "consistent" && fixed_node') &&
+    ipv6PolicyRs.includes('egress_identity::consistency_report(&identity, dns_policy.as_ref(), &snapshot)') &&
+    ipv6PolicyRs.includes('map.insert("egressConsistency".to_string(), consistency)') &&
+    appJs.includes('function renderEgressConsistency(') &&
+    appJs.includes("report.state === 'consistent'") &&
+    interactionSmoke.includes('egress identity/DNS/TUN/IPv6 consistency report did not render'),
+  'missing, stale, mismatched or partial evidence cannot render as fixed egress verified'
+);
+
+check(
+  'route changes expire slow consistency probes and stale UI evidence remains explicit',
+  ipv6PolicyRs.includes('fn snapshot_context_is_current(') &&
+    ipv6PolicyRs.includes('core.outbound_ip_query_generation') &&
+    ipv6PolicyRs.includes('IPv6/DNS snapshot expired after the route identity changed.') &&
+    ipv6PolicyRs.includes('fn route_identity_change_expires_slow_snapshot()') &&
+    appJs.includes("availability.state === 'stale'") &&
+    appJs.includes('if (result && latestStatus?.trafficTakeover) void refreshOutboundIpAfterNodeChange()') &&
+    interactionSmoke.includes('stale outbound observation was displayed as current') &&
+    interactionSmoke.includes('connected mode switch did not invalidate and refresh outbound identity'),
+  'slow probes and cached values cannot overwrite a newer node/profile/mode identity'
 );
 
 check(

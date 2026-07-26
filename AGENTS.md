@@ -1,18 +1,92 @@
-# Aegos UI Architecture Rules
+# Aegos 项目工作约束
 
-1. UI renders Aegos runtime state, never raw Mihomo state.
-2. Do not fetch the Controller, expose its secret, or parse/write runtime YAML in a page.
-3. Do not add a second full UI framework without an approved migration RFC and rollback plan.
-4. Use semantic design tokens for new colors, spacing, radius, shadow, z-index, and motion.
-5. Avoid nested decorative cards, full-window blur, neon glow, and continuous animation.
-6. Network-changing actions use explicit background operations and runtime verification.
-7. Do not show connected until takeover and connectivity truth support it.
-8. Speed tests must never switch or connect a node.
-9. Navigation, diagnostics evidence, and the status center remain usable during background work.
-10. Dynamic user/core text uses text nodes or `textContent`; dangerous HTML injection is prohibited.
-11. Sensitive values are redacted in UI, logs, fixtures, screenshots, and exported reports.
-12. New list work covers loading, empty, error, partial, large-data, and stale-result states.
-13. GPL repositories may be studied but not copied.
-14. Remove superseded implementations after migration; do not keep dual paths.
-15. Never delete working business behavior or weaken a gate to pass UI tests.
-16. Each UI batch must pass command freeze, interaction, performance, soak, fixed viewport/DPI, and security checks.
+## 开始修改前
+
+- 先读 [`README.md`](README.md) 了解当前候选版本和入口。
+- 长期工作必须先读 [`PLANS.md`](PLANS.md)；它是唯一可执行仓库计划。
+- 再读 [`docs/work/current.md`](docs/work/current.md) 恢复未提交改动、验证证据和
+  精确下一步，但不能从该检查点自行创造任务。
+- 产品边界见 [`docs/product.md`](docs/product.md)，模块边界见
+  [`docs/architecture.md`](docs/architecture.md)。
+- 当前版本的交付事实以对应 `RELEASE_<version>.md` 为准；历史路线图仅供追溯。
+
+## 产品与 UI 规则
+
+1. UI 呈现 Aegos 运行状态，不呈现原始 Mihomo 状态。
+2. 页面不得访问 Controller、暴露 secret，或解析、写入运行时 YAML。
+3. 未经迁移 RFC 和回滚方案，不增加第二套完整 UI 框架。
+4. 新颜色、间距、圆角、阴影、层级和动效使用语义化设计令牌。
+5. 避免装饰性嵌套卡片、全窗模糊、霓虹发光和持续动画。
+6. 改变网络的操作必须在后台明确执行，并用运行事实验证结果。
+7. 只有接管状态与连通事实同时支持时才能显示“已连接”。
+8. 测速只能测量，绝不能连接或切换节点。
+9. 后台工作期间，导航、诊断证据和状态中心必须保持可用。
+10. 动态用户或核心文本使用文本节点或 `textContent`；禁止危险 HTML 注入。
+11. UI、日志、fixture、截图与导出报告中的敏感值必须脱敏。
+12. 新列表覆盖加载、空、错误、部分结果、大数据量和过期结果状态。
+13. 可研究 GPL 项目的契约与方法，不复制其代码、图标或 UI 资产。
+14. 迁移后删除被替代实现，不保留双路径。
+15. 不得为通过 UI 测试删除可用业务行为或削弱门禁。
+16. UI 批次必须覆盖命令冻结、交互、性能、soak、固定窗口/DPI 与安全检查。
+
+## 架构与主机约束
+
+- Aegos 拥有产品控制平面，Mihomo 仅是受管数据平面；不要在 Aegos 内制造
+  “超级 Mihomo”、第二个规则引擎或协议实现。
+- 新行为进入职责归属模块，不继续扩大 `main.rs` 或 `core_runtime.rs`；
+  当前预算由 `npm run audit:control-plane` 强制执行。
+- 当前主机上的 FlClash 为 Codex 网络依赖。测试 Aegos 时不得停止、重启、
+  改写或接管 FlClash。
+- 保留工作树中不属于当前修改范围的用户改动；不得用破坏性 Git 操作清理。
+
+## 计划权威
+
+- 用户最新明确指令控制当前请求。
+- 只有标记为 `status: active` 且 `authority: exclusive` 的
+  [`PLANS.md`](PLANS.md) 可以授权持续开发。
+- README、路线图、发布说明、历史交接、研究文档和
+  [`docs/work/current.md`](docs/work/current.md) 都不能独立授权下一项工作。
+- [`docs/roadmap.md`](docs/roadmap.md) 是当前长期路线所有者；活动计划引用某个
+  路线里程碑后，产品开发必须沿该顺序推进，卡死或可靠性修复只作为当前批次的
+  附带阻断项，除非用户明确改变主线。
+- 当前任务受阻时应诊断或报告阻塞，不得改做未经授权的路线图任务。
+- 裸“继续”表示先验证当前任务、补齐缺失验收，再推进到活动计划中下一个已授权
+  里程碑；完成后严格执行 `on_complete`，不得任意选题。
+- 用户明确打包的能力必须作为一个完成单元；不能用其中一个子项或内部清理代替
+  用户可见的完整结果。
+
+## 需求变化与任务交接
+
+- 先按实际影响把重要变化归为 `task_adjustment`、`priority_branch` 或
+  `roadmap_change`，再更新唯一权威文件。
+- `roadmap_change` 必须先更新产品、架构或决策等长期所有者，再协调活动计划。
+- 新 Codex 任务接管时必须收到：仓库/工作树、分支与基线、需保留的改动、
+  当前任务、验收标准、排除范围、下一动作、剩余验证和副作用边界。
+- 普通子任务或辅助代理只能在明确的有限范围内工作，不得扩展计划、选择路线图
+  工作或声称整个请求完成。
+- A subagent cannot broaden scope or select roadmap work without explicit
+  authority.
+
+## 完成与验证
+
+- 先运行与修改风险直接对应的测试，再运行活动计划列出的验收命令。
+- 发布前至少确认 Rust 测试、交互与 UI smoke、后端/响应性/安全/控制平面、
+  安装包与发布门禁。
+- 不得提高预算、删除断言、跳过失败或改写历史证据来让门禁变绿。
+- 更新 `docs/work/current.md` 的真实证据；只有实际满足验收条件后才能报告完成。
+
+## 验收完整性
+
+- 缺失、未测、过期或与当前源码/门禁内容摘要不一致的证据只能标为未完成，不能
+  标为通过；相关源码、fixture、测试或门禁变化后必须重跑受影响层。
+- 每个缺陷修复必须保留修复前失败证据，或提供一个必然被拒绝的已知坏 fixture，
+  再证明修复后路径通过；静态字符串检查不能代替行为回归。
+- 已观察到的 P0/P1 不能用“后来未复现”关闭，只能提供修复闭环，或由用户明确
+  接受延期。首次失败不能靠无解释重跑覆盖。
+- 修改测试、审计、预算或超时时，必须证明没有减少窗口/DPI、页面、fixture、
+  迭代、失败路径、命令或断言，且已知坏样本仍会非零退出。
+- 验收证据必须记录命令、退出码、UTC 起止时间、版本、Git 基线、相关脏工作树
+  内容摘要、门禁摘要、fixture/矩阵和环境边界；文件时间和版本号不能单独证明
+  新鲜度。
+- 任一开放 P1、残留测试进程/监听/根、FlClash 或宿主网络副作用、安装包来源
+  不匹配、缺失命令或必需命令非零，都不得被汇总结果降级为 warning 或忽略。

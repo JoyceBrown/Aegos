@@ -19,7 +19,7 @@
         <div class="brand-mark"><img class="brand-logo" src="assets/brand/aegos-mark-64.png" alt=""></div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v3.6.57</span>
+          <span id="appVersionLabel" class="brand-version">v3.6.65</span>
         </div>
       </section>
 
@@ -246,6 +246,7 @@
             <button class="active" data-diagnostic-view="overview" role="tab" aria-selected="true">问题诊断</button>
             <button data-diagnostic-view="logs" role="tab" aria-selected="false">运行日志</button>
           </div>
+          <div class="diagnostic-views">
           <div id="diagnosticOverviewView" class="diagnostic-view active" data-diagnostic-view-panel="overview">
             <div id="diagSummary" class="diagnostic-summary"></div>
             <div class="diagnostic-category-filters" role="tablist" aria-label="问题类别">
@@ -276,6 +277,7 @@
               </div>
             </div>
             <div id="logRows" class="log-list"></div>
+          </div>
           </div>
         </section>
       </section>
@@ -308,13 +310,13 @@
                     <label class="switch-row"><span><b>连接后自动接管</b><small>连接成功后开启系统代理</small></span><input id="startProxyToggle" type="checkbox"></label>
                     <label class="switch-row"><span><b>TUN 模式</b><small>接管不使用系统代理的应用</small></span><input id="tunToggle" type="checkbox"></label>
                     <label class="switch-row"><span><b>允许局域网设备使用</b><small>向同一局域网开放代理端口</small></span><input id="allowLanToggle" type="checkbox"></label>
-                    <label class="switch-row"><span><b>IPv6</b><small>当前由 Aegos 自动管理</small></span><input id="ipv6Toggle" type="checkbox"></label>
+                    <label class="switch-row"><span><b>IPv6</b><small id="ipv6ToggleHint">连接后验证本机与节点能力，再决定是否开放操作。</small></span><input id="ipv6Toggle" type="checkbox" disabled></label>
                   </div>
                 </div>
                 <div class="settings-subsection">
                   <header><h4>DNS</h4><p>统一解析路径并减少泄漏风险</p></header>
                   <div class="settings-grid compact-grid">
-                    <label class="switch-row"><span><b>DNS 防泄漏</b><small>阻止 DNS 绕过当前代理</small></span><input id="dnsToggle" type="checkbox"></label>
+                    <label class="switch-row"><span><b>DNS 防泄漏</b><small id="dnsHijackHint">阻止 DNS 绕过当前代理</small></span><input id="dnsToggle" type="checkbox"></label>
                     <label class="input-row"><span><b>DNS 模式</b><small id="dnsModeHint">自动使用 Aegos 的加密 DNS；TUN 下建议安全接管。</small></span><select id="dnsModeSelect"><option value="auto">自动（推荐）</option><option value="secure">安全接管</option><option value="system">系统 DNS（兼容）</option><option value="custom">自定义加密 DNS</option></select></label>
                     <label id="dnsCustomNameserversRow" class="input-row settings-wide-row" hidden><span><b>自定义解析器</b><small>以逗号分隔；仅允许 https:// 或 tls:// 地址。</small></span><input id="dnsCustomNameserversInput" type="text" autocomplete="off" placeholder="https://dns.example/dns-query, tls://dns.example:853"></label>
                     <div class="settings-subsection-actions"><button id="saveDnsModeBtn" type="button" class="secondary-btn">保存 DNS 设置</button></div>

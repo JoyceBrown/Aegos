@@ -31,6 +31,46 @@ const PROTECTED_ROOT_KEYS: [&str; 17] = [
     "profile",
 ];
 
+#[derive(Debug)]
+struct ValidationIssue {
+    code: &'static str,
+    surface: &'static str,
+    line: Option<usize>,
+    column: Option<usize>,
+    message: String,
+    hint: &'static str,
+}
+
+impl ValidationIssue {
+    fn new(
+        code: &'static str,
+        surface: &'static str,
+        line: Option<usize>,
+        column: Option<usize>,
+        message: impl Into<String>,
+        hint: &'static str,
+    ) -> Self {
+        Self {
+            code,
+            surface,
+            line,
+            column,
+            message: message.into(),
+            hint,
+        }
+    }
+
+    fn public_surface(&self) -> JsonValue {
+        json!({
+            "code": self.code,
+            "surface": self.surface,
+            "line": self.line,
+            "column": self.column,
+            "hint": self.hint
+        })
+    }
+}
+
 pub(crate) fn is_setting_key(key: &str) -> bool {
     matches!(
         key,
@@ -99,25 +139,140 @@ pub(crate) fn diagnostic_surface(settings: &Settings) -> JsonValue {
 }
 
 pub(crate) fn validate_settings(settings: &Settings) -> Result<(), String> {
-    normalized_additional_rules(settings)?;
-    parse_override_script(settings)?;
+    normalized_additional_rules(settings).map_err(|issue| issue.message)?;
+    parse_override_script(settings).map_err(|issue| issue.message)?;
     Ok(())
 }
 
 pub(crate) fn apply_to_runtime(config: &mut Mapping, settings: &Settings) -> Result<(), String> {
-    if let Some(overlay) = parse_override_script(settings)? {
+    if let Some(overlay) = parse_override_script(settings).map_err(|issue| issue.message)? {
         merge_mapping(config, overlay);
     }
-    apply_additional_rules(config, &normalized_additional_rules(settings)?)
+    let rules = normalized_additional_rules(settings).map_err(|issue| issue.message)?;
+    apply_additional_rules(config, &rules)
 }
 
-fn normalized_additional_rules(settings: &Settings) -> Result<Vec<String>, String> {
+pub(crate) fn preview(current: &Settings, draft: &JsonValue) -> JsonValue {
+    let candidate = match preview_candidate(current, draft) {
+        Ok(candidate) => candidate,
+        Err(issue) => {
+            return json!({
+                "valid": false,
+                "changed": false,
+                "issues": [issue.public_surface()],
+                "summary": JsonValue::Null
+            });
+        }
+    };
+    let mut issues = Vec::new();
+    if let Err(issue) = normalized_additional_rules(&candidate) {
+        issues.push(issue.public_surface());
+    }
+    if let Err(issue) = parse_override_script(&candidate) {
+        issues.push(issue.public_surface());
+    }
+    let before_rules = rule_intent_lines(&current.additional_rules);
+    let after_rules = rule_intent_lines(&candidate.additional_rules);
+    let before_set = before_rules.iter().collect::<HashSet<_>>();
+    let after_set = after_rules.iter().collect::<HashSet<_>>();
+    let rules_added = after_set.difference(&before_set).count();
+    let rules_removed = before_set.difference(&after_set).count();
+    let rules_enabled_changed =
+        current.additional_rules_enabled != candidate.additional_rules_enabled;
+    let override_enabled_changed =
+        current.override_script_enabled != candidate.override_script_enabled;
+    let override_changed = current.override_script.trim() != candidate.override_script.trim();
+    let changed = rules_added > 0
+        || rules_removed > 0
+        || rules_enabled_changed
+        || override_enabled_changed
+        || override_changed;
+    json!({
+        "valid": issues.is_empty(),
+        "changed": changed,
+        "issues": issues,
+        "summary": {
+            "rulesBefore": before_rules.len(),
+            "rulesAfter": after_rules.len(),
+            "rulesAdded": rules_added,
+            "rulesRemoved": rules_removed,
+            "rulesEnabledChanged": rules_enabled_changed,
+            "overrideChanged": override_changed,
+            "overrideEnabledChanged": override_enabled_changed,
+            "runtimeReload": changed
+        }
+    })
+}
+
+fn preview_candidate(current: &Settings, draft: &JsonValue) -> Result<Settings, ValidationIssue> {
+    let object = draft.as_object().ok_or_else(|| {
+        ValidationIssue::new(
+            "draft_type",
+            "workspace",
+            None,
+            None,
+            "Configuration extension draft must be an object.",
+            "Refresh the settings page and try again.",
+        )
+    })?;
+    let boolean = |key: &str, surface: &'static str| {
+        object.get(key).and_then(JsonValue::as_bool).ok_or_else(|| {
+            ValidationIssue::new(
+                "draft_field",
+                surface,
+                None,
+                None,
+                format!("Draft field '{key}' must be true or false."),
+                "Refresh the settings page and try again.",
+            )
+        })
+    };
+    let text = |key: &str, surface: &'static str| {
+        object.get(key).and_then(JsonValue::as_str).ok_or_else(|| {
+            ValidationIssue::new(
+                "draft_field",
+                surface,
+                None,
+                None,
+                format!("Draft field '{key}' must be text."),
+                "Refresh the settings page and try again.",
+            )
+        })
+    };
+    let mut candidate = current.clone();
+    candidate.additional_rules_enabled = boolean("additionalRulesEnabled", "rules")?;
+    candidate.additional_rules = text("additionalRulesText", "rules")?
+        .lines()
+        .map(|line| line.trim_end_matches('\r').to_string())
+        .collect();
+    candidate.override_script_enabled = boolean("overrideScriptEnabled", "override")?;
+    candidate.override_script = text("overrideScript", "override")?.to_string();
+    Ok(candidate)
+}
+
+fn rule_intent_lines(raw_rules: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    raw_rules
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter(|line| seen.insert((*line).to_string()))
+        .map(str::to_string)
+        .collect()
+}
+
+fn normalized_additional_rules(settings: &Settings) -> Result<Vec<String>, ValidationIssue> {
     if !settings.additional_rules_enabled {
         return Ok(Vec::new());
     }
     if settings.additional_rules.len() > MAX_ADDITIONAL_RULES {
-        return Err(format!(
-            "Additional rules are limited to {MAX_ADDITIONAL_RULES} entries."
+        return Err(ValidationIssue::new(
+            "rules_limit",
+            "rules",
+            None,
+            None,
+            format!("Additional rules are limited to {MAX_ADDITIONAL_RULES} entries."),
+            "Remove unused or blank lines before applying.",
         ));
     }
     let mut seen = HashSet::new();
@@ -128,15 +283,29 @@ fn normalized_additional_rules(settings: &Settings) -> Result<Vec<String>, Strin
             continue;
         }
         if rule.len() > MAX_RULE_LENGTH {
-            return Err(format!(
-                "Additional rule {} exceeds {MAX_RULE_LENGTH} characters.",
-                index + 1
+            return Err(ValidationIssue::new(
+                "rule_length",
+                "rules",
+                Some(index + 1),
+                Some(1),
+                format!(
+                    "Additional rule {} exceeds {MAX_RULE_LENGTH} characters.",
+                    index + 1
+                ),
+                "Shorten this rule and preview again.",
             ));
         }
         if rule.contains(['\r', '\n', '\0']) || !rule.contains(',') {
-            return Err(format!(
-                "Additional rule {} is not a valid single-line rule.",
-                index + 1
+            return Err(ValidationIssue::new(
+                "rule_format",
+                "rules",
+                Some(index + 1),
+                Some(1),
+                format!(
+                    "Additional rule {} is not a valid single-line rule.",
+                    index + 1
+                ),
+                "Use one comma-separated Mihomo rule per line.",
             ));
         }
         let kind = rule
@@ -146,9 +315,16 @@ fn normalized_additional_rules(settings: &Settings) -> Result<Vec<String>, Strin
             .trim()
             .to_ascii_uppercase();
         if matches!(kind.as_str(), "MATCH" | "FINAL") {
-            return Err(format!(
-                "Additional rule {} cannot be MATCH or FINAL; Aegos keeps the existing fallback rule last.",
-                index + 1
+            return Err(ValidationIssue::new(
+                "terminal_rule",
+                "rules",
+                Some(index + 1),
+                Some(1),
+                format!(
+                    "Additional rule {} cannot be MATCH or FINAL; Aegos keeps the existing fallback rule last.",
+                    index + 1
+                ),
+                "Remove the terminal rule; Aegos preserves the subscription fallback.",
             ));
         }
         if seen.insert(rule.to_string()) {
@@ -158,30 +334,61 @@ fn normalized_additional_rules(settings: &Settings) -> Result<Vec<String>, Strin
     Ok(rules)
 }
 
-fn parse_override_script(settings: &Settings) -> Result<Option<Mapping>, String> {
+fn parse_override_script(settings: &Settings) -> Result<Option<Mapping>, ValidationIssue> {
     if !settings.override_script_enabled || settings.override_script.trim().is_empty() {
         return Ok(None);
     }
     if settings.override_script.len() > MAX_OVERRIDE_BYTES {
-        return Err(format!(
-            "Override YAML is limited to {} KiB.",
-            MAX_OVERRIDE_BYTES / 1024
+        return Err(ValidationIssue::new(
+            "override_limit",
+            "override",
+            None,
+            None,
+            format!(
+                "Override YAML is limited to {} KiB.",
+                MAX_OVERRIDE_BYTES / 1024
+            ),
+            "Reduce the override draft before applying.",
         ));
     }
-    let value: YamlValue = serde_yaml::from_str(&settings.override_script)
-        .map_err(|err| format!("Override YAML is invalid: {err}"))?;
-    let mapping = value
-        .as_mapping()
-        .cloned()
-        .ok_or_else(|| "Override YAML root must be an object.".to_string())?;
+    let value: YamlValue = serde_yaml::from_str(&settings.override_script).map_err(|err| {
+        let location = err.location();
+        ValidationIssue::new(
+            "override_yaml",
+            "override",
+            location.as_ref().map(|item| item.line()),
+            location.as_ref().map(|item| item.column()),
+            format!("Override YAML is invalid: {err}"),
+            "Fix the YAML at this location and preview again.",
+        )
+    })?;
+    let mapping = value.as_mapping().cloned().ok_or_else(|| {
+        ValidationIssue::new(
+            "override_root",
+            "override",
+            Some(1),
+            Some(1),
+            "Override YAML root must be an object.",
+            "Start the document with a top-level key.",
+        )
+    })?;
     validate_override_shape(&YamlValue::Mapping(mapping.clone()), 0, &mut 0)?;
     for key in mapping.keys().filter_map(YamlValue::as_str) {
         if PROTECTED_ROOT_KEYS
             .iter()
             .any(|protected| key.eq_ignore_ascii_case(protected))
         {
-            return Err(format!(
-                "Override key '{key}' is managed by Aegos. Use the matching setting or Additional Rules instead."
+            let (line, column) =
+                root_key_location(&settings.override_script, key).unwrap_or((1, 1));
+            return Err(ValidationIssue::new(
+                "protected_key",
+                "override",
+                Some(line),
+                Some(column),
+                format!(
+                    "Override key '{key}' is managed by Aegos. Use the matching setting or Additional Rules instead."
+                ),
+                "Remove this protected key and use the matching Aegos setting.",
             ));
         }
     }
@@ -192,23 +399,40 @@ fn validate_override_shape(
     value: &YamlValue,
     depth: usize,
     nodes: &mut usize,
-) -> Result<(), String> {
+) -> Result<(), ValidationIssue> {
     if depth > MAX_OVERRIDE_DEPTH {
-        return Err(format!(
-            "Override YAML nesting is limited to {MAX_OVERRIDE_DEPTH} levels."
+        return Err(ValidationIssue::new(
+            "override_depth",
+            "override",
+            None,
+            None,
+            format!("Override YAML nesting is limited to {MAX_OVERRIDE_DEPTH} levels."),
+            "Flatten deeply nested values and preview again.",
         ));
     }
     *nodes += 1;
     if *nodes > MAX_OVERRIDE_NODES {
-        return Err(format!(
-            "Override YAML is limited to {MAX_OVERRIDE_NODES} values."
+        return Err(ValidationIssue::new(
+            "override_nodes",
+            "override",
+            None,
+            None,
+            format!("Override YAML is limited to {MAX_OVERRIDE_NODES} values."),
+            "Reduce the number of values and preview again.",
         ));
     }
     match value {
         YamlValue::Mapping(mapping) => {
             for (key, item) in mapping {
                 if !matches!(key, YamlValue::String(_)) {
-                    return Err("Override YAML object keys must be text.".to_string());
+                    return Err(ValidationIssue::new(
+                        "override_key_type",
+                        "override",
+                        None,
+                        None,
+                        "Override YAML object keys must be text.",
+                        "Replace non-text keys with text keys.",
+                    ));
                 }
                 validate_override_shape(item, depth + 1, nodes)?;
             }
@@ -219,11 +443,39 @@ fn validate_override_shape(
             }
         }
         YamlValue::Tagged(_) => {
-            return Err("Override YAML tags are not supported.".to_string());
+            return Err(ValidationIssue::new(
+                "override_tag",
+                "override",
+                None,
+                None,
+                "Override YAML tags are not supported.",
+                "Remove custom YAML tags and preview again.",
+            ));
         }
         _ => {}
     }
     Ok(())
+}
+
+fn root_key_location(script: &str, expected: &str) -> Option<(usize, usize)> {
+    let entries = script
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let content = line.trim_start();
+            if content.is_empty() || content.starts_with('#') {
+                return None;
+            }
+            let indent = line.len() - content.len();
+            let key = content.split_once(':')?.0.trim().trim_matches(['\'', '"']);
+            Some((index + 1, indent, key))
+        })
+        .collect::<Vec<_>>();
+    let root_indent = entries.iter().map(|(_, indent, _)| *indent).min()?;
+    entries
+        .into_iter()
+        .find(|(_, indent, key)| *indent == root_indent && key.eq_ignore_ascii_case(expected))
+        .map(|(line, indent, _)| (line, indent + 1))
 }
 
 fn merge_mapping(target: &mut Mapping, overlay: Mapping) {
@@ -362,5 +614,39 @@ mod tests {
         assert!(validate_settings(&settings)
             .expect_err("terminal rule")
             .contains("cannot be MATCH"));
+    }
+
+    #[test]
+    fn preview_reports_safe_line_level_issues_and_intent_diff() {
+        let settings = default_settings();
+        let invalid = preview(
+            &settings,
+            &json!({
+                "additionalRulesEnabled": true,
+                "additionalRulesText": "# keep the source line\nMATCH,DIRECT",
+                "overrideScriptEnabled": true,
+                "overrideScript": "sniffer:\n  enable: true\nsecret: exposed"
+            }),
+        );
+        assert_eq!(invalid["valid"], false);
+        assert_eq!(invalid["issues"][0]["surface"], "rules");
+        assert_eq!(invalid["issues"][0]["line"], 2);
+        assert_eq!(invalid["issues"][1]["surface"], "override");
+        assert_eq!(invalid["issues"][1]["line"], 3);
+        assert!(!invalid.to_string().contains("exposed"));
+
+        let valid = preview(
+            &settings,
+            &json!({
+                "additionalRulesEnabled": true,
+                "additionalRulesText": "DOMAIN-SUFFIX,example.com,Proxies",
+                "overrideScriptEnabled": true,
+                "overrideScript": "sniffer:\n  enable: true"
+            }),
+        );
+        assert_eq!(valid["valid"], true);
+        assert_eq!(valid["changed"], true);
+        assert_eq!(valid["summary"]["rulesAdded"], 1);
+        assert_eq!(valid["summary"]["overrideChanged"], true);
     }
 }

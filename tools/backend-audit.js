@@ -24,6 +24,8 @@ const runtimeCommandRs = readSource('src-tauri', 'src', 'runtime_command.rs');
 const windowsProcessRs = readSource('src-tauri', 'src', 'windows_process.rs');
 const storageRuntimeRs = readSource('src-tauri', 'src', 'storage_runtime.rs');
 const dataplaneRs = readSource('src-tauri', 'src', 'dataplane.rs');
+const nodeSelectionRs = readSource('src-tauri', 'src', 'node_selection.rs');
+const egressIdentityRs = readSource('src-tauri', 'src', 'egress_identity.rs');
 
 const fail = [];
 const pass = [];
@@ -57,7 +59,7 @@ const outboundIpRefreshBody = outboundIpRefreshStart >= 0 && outboundIpRefreshEn
   : '';
 const outboundIpIdentityIndex = outboundIpRefreshBody.indexOf('if !outbound_ip_query_is_current(');
 const outboundIpStaleReturnIndex = outboundIpRefreshBody.indexOf('Outbound IP query expired after node changed; retrying will use the current node.');
-const outboundIpFallbackIndex = outboundIpRefreshBody.indexOf('let fallback = core.outbound_ip_cache.trim().to_string()');
+const outboundIpFallbackIndex = outboundIpRefreshBody.indexOf('let fallback = core.outbound_observation.visible_ip()');
 const publicProfileStart = mainRs.indexOf('fn public_profile(');
 const publicProfileEnd = mainRs.indexOf('fn is_fake_ip_address(', publicProfileStart);
 const publicProfileBody = publicProfileStart >= 0 && publicProfileEnd > publicProfileStart
@@ -107,7 +109,9 @@ check(
     mainRs.includes('OUTBOUND_IP_GLOBAL_PRIMARY_GROUPS') &&
     coreDomainRs.includes('pub fn resolve_runtime_leaf(') &&
     coreDomainRs.includes('pub fn group_contains_leaf(') &&
-    outboundIpRefreshBody.includes('let selected_proxy = sync_outbound_ip_route(&controller, &mode)?') &&
+    outboundIpRefreshBody.includes('core.runtime_outbound_ip_primary_group(),') &&
+    outboundIpRefreshBody.includes('let selected_proxy = sync_outbound_ip_route(&controller, &mode, primary_group.as_deref())?') &&
+    outboundIpRefreshBody.includes('runtime_current_proxy_route(&controller, &mode, primary_group.as_deref())') &&
     mainRs.includes('fn outbound_ip_query_is_current(') &&
     mainRs.includes('fn outbound_ip_query_identity_rejects_stale_contexts()') &&
     outboundIpIdentityIndex >= 0 &&
@@ -116,6 +120,8 @@ check(
     !outboundIpRefreshBody.includes('current_outbound_ip_proxy_name') &&
     outboundIpRefreshBody.includes('Outbound IP refresh result ignored because the selected node changed.') &&
     outboundIpRefreshBody.includes('Outbound IP query expired after node changed; retrying will use the current node.') &&
+    egressIdentityRs.includes('pub(super) fn invalidate_egress_observation(&mut self)') &&
+    egressIdentityRs.includes('self.outbound_ip_query_generation.saturating_add(1)') &&
     mainRs.includes('Unable to query outbound IP') &&
     !outboundIpRefreshBody.includes('鐠囧嘲') &&
     !mainRs.includes('閺冪姵纭堕懢宄板絿'),
@@ -191,13 +197,14 @@ check(
 check(
   'runtime DNS is isolated from local fake-ip resolvers',
   configPipelineRs.includes('pub(crate) const AEGOS_DNS_LISTEN: &str = "127.0.0.1:1054"') &&
-    configPipelineRs.includes('const AEGOS_DIRECT_NAMESERVERS') &&
+    configPipelineRs.includes('const AEGOS_BOOTSTRAP_NAMESERVERS') &&
+    configPipelineRs.includes('const AEGOS_REMOTE_NAMESERVERS') &&
     configPipelineRs.includes('https://223.5.5.5/dns-query') &&
     configPipelineRs.includes('https://1.1.1.1/dns-query') &&
     configPipelineRs.includes('pub(crate) fn harden_runtime_dns') &&
     configPipelineRs.includes('proxy-server-nameserver') &&
     configPipelineRs.includes('pub(crate) fn is_local_or_fake_nameserver') &&
-    configPipelineRs.includes('harden_runtime_dns(&mut config, settings)') &&
+    configPipelineRs.includes('harden_runtime_dns(&mut config, settings, strict_fixed_dns)') &&
     mainRs.includes('runtime_dns_is_isolated_from_local_fake_ip_resolvers'),
   'proxy server domains must not resolve through 127.0.0.1:1053 or 198.18/198.19 fake-ip DNS'
 );
@@ -302,7 +309,7 @@ check(
     mainRs.includes('query_outbound_ip(mixed_port)') &&
     mainRs.includes('normalize_outbound_ip_response') &&
     mainRs.includes('checkip.amazonaws.com') &&
-    mainRs.includes('keeping cached value'),
+    mainRs.includes('cached evidence is now stale'),
   'network waits happen outside the CoreManager mutex; outbound IP uses validated multi-provider fallback'
 );
 
@@ -543,7 +550,8 @@ check(
     !mainRs.includes('fn classify_delay_http_failure') &&
     mainRs.includes('fn sync_outbound_ip_route(') &&
     mainRs.includes('.apply_auxiliary_proxy_selection(AEGOS_OUTBOUND_IP_GROUP, &proxy)') &&
-    mainRs.includes('.apply_proxy_selection_with_cleanup(group, proxy)') &&
+    !mainRs.includes('.apply_proxy_selection_with_cleanup(group, proxy)') &&
+    nodeSelectionRs.includes('.apply_proxy_selection_with_cleanup(group, proxy)') &&
     !mainRs.includes('.apply_proxy_selection(group, proxy)') &&
     !mainRs.includes('.cleanup_stale_connections_after_selection()') &&
     !mainRs.includes('.select_proxy(AEGOS_OUTBOUND_IP_GROUP, &proxy, 1500)') &&
@@ -661,13 +669,17 @@ check(
     mainRs.includes('fn restore_system_proxy_preference') &&
     mainRs.includes('fn stop_orphaned_core_processes') &&
     mainRs.includes('Interrupted managed core recovery failed:') &&
-    coreRuntimeRs.includes('pub fn orphaned_core_cleanup_script') &&
-    coreRuntimeRs.includes("Get-Process -Name {process_name_literal}") &&
-    coreRuntimeRs.includes('Stop-Process -Id $_.Id -Force') &&
-    !coreRuntimeRs.includes('Get-CimInstance Win32_Process -Filter "Name = {binary_literal}"') &&
+    mainRs.includes('stop_managed_core_for_root(&self.core_path, &self.home_dir)') &&
+    windowsProcessRs.includes('fn managed_core_cleanup_script') &&
+    windowsProcessRs.includes('Get-CimInstance Win32_Process') &&
+    windowsProcessRs.includes('$_.CommandLine -match $argumentPattern') &&
+    windowsProcessRs.includes('Stop-Process -Id $process.ProcessId -Force') &&
+    windowsProcessRs.includes('pub(crate) fn stop_managed_core_for_root') &&
+    !windowsProcessRs.includes('Get-Process -Name {process_name_literal}') &&
     windowsProcessRs.includes('fn run_powershell_with_timeout') &&
     windowsProcessRs.includes('child.try_wait()') &&
-    mainRs.includes('run_powershell_with_timeout(&script, Duration::from_secs(3))') &&
+    windowsProcessRs.includes('started.elapsed() >= timeout') &&
+    windowsProcessRs.includes('let _ = child.kill()') &&
     mainRs.includes('self.restart_core_preserving_proxy(350)?') &&
     mainRs.includes('core.restart_core_preserving_proxy(350)') &&
     mainRs.includes('if let Err(err) = self.wait_for_controller()'),
@@ -790,8 +802,8 @@ check(
     mainRs.includes('realProxyName') &&
     mainRs.includes('proxy_items') &&
     mainRs.includes('profile_proxy_groups_for_profile_snapshot') &&
-    mainRs.includes('.selected_proxy_map') &&
-    mainRs.includes('insert(group.to_string(), proxy.to_string())'),
+    nodeSelectionRs.includes('.selected_proxy_map') &&
+    nodeSelectionRs.includes('insert(group.to_string(), proxy.to_string())'),
   'FlClash-style selected map and group resolution'
 );
 
@@ -914,12 +926,13 @@ check(
 check(
   'node switching preflights group and proxy before mutating selection',
   (() => {
-    const body = mainRs.match(/fn change_proxy\(&mut self, group: &str, proxy: &str\) -> Result<bool, String> \{([\s\S]*?)\n    \}/)?.[1] || '';
+    const body = nodeSelectionRs.match(/fn change_proxy\(&mut self, group: &str, proxy: &str\) -> Result<bool, String> \{([\s\S]*?)\n    \}/)?.[1] || '';
     return coreRuntimeRs.includes('pub struct ProxySelectionPreflight') &&
       coreRuntimeRs.includes('pub fn validate_proxy_selection_from_groups') &&
       coreRuntimeRs.includes('Node switch preflight failed') &&
       !mainRs.includes('fn validate_proxy_selection_from_groups') &&
-      mainRs.includes('Node switch preflight passed') &&
+      !mainRs.includes('fn change_proxy(') &&
+      nodeSelectionRs.includes('Node switch preflight passed') &&
       mainRs.includes('node_switch_preflight_validates_group_and_proxy') &&
       body.includes('let groups = self.proxy_groups();') &&
       body.includes('core_runtime::validate_proxy_selection_from_groups(&groups, group, proxy)?') &&
@@ -952,7 +965,8 @@ check(
     mainRs.includes('core_runtime::core_start_result_json(') &&
     coreRuntimeRs.includes('"connection": connection') &&
     mainRs.includes('let connection = core.connection_closure();') &&
-    mainRs.includes('json!({ "group": group, "proxy": proxy, "connection": connection })'),
+    mainRs.includes('"connection": connection,') &&
+    mainRs.includes('"dnsPolicy": dns_policy'),
   'core running, takeover, system proxy, node, and outbound IP closure'
 );
 
@@ -962,7 +976,7 @@ check(
     ['timeout', 'dns', 'tls', 'auth', 'unsupported-protocol', 'port-conflict', 'controller-unavailable', 'config', 'network'].every((item) => coreRuntimeRs.includes(`"${item}"`)) &&
     coreRuntimeRs.includes('pub fn classified_error') &&
     coreRuntimeRs.includes('runtime_failure_reason_classifier_covers_common_connection_failures') &&
-    mainRs.includes('core_runtime::classified_error("Node switch", apply_error)') &&
+    nodeSelectionRs.includes('core_runtime::classified_error("Node switch", apply_error)') &&
     !mainRs.includes('fn classify_failure_reason') &&
     !mainRs.includes('fn classified_error'),
   'timeout/DNS/TLS/auth/controller/config/network classifications'

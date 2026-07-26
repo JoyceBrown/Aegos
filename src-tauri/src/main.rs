@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_config;
+mod backup_runtime;
 mod config_deployment;
 mod config_domain;
 mod config_extensions;
@@ -9,8 +10,12 @@ mod core_domain;
 mod core_runtime;
 mod dataplane;
 mod diagnostics_runtime;
+mod dns_policy;
+mod egress_identity;
+mod ipv6_policy;
 mod manual_node_runtime;
 mod network_runtime;
+mod node_selection;
 mod profile_compiler;
 mod routing_domain;
 mod routing_store;
@@ -55,7 +60,7 @@ use speed_scheduler::{run_probe_wave, ProbeOutcome, SchedulerPolicy};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
-    io::{BufRead, BufReader},
+    io::{BufReader, Read},
     net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket},
     path::{Path, PathBuf},
     process::Child,
@@ -66,18 +71,21 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use storage_runtime::{atomic_write_text_confined, ensure_dir, remove_file_confined, sha256_text};
+use storage_runtime::{
+    application_data_root, atomic_write_text_confined, ensure_dir, remove_file_confined,
+    sha256_text,
+};
 use subscription_runtime::ProfileSourceSummary;
 use task_runtime::{
-    finish_cancelled, finish_job, job_cancel_requested, job_status_snapshot, new_job_record,
-    request_job_cancel, set_job_issue, set_job_state, JobStore,
+    finish_cancelled, finish_job, guard_job_worker, job_cancel_requested, job_status_snapshot,
+    new_job_record, request_job_cancel, set_job_issue, set_job_state, JobStore,
 };
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, State, Window, WindowEvent,
 };
-use windows_process::{run_powershell, run_powershell_with_timeout, stop_stale_managed_core};
+use windows_process::{run_powershell, run_powershell_with_timeout, stop_managed_core_for_root};
 
 const AEGOS_DEFAULT_MIXED_PORT: u16 = 7891;
 const AEGOS_DEFAULT_CONTROLLER_PORT: u16 = 19091;
@@ -103,6 +111,38 @@ const OUTBOUND_IP_RULE_DOMAINS: &[&str] = &[
     "ifconfig.me",
     "icanhazip.com",
 ];
+
+fn spawn_core_log_reader<R>(reader: R, logs: LogStore, level: &'static str, category: &'static str)
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let result = core_runtime::consume_core_log_lines(BufReader::new(reader), |line| {
+            let mut logs = logs.lock().unwrap();
+            logs.push(LogEntry {
+                at: now_iso(),
+                level: level.to_string(),
+                category: category.to_string(),
+                line: sanitize_sensitive_text(&line),
+            });
+            if logs.len() > 700 {
+                logs.remove(0);
+            }
+        });
+        if let Err(error) = result {
+            let mut logs = logs.lock().unwrap();
+            logs.push(LogEntry {
+                at: now_iso(),
+                level: "warn".to_string(),
+                category: "core".to_string(),
+                line: format!("Core {category} log reader stopped: {error}"),
+            });
+            if logs.len() > 700 {
+                logs.remove(0);
+            }
+        }
+    });
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ProfileYamlFingerprint {
     bytes: u64,
@@ -601,6 +641,7 @@ struct CoreManager {
     proxy_snapshot_path: PathBuf,
     settings: Settings,
     process: Option<Child>,
+    managed_child_job: Option<windows_process::ManagedChildJob>,
     managed_stop_verified: bool,
     runtime_profile_id: Option<String>,
     runtime_config_digest: Option<String>,
@@ -613,10 +654,11 @@ struct CoreManager {
     profile_metadata_errors: HashMap<String, String>,
     lan_ip_cache: String,
     lan_ip_checked_at: u64,
-    outbound_ip_cache: String,
-    outbound_ip_checked_at: u64,
+    outbound_observation: egress_identity::EgressObservation,
     outbound_ip_query_generation: u64,
     reliability_failures: u64,
+    #[cfg(test)]
+    test_fail_next_runtime_apply: Option<String>,
 }
 
 struct AppState {
@@ -783,35 +825,20 @@ fn string_choice_from_value(
     Ok(text.to_string())
 }
 
-fn dns_custom_nameservers_from_value(value: &JsonValue) -> Result<Vec<String>, String> {
-    let values = value
-        .as_array()
-        .ok_or_else(|| "Custom DNS resolvers must be an array".to_string())?;
-    if values.is_empty() || values.len() > 4 {
-        return Err("Custom DNS requires between 1 and 4 encrypted resolvers".to_string());
-    }
-    let mut resolvers = Vec::with_capacity(values.len());
-    for value in values {
-        let resolver = value
-            .as_str()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "Custom DNS resolver must be a non-empty string".to_string())?;
-        if !(resolver.starts_with("https://") || resolver.starts_with("tls://"))
-            || config_pipeline::is_local_or_fake_nameserver(resolver)
-        {
-            return Err(format!(
-                "Custom DNS resolver must use https:// or tls:// and cannot be local: {resolver}"
-            ));
-        }
-        if !resolvers.iter().any(|item| item == resolver) {
-            resolvers.push(resolver.to_string());
-        }
-    }
-    if resolvers.is_empty() {
-        return Err("Custom DNS requires at least one encrypted resolver".to_string());
-    }
-    Ok(resolvers)
+fn setting_requires_runtime_restart(key: &str) -> bool {
+    matches!(
+        key,
+        "mixedPort"
+            | "controllerPort"
+            | "tunEnabled"
+            | "tunStack"
+            | "dnsHijackEnabled"
+            | "dnsMode"
+            | "dnsCustomNameservers"
+            | "ipv6Enabled"
+            | "allowLan"
+            | "logLevel"
+    ) || config_extensions::is_setting_key(key)
 }
 
 fn test_proxy_delay_request(
@@ -1719,24 +1746,33 @@ fn normalize_outbound_ip_response(text: &str) -> Option<String> {
 fn runtime_current_proxy_route(
     controller: &impl DataplaneControl,
     mode: &str,
+    primary_group: Option<&str>,
 ) -> Result<(ProxyCatalog, String), String> {
     let catalog = controller.proxy_catalog_snapshot(&[])?;
-    let primary_groups = if mode.eq_ignore_ascii_case("global") {
+    let primary_groups = outbound_ip_primary_groups(mode, primary_group);
+    let proxy = catalog
+        .resolve_runtime_leaf(&primary_groups)
+        .ok_or_else(|| "Current runtime route does not resolve to a proxy node".to_string())?;
+    Ok((catalog, proxy))
+}
+
+fn outbound_ip_primary_groups<'a>(mode: &str, primary_group: Option<&'a str>) -> Vec<&'a str> {
+    let fallback_groups = if mode.eq_ignore_ascii_case("global") {
         OUTBOUND_IP_GLOBAL_PRIMARY_GROUPS
     } else {
         OUTBOUND_IP_RULE_PRIMARY_GROUPS
     };
-    let proxy = catalog
-        .resolve_runtime_leaf(primary_groups)
-        .ok_or_else(|| "Current runtime route does not resolve to a proxy node".to_string())?;
-    Ok((catalog, proxy))
+    let mut groups = primary_group.into_iter().collect::<Vec<_>>();
+    groups.extend(fallback_groups.iter().copied());
+    groups
 }
 
 fn sync_outbound_ip_route(
     controller: &impl DataplaneControl,
     mode: &str,
+    primary_group: Option<&str>,
 ) -> Result<String, String> {
-    let (catalog, proxy) = runtime_current_proxy_route(controller, mode)?;
+    let (catalog, proxy) = runtime_current_proxy_route(controller, mode, primary_group)?;
     if !catalog.group_contains_leaf(AEGOS_OUTBOUND_IP_GROUP, &proxy) {
         return Err(format!(
             "Current runtime node '{proxy}' is not available in the outbound IP route"
@@ -1858,116 +1894,59 @@ fn query_outbound_ip_family(mixed_port: u16, family: &str) -> Result<String, Str
     })
 }
 
-fn local_ipv6_capability() -> JsonValue {
-    match UdpSocket::bind("[::]:0") {
-        Ok(socket) => {
-            let routed = socket.connect("[2606:4700:4700::1111]:53").is_ok();
-            let local = socket
-                .local_addr()
-                .ok()
-                .map(|addr| addr.ip().to_string())
-                .unwrap_or_else(|| "::".to_string());
-            let usable = routed
-                && local
-                    .parse::<IpAddr>()
-                    .map(|ip| ip.is_ipv6() && ip.to_string() != "::")
-                    .unwrap_or(false);
-            json!({
-                "available": usable,
-                "routed": routed,
-                "localAddress": if usable { local } else { "-".to_string() },
-                "method": "udp-route-probe",
-                "changesConnection": false
-            })
-        }
-        Err(err) => json!({
-            "available": false,
-            "routed": false,
-            "localAddress": "-",
-            "method": "udp-route-probe",
-            "error": err.to_string(),
-            "changesConnection": false
-        }),
-    }
-}
-
-fn ipv6_dns_safety_from_parts(
-    local: JsonValue,
-    ipv4_outlet: Result<String, String>,
-    ipv6_outlet: Result<String, String>,
-    dns_safety: Result<String, String>,
-    settings: &Settings,
-    running: bool,
-) -> JsonValue {
-    let local_available = local
-        .get("available")
-        .and_then(JsonValue::as_bool)
-        .unwrap_or(false);
-    let ipv4_ok = ipv4_outlet.is_ok();
-    let ipv6_ok = ipv6_outlet.is_ok();
-    let node_ipv6_support = if !running {
-        "unknown"
-    } else if ipv6_ok {
-        "supported"
-    } else {
-        "unsupported"
-    };
-    let leak_level = if !local_available || ipv6_ok {
-        "none"
-    } else if settings.ipv6_enabled {
-        "risk"
-    } else {
-        "blocked"
-    };
-    let action = if !local_available {
-        "local-ipv6-unavailable"
-    } else if ipv6_ok {
-        "use-ipv6"
-    } else if settings.ipv6_enabled {
-        "block-ipv6-leak"
-    } else {
-        "fallback-ipv4"
-    };
-    let plain_prompt = match action {
-        "use-ipv6" => "Current node supports IPv6.",
-        "block-ipv6-leak" => "Current node does not support IPv6; IPv6 leak should be blocked.",
-        "fallback-ipv4" => "Current node does not support IPv6; Aegos is using IPv4.",
-        _ => "Local IPv6 is unavailable; Aegos is using IPv4.",
-    };
-    json!({
-        "mode": "auto",
-        "changesConnection": false,
-        "localIpv6": local,
-        "currentNodeIpv4": {
-            "ok": ipv4_ok,
-            "ip": ipv4_outlet.as_ref().ok(),
-            "error": ipv4_outlet.as_ref().err()
-        },
-        "currentNodeIpv6": {
-            "ok": ipv6_ok,
-            "ip": ipv6_outlet.as_ref().ok(),
-            "error": ipv6_outlet.as_ref().err()
-        },
-        "nodeIpv6Support": node_ipv6_support,
-        "ipv6Leak": {
-            "level": leak_level,
-            "blockedOrFallback": leak_level != "risk",
-            "action": action
-        },
-        "dnsLeak": {
-            "ok": dns_safety.is_ok(),
-            "detail": dns_safety.unwrap_or_else(|err| err),
-            "hijackEnabled": settings.dns_hijack_enabled,
-            "runtimeDnsListen": config_pipeline::AEGOS_DNS_LISTEN
-        },
-        "plainPrompt": plain_prompt,
-        "checkedAt": now_secs()
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+
+    struct LocalSubscriptionReply {
+        body: String,
+        delay: Duration,
+        started: Option<std::sync::mpsc::Sender<()>>,
+    }
+
+    fn local_subscription_server(
+        replies: Vec<LocalSubscriptionReply>,
+    ) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("local subscription listener");
+        let address = listener.local_addr().expect("local subscription address");
+        let worker = thread::spawn(move || {
+            for reply in replies {
+                let (mut stream, _) = listener.accept().expect("local subscription request");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("local subscription request timeout");
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 512];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream
+                        .read(&mut chunk)
+                        .expect("local subscription request body");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                }
+                assert!(
+                    request.starts_with(b"GET /subscription HTTP/1.1\r\n"),
+                    "local subscription request must reach the direct test server"
+                );
+                if let Some(started) = reply.started {
+                    let _ = started.send(());
+                }
+                thread::sleep(reply.delay);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    reply.body.len(),
+                    reply.body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("local subscription response");
+            }
+        });
+        (format!("http://{address}/subscription"), worker)
+    }
 
     #[test]
     fn lan_ip_filter_accepts_private_addresses_only() {
@@ -2025,39 +2004,159 @@ mod tests {
     }
 
     #[test]
-    fn ipv6_dns_safety_auto_falls_back_without_connection_changes() {
-        let mut settings = default_settings();
-        settings.ipv6_enabled = false;
-        settings.dns_hijack_enabled = true;
-        let report = ipv6_dns_safety_from_parts(
-            json!({ "available": true, "routed": true, "localAddress": "2001:db8::10" }),
-            Ok("198.51.100.10".to_string()),
-            Err("ipv6 outlet unavailable".to_string()),
-            Ok("listen=127.0.0.1:1054".to_string()),
-            &settings,
-            true,
-        );
-        assert_eq!(report.get("mode").and_then(JsonValue::as_str), Some("auto"));
+    fn wm03_isolated_remote_update_keeps_previous_source_for_invalid_or_interrupted_results() {
+        let _direct_download = subscription_runtime::enable_test_subscription_download_direct();
+        let root =
+            std::env::temp_dir().join(format!("aegos-wm03-subscription-update-{}", hex_random(8)));
+        let core = Arc::new(Mutex::new(
+            CoreManager::new_with_paths(root.clone(), root.join("missing-mihomo.exe"))
+                .expect("isolated manager"),
+        ));
+        {
+            let mut manager = core.lock().expect("isolated manager lock");
+            manager.settings.system_proxy = false;
+            manager.settings.start_with_system_proxy = false;
+            manager.settings.tun_enabled = false;
+            manager.settings.kill_switch_enabled = false;
+            manager.save_settings().expect("isolated settings");
+        }
+
+        let initial_source = include_str!("../fixtures/subscriptions/clash-basic.yaml");
+        let updated_source = initial_source.replace("Fixture SS", "Fixture Updated SS");
+        let invalid_source = updated_source.replace("MATCH,Fixture", "MATCH,Missing");
+        let (download_started_tx, download_started_rx) = std::sync::mpsc::channel();
+        let (url, server) = local_subscription_server(vec![
+            LocalSubscriptionReply {
+                body: initial_source.to_string(),
+                delay: Duration::from_millis(0),
+                started: None,
+            },
+            LocalSubscriptionReply {
+                body: updated_source.clone(),
+                delay: Duration::from_millis(0),
+                started: None,
+            },
+            LocalSubscriptionReply {
+                body: invalid_source,
+                delay: Duration::from_millis(0),
+                started: None,
+            },
+            LocalSubscriptionReply {
+                body: updated_source.clone(),
+                delay: Duration::from_millis(250),
+                started: Some(download_started_tx),
+            },
+        ]);
+        let operations = runtime_command::RuntimeOperationCoordinator::default();
+        let profile = add_profile_url_detached(Arc::clone(&core), operations.clone(), &url)
+            .expect("initial local subscription import");
+        let profile_path = PathBuf::from(&profile.path);
+
+        let updated = update_profile_detached(Arc::clone(&core), operations.clone(), &profile.id)
+            .expect("valid local subscription update");
+        let source_after_valid_update =
+            fs::read_to_string(&profile_path).expect("valid updated source is persisted");
+        assert!(source_after_valid_update.contains("Fixture Updated SS"));
+        assert_ne!(updated.digest, profile.digest);
+
+        let invalid_error =
+            match update_profile_detached(Arc::clone(&core), operations.clone(), &profile.id) {
+                Ok(_) => panic!("invalid runtime source must be rejected before deployment"),
+                Err(error) => error,
+            };
+        assert!(invalid_error.contains("runtime config preflight failed"));
         assert_eq!(
-            report.get("changesConnection").and_then(JsonValue::as_bool),
-            Some(false)
+            fs::read_to_string(&profile_path).expect("invalid update kept previous source"),
+            source_after_valid_update
         );
         assert_eq!(
-            report.get("nodeIpv6Support").and_then(JsonValue::as_str),
-            Some("unsupported")
+            core.lock()
+                .expect("isolated manager lock")
+                .settings
+                .profiles
+                .iter()
+                .find(|candidate| candidate.id == profile.id)
+                .map(|candidate| candidate.digest.as_str()),
+            Some(updated.digest.as_str())
         );
+
+        let core_for_update = Arc::clone(&core);
+        let operations_for_update = operations.clone();
+        let profile_id = profile.id.clone();
+        let interrupted_update = thread::spawn(move || {
+            let _direct_download = subscription_runtime::enable_test_subscription_download_direct();
+            update_profile_detached(core_for_update, operations_for_update, &profile_id)
+        });
+        download_started_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("slow update reached the local server");
+        {
+            let mut manager = core.lock().expect("isolated manager lock");
+            manager
+                .settings
+                .profiles
+                .iter_mut()
+                .find(|candidate| candidate.id == profile.id)
+                .expect("imported profile")
+                .source_url = Some("http://127.0.0.1/discarded".to_string());
+            manager.save_settings().expect("persist source change");
+        }
+        let interrupted_error = match interrupted_update
+            .join()
+            .expect("interrupted update worker")
+        {
+            Ok(_) => panic!("stale download must be discarded"),
+            Err(error) => error,
+        };
+        assert!(interrupted_error.contains("address changed while the update was downloading"));
         assert_eq!(
-            report
-                .get("ipv6Leak")
-                .and_then(|value| value.get("action"))
-                .and_then(JsonValue::as_str),
-            Some("fallback-ipv4")
+            fs::read_to_string(&profile_path).expect("stale update kept previous source"),
+            source_after_valid_update
         );
-        assert!(report
-            .get("plainPrompt")
-            .and_then(JsonValue::as_str)
-            .unwrap_or("")
-            .contains("IPv4"));
+
+        server.join().expect("local subscription server");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn system_proxy_restore_failure_stays_recoverable_in_an_isolated_journal() {
+        let root =
+            std::env::temp_dir().join(format!("aegos-system-proxy-restore-{}", hex_random(8)));
+        let transaction = system_takeover::SystemTakeoverTransaction::begin(
+            &root,
+            "Restore Windows system proxy",
+            "system-proxy",
+            false,
+        )
+        .expect("isolated recovery journal");
+
+        let message = takeover_failure_message(
+            transaction,
+            "Injected Windows system proxy restore failure",
+            Err("Injected rollback restore failure".to_string()),
+        );
+
+        assert!(message.contains("automatic restore also failed"));
+        let pending = system_takeover::interrupted_transactions(&root);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].1.status, "recovery-required");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dns_and_ipv6_changes_require_managed_runtime_reapply() {
+        for key in [
+            "dnsMode",
+            "dnsCustomNameservers",
+            "dnsHijackEnabled",
+            "ipv6Enabled",
+        ] {
+            assert!(
+                setting_requires_runtime_restart(key),
+                "{key} must reapply the managed runtime"
+            );
+        }
+        assert!(!setting_requires_runtime_restart("reliabilityAuto"));
     }
 
     #[test]
@@ -2900,7 +2999,14 @@ rules:
             .expect("custom nameservers");
         assert_eq!(
             nameservers[0].as_str(),
-            Some("https://resolver.example/dns-query")
+            Some("https://resolver.example/dns-query#Aegos Landing IP")
+        );
+        assert_eq!(
+            custom_config
+                .get(yaml_key("dns"))
+                .and_then(|dns| dns.get(yaml_key("respect-rules")))
+                .and_then(YamlValue::as_bool),
+            Some(true)
         );
 
         let mut secure = default_settings();
@@ -2919,6 +3025,159 @@ rules:
             .and_then(|tun| tun.get(yaml_key("dns-hijack")))
             .and_then(YamlValue::as_sequence)
             .is_some_and(|items| items.iter().any(|item| item.as_str() == Some("any:53"))));
+    }
+
+    #[test]
+    fn fixed_node_enables_remote_dns_and_tun_hijack() {
+        let source: YamlValue = serde_yaml::from_str(
+            r#"
+proxies:
+  - name: Node A
+    type: ss
+    server: node-a.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: GLOBAL
+    type: select
+    proxies: [Node A]
+rules: ["MATCH,GLOBAL"]
+"#,
+        )
+        .expect("source");
+        let fixed: ManualNodeConfig = serde_json::from_value(json!({
+            "name": "Fixed US",
+            "type": "http",
+            "server": "fixed.example.com",
+            "port": 12323,
+            "username": "user",
+            "password": "password"
+        }))
+        .expect("manual node");
+        let mut settings = default_settings();
+        settings.tun_enabled = true;
+        settings.dns_mode = "auto".to_string();
+        settings.dns_hijack_enabled = false;
+        settings
+            .manual_nodes
+            .entry("test".to_string())
+            .or_default()
+            .insert("Fixed US".to_string(), fixed);
+        settings
+            .selected_proxy_map
+            .insert("GLOBAL".to_string(), "Fixed US".to_string());
+
+        let patched =
+            config_pipeline::patch_config(source, &settings, Some("test")).expect("fixed DNS");
+        let nameservers = patched
+            .get(yaml_key("dns"))
+            .and_then(|dns| dns.get(yaml_key("nameserver")))
+            .and_then(YamlValue::as_sequence)
+            .expect("nameservers");
+        assert!(nameservers.iter().all(|item| item
+            .as_str()
+            .is_some_and(|value| value.ends_with("#Aegos Landing IP"))));
+        assert!(patched
+            .get(yaml_key("tun"))
+            .and_then(|tun| tun.get(yaml_key("dns-hijack")))
+            .and_then(YamlValue::as_sequence)
+            .is_some_and(|items| items.iter().any(|item| item.as_str() == Some("any:53"))));
+    }
+
+    #[test]
+    fn ordinary_node_uses_direct_encrypted_dns_for_lower_latency() {
+        let source: YamlValue = serde_yaml::from_str(
+            r#"
+proxies:
+  - name: Node A
+    type: ss
+    server: node-a.example.com
+    port: 443
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: GLOBAL
+    type: select
+    proxies: [Node A]
+rules: ["MATCH,GLOBAL"]
+"#,
+        )
+        .expect("source");
+        let mut settings = default_settings();
+        settings
+            .selected_proxy_map
+            .insert("GLOBAL".to_string(), "Node A".to_string());
+
+        let patched =
+            config_pipeline::patch_config(source, &settings, Some("test")).expect("ordinary DNS");
+        let nameservers = patched
+            .get(yaml_key("dns"))
+            .and_then(|dns| dns.get(yaml_key("nameserver")))
+            .and_then(YamlValue::as_sequence)
+            .expect("nameservers");
+        assert!(nameservers.iter().all(|item| item
+            .as_str()
+            .is_some_and(|value| value.ends_with("#DIRECT"))));
+        assert!(config_pipeline::runtime_dns_safety_report(&patched).is_ok());
+    }
+
+    #[test]
+    fn dns_policy_reports_effective_fixed_node_protection() {
+        let source: YamlValue = serde_yaml::from_str(
+            r#"
+proxies:
+  - name: Fixed US
+    type: socks5
+    server: fixed.example.com
+    port: 12324
+proxy-groups:
+  - name: GLOBAL
+    type: select
+    proxies: [Fixed US]
+rules: ["MATCH,GLOBAL"]
+"#,
+        )
+        .expect("source");
+        let fixed: ManualNodeConfig = serde_json::from_value(json!({
+            "name": "Fixed US",
+            "type": "socks5",
+            "server": "fixed.example.com",
+            "port": 12324
+        }))
+        .expect("manual node");
+        let mut settings = default_settings();
+        settings.tun_enabled = true;
+        settings.dns_hijack_enabled = false;
+        settings
+            .manual_nodes
+            .entry("test".to_string())
+            .or_default()
+            .insert("Fixed US".to_string(), fixed);
+        settings
+            .selected_proxy_map
+            .insert("GLOBAL".to_string(), "Fixed US".to_string());
+        let patched =
+            config_pipeline::patch_config(source, &settings, Some("test")).expect("fixed DNS");
+
+        let policy =
+            dns_policy::from_runtime_config(&patched, &settings, "test", true).expect("policy");
+        assert_eq!(
+            policy.get("fixedNode").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            policy.get("remote").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            policy.get("hijackEffective").and_then(JsonValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            policy.get("hijackRequested").and_then(JsonValue::as_bool),
+            Some(false)
+        );
     }
 
     #[test]
@@ -4187,6 +4446,634 @@ rules:
         );
         let _ = fs::remove_dir_all(root);
     }
+
+    #[cfg(windows)]
+    struct IsolatedManagedCore {
+        core: Arc<Mutex<CoreManager>>,
+        root: PathBuf,
+    }
+
+    #[cfg(windows)]
+    fn isolated_managed_core_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[cfg(windows)]
+    impl Drop for IsolatedManagedCore {
+        fn drop(&mut self) {
+            let mut manager = self
+                .core
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // The isolated journey never owns Windows traffic takeover, so its
+            // cleanup kills only the child process it started.
+            manager.terminate_core_process("WM-01 isolated runtime cleanup");
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[cfg(windows)]
+    fn wm03_interruption_worker_path(variable: &str) -> Option<PathBuf> {
+        std::env::var_os(variable).map(PathBuf::from)
+    }
+
+    #[cfg(windows)]
+    fn wm03_interruption_worker_port(variable: &str) -> u16 {
+        std::env::var(variable)
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|port| *port != 7890)
+            .expect("WM-03 interruption worker has a non-reserved port")
+    }
+
+    #[cfg(windows)]
+    fn wm03_interruption_worker_mode() -> String {
+        std::env::var("AEGOS_WM03_WORKER_MODE").unwrap_or_else(|_| "ready".to_string())
+    }
+
+    #[cfg(windows)]
+    fn write_wm03_interruption_checkpoint(path: &Path, value: &JsonValue) {
+        let parent = path.parent().expect("WM-03 checkpoint parent");
+        fs::create_dir_all(parent).expect("WM-03 checkpoint directory");
+        let temporary = path.with_extension(format!("{}.tmp", hex_random(8)));
+        fs::write(
+            &temporary,
+            serde_json::to_vec(value).expect("WM-03 checkpoint JSON"),
+        )
+        .expect("WM-03 checkpoint write");
+        fs::rename(&temporary, path).expect("WM-03 checkpoint promotion");
+    }
+
+    #[cfg(windows)]
+    fn wait_for_wm03_interruption_release(path: &Path) {
+        let started = Instant::now();
+        while !path.exists() {
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "WM-03 interruption worker release was not supplied"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wm03_cleanup_interruptible_worker() {
+        let Some(root) = wm03_interruption_worker_path("AEGOS_WM03_WORKER_ROOT") else {
+            return;
+        };
+        let control_path = wm03_interruption_worker_path("AEGOS_WM03_WORKER_CONTROL")
+            .expect("WM-03 interruption worker control path");
+        let release_path = wm03_interruption_worker_path("AEGOS_WM03_WORKER_RELEASE")
+            .expect("WM-03 interruption worker release path");
+        let worker_parent = std::env::temp_dir();
+        let worker_name_prefix = "aegos-wm03-interruption-";
+        assert!(
+            root.parent() == Some(worker_parent.as_path())
+                && root
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name.starts_with(worker_name_prefix))
+                && control_path.starts_with(&root)
+                && release_path.starts_with(&root),
+            "WM-03 interruption worker paths stay in its exact temporary root"
+        );
+        let mixed_port = wm03_interruption_worker_port("AEGOS_WM03_WORKER_MIXED_PORT");
+        let controller_port = wm03_interruption_worker_port("AEGOS_WM03_WORKER_CONTROLLER_PORT");
+        assert_ne!(mixed_port, controller_port, "worker ports are distinct");
+
+        let core_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("repository root")
+            .join("resources")
+            .join("core")
+            .join("mihomo.exe");
+        assert!(
+            core_path.is_file(),
+            "managed Mihomo test resource is present"
+        );
+
+        let core = Arc::new(Mutex::new(
+            CoreManager::new_with_paths(root.clone(), core_path).expect("isolated manager"),
+        ));
+        let _isolated_runtime = IsolatedManagedCore {
+            core: Arc::clone(&core),
+            root: root.clone(),
+        };
+        {
+            let mut manager = core.lock().expect("isolated manager lock");
+            manager.settings.mixed_port = mixed_port;
+            manager.settings.controller_port = controller_port;
+            manager.settings.system_proxy = false;
+            manager.settings.start_with_system_proxy = false;
+            manager.settings.tun_enabled = false;
+            manager.settings.kill_switch_enabled = false;
+            manager.managed_stop_verified = true;
+            manager.save_settings().expect("isolated settings");
+        }
+
+        add_profile_text_detached(
+            Arc::clone(&core),
+            runtime_command::RuntimeOperationCoordinator::default(),
+            "WM-03 Interrupt Fixture",
+            include_str!("../fixtures/subscriptions/clash-basic.yaml"),
+        )
+        .expect("fixture import through the production transaction");
+
+        let mode = wm03_interruption_worker_mode();
+        let child_pid = {
+            let mut manager = core.lock().expect("isolated manager lock");
+            if mode == "pre-controller" {
+                manager
+                    .ensure_runtime_ports()
+                    .expect("worker port preparation");
+                let profile = manager.active_profile().expect("worker active profile");
+                manager
+                    .prepare_runtime_profile(&profile, false)
+                    .expect("worker runtime profile preparation");
+                ensure_dir(&manager.home_dir).expect("worker runtime directory");
+                let child = core_runtime::launch_command(
+                    &manager.core_path,
+                    &manager.home_dir,
+                    &manager.runtime_profile_path(),
+                )
+                .spawn()
+                .expect("worker managed child spawn before controller wait");
+                let job = windows_process::ManagedChildJob::assign(&child)
+                    .expect("worker managed child job assignment");
+                manager.managed_child_job = Some(job);
+                manager.process = Some(child);
+            } else {
+                manager
+                    .start_standby()
+                    .expect("real Mihomo standby start without Windows takeover");
+            }
+            let child_pid = manager
+                .process
+                .as_ref()
+                .map(|child| child.id())
+                .expect("managed child PID");
+            assert!(
+                !manager.traffic_takeover,
+                "worker never owns Windows traffic"
+            );
+            child_pid
+        };
+        if mode == "poisoned" {
+            let poisoned_core = Arc::clone(&core);
+            let poison_result = thread::spawn(move || {
+                let _guard = poisoned_core.lock().expect("poison worker lock");
+                panic!("WM-03 deliberate isolated manager lock poison");
+            })
+            .join();
+            assert!(poison_result.is_err(), "lock-poison worker panicked");
+        }
+        let transaction = runtime_command::RuntimeOperationCoordinator::default();
+        let transaction_lease = if mode == "transaction" {
+            let lease = transaction
+                .acquire("changeProxy")
+                .expect("transaction lease");
+            {
+                let mut manager = core.lock().expect("transaction manager lock");
+                manager
+                    .change_proxy("Fixture", "Fixture VLESS")
+                    .expect("transaction node selection");
+            }
+            assert_eq!(
+                transaction.snapshot().active_label.as_deref(),
+                Some("changeProxy"),
+                "transaction lease stays visible during interruption checkpoint"
+            );
+            Some(lease)
+        } else {
+            None
+        };
+        assert!(
+            mode == "ready"
+                || mode == "poisoned"
+                || mode == "pre-controller"
+                || mode == "transaction",
+            "known WM-03 worker mode"
+        );
+        write_wm03_interruption_checkpoint(
+            &control_path,
+            &json!({
+                "schema": "aegos.wm03.interruption-checkpoint/v1",
+                "phase": mode,
+                "workerPid": std::process::id(),
+                "childPid": child_pid,
+                "mixedPort": mixed_port,
+                "controllerPort": controller_port,
+                "trafficTakeover": false,
+                "operationActive": transaction_lease.is_some(),
+                "rootName": root.file_name().and_then(|value| value.to_str()).unwrap_or("unknown")
+            }),
+        );
+
+        wait_for_wm03_interruption_release(&release_path);
+        drop(transaction_lease);
+        if mode == "poisoned" {
+            return;
+        }
+        let mut manager = core.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        manager.stop().expect("worker normal standby stop");
+        assert!(
+            manager.process.is_none(),
+            "worker normal stop removes child"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wm01_isolated_managed_core_journey_uses_real_mihomo_without_windows_takeover() {
+        let _runtime_lock = isolated_managed_core_lock();
+        let root = std::env::temp_dir().join(format!(
+            "aegos-wm01-managed-core-{}-{}",
+            std::process::id(),
+            hex_random(12)
+        ));
+        let core_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("repository root")
+            .join("resources")
+            .join("core")
+            .join("mihomo.exe");
+        assert!(
+            core_path.is_file(),
+            "managed Mihomo test resource is present"
+        );
+
+        let core = Arc::new(Mutex::new(
+            CoreManager::new_with_paths(root.clone(), core_path.clone()).expect("isolated manager"),
+        ));
+        let _isolated_runtime = IsolatedManagedCore {
+            core: Arc::clone(&core),
+            root: root.clone(),
+        };
+        {
+            let mut manager = core.lock().expect("isolated manager lock");
+            manager.settings.system_proxy = false;
+            manager.settings.start_with_system_proxy = false;
+            manager.settings.tun_enabled = false;
+            manager.settings.kill_switch_enabled = false;
+            // A freshly constructed isolated root cannot contain an orphaned
+            // process. Avoid a path-wide orphan scan that could affect another
+            // independently running Aegos instance.
+            manager.managed_stop_verified = true;
+            manager.save_settings().expect("isolated settings");
+        }
+
+        let profile = add_profile_text_detached(
+            Arc::clone(&core),
+            runtime_command::RuntimeOperationCoordinator::default(),
+            "WM-01 Fixture",
+            include_str!("../fixtures/subscriptions/clash-basic.yaml"),
+        )
+        .expect("fixture import through the production transaction");
+        assert_eq!(profile.name, "WM-01 Fixture");
+
+        {
+            let mut manager = core.lock().expect("isolated manager lock");
+            let started = manager.start_standby().expect("real Mihomo standby start");
+            assert_eq!(
+                started.get("standby").and_then(JsonValue::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                started.get("trafficTakeover").and_then(JsonValue::as_bool),
+                Some(false)
+            );
+            assert!(manager.process.is_some(), "managed process is tracked");
+            assert!(
+                !manager.traffic_takeover,
+                "standby never owns Windows traffic"
+            );
+            assert!(
+                manager.core_controller().runtime_reuse_ready(),
+                "the real controller answered its readiness probe"
+            );
+
+            manager
+                .change_proxy("Fixture", "Fixture VLESS")
+                .expect("real controller node selection");
+            let catalog = manager
+                .core_controller()
+                .proxy_catalog_snapshot(&[])
+                .expect("real controller proxy catalog");
+            assert_eq!(
+                catalog
+                    .groups()
+                    .iter()
+                    .find(|group| group.name == "Fixture")
+                    .map(|group| group.now.as_str()),
+                Some("Fixture VLESS")
+            );
+
+            let restarted = manager
+                .restart_core_preserving_proxy(0)
+                .expect("standby restart after node selection");
+            assert_eq!(
+                restarted.get("standby").and_then(JsonValue::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                restarted
+                    .get("trafficTakeover")
+                    .and_then(JsonValue::as_bool),
+                Some(false)
+            );
+            assert!(
+                manager.process.is_some(),
+                "restart tracks a new managed child"
+            );
+            assert!(
+                manager.core_controller().runtime_reuse_ready(),
+                "the restarted real controller answered its readiness probe"
+            );
+
+            manager.stop().expect("standby stop");
+            assert!(manager.process.is_none(), "managed child was removed");
+            assert!(!manager.traffic_takeover, "stop leaves no traffic takeover");
+
+            manager.core_path = root.join("missing-mihomo.exe");
+            let error = manager
+                .start_standby()
+                .expect_err("missing managed core has a terminal error");
+            assert!(error.contains("mihomo core not found"));
+            assert!(error.contains("missing-mihomo.exe"));
+            assert!(
+                manager.process.is_none(),
+                "failed start leaves no child process"
+            );
+
+            manager.core_path = core_path;
+            let retried = manager
+                .start_standby()
+                .expect("retry after a terminal missing-core failure");
+            assert_eq!(
+                retried.get("standby").and_then(JsonValue::as_bool),
+                Some(true)
+            );
+            assert!(!manager.traffic_takeover, "retry remains in standby");
+            manager.stop().expect("standby stop after retry");
+            assert!(manager.process.is_none(), "retry cleanup removes the child");
+        }
+        system_takeover::set_component_active(&root, "tun", true)
+            .expect("temporary isolated recovery marker");
+        let recovered =
+            CoreManager::new_with_paths(root.clone(), root.join("recovery-missing-mihomo.exe"))
+                .expect("safe startup recovery with no managed core process");
+        assert!(!recovered.settings.tun_enabled);
+        assert!(
+            !system_takeover::active_takeover_state(&root).any_active(),
+            "startup recovery clears the isolated TUN marker"
+        );
+    }
+
+    #[cfg(windows)]
+    fn isolated_runtime_selection(manager: &CoreManager, group: &str) -> String {
+        manager
+            .core_controller()
+            .proxy_catalog_snapshot(&[])
+            .expect("real controller proxy catalog")
+            .groups()
+            .iter()
+            .find(|candidate| candidate.name == group)
+            .map(|candidate| candidate.now.clone())
+            .expect("selected proxy group")
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wm03_isolated_selection_and_fixed_nodes_restore_runtime_state_after_failures() {
+        let _runtime_lock = isolated_managed_core_lock();
+        let root = std::env::temp_dir().join(format!(
+            "aegos-wm03-selection-{}-{}",
+            std::process::id(),
+            hex_random(12)
+        ));
+        let core_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("repository root")
+            .join("resources")
+            .join("core")
+            .join("mihomo.exe");
+        assert!(
+            core_path.is_file(),
+            "managed Mihomo test resource is present"
+        );
+
+        let core = Arc::new(Mutex::new(
+            CoreManager::new_with_paths(root.clone(), core_path).expect("isolated manager"),
+        ));
+        let _isolated_runtime = IsolatedManagedCore {
+            core: Arc::clone(&core),
+            root: root.clone(),
+        };
+        {
+            let mut manager = core.lock().expect("isolated manager lock");
+            manager.settings.system_proxy = false;
+            manager.settings.start_with_system_proxy = false;
+            manager.settings.tun_enabled = false;
+            manager.settings.kill_switch_enabled = false;
+            manager.managed_stop_verified = true;
+            manager.save_settings().expect("isolated settings");
+        }
+
+        let _profile = add_profile_text_detached(
+            Arc::clone(&core),
+            runtime_command::RuntimeOperationCoordinator::default(),
+            "WM-03 Fixture",
+            include_str!("../fixtures/subscriptions/clash-basic.yaml"),
+        )
+        .expect("fixture import through the production transaction");
+
+        let fixed_node = |name: &str| {
+            json!({
+                "name": name,
+                "type": "socks5",
+                "server": "198.51.100.10",
+                "port": 1080,
+                "username": "fixture-user",
+                "password": "fixture-password"
+            })
+        };
+
+        let mut manager = core.lock().expect("isolated manager lock");
+        manager
+            .start_standby()
+            .expect("real Mihomo standby start without Windows takeover");
+        assert!(manager.process.is_some(), "managed process is tracked");
+        assert!(
+            !manager.traffic_takeover,
+            "standby never owns Windows traffic"
+        );
+
+        manager
+            .change_proxy("Fixture", "Fixture VLESS")
+            .expect("ordinary node selection reaches the real controller");
+        assert_eq!(
+            isolated_runtime_selection(&manager, "Fixture"),
+            "Fixture VLESS"
+        );
+        assert_eq!(
+            manager.settings.selected_proxy_map.get("Fixture"),
+            Some(&"Fixture VLESS".to_string())
+        );
+
+        let ordinary_dns_before = manager.dns_policy_snapshot().expect("ordinary DNS policy");
+        let ordinary_digest_before = manager.runtime_config_digest.clone();
+        let ordinary_runtime_before =
+            fs::read_to_string(manager.runtime_profile_path()).expect("ordinary runtime config");
+        let original_settings_path = manager.settings_path.clone();
+        let failing_settings_path = root.join("settings-save-failure");
+        fs::create_dir_all(&failing_settings_path).expect("settings failure directory");
+        manager.settings_path = failing_settings_path;
+        let save_error = manager
+            .change_proxy("Fixture", "Fixture SS")
+            .expect_err("settings persistence failure must roll back real selection");
+        manager.settings_path = original_settings_path;
+        assert!(save_error.contains("Node preference save failed"));
+        assert_eq!(
+            isolated_runtime_selection(&manager, "Fixture"),
+            "Fixture VLESS",
+            "controller selection returned to the previous runtime node"
+        );
+        assert_eq!(
+            manager.settings.selected_proxy_map.get("Fixture"),
+            Some(&"Fixture VLESS".to_string()),
+            "persisted Aegos intent returned to the previous node"
+        );
+        assert_eq!(
+            manager
+                .dns_policy_snapshot()
+                .expect("rolled back DNS policy"),
+            ordinary_dns_before
+        );
+        assert_eq!(manager.runtime_config_digest, ordinary_digest_before);
+        assert_eq!(
+            fs::read_to_string(manager.runtime_profile_path()).expect("rolled back runtime config"),
+            ordinary_runtime_before
+        );
+        manager
+            .save_settings()
+            .expect("restore isolated settings path");
+
+        manager
+            .save_manual_node(fixed_node("WM03 Fixed"))
+            .expect("fixed node save reloads the isolated managed runtime");
+        manager
+            .change_proxy("Fixture", "WM03 Fixed")
+            .expect("fixed node selection reaches the real controller");
+        let fixed_dns = manager.dns_policy_snapshot().expect("fixed DNS policy");
+        assert_eq!(
+            isolated_runtime_selection(&manager, "Fixture"),
+            "WM03 Fixed"
+        );
+        assert_eq!(
+            isolated_runtime_selection(&manager, AEGOS_OUTBOUND_IP_GROUP),
+            "WM03 Fixed",
+            "fixed-node DNS uses the selected runtime node"
+        );
+        assert_eq!(fixed_dns.get("fixedNode"), Some(&json!(true)));
+        assert_eq!(
+            fixed_dns.get("route"),
+            Some(&json!(AEGOS_OUTBOUND_IP_GROUP))
+        );
+
+        manager
+            .change_proxy("Fixture", "Fixture VLESS")
+            .expect("ordinary node restores its direct DNS policy");
+        let dns_before_failed_fixed_selection = manager
+            .dns_policy_snapshot()
+            .expect("ordinary DNS policy before fixed-node failure");
+        let digest_before_failed_fixed_selection = manager.runtime_config_digest.clone();
+        let runtime_before_failed_fixed_selection =
+            fs::read_to_string(manager.runtime_profile_path()).expect("ordinary runtime config");
+        manager.fail_next_runtime_apply_for_test("fixed-node DNS reload");
+        let reload_error = manager
+            .change_proxy("Fixture", "WM03 Fixed")
+            .expect_err("fixed-node DNS reload failure must restore the previous runtime state");
+        assert!(reload_error.contains("DNS policy reload failed after node switch"));
+        assert_eq!(
+            isolated_runtime_selection(&manager, "Fixture"),
+            "Fixture VLESS",
+            "controller selection rolled back after DNS reload failure"
+        );
+        assert_eq!(
+            manager.settings.selected_proxy_map.get("Fixture"),
+            Some(&"Fixture VLESS".to_string())
+        );
+        assert_eq!(
+            manager
+                .dns_policy_snapshot()
+                .expect("DNS policy after rollback"),
+            dns_before_failed_fixed_selection
+        );
+        assert_eq!(
+            manager.runtime_config_digest,
+            digest_before_failed_fixed_selection
+        );
+        assert_eq!(
+            fs::read_to_string(manager.runtime_profile_path())
+                .expect("runtime config after rollback"),
+            runtime_before_failed_fixed_selection
+        );
+
+        let runtime_before_failed_fixed_save =
+            fs::read_to_string(manager.runtime_profile_path()).expect("runtime before fixed save");
+        manager.fail_next_runtime_apply_for_test("fixed-node save reload");
+        let fixed_save_error = manager
+            .save_manual_node(fixed_node("WM03 Save Failure"))
+            .expect_err("fixed-node save reload failure must roll back settings and runtime");
+        assert!(fixed_save_error.contains("Fixed node hot reload failed after save"));
+        assert!(
+            !manager
+                .active_manual_nodes()
+                .contains_key("WM03 Save Failure"),
+            "failed fixed-node save did not persist the node"
+        );
+        assert_eq!(
+            fs::read_to_string(manager.runtime_profile_path())
+                .expect("runtime after fixed save rollback"),
+            runtime_before_failed_fixed_save
+        );
+        assert_eq!(
+            isolated_runtime_selection(&manager, "Fixture"),
+            "Fixture VLESS"
+        );
+
+        manager
+            .save_manual_node(fixed_node("WM03 Delete Failure"))
+            .expect("fixed node exists before delete rollback");
+        let runtime_before_failed_fixed_delete = fs::read_to_string(manager.runtime_profile_path())
+            .expect("runtime before fixed delete");
+        manager.fail_next_runtime_apply_for_test("fixed-node delete reload");
+        let fixed_delete_error = manager
+            .delete_manual_node("WM03 Delete Failure")
+            .expect_err("fixed-node delete reload failure must restore settings and runtime");
+        assert!(fixed_delete_error.contains("Fixed node delete hot reload failed"));
+        assert!(
+            manager
+                .active_manual_nodes()
+                .contains_key("WM03 Delete Failure"),
+            "failed fixed-node delete restored the previous node"
+        );
+        assert_eq!(
+            fs::read_to_string(manager.runtime_profile_path())
+                .expect("runtime after fixed delete rollback"),
+            runtime_before_failed_fixed_delete
+        );
+        assert_eq!(
+            isolated_runtime_selection(&manager, "Fixture"),
+            "Fixture VLESS"
+        );
+        manager.stop().expect("isolated standby stop");
+        assert!(manager.process.is_none(), "managed child was removed");
+    }
 }
 
 fn default_settings() -> Settings {
@@ -4740,7 +5627,7 @@ foreach ($adapter in $adapters) {{
 "#,
         self_pid = std::process::id(),
     );
-    let raw = match run_powershell(&script) {
+    let raw = match run_powershell_with_timeout(&script, Duration::from_secs(5)) {
         Ok(output) => match serde_json::from_str::<JsonValue>(&output) {
             Ok(value) => value,
             Err(err) => {
@@ -4850,18 +5737,22 @@ foreach ($adapter in $adapters) {{
 
 impl CoreManager {
     fn new(app: &AppHandle) -> Result<Self, String> {
-        let startup_started = Instant::now();
-        let app_data = app.path().app_data_dir().unwrap_or_else(|_| {
+        let app_data = application_data_root(app.path().app_data_dir().unwrap_or_else(|_| {
             std::env::current_dir()
                 .unwrap_or_default()
                 .join(".aegos-data")
-        });
+        }));
         let resource_dir = app
             .path()
             .resource_dir()
             .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
         let current_dir = std::env::current_dir().unwrap_or_default();
         let core_path = core_runtime::resolve_core_path(&resource_dir, &current_dir);
+        Self::new_with_paths(app_data, core_path)
+    }
+
+    fn new_with_paths(app_data: PathBuf, core_path: PathBuf) -> Result<Self, String> {
+        let startup_started = Instant::now();
         let home_dir = app_data.join("core-home");
         let profile_dir = app_data.join("profiles");
         let settings_path = app_data.join("settings.json");
@@ -4888,6 +5779,7 @@ impl CoreManager {
             proxy_snapshot_path,
             settings,
             process: None,
+            managed_child_job: None,
             managed_stop_verified: false,
             runtime_profile_id: None,
             runtime_config_digest: None,
@@ -4903,10 +5795,11 @@ impl CoreManager {
             profile_metadata_errors: HashMap::new(),
             lan_ip_cache: "-".to_string(),
             lan_ip_checked_at: 0,
-            outbound_ip_cache: "-".to_string(),
-            outbound_ip_checked_at: 0,
+            outbound_observation: egress_identity::EgressObservation::default(),
             outbound_ip_query_generation: 0,
             reliability_failures: 0,
+            #[cfg(test)]
+            test_fail_next_runtime_apply: None,
         };
         let step_started = Instant::now();
         manager.recover_interrupted_system_takeover();
@@ -4978,7 +5871,7 @@ impl CoreManager {
                     .to_string()
             }
             "tun" => {
-                stop_stale_managed_core(&self.core_path)?;
+                stop_managed_core_for_root(&self.core_path, &self.home_dir)?;
                 let evidence = network_runtime::windows_tun_evidence()?;
                 let active = evidence
                     .get("active_adapter_count")
@@ -5151,6 +6044,11 @@ impl CoreManager {
             self.settings.controller_port,
             self.settings.secret.clone(),
         )
+    }
+
+    #[cfg(test)]
+    fn fail_next_runtime_apply_for_test(&mut self, reason: impl Into<String>) {
+        self.test_fail_next_runtime_apply = Some(reason.into());
     }
 
     fn clear_system_proxy_snapshot(&self) {
@@ -5369,9 +6267,9 @@ impl CoreManager {
     ) -> Result<(), String> {
         let mut candidate = self.settings.clone();
         Self::apply_port_candidate_value(&mut candidate, key, value)?;
-        Self::apply_dns_candidate_value(&mut candidate, key, value)?;
+        dns_policy::apply_candidate_value(&mut candidate, key, value)?;
         config_extensions::apply_candidate_value(&mut candidate, key, value)?;
-        Self::validate_dns_candidate(&candidate)?;
+        dns_policy::validate_candidate(&candidate)?;
         Self::validate_port_settings_snapshot(&candidate)
     }
 
@@ -5382,54 +6280,11 @@ impl CoreManager {
         let mut candidate = self.settings.clone();
         for (key, value) in map {
             Self::apply_port_candidate_value(&mut candidate, key, value)?;
-            Self::apply_dns_candidate_value(&mut candidate, key, value)?;
+            dns_policy::apply_candidate_value(&mut candidate, key, value)?;
             config_extensions::apply_candidate_value(&mut candidate, key, value)?;
         }
-        Self::validate_dns_candidate(&candidate)?;
+        dns_policy::validate_candidate(&candidate)?;
         Self::validate_port_settings_snapshot(&candidate)
-    }
-
-    fn apply_dns_candidate_value(
-        settings: &mut Settings,
-        key: &str,
-        value: &JsonValue,
-    ) -> Result<(), String> {
-        match key {
-            "dnsMode" => {
-                settings.dns_mode = string_choice_from_value(
-                    value,
-                    "auto",
-                    &["auto", "secure", "system", "custom"],
-                    "DNS mode",
-                )?;
-            }
-            "dnsCustomNameservers" => {
-                settings.dns_custom_nameservers = dns_custom_nameservers_from_value(value)?;
-            }
-            "tunEnabled" => settings.tun_enabled = value.as_bool().unwrap_or(false),
-            "dnsHijackEnabled" => settings.dns_hijack_enabled = value.as_bool().unwrap_or(false),
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn validate_dns_candidate(settings: &Settings) -> Result<(), String> {
-        if settings.dns_mode == "custom" && settings.dns_custom_nameservers.is_empty() {
-            return Err("Custom DNS mode requires at least one encrypted resolver".to_string());
-        }
-        if settings.dns_mode == "system" && settings.tun_enabled {
-            return Err(
-                "System DNS mode cannot be used with TUN; choose Auto, Secure, or Custom DNS"
-                    .to_string(),
-            );
-        }
-        if settings.dns_mode == "system" && settings.dns_hijack_enabled {
-            return Err("System DNS mode cannot enable DNS hijacking".to_string());
-        }
-        if settings.dns_mode == "secure" && !settings.dns_hijack_enabled {
-            return Err("Secure DNS takeover requires DNS hijacking".to_string());
-        }
-        Ok(())
     }
 
     fn restore_settings_snapshot(
@@ -6821,6 +7676,10 @@ impl CoreManager {
     ) -> Result<JsonValue, String> {
         let config_digest =
             self.write_runtime_deployment_plan(plan, "Runtime deployment plan prepared")?;
+        #[cfg(test)]
+        if let Some(reason) = self.test_fail_next_runtime_apply.take() {
+            return Err(format!("WM-03 injected runtime apply failure: {reason}"));
+        }
         let same_runtime = self.runtime_profile_id.as_deref() == Some(profile.id.as_str())
             && self.runtime_config_digest.as_deref() == Some(config_digest.as_str());
         if same_runtime && self.core_controller().runtime_reuse_ready() {
@@ -6970,7 +7829,7 @@ impl CoreManager {
         Ok(runtime_write.digest)
     }
 
-    fn apply_takeover_after_core_ready(&mut self, enable_takeover: bool) {
+    fn apply_takeover_after_core_ready(&mut self, enable_takeover: bool) -> Option<String> {
         let takeover_plan = core_runtime::CoreTrafficTakeoverPlan::after_core_ready(
             enable_takeover,
             self.settings.system_proxy,
@@ -6978,6 +7837,7 @@ impl CoreManager {
             self.settings.tun_enabled,
         );
         let mut system_proxy_applied = false;
+        let mut terminal_message = None;
         if takeover_plan.should_apply_system_proxy {
             self.traffic_takeover = takeover_plan.optimistic_takeover_before_system_proxy();
             match self.set_system_proxy(true) {
@@ -6987,10 +7847,13 @@ impl CoreManager {
                         format!("System proxy enable failed after core start: {err}"),
                         "warn",
                     );
+                    terminal_message =
+                        Some(core_runtime::SYSTEM_PROXY_TAKEOVER_STANDBY_MESSAGE.to_string());
                 }
             }
         }
         self.traffic_takeover = takeover_plan.final_traffic_takeover(system_proxy_applied);
+        terminal_message
     }
 
     fn start(&mut self) -> Result<JsonValue, String> {
@@ -7069,8 +7932,7 @@ impl CoreManager {
     }
 
     fn stop_orphaned_core_processes(&self) -> Result<(), String> {
-        let script = core_runtime::orphaned_core_cleanup_script(&self.core_path);
-        let output = run_powershell_with_timeout(&script, Duration::from_secs(3))?;
+        let output = stop_managed_core_for_root(&self.core_path, &self.home_dir)?;
         if output.trim() != "stopped=0" {
             self.add_log(
                 format!("Recovered interrupted managed core process state: {output}"),
@@ -7124,9 +7986,9 @@ impl CoreManager {
         ) {
             core_runtime::CoreRuntimeStartAction::LaunchFresh => {}
             core_runtime::CoreRuntimeStartAction::ReuseRunning => {
-                self.apply_takeover_after_core_ready(enable_takeover);
+                let terminal_message = self.apply_takeover_after_core_ready(enable_takeover);
                 return Ok(core_runtime::core_start_result_json(
-                    Some("Core already running"),
+                    terminal_message.as_deref().or(Some("Core already running")),
                     !enable_takeover,
                     self.traffic_takeover,
                     self.connection_closure(),
@@ -7163,41 +8025,18 @@ impl CoreManager {
             self.start_failure_message(Some(&profile), &format!("Core process spawn failed: {err}"))
         })?;
         if let Some(stdout) = child.stdout.take() {
-            let logs = self.logs.clone();
-            thread::spawn(move || {
-                for line in BufReader::new(stdout).lines().flatten() {
-                    let line = sanitize_sensitive_text(&line);
-                    let mut logs = logs.lock().unwrap();
-                    logs.push(LogEntry {
-                        at: now_iso(),
-                        level: "core".to_string(),
-                        category: "core".to_string(),
-                        line,
-                    });
-                    if logs.len() > 700 {
-                        logs.remove(0);
-                    }
-                }
-            });
+            spawn_core_log_reader(stdout, self.logs.clone(), "core", "stdout");
         }
         if let Some(stderr) = child.stderr.take() {
-            let logs = self.logs.clone();
-            thread::spawn(move || {
-                for line in BufReader::new(stderr).lines().flatten() {
-                    let line = sanitize_sensitive_text(&line);
-                    let mut logs = logs.lock().unwrap();
-                    logs.push(LogEntry {
-                        at: now_iso(),
-                        level: "warn".to_string(),
-                        category: "core".to_string(),
-                        line,
-                    });
-                    if logs.len() > 700 {
-                        logs.remove(0);
-                    }
-                }
-            });
+            spawn_core_log_reader(stderr, self.logs.clone(), "warn", "stderr");
         }
+        let managed_child_job =
+            windows_process::ManagedChildJob::assign(&child).map_err(|err| {
+                let _ = child.kill();
+                let _ = child.wait();
+                self.start_failure_message(Some(&profile), &err)
+            })?;
+        self.managed_child_job = Some(managed_child_job);
         self.process = Some(child);
         if let Err(err) = self.wait_for_controller() {
             let message = self.start_failure_message(Some(&profile), &err);
@@ -7206,9 +8045,9 @@ impl CoreManager {
         }
         self.runtime_profile_id = Some(profile.id.clone());
         self.runtime_config_digest = Some(config_digest);
-        self.apply_takeover_after_core_ready(enable_takeover);
+        let terminal_message = self.apply_takeover_after_core_ready(enable_takeover);
         Ok(core_runtime::core_start_result_json(
-            None,
+            terminal_message.as_deref(),
             !enable_takeover,
             self.traffic_takeover,
             self.connection_closure(),
@@ -7216,6 +8055,7 @@ impl CoreManager {
     }
 
     fn terminate_core_process(&mut self, message: &str) {
+        self.invalidate_egress_observation();
         self.managed_stop_verified = false;
         if let Some(mut child) = self.process.take() {
             self.add_log(message, "warn");
@@ -7223,6 +8063,7 @@ impl CoreManager {
             let reaped = child.wait().is_ok();
             self.managed_stop_verified = killed && reaped;
         }
+        self.managed_child_job = None;
         self.runtime_profile_id = None;
         self.runtime_config_digest = None;
         self.traffic_takeover = false;
@@ -7375,17 +8216,13 @@ impl CoreManager {
             self.process.is_some(),
             self.traffic_takeover,
             &self.cached_outbound_ip(),
-            self.outbound_ip_checked_at,
+            self.outbound_observation.checked_at(),
             now_secs(),
         )
     }
 
     fn cached_outbound_ip(&self) -> String {
-        if self.outbound_ip_cache.trim().is_empty() {
-            "-".to_string()
-        } else {
-            self.outbound_ip_cache.clone()
-        }
+        self.outbound_observation.visible_ip()
     }
 
     fn connection_status_summary(&self) -> JsonValue {
@@ -7789,27 +8626,8 @@ impl CoreManager {
                     "TUN stack",
                 )?
             }
-            "dnsHijackEnabled" => {
-                if self.settings.dns_mode == "system" && value.as_bool().unwrap_or(false) {
-                    return Err("System DNS mode cannot enable DNS hijacking".to_string());
-                }
-                self.settings.dns_hijack_enabled = value.as_bool().unwrap_or(true)
-            }
-            "dnsMode" => {
-                self.settings.dns_mode = string_choice_from_value(
-                    value,
-                    "auto",
-                    &["auto", "secure", "system", "custom"],
-                    "DNS mode",
-                )?;
-                if self.settings.dns_mode == "system" {
-                    self.settings.dns_hijack_enabled = false;
-                } else if self.settings.dns_mode == "secure" {
-                    self.settings.dns_hijack_enabled = true;
-                }
-            }
-            "dnsCustomNameservers" => {
-                self.settings.dns_custom_nameservers = dns_custom_nameservers_from_value(value)?;
+            "dnsHijackEnabled" | "dnsMode" | "dnsCustomNameservers" => {
+                dns_policy::apply_candidate_value(&mut self.settings, key, value)?
             }
             "ipv6Enabled" => self.settings.ipv6_enabled = value.as_bool().unwrap_or(false),
             "allowLan" => self.settings.allow_lan = value.as_bool().unwrap_or(false),
@@ -7863,17 +8681,7 @@ impl CoreManager {
             }
             _ => return Err(format!("Unsupported setting: {key}")),
         }
-        Ok(matches!(
-            key,
-            "mixedPort"
-                | "controllerPort"
-                | "tunEnabled"
-                | "tunStack"
-                | "dnsHijackEnabled"
-                | "ipv6Enabled"
-                | "allowLan"
-                | "logLevel"
-        ) || config_extensions::is_setting_key(key))
+        Ok(setting_requires_runtime_restart(key))
     }
 
     fn restart_after_settings_if_needed(
@@ -8268,6 +9076,9 @@ impl CoreManager {
             return Err("Unsupported mode".to_string());
         }
         let previous_mode = self.settings.mode.clone();
+        if previous_mode != mode {
+            self.invalidate_egress_observation();
+        }
         let controller = self.core_controller();
         if let Some(result) = controller.apply_mode_if_running(self.process.is_some(), mode) {
             result.map_err(|err| format!("Mode switch was not applied: {err}"))?;
@@ -8441,21 +9252,36 @@ impl CoreManager {
     }
 
     fn current_outbound_ip_proxy_name(&self, groups: &JsonValue) -> Option<String> {
-        let primary_groups = if self.settings.mode.eq_ignore_ascii_case("global") {
-            OUTBOUND_IP_GLOBAL_PRIMARY_GROUPS
-        } else {
-            OUTBOUND_IP_RULE_PRIMARY_GROUPS
-        };
+        let primary_group = self.runtime_outbound_ip_primary_group();
         ProxyCatalog::from_product_json(groups)
             .ok()?
-            .resolve_runtime_leaf(primary_groups)
+            .resolve_runtime_leaf(&outbound_ip_primary_groups(
+                &self.settings.mode,
+                primary_group.as_deref(),
+            ))
+    }
+
+    fn runtime_outbound_ip_primary_group(&self) -> Option<String> {
+        let profile = self.active_profile()?;
+        let plan = self.render_runtime_profile(&profile).ok()?;
+        plan.runtime_catalog()
+            .config()
+            .as_mapping()
+            .and_then(|config| {
+                config_pipeline::outbound_ip_primary_group_name(config, &self.settings)
+            })
     }
 
     fn sync_outbound_ip_group_selection(&mut self) -> Result<Option<String>, String> {
         if self.process.is_none() {
             return Ok(None);
         }
-        match sync_outbound_ip_route(&self.core_controller(), &self.settings.mode) {
+        let primary_group = self.runtime_outbound_ip_primary_group();
+        match sync_outbound_ip_route(
+            &self.core_controller(),
+            &self.settings.mode,
+            primary_group.as_deref(),
+        ) {
             Ok(proxy) => Ok(Some(proxy)),
             Err(err) => {
                 self.add_log(
@@ -9384,76 +10210,6 @@ impl CoreManager {
         ))
     }
 
-    fn change_proxy(&mut self, group: &str, proxy: &str) -> Result<bool, String> {
-        let groups = self.proxy_groups();
-        let preflight = core_runtime::validate_proxy_selection_from_groups(&groups, group, proxy)?;
-        self.add_log(
-            format!(
-                "Node switch preflight passed: {} -> {} ({})",
-                preflight.group, preflight.proxy, preflight.group_type
-            ),
-            "info",
-        );
-        let running = self.process.is_some();
-        let controller = self.core_controller();
-        if running {
-            if let Err(apply_error) = controller.apply_proxy_selection_with_cleanup(group, proxy) {
-                let rollback_error = if !preflight.previous_proxy.trim().is_empty()
-                    && preflight.previous_proxy != proxy
-                {
-                    controller
-                        .apply_proxy_selection_with_cleanup(group, &preflight.previous_proxy)
-                        .err()
-                } else {
-                    None
-                };
-                return Err(match rollback_error {
-                    Some(rollback_error) => format!(
-                        "{}; previous runtime node rollback also failed: {}",
-                        core_runtime::classified_error("Node switch", apply_error),
-                        rollback_error
-                    ),
-                    None => core_runtime::classified_error("Node switch", apply_error),
-                });
-            }
-        }
-        let previous_preference = self
-            .settings
-            .selected_proxy_map
-            .insert(group.to_string(), proxy.to_string());
-        if let Err(save_error) = self.save_settings() {
-            match previous_preference {
-                Some(value) => {
-                    self.settings
-                        .selected_proxy_map
-                        .insert(group.to_string(), value);
-                }
-                None => {
-                    self.settings.selected_proxy_map.remove(group);
-                }
-            }
-            let rollback_error = if running && !preflight.previous_proxy.trim().is_empty() {
-                controller
-                    .apply_proxy_selection_with_cleanup(group, &preflight.previous_proxy)
-                    .err()
-            } else {
-                None
-            };
-            return Err(match rollback_error {
-                Some(rollback_error) => format!(
-                    "Node preference save failed: {save_error}; runtime rollback also failed: {rollback_error}"
-                ),
-                None => format!(
-                    "Node preference save failed: {save_error}; previous selection was restored"
-                ),
-            });
-        }
-        if running {
-            let _ = self.sync_outbound_ip_group_selection();
-        }
-        Ok(true)
-    }
-
     fn set_active_profile(&mut self, id: &str) -> Result<Profile, String> {
         let was_running = self.process.is_some();
         let previous_profile_id = self.settings.active_profile_id.clone();
@@ -9490,6 +10246,9 @@ impl CoreManager {
             self.add_log(&message, "error");
             message
         })?;
+        if previous_profile_id != id {
+            self.invalidate_egress_observation();
+        }
         let rule_validation = routing_rule_validation_summary_for_profile(&profile);
         let warning_count = rule_validation
             .get("warningCount")
@@ -9868,7 +10627,7 @@ fn take_diagnostics_snapshot(core: Arc<Mutex<CoreManager>>) -> DiagnosticsSnapsh
         speed_test,
         lan_ip_cache: core.lan_ip_cache.clone(),
         outbound_ip_cache: core.cached_outbound_ip(),
-        outbound_ip_checked_at: core.outbound_ip_checked_at,
+        outbound_ip_checked_at: core.outbound_observation.checked_at(),
         reliability_failures: core.reliability_failures,
         recent_logs: core.recent_logs(8),
         status_logs: core.recent_logs(120),
@@ -10735,12 +11494,10 @@ fn outbound_ip_query_is_current(
 }
 
 fn refresh_outbound_ip_detached(core: Arc<Mutex<CoreManager>>) -> Result<String, String> {
-    let (mixed_port, query_generation, profile_id, mode, controller) = {
+    let (mixed_port, query_generation, profile_id, mode, primary_group, controller) = {
         let mut core = core.lock().unwrap();
         if core.process.is_none() {
-            core.outbound_ip_cache = "-".to_string();
-            core.outbound_ip_checked_at = now_secs();
-            core.outbound_ip_query_generation = core.outbound_ip_query_generation.saturating_add(1);
+            core.invalidate_egress_observation();
             return Err("Outbound IP requires an active or standby connection.".to_string());
         }
         core.outbound_ip_query_generation = core.outbound_ip_query_generation.saturating_add(1);
@@ -10749,12 +11506,13 @@ fn refresh_outbound_ip_detached(core: Arc<Mutex<CoreManager>>) -> Result<String,
             core.outbound_ip_query_generation,
             core.settings.active_profile_id.clone(),
             core.settings.mode.clone(),
+            core.runtime_outbound_ip_primary_group(),
             core.core_controller(),
         )
     };
-    let selected_proxy = sync_outbound_ip_route(&controller, &mode)?;
+    let selected_proxy = sync_outbound_ip_route(&controller, &mode, primary_group.as_deref())?;
     let ip = query_outbound_ip(mixed_port);
-    let current_proxy = runtime_current_proxy_route(&controller, &mode)
+    let current_proxy = runtime_current_proxy_route(&controller, &mode, primary_group.as_deref())
         .ok()
         .map(|(_, proxy)| proxy);
     let mut core = core.lock().unwrap();
@@ -10779,19 +11537,22 @@ fn refresh_outbound_ip_detached(core: Arc<Mutex<CoreManager>>) -> Result<String,
     }
     match ip {
         Ok(ip) => {
-            core.outbound_ip_cache = ip.clone();
-            core.outbound_ip_checked_at = now_secs();
-            core.add_log(format!("Outbound IP refreshed: {ip}"), "info");
+            core.outbound_observation.record(
+                ip.clone(),
+                now_secs(),
+                &profile_id,
+                &mode,
+                &selected_proxy,
+            );
+            core.add_log("Outbound IP refreshed.", "info");
             Ok(ip)
         }
         Err(reason) => {
-            let fallback = core.outbound_ip_cache.trim().to_string();
+            let fallback = core.outbound_observation.visible_ip();
             if !fallback.is_empty() && fallback != "-" {
-                core.outbound_ip_checked_at = 0;
+                core.outbound_observation.invalidate();
                 core.add_log(
-                    format!(
-                        "Outbound IP refresh failed; keeping cached value {fallback}: {reason}"
-                    ),
+                    format!("Outbound IP refresh failed; cached evidence is now stale: {reason}"),
                     "warn",
                 );
                 Err(format!(
@@ -10986,6 +11747,57 @@ fn lock_operation_queue<'a>(
     operations.acquire(label)
 }
 
+#[tauri::command]
+fn local_backup_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
+    let core = lock_state(&state.core, "core")?;
+    Ok(json!({
+        "available": cfg!(windows),
+        "connected": core.process.is_some(),
+        "backups": backup_runtime::list_local_backups(&core.app_data),
+    }))
+}
+
+fn create_local_backup_detached(
+    core: Arc<Mutex<CoreManager>>,
+    operations: runtime_command::RuntimeOperationCoordinator,
+) -> Result<JsonValue, String> {
+    let _operation = lock_operation_queue(&operations, "createLocalBackup")?;
+    let core = lock_state(&core, "core")?;
+    let backup = backup_runtime::create_local_backup(
+        &core.app_data,
+        &core.profile_dir,
+        &core.settings_path,
+    )?;
+    core.add_log("Created an encrypted local backup.", "info");
+    Ok(json!({ "backup": backup }))
+}
+
+fn restore_local_backup_detached(
+    core: Arc<Mutex<CoreManager>>,
+    operations: runtime_command::RuntimeOperationCoordinator,
+    id: &str,
+) -> Result<JsonValue, String> {
+    let _operation = lock_operation_queue(&operations, "restoreLocalBackup")?;
+    let mut core = lock_state(&core, "core")?;
+    if core.process.is_some() {
+        return Err("Disconnect Aegos before restoring a local backup.".to_string());
+    }
+    let backup = backup_runtime::restore_local_backup(
+        &core.app_data,
+        &core.profile_dir,
+        &core.settings_path,
+        id,
+    )?;
+    core.settings = load_settings(&core.settings_path);
+    let repaired = core.repair_profile_metadata();
+    core.save_settings()?;
+    core.add_log(
+        format!("Restored encrypted local backup while disconnected; repaired {repaired} profile records."),
+        "info",
+    );
+    Ok(json!({ "backup": backup, "connected": false, "repairedProfiles": repaired }))
+}
+
 fn job_label(kind: &str) -> String {
     match kind {
         "repairDiagnostic" => "修复诊断问题",
@@ -11013,6 +11825,8 @@ fn job_label(kind: &str) -> String {
         "applyRoutingRuleEdit" => "编辑用户规则",
         "resolveUnboundRoutingRule" => "处理待绑定规则",
         "exportDiagnostics" => "导出支持报告",
+        "createLocalBackup" => "创建本机备份",
+        "restoreLocalBackup" => "恢复本机备份",
         _ => "后台任务",
     }
     .to_string()
@@ -11035,7 +11849,7 @@ fn start_job(
     kind: String,
     payload: JsonValue,
 ) -> Result<JsonValue, String> {
-    if !matches!(
+    let supported = matches!(
         kind.as_str(),
         "addProfileUrl"
             | "importProfileFile"
@@ -11065,7 +11879,16 @@ fn start_job(
             | "applyRoutingRuleEdit"
             | "resolveUnboundRoutingRule"
             | "exportDiagnostics"
-    ) {
+            | "createLocalBackup"
+            | "restoreLocalBackup"
+    );
+    #[cfg(feature = "native-measurement")]
+    let supported = supported
+        || matches!(
+            kind.as_str(),
+            "nativeMeasurementDelay" | "nativeMeasurementStandby"
+        );
+    if !supported {
         return Err(format!("Unsupported job kind: {kind}"));
     }
     let id = format!("job-{}-{}", now_secs(), hex_random(4));
@@ -11082,347 +11905,427 @@ fn start_job(
     let operations = state.operations.clone();
     let app_data = state.app_data.clone();
     thread::spawn(move || {
-        set_job_state(&jobs, &id, "running", 0, 3, "正在准备");
-        if job_cancel_requested(&jobs, &id) {
-            finish_cancelled(&jobs, &id, "cancelled before start");
-            return;
-        }
-        let result = match kind.as_str() {
-            "addProfileUrl" => {
-                let url = payload
-                    .get("url")
-                    .and_then(|value| value.as_str())
-                    .ok_or_else(|| "Missing url".to_string())
-                    .and_then(|url| {
-                        set_job_state(&jobs, &id, "running", 1, 3, "正在下载订阅");
-                        add_profile_url_detached(core.clone(), operations.clone(), url)
-                            .map(|profile| json!({ "profile": profile }))
-                    });
-                url
+        let panic_jobs = jobs.clone();
+        let panic_id = id.clone();
+        guard_job_worker(&panic_jobs, &panic_id, || {
+            set_job_state(&jobs, &id, "running", 0, 3, "正在准备");
+            if job_cancel_requested(&jobs, &id) {
+                finish_cancelled(&jobs, &id, "cancelled before start");
+                return;
             }
-            "importProfileFile" => {
-                let name = payload
-                    .get("name")
-                    .and_then(JsonValue::as_str)
-                    .unwrap_or("Local profile");
-                payload
-                    .get("content")
-                    .and_then(JsonValue::as_str)
-                    .ok_or_else(|| "Missing local profile content".to_string())
-                    .and_then(|content| {
-                        set_job_state(&jobs, &id, "running", 1, 3, "正在校验本地配置");
-                        add_profile_text_detached(core.clone(), operations.clone(), name, content)
-                            .map(|profile| json!({ "profile": profile }))
-                    })
-            }
-            "editProfileSource" => payload
-                .get("id")
-                .and_then(JsonValue::as_str)
-                .ok_or_else(|| "Missing profile id".to_string())
-                .and_then(|profile_id| {
+            let result = match kind.as_str() {
+                "addProfileUrl" => {
                     let url = payload
                         .get("url")
+                        .and_then(|value| value.as_str())
+                        .ok_or_else(|| "Missing url".to_string())
+                        .and_then(|url| {
+                            set_job_state(&jobs, &id, "running", 1, 3, "正在下载订阅");
+                            add_profile_url_detached(core.clone(), operations.clone(), url)
+                                .map(|profile| json!({ "profile": profile }))
+                        });
+                    url
+                }
+                "importProfileFile" => {
+                    let name = payload
+                        .get("name")
                         .and_then(JsonValue::as_str)
-                        .ok_or_else(|| "Missing subscription URL".to_string())?;
-                    set_job_state(&jobs, &id, "running", 1, 3, "正在验证新的订阅地址");
-                    edit_profile_source_url_detached(
-                        core.clone(),
-                        operations.clone(),
-                        profile_id,
-                        url,
-                    )
-                    .map(|profile| json!({ "profile": profile }))
-                }),
-            "updateProfile" => {
-                let profile_id = payload
-                    .get("id")
-                    .and_then(|value| value.as_str())
-                    .ok_or_else(|| "Missing profile id".to_string())
-                    .and_then(|profile_id| {
-                        set_job_state(&jobs, &id, "running", 1, 3, "正在更新订阅");
-                        update_profile_detached(core.clone(), operations.clone(), profile_id)
+                        .unwrap_or("Local profile");
+                    payload
+                        .get("content")
+                        .and_then(JsonValue::as_str)
+                        .ok_or_else(|| "Missing local profile content".to_string())
+                        .and_then(|content| {
+                            set_job_state(&jobs, &id, "running", 1, 3, "正在校验本地配置");
+                            add_profile_text_detached(
+                                core.clone(),
+                                operations.clone(),
+                                name,
+                                content,
+                            )
                             .map(|profile| json!({ "profile": profile }))
-                    });
-                profile_id
-            }
-            "renameProfile" => {
-                let result = payload
-                    .get("id")
-                    .and_then(|value| value.as_str())
-                    .ok_or_else(|| "Missing profile id".to_string())
-                    .and_then(|profile_id| {
-                        let name = payload
-                            .get("name")
-                            .and_then(|value| value.as_str())
-                            .ok_or_else(|| "Missing profile name".to_string())?;
-                        set_job_state(&jobs, &id, "running", 1, 2, "Renaming profile");
-                        let _operation = lock_operation_queue(&operations, "renameProfile")?;
-                        core.lock()
-                            .unwrap()
-                            .rename_profile(profile_id, name)
-                            .map(|profile| json!({ "profile": profile }))
-                    });
-                result
-            }
-            "updateAllProfiles" => {
-                update_all_profiles_detached(core.clone(), operations.clone(), jobs.clone(), &id)
-            }
-            "refreshOutboundIp" => {
-                set_job_state(&jobs, &id, "running", 1, 2, "正在查询落地 IP");
-                refresh_outbound_ip_detached(core.clone()).map(|ip| json!({ "ip": ip }))
-            }
-            "providerHealthcheck" => {
-                set_job_state(
-                    &jobs,
-                    &id,
-                    "running",
-                    1,
-                    2,
-                    "正在检查订阅健康，不会切换节点",
-                );
-                payload
-                    .get("id")
-                    .and_then(JsonValue::as_str)
-                    .ok_or_else(|| "Missing profile id".to_string())
-                    .and_then(|profile_id| profile_healthcheck_detached(core.clone(), profile_id))
-            }
-            "diagnostics" => {
-                set_job_state(&jobs, &id, "running", 1, 2, "正在检查网络状态");
-                Ok(diagnostics_detached(core.clone()))
-            }
-            "repairDiagnostic" => (|| -> Result<JsonValue, String> {
-                let action = payload
-                    .get("action")
-                    .and_then(JsonValue::as_str)
-                    .ok_or_else(|| "Missing diagnostic repair action".to_string())?;
-                if !is_supported_diagnostic_repair_action(action) {
-                    return Err("Unsupported diagnostic repair action".to_string());
+                        })
                 }
-                set_job_state(&jobs, &id, "running", 1, 4, "正在验证并修复");
-                let _operation = lock_operation_queue(&operations, "repairDiagnostic")?;
-                let mut core = core.lock().unwrap();
-                match action {
-                    "system-proxy" => core.repair_system_proxy_takeover(),
-                    "recommended-ports" => core.repair_recommended_ports(),
-                    "cleanup-firewall" => core
-                        .set_kill_switch(false)
-                        .map(|_| json!({ "ok": true, "action": action })),
-                    "restart-core" => {
-                        if core.process.is_some() {
-                            core.restart_core_preserving_proxy(350)
-                        } else {
-                            core.start()
-                        }
+                "editProfileSource" => payload
+                    .get("id")
+                    .and_then(JsonValue::as_str)
+                    .ok_or_else(|| "Missing profile id".to_string())
+                    .and_then(|profile_id| {
+                        let url = payload
+                            .get("url")
+                            .and_then(JsonValue::as_str)
+                            .ok_or_else(|| "Missing subscription URL".to_string())?;
+                        set_job_state(&jobs, &id, "running", 1, 3, "正在验证新的订阅地址");
+                        edit_profile_source_url_detached(
+                            core.clone(),
+                            operations.clone(),
+                            profile_id,
+                            url,
+                        )
+                        .map(|profile| json!({ "profile": profile }))
+                    }),
+                "updateProfile" => {
+                    let profile_id = payload
+                        .get("id")
+                        .and_then(|value| value.as_str())
+                        .ok_or_else(|| "Missing profile id".to_string())
+                        .and_then(|profile_id| {
+                            set_job_state(&jobs, &id, "running", 1, 3, "正在更新订阅");
+                            update_profile_detached(core.clone(), operations.clone(), profile_id)
+                                .map(|profile| json!({ "profile": profile }))
+                        });
+                    profile_id
+                }
+                "renameProfile" => {
+                    let result = payload
+                        .get("id")
+                        .and_then(|value| value.as_str())
+                        .ok_or_else(|| "Missing profile id".to_string())
+                        .and_then(|profile_id| {
+                            let name = payload
+                                .get("name")
+                                .and_then(|value| value.as_str())
+                                .ok_or_else(|| "Missing profile name".to_string())?;
+                            set_job_state(&jobs, &id, "running", 1, 2, "Renaming profile");
+                            let _operation = lock_operation_queue(&operations, "renameProfile")?;
+                            core.lock()
+                                .unwrap()
+                                .rename_profile(profile_id, name)
+                                .map(|profile| json!({ "profile": profile }))
+                        });
+                    result
+                }
+                "updateAllProfiles" => update_all_profiles_detached(
+                    core.clone(),
+                    operations.clone(),
+                    jobs.clone(),
+                    &id,
+                ),
+                "refreshOutboundIp" => {
+                    set_job_state(&jobs, &id, "running", 1, 2, "正在查询落地 IP");
+                    refresh_outbound_ip_detached(core.clone()).map(|ip| json!({ "ip": ip }))
+                }
+                "providerHealthcheck" => {
+                    set_job_state(
+                        &jobs,
+                        &id,
+                        "running",
+                        1,
+                        2,
+                        "正在检查订阅健康，不会切换节点",
+                    );
+                    payload
+                        .get("id")
+                        .and_then(JsonValue::as_str)
+                        .ok_or_else(|| "Missing profile id".to_string())
+                        .and_then(|profile_id| {
+                            profile_healthcheck_detached(core.clone(), profile_id)
+                        })
+                }
+                "diagnostics" => {
+                    set_job_state(&jobs, &id, "running", 1, 2, "正在检查网络状态");
+                    Ok(diagnostics_detached(core.clone()))
+                }
+                "repairDiagnostic" => (|| -> Result<JsonValue, String> {
+                    let action = payload
+                        .get("action")
+                        .and_then(JsonValue::as_str)
+                        .ok_or_else(|| "Missing diagnostic repair action".to_string())?;
+                    if !is_supported_diagnostic_repair_action(action) {
+                        return Err("Unsupported diagnostic repair action".to_string());
                     }
-                    "recover-network" => core.recover_network(true),
-                    _ => Err(format!("Unsupported diagnostic repair action: {action}")),
-                }
-            })(),
-            "exportDiagnostics" => {
-                set_job_state(&jobs, &id, "running", 1, 2, "正在导出支持报告");
-                export_diagnostics_report_from_state(core.clone(), &app_data)
-            }
-            "recoverNetwork" => {
-                let force = payload
-                    .get("force")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false);
-                set_job_state(&jobs, &id, "running", 1, 4, "正在修复网络");
-                (|| -> Result<JsonValue, String> {
-                    let _operation = lock_operation_queue(&operations, "recoverNetwork")?;
-                    core.lock().unwrap().recover_network(force)
-                })()
-            }
-            "startCore" => {
-                set_job_state(&jobs, &id, "running", 1, 4, "正在建立连接");
-                (|| -> Result<JsonValue, String> {
-                    let _operation = lock_operation_queue(&operations, "startCore")?;
-                    core.lock().unwrap().start()
-                })()
-            }
-            "stopCore" => {
-                set_job_state(&jobs, &id, "running", 1, 2, "正在断开连接");
-                (|| -> Result<JsonValue, String> {
-                    let _operation = lock_operation_queue(&operations, "stopCore")?;
-                    core.lock().unwrap().stop()
-                })()
-            }
-            "restartCore" => {
-                set_job_state(&jobs, &id, "running", 1, 5, "正在重启网络核心");
-                (|| -> Result<JsonValue, String> {
-                    let _operation = lock_operation_queue(&operations, "restartCore")?;
+                    set_job_state(&jobs, &id, "running", 1, 4, "正在验证并修复");
+                    let _operation = lock_operation_queue(&operations, "repairDiagnostic")?;
                     let mut core = core.lock().unwrap();
-                    core.restart_core_preserving_proxy(350)
-                })()
-            }
-            "setActiveProfile" => {
-                let profile_id = payload
+                    match action {
+                        "system-proxy" => core.repair_system_proxy_takeover(),
+                        "recommended-ports" => core.repair_recommended_ports(),
+                        "cleanup-firewall" => core
+                            .set_kill_switch(false)
+                            .map(|_| json!({ "ok": true, "action": action })),
+                        "restart-core" => {
+                            if core.process.is_some() {
+                                core.restart_core_preserving_proxy(350)
+                            } else {
+                                core.start()
+                            }
+                        }
+                        "recover-network" => core.recover_network(true),
+                        _ => Err(format!("Unsupported diagnostic repair action: {action}")),
+                    }
+                })(),
+                "exportDiagnostics" => {
+                    set_job_state(&jobs, &id, "running", 1, 2, "正在导出支持报告");
+                    export_diagnostics_report_from_state(core.clone(), &app_data)
+                }
+                "createLocalBackup" => {
+                    set_job_state(&jobs, &id, "running", 1, 3, "正在加密本机备份");
+                    create_local_backup_detached(core.clone(), operations.clone())
+                }
+                "restoreLocalBackup" => payload
                     .get("id")
-                    .and_then(|value| value.as_str())
-                    .ok_or_else(|| "Missing profile id".to_string())
-                    .and_then(|profile_id| {
-                        set_job_state(&jobs, &id, "running", 1, 4, "正在切换订阅");
-                        let _operation = lock_operation_queue(&operations, "setActiveProfile")?;
-                        core.lock()
-                            .unwrap()
-                            .set_active_profile(profile_id)
-                            .map(|profile| json!({ "profile": profile }))
-                    });
-                profile_id
-            }
-            "removeProfile" => {
-                let profile_id = payload
-                    .get("id")
-                    .and_then(|value| value.as_str())
-                    .ok_or_else(|| "Missing profile id".to_string())
-                    .and_then(|profile_id| {
-                        set_job_state(&jobs, &id, "running", 1, 4, "removing profile");
-                        let _operation = lock_operation_queue(&operations, "removeProfile")?;
-                        core.lock()
-                            .unwrap()
-                            .remove_profile(profile_id)
-                            .map(|removed| json!({ "removed": removed, "id": profile_id }))
-                    });
-                profile_id
-            }
-            "updateSettings" => {
-                let updates = payload
-                    .get("updates")
-                    .cloned()
-                    .unwrap_or_else(|| payload.clone());
-                set_job_state(&jobs, &id, "running", 1, 4, "正在保存设置");
-                (|| -> Result<JsonValue, String> {
-                    let _operation = lock_operation_queue(&operations, "updateSettings")?;
+                    .and_then(JsonValue::as_str)
+                    .ok_or_else(|| "Missing local backup identifier".to_string())
+                    .and_then(|backup_id| {
+                        set_job_state(&jobs, &id, "running", 1, 3, "正在恢复本机备份");
+                        restore_local_backup_detached(core.clone(), operations.clone(), backup_id)
+                    }),
+                #[cfg(feature = "native-measurement")]
+                "nativeMeasurementDelay" => {
+                    let delay_ms = payload
+                        .get("delayMs")
+                        .and_then(JsonValue::as_u64)
+                        .unwrap_or(600)
+                        .clamp(250, 5_000);
+                    let outcome = payload
+                        .get("outcome")
+                        .and_then(JsonValue::as_str)
+                        .unwrap_or("success");
+                    set_job_state(
+                        &jobs,
+                        &id,
+                        "running",
+                        1,
+                        2,
+                        "native measurement task is pending",
+                    );
+                    let deadline = Instant::now() + Duration::from_millis(delay_ms);
+                    while Instant::now() < deadline && !job_cancel_requested(&jobs, &id) {
+                        thread::sleep(Duration::from_millis(25));
+                    }
+                    if job_cancel_requested(&jobs, &id) {
+                        Ok(json!({ "cancelled": true }))
+                    } else if outcome == "failure" {
+                        Err("Native measurement task failed as requested.".to_string())
+                    } else {
+                        Ok(json!({ "completed": true, "delayMs": delay_ms }))
+                    }
+                }
+                #[cfg(feature = "native-measurement")]
+                "nativeMeasurementStandby" => {
+                    set_job_state(
+                        &jobs,
+                        &id,
+                        "running",
+                        1,
+                        2,
+                        "starting isolated standby core",
+                    );
                     core.lock()
-                        .unwrap()
-                        .update_settings(updates)
-                        .map(|settings| json!({ "settings": settings }))
-                })()
-            }
-            "updateSetting" => (|| -> Result<JsonValue, String> {
-                let key = payload
-                    .get("key")
-                    .and_then(|value| value.as_str())
-                    .ok_or_else(|| "Missing setting key".to_string())?;
-                let value = payload
-                    .get("value")
-                    .cloned()
-                    .ok_or_else(|| "Missing setting value".to_string())?;
-                set_job_state(&jobs, &id, "running", 1, 3, "正在保存设置");
-                let _operation = lock_operation_queue(&operations, "updateSetting")?;
-                let mut core = core.lock().unwrap();
-                if key == "systemProxy" {
-                    core.set_system_proxy(value.as_bool().unwrap_or(false))?;
-                    Ok(json!({ "settings": core.public_settings() }))
-                } else {
-                    core.update_setting(key, value)
-                        .map(|settings| json!({ "settings": settings }))
+                        .map_err(|_| "Native measurement core lock is poisoned".to_string())
+                        .and_then(|mut core| core.start_standby())
                 }
-            })(),
-            "setMode" => {
-                let mode = payload
-                    .get("mode")
-                    .and_then(|value| value.as_str())
-                    .ok_or_else(|| "Missing mode".to_string())
-                    .and_then(|mode| {
-                        set_job_state(&jobs, &id, "running", 1, 2, "正在切换模式");
-                        let _operation = lock_operation_queue(&operations, "setMode")?;
+                "recoverNetwork" => {
+                    let force = payload
+                        .get("force")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false);
+                    set_job_state(&jobs, &id, "running", 1, 4, "正在修复网络");
+                    (|| -> Result<JsonValue, String> {
+                        let _operation = lock_operation_queue(&operations, "recoverNetwork")?;
+                        core.lock().unwrap().recover_network(force)
+                    })()
+                }
+                "startCore" => {
+                    set_job_state(&jobs, &id, "running", 1, 4, "正在建立连接");
+                    (|| -> Result<JsonValue, String> {
+                        let _operation = lock_operation_queue(&operations, "startCore")?;
+                        core.lock().unwrap().start()
+                    })()
+                }
+                "stopCore" => {
+                    set_job_state(&jobs, &id, "running", 1, 2, "正在断开连接");
+                    (|| -> Result<JsonValue, String> {
+                        let _operation = lock_operation_queue(&operations, "stopCore")?;
+                        core.lock().unwrap().stop()
+                    })()
+                }
+                "restartCore" => {
+                    set_job_state(&jobs, &id, "running", 1, 5, "正在重启网络核心");
+                    (|| -> Result<JsonValue, String> {
+                        let _operation = lock_operation_queue(&operations, "restartCore")?;
+                        let mut core = core.lock().unwrap();
+                        core.restart_core_preserving_proxy(350)
+                    })()
+                }
+                "setActiveProfile" => {
+                    let profile_id = payload
+                        .get("id")
+                        .and_then(|value| value.as_str())
+                        .ok_or_else(|| "Missing profile id".to_string())
+                        .and_then(|profile_id| {
+                            set_job_state(&jobs, &id, "running", 1, 4, "正在切换订阅");
+                            let _operation = lock_operation_queue(&operations, "setActiveProfile")?;
+                            core.lock()
+                                .unwrap()
+                                .set_active_profile(profile_id)
+                                .map(|profile| json!({ "profile": profile }))
+                        });
+                    profile_id
+                }
+                "removeProfile" => {
+                    let profile_id = payload
+                        .get("id")
+                        .and_then(|value| value.as_str())
+                        .ok_or_else(|| "Missing profile id".to_string())
+                        .and_then(|profile_id| {
+                            set_job_state(&jobs, &id, "running", 1, 4, "removing profile");
+                            let _operation = lock_operation_queue(&operations, "removeProfile")?;
+                            core.lock()
+                                .unwrap()
+                                .remove_profile(profile_id)
+                                .map(|removed| json!({ "removed": removed, "id": profile_id }))
+                        });
+                    profile_id
+                }
+                "updateSettings" => {
+                    let updates = payload
+                        .get("updates")
+                        .cloned()
+                        .unwrap_or_else(|| payload.clone());
+                    set_job_state(&jobs, &id, "running", 1, 4, "正在保存设置");
+                    (|| -> Result<JsonValue, String> {
+                        let _operation = lock_operation_queue(&operations, "updateSettings")?;
                         core.lock()
                             .unwrap()
-                            .set_mode(mode)
-                            .map(|mode| json!({ "mode": mode }))
-                    });
-                mode
-            }
-            "changeProxy" => (|| -> Result<JsonValue, String> {
-                let group = payload
-                    .get("group")
-                    .and_then(|value| value.as_str())
-                    .ok_or_else(|| "Missing proxy group".to_string())?;
-                let proxy = payload
-                    .get("proxy")
-                    .and_then(|value| value.as_str())
-                    .ok_or_else(|| "Missing proxy name".to_string())?;
-                set_job_state(&jobs, &id, "running", 1, 2, "正在切换节点");
-                let _operation = lock_operation_queue(&operations, "changeProxy")?;
-                let mut core = core.lock().unwrap();
-                core.change_proxy(group, proxy)?;
-                let connection = core.connection_closure();
-                Ok(json!({ "group": group, "proxy": proxy, "connection": connection }))
-            })(),
-            "selectBestProxy" => (|| -> Result<JsonValue, String> {
-                set_job_state(&jobs, &id, "running", 1, 2, "selecting best proxy");
-                let _operation = lock_operation_queue(&operations, "selectBestProxy")?;
-                core.lock().unwrap().select_best_proxy()
-            })(),
-            "repairSystemProxy" => (|| -> Result<JsonValue, String> {
-                set_job_state(
-                    &jobs,
-                    &id,
-                    "running",
-                    1,
-                    3,
-                    "repairing system proxy takeover",
-                );
-                let _operation = lock_operation_queue(&operations, "repairSystemProxy")?;
-                core.lock().unwrap().repair_system_proxy_takeover()
-            })(),
-            "applyRoutingDrafts" => (|| -> Result<JsonValue, String> {
-                let drafts_value = payload
-                    .get("drafts")
-                    .cloned()
-                    .ok_or_else(|| "Missing routing drafts".to_string())?;
-                let drafts = serde_json::from_value::<Vec<RoutingDraftInput>>(drafts_value)
-                    .map_err(|err| format!("Invalid routing drafts: {err}"))?;
-                set_job_state(&jobs, &id, "running", 1, 4, "正在预检分流规则");
-                let _operation = lock_operation_queue(&operations, "applyRoutingDrafts")?;
-                core.lock().unwrap().apply_user_rule_store_drafts(drafts)
-            })(),
-            "undoRoutingApply" => (|| -> Result<JsonValue, String> {
-                set_job_state(&jobs, &id, "running", 1, 3, "正在撤销分流规则");
-                let _operation = lock_operation_queue(&operations, "undoRoutingApply")?;
-                core.lock().unwrap().undo_last_routing_apply()
-            })(),
-            "applyRoutingGroupEdit" => (|| -> Result<JsonValue, String> {
-                let edit = serde_json::from_value::<RoutingGroupEditInput>(payload.clone())
-                    .map_err(|err| format!("Invalid routing group edit: {err}"))?;
-                set_job_state(&jobs, &id, "running", 1, 4, "Saving strategy group");
-                let _operation = lock_operation_queue(&operations, "applyRoutingGroupEdit")?;
-                core.lock().unwrap().apply_routing_group_edit(edit)
-            })(),
-            "applyRoutingRuleEdit" => (|| -> Result<JsonValue, String> {
-                let edit = serde_json::from_value::<RoutingRuleEditInput>(payload.clone())
-                    .map_err(|err| format!("Invalid routing rule edit: {err}"))?;
-                set_job_state(&jobs, &id, "running", 1, 4, "正在保存用户规则");
-                let _operation = lock_operation_queue(&operations, "applyRoutingRuleEdit")?;
-                core.lock().unwrap().apply_user_rule_store_edit(edit)
-            })(),
-            "resolveUnboundRoutingRule" => (|| -> Result<JsonValue, String> {
-                let input = serde_json::from_value::<UnboundRuleResolutionInput>(payload.clone())
-                    .map_err(|err| format!("Invalid unbound rule resolution: {err}"))?;
-                set_job_state(&jobs, &id, "running", 1, 4, "正在处理待绑定规则");
-                let _operation = lock_operation_queue(&operations, "resolveUnboundRoutingRule")?;
-                core.lock().unwrap().resolve_unbound_user_rule(input)
-            })(),
-            _ => Err("Unsupported job kind".to_string()),
-        };
-        if job_cancel_requested(&jobs, &id) {
-            finish_cancelled(&jobs, &id, "cancelled");
-            return;
-        }
-        let result = match result {
-            Ok(value) => Ok(value),
-            Err(raw) => {
-                let classification = core_runtime::classify_failure_reason(&raw);
-                let issue = diagnostics_runtime::issue_from_failure(&kind, classification, &raw);
-                if let Ok(core) = core.lock() {
-                    core.add_log(format!("{} technical detail: {}", issue.code, raw), "error");
+                            .update_settings(updates)
+                            .map(|settings| json!({ "settings": settings }))
+                    })()
                 }
-                set_job_issue(&jobs, &id, json!(issue.clone()));
-                Err(issue.public_message())
+                "updateSetting" => (|| -> Result<JsonValue, String> {
+                    let key = payload
+                        .get("key")
+                        .and_then(|value| value.as_str())
+                        .ok_or_else(|| "Missing setting key".to_string())?;
+                    let value = payload
+                        .get("value")
+                        .cloned()
+                        .ok_or_else(|| "Missing setting value".to_string())?;
+                    set_job_state(&jobs, &id, "running", 1, 3, "正在保存设置");
+                    let _operation = lock_operation_queue(&operations, "updateSetting")?;
+                    let mut core = core.lock().unwrap();
+                    if key == "systemProxy" {
+                        core.set_system_proxy(value.as_bool().unwrap_or(false))?;
+                        Ok(json!({ "settings": core.public_settings() }))
+                    } else {
+                        core.update_setting(key, value)
+                            .map(|settings| json!({ "settings": settings }))
+                    }
+                })(),
+                "setMode" => {
+                    let mode = payload
+                        .get("mode")
+                        .and_then(|value| value.as_str())
+                        .ok_or_else(|| "Missing mode".to_string())
+                        .and_then(|mode| {
+                            set_job_state(&jobs, &id, "running", 1, 2, "正在切换模式");
+                            let _operation = lock_operation_queue(&operations, "setMode")?;
+                            core.lock()
+                                .unwrap()
+                                .set_mode(mode)
+                                .map(|mode| json!({ "mode": mode }))
+                        });
+                    mode
+                }
+                "changeProxy" => (|| -> Result<JsonValue, String> {
+                    let group = payload
+                        .get("group")
+                        .and_then(|value| value.as_str())
+                        .ok_or_else(|| "Missing proxy group".to_string())?;
+                    let proxy = payload
+                        .get("proxy")
+                        .and_then(|value| value.as_str())
+                        .ok_or_else(|| "Missing proxy name".to_string())?;
+                    set_job_state(&jobs, &id, "running", 1, 2, "正在切换节点");
+                    let _operation = lock_operation_queue(&operations, "changeProxy")?;
+                    let mut core = core.lock().unwrap();
+                    core.change_proxy(group, proxy)?;
+                    let connection = core.connection_closure();
+                    let dns_policy = core.dns_policy_snapshot().ok();
+                    Ok(json!({
+                        "group": group,
+                        "proxy": proxy,
+                        "connection": connection,
+                        "dnsPolicy": dns_policy
+                    }))
+                })(),
+                "selectBestProxy" => (|| -> Result<JsonValue, String> {
+                    set_job_state(&jobs, &id, "running", 1, 2, "selecting best proxy");
+                    let _operation = lock_operation_queue(&operations, "selectBestProxy")?;
+                    core.lock().unwrap().select_best_proxy()
+                })(),
+                "repairSystemProxy" => (|| -> Result<JsonValue, String> {
+                    set_job_state(
+                        &jobs,
+                        &id,
+                        "running",
+                        1,
+                        3,
+                        "repairing system proxy takeover",
+                    );
+                    let _operation = lock_operation_queue(&operations, "repairSystemProxy")?;
+                    core.lock().unwrap().repair_system_proxy_takeover()
+                })(),
+                "applyRoutingDrafts" => (|| -> Result<JsonValue, String> {
+                    let drafts_value = payload
+                        .get("drafts")
+                        .cloned()
+                        .ok_or_else(|| "Missing routing drafts".to_string())?;
+                    let drafts = serde_json::from_value::<Vec<RoutingDraftInput>>(drafts_value)
+                        .map_err(|err| format!("Invalid routing drafts: {err}"))?;
+                    set_job_state(&jobs, &id, "running", 1, 4, "正在预检分流规则");
+                    let _operation = lock_operation_queue(&operations, "applyRoutingDrafts")?;
+                    core.lock().unwrap().apply_user_rule_store_drafts(drafts)
+                })(),
+                "undoRoutingApply" => (|| -> Result<JsonValue, String> {
+                    set_job_state(&jobs, &id, "running", 1, 3, "正在撤销分流规则");
+                    let _operation = lock_operation_queue(&operations, "undoRoutingApply")?;
+                    core.lock().unwrap().undo_last_routing_apply()
+                })(),
+                "applyRoutingGroupEdit" => (|| -> Result<JsonValue, String> {
+                    let edit = serde_json::from_value::<RoutingGroupEditInput>(payload.clone())
+                        .map_err(|err| format!("Invalid routing group edit: {err}"))?;
+                    set_job_state(&jobs, &id, "running", 1, 4, "Saving strategy group");
+                    let _operation = lock_operation_queue(&operations, "applyRoutingGroupEdit")?;
+                    core.lock().unwrap().apply_routing_group_edit(edit)
+                })(),
+                "applyRoutingRuleEdit" => (|| -> Result<JsonValue, String> {
+                    let edit = serde_json::from_value::<RoutingRuleEditInput>(payload.clone())
+                        .map_err(|err| format!("Invalid routing rule edit: {err}"))?;
+                    set_job_state(&jobs, &id, "running", 1, 4, "正在保存用户规则");
+                    let _operation = lock_operation_queue(&operations, "applyRoutingRuleEdit")?;
+                    core.lock().unwrap().apply_user_rule_store_edit(edit)
+                })(),
+                "resolveUnboundRoutingRule" => (|| -> Result<JsonValue, String> {
+                    let input =
+                        serde_json::from_value::<UnboundRuleResolutionInput>(payload.clone())
+                            .map_err(|err| format!("Invalid unbound rule resolution: {err}"))?;
+                    set_job_state(&jobs, &id, "running", 1, 4, "正在处理待绑定规则");
+                    let _operation =
+                        lock_operation_queue(&operations, "resolveUnboundRoutingRule")?;
+                    core.lock().unwrap().resolve_unbound_user_rule(input)
+                })(),
+                _ => Err("Unsupported job kind".to_string()),
+            };
+            if job_cancel_requested(&jobs, &id) {
+                finish_cancelled(&jobs, &id, "cancelled");
+                return;
             }
-        };
-        finish_job(&jobs, &id, result);
+            let result = match result {
+                Ok(value) => Ok(value),
+                Err(raw) => {
+                    let classification = core_runtime::classify_failure_reason(&raw);
+                    let issue =
+                        diagnostics_runtime::issue_from_failure(&kind, classification, &raw);
+                    if let Ok(core) = core.lock() {
+                        core.add_log(format!("{} technical detail: {}", issue.code, raw), "error");
+                    }
+                    set_job_issue(&jobs, &id, json!(issue.clone()));
+                    Err(issue.public_message())
+                }
+            };
+            finish_job(&jobs, &id, result);
+        });
     });
 
     Ok(json!(record))
@@ -11492,6 +12395,17 @@ fn core_runtime_info(state: State<AppState>) -> Result<JsonValue, String> {
 fn update_settings(state: State<AppState>, updates: JsonValue) -> Result<JsonValue, String> {
     let _operation = lock_operation_queue(&state.operations, "update_settings command")?;
     state.core.lock().unwrap().update_settings(updates)
+}
+
+#[tauri::command]
+async fn config_extensions_preview(
+    state: State<'_, AppState>,
+    draft: JsonValue,
+) -> Result<JsonValue, String> {
+    let settings = lock_state(&state.core, "core")?.settings.clone();
+    tauri::async_runtime::spawn_blocking(move || config_extensions::preview(&settings, &draft))
+        .await
+        .map_err(|err| format!("Configuration extension preview failed: {err}"))
 }
 
 #[tauri::command]
@@ -11941,49 +12855,13 @@ fn refresh_outbound_ip(state: State<AppState>) -> Result<String, String> {
     refresh_outbound_ip_detached(state.core.clone())
 }
 
-#[tauri::command]
-fn ipv6_dns_safety_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
-    let (running, mixed_port, settings, active_profile) = {
-        let core = state.core.lock().unwrap();
-        (
-            core.process.is_some(),
-            core.settings.mixed_port,
-            core.settings.clone(),
-            core.active_profile(),
-        )
-    };
-    let local = local_ipv6_capability();
-    let ipv4_outlet = if running {
-        query_outbound_ip_family(mixed_port, "ipv4")
-    } else {
-        Err("core is not running".to_string())
-    };
-    let ipv6_outlet = if running {
-        query_outbound_ip_family(mixed_port, "ipv6")
-    } else {
-        Err("core is not running".to_string())
-    };
-    let dns_safety = active_profile
-        .as_ref()
-        .ok_or_else(|| "no active profile".to_string())
-        .and_then(|profile| {
-            let plan = profile_compiler::compile_profile_file(profile, &settings)?;
-            config_pipeline::runtime_dns_safety_report(plan.runtime_catalog().config())
-        });
-    Ok(ipv6_dns_safety_from_parts(
-        local,
-        ipv4_outlet,
-        ipv6_outlet,
-        dns_safety,
-        &settings,
-        running,
-    ))
-}
-
-#[tauri::command]
-fn environment_readiness(state: State<AppState>) -> Result<JsonValue, String> {
+fn environment_readiness_detached(
+    core_state: Arc<Mutex<CoreManager>>,
+) -> Result<JsonValue, String> {
     let (running, core_path, settings, traffic_takeover, proxy_snapshot_exists) = {
-        let core = state.core.lock().unwrap();
+        let core = core_state
+            .lock()
+            .map_err(|_| "core state lock poisoned".to_string())?;
         (
             core.process.is_some(),
             core.core_path.clone(),
@@ -12120,6 +12998,14 @@ fn environment_readiness(state: State<AppState>) -> Result<JsonValue, String> {
         },
         "checks": checks
     }))
+}
+
+#[tauri::command]
+async fn environment_readiness(state: State<'_, AppState>) -> Result<JsonValue, String> {
+    let core = state.core.clone();
+    tauri::async_runtime::spawn_blocking(move || environment_readiness_detached(core))
+        .await
+        .map_err(|err| format!("Environment check worker stopped: {err}"))?
 }
 
 #[tauri::command]
@@ -13832,13 +14718,15 @@ fn window_close(window: Window, state: State<AppState>) -> Result<(), String> {
 }
 
 fn main() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }))
+    let builder = tauri::Builder::default();
+    #[cfg(not(feature = "native-measurement"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _, _| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }));
+    builder
         .setup(|app| {
             let core = CoreManager::new(&app.handle())?;
             let speed_test = core.speed_test.clone();
@@ -13919,9 +14807,11 @@ fn main() {
             start_job,
             job_status,
             cancel_job,
+            local_backup_snapshot,
             app_status,
             core_runtime_info,
             update_settings,
+            config_extensions_preview,
             relaunch_as_admin,
             proxy_groups,
             preview_profile_groups,
@@ -13942,7 +14832,9 @@ fn main() {
             cancel_proxy_delay_test,
             recover_network,
             refresh_outbound_ip,
-            ipv6_dns_safety_snapshot,
+            ipv6_policy::ipv6_dns_safety_snapshot,
+            dns_policy::dns_policy_snapshot,
+            egress_identity::egress_identity_snapshot,
             environment_readiness,
             select_best_proxy,
             connections,

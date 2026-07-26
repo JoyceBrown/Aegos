@@ -1,0 +1,19 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Aegos WM-04 Native Measurement",
+        "width": 920,
+        "height": 640,
+        "minWidth": 920,
+        "minHeight": 640,
+        "center": false,
+        "decorations": false,
+        "transparent": false,
+        "resizable": true,
+        "visible": false
+      }
+    ]
+  }
+}

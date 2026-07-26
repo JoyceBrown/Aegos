@@ -113,6 +113,11 @@ let routingPrefetchTimer = null;
 let latestEnvironmentReadiness = null;
 let environmentReadinessBusy = false;
 let ipv6DnsSafetyBusy = false;
+let ipv6DnsSafetyQueued = false;
+let ipv6DnsSafetySeq = 0;
+let dnsPolicyBusy = false;
+let dnsPolicyQueued = false;
+let dnsPolicySeq = 0;
 let routingAssistantDrafts = [];
 let routingAssistantView = 'simple';
 let routingAssistantKind = 'website';
@@ -125,8 +130,12 @@ let expandedRoutingDraftId = '';
 let routingApplyStatus = null;
 let routingRuleEditRaw = '';
 let settingsWorkspaceReady = false;
+let settingsWorkspaceWarmScheduled = false;
 let settingsCategory = 'takeover';
 let configExtensionsDirty = false;
+let configExtensionsPreviewSignature = '';
+let configExtensionsPreviewSeq = 0;
+let configExtensionsAppliedSnapshot = null;
 let nodeGroupSortMode = false;
 let nodeGroupDragName = '';
 let nodeGroupDragPointerId = null;
@@ -166,6 +175,9 @@ let lastUiHeartbeatAt = performance.now();
 let latestDiagnostics = null;
 let lastBackgroundJobIssue = null;
 let latestIpv6DnsSafety = null;
+let latestDnsPolicy = null;
+let latestEgressConsistency = null;
+let standbyRemediationNotice = '';
 let jobCenterSyncBusy = false;
 let jobCenterLastSyncAt = 0;
 let activeConnectionCount = 0;
@@ -321,7 +333,7 @@ function statusSurfaceNotice(status = {}, settings = {}, protection = {}, availa
     return '\u6838\u5fc3\u672a\u8fd0\u884c\uff0c\u5f53\u524d\u6ca1\u6709\u6d41\u91cf\u63a5\u7ba1\u3002';
   }
   if (!trafficTakeover) {
-    return '\u6838\u5fc3\u5f85\u547d\uff0c\u5c1a\u672a\u63a5\u7ba1\u7cfb\u7edf\u6d41\u91cf\u3002';
+    return standbyRemediationNotice || '\u6838\u5fc3\u5f85\u547d\uff0c\u5c1a\u672a\u63a5\u7ba1\u7cfb\u7edf\u6d41\u91cf\u3002';
   }
   if (systemProxyWanted && !systemProxyApplied) {
     return '\u7cfb\u7edf\u4ee3\u7406\u5f85\u751f\u6548\uff0c\u8bf7\u4f7f\u7528\u8bca\u65ad\u68c0\u67e5\u7aef\u53e3\u548c Windows \u4ee3\u7406\u72b6\u6001\u3002';
@@ -551,6 +563,8 @@ function icon(className) {
 }
 
 let appDialogResolve = null;
+let localBackupSnapshot = null;
+let localBackupSnapshotLoading = false;
 
 function closeAppDialog(result = null) {
   const overlay = $('#appDialogOverlay');
@@ -642,6 +656,133 @@ function requestAppConfirm(options = {}) {
   return new Promise((resolve) => {
     appDialogResolve = (value) => resolve(Boolean(value));
   });
+}
+
+function localBackupDate(value) {
+  const date = new Date(Number(value || 0));
+  return Number.isNaN(date.getTime()) ? '时间未知' : date.toLocaleString();
+}
+
+function localBackupSize(value) {
+  const bytes = Math.max(0, Number(value || 0));
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function refreshLocalBackupSnapshot(options = {}) {
+  if (localBackupSnapshotLoading && !options.force) return;
+  localBackupSnapshotLoading = true;
+  try {
+    localBackupSnapshot = await invoke('local_backup_snapshot');
+  } catch (error) {
+    if (options.notify) setNotice(`无法读取本机备份：${error.message || error}`);
+  } finally {
+    localBackupSnapshotLoading = false;
+    renderLocalBackupUi();
+  }
+}
+
+async function createLocalBackupJob() {
+  const result = await runBackgroundJob('createLocalBackup', {}, {
+    blockRefresh: true,
+    pendingNotice: '正在创建本机加密备份…',
+    successNotice: '已创建本机加密备份。'
+  });
+  await refreshLocalBackupSnapshot({ force: true });
+  return result;
+}
+
+async function restoreLocalBackupJob(id) {
+  const connected = Boolean(latestStatus?.running);
+  if (connected) {
+    setNotice('请先断开 Aegos，再恢复本机备份。');
+    return null;
+  }
+  const confirmed = await requestAppConfirm({
+    title: '恢复本机备份',
+    message: '恢复会替换当前设置、订阅配置和用户分流规则。Aegos 保持断开状态，是否继续？',
+    okText: '恢复',
+    danger: true
+  });
+  if (!confirmed) return null;
+  const result = await runBackgroundJob('restoreLocalBackup', { id }, {
+    blockRefresh: true,
+    pendingNotice: '正在恢复本机加密备份…',
+    successNotice: '已恢复本机备份，Aegos 当前保持断开。'
+  });
+  if (result) await refreshStatus(true);
+  await refreshLocalBackupSnapshot({ force: true });
+  return result;
+}
+
+function ensureLocalBackupUi() {
+  if ($('#localBackupPanel')) return true;
+  const grid = document.querySelector('[data-settings-panel="security"] .settings-grid');
+  if (!grid) return false;
+  const createButton = el('button', {
+    id: 'createLocalBackupBtn',
+    className: 'secondary-btn',
+    textContent: '创建备份',
+    attrs: { type: 'button' }
+  });
+  createButton.addEventListener('click', (event) => runButtonAction(
+    event.currentTarget,
+    '正在创建…',
+    createLocalBackupJob
+  ));
+  grid.append(el('section', {
+    id: 'localBackupPanel',
+    className: 'local-backup-panel settings-wide-row'
+  }, [
+    el('div', { className: 'local-backup-copy' }, [
+      el('b', { textContent: '本机加密备份' }),
+      el('small', { textContent: '仅当前 Windows 用户可恢复；不上传、不联网，也不与其他设备同步。' })
+    ]),
+    el('div', { id: 'localBackupSummary', className: 'local-backup-summary', textContent: '正在读取备份…' }),
+    el('div', { id: 'localBackupList', className: 'local-backup-list' }),
+    el('div', { className: 'settings-actions' }, [createButton])
+  ]));
+  refreshLocalBackupSnapshot();
+  return true;
+}
+
+function renderLocalBackupUi() {
+  if (!ensureLocalBackupUi()) return;
+  const summary = $('#localBackupSummary');
+  const list = $('#localBackupList');
+  const createButton = $('#createLocalBackupBtn');
+  if (!summary || !list || !createButton) return;
+  const available = localBackupSnapshot?.available === true;
+  const connected = Boolean(latestStatus?.running ?? localBackupSnapshot?.connected);
+  const backups = Array.isArray(localBackupSnapshot?.backups) ? localBackupSnapshot.backups : [];
+  createButton.disabled = !available;
+  if (!localBackupSnapshot) {
+    summary.textContent = '正在读取备份…';
+    replaceChildrenSafe(list, []);
+    return;
+  }
+  if (!available) {
+    summary.textContent = '本机加密备份仅支持 Windows。';
+    replaceChildrenSafe(list, []);
+    return;
+  }
+  summary.textContent = backups.length
+    ? `已保留 ${backups.length} 个本机加密备份。${connected ? '恢复前需先断开 Aegos。' : '可在断开状态下恢复。'}`
+    : '尚无本机备份。创建后可在断开状态下恢复。';
+  replaceChildrenSafe(list, backups.map((backup) => {
+    const restore = el('button', {
+      className: 'ghost compact',
+      textContent: '恢复',
+      attrs: { type: 'button' }
+    });
+    restore.disabled = connected;
+    restore.addEventListener('click', () => restoreLocalBackupJob(String(backup.id || '')));
+    return el('div', { className: 'local-backup-item' }, [
+      el('span', { textContent: `${localBackupDate(backup.createdAtMs)} · ${localBackupSize(backup.bytes)}` }),
+      restore
+    ]);
+  }));
 }
 
 function emptyState(message) {
@@ -3740,6 +3881,9 @@ function schedulePageLoad(page) {
       if (page === 'settings' && shouldRefreshPageCache(page)) {
         renderEnvironmentReadiness();
         if (latestIpv6DnsSafety) renderIpv6DnsSafety(latestIpv6DnsSafety);
+        if (latestEgressConsistency) renderEgressConsistency(latestEgressConsistency);
+        if (latestDnsPolicy) renderDnsPolicy(latestDnsPolicy);
+        else void refreshDnsPolicy();
         markPageCache(page);
       }
     };
@@ -4162,17 +4306,44 @@ function createConfigExtensionsPanel() {
         textContent: '\u5c1a\u672a\u542f\u7528'
       }),
       el('button', {
+        id: 'restoreConfigExtensionsBtn',
+        className: 'ghost compact',
+        attrs: { type: 'button', title: '\u6062\u590d\u6700\u8fd1\u4e00\u6b21\u6210\u529f\u5e94\u7528\u7684\u914d\u7f6e\u6269\u5c55' },
+        textContent: '\u6062\u590d'
+      }),
+      el('button', {
         id: 'resetConfigExtensionsBtn',
         className: 'ghost compact',
-        attrs: { type: 'button' },
+        attrs: { type: 'button', title: '\u6e05\u7a7a\u5f53\u524d\u8349\u7a3f' },
         textContent: '\u6e05\u7a7a'
+      }),
+      el('button', {
+        id: 'previewConfigExtensionsBtn',
+        className: 'ghost compact',
+        attrs: { type: 'button' },
+        textContent: '\u9884\u68c0'
       }),
       el('button', {
         id: 'saveConfigExtensionsBtn',
         className: 'primary compact',
         attrs: { type: 'button' },
-        textContent: '\u6821\u9a8c\u5e76\u4fdd\u5b58'
+        disabled: true,
+        textContent: '\u5e94\u7528'
       })
+    ]),
+    el('section', {
+      className: 'config-extension-preflight',
+      attrs: { 'aria-live': 'polite', 'aria-label': '\u914d\u7f6e\u6269\u5c55\u5e94\u7528\u524d\u68c0\u67e5' }
+    }, [
+      el('header', {}, [
+        el('b', { textContent: '\u5e94\u7528\u524d\u68c0\u67e5' }),
+        el('small', {
+          id: 'configExtensionsPreflightStatus',
+          textContent: '\u4fee\u6539\u8349\u7a3f\u540e\u5148\u9884\u68c0\uff0c\u901a\u8fc7\u540e\u624d\u80fd\u5e94\u7528\u3002'
+        })
+      ]),
+      el('div', { id: 'configExtensionsDiff', className: 'config-extension-diff' }),
+      el('div', { id: 'configExtensionsIssues', className: 'config-extension-issues' })
     ])
   ]);
 }
@@ -4182,6 +4353,123 @@ function configExtensionRuleLines() {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith('#'));
+}
+
+function configExtensionDraft() {
+  return {
+    additionalRulesEnabled: Boolean($('#additionalRulesToggle')?.checked),
+    additionalRulesText: String($('#additionalRulesInput')?.value || ''),
+    overrideScriptEnabled: Boolean($('#overrideScriptToggle')?.checked),
+    overrideScript: String($('#overrideScriptInput')?.value || '')
+  };
+}
+
+function configExtensionDraftSignature(draft = configExtensionDraft()) {
+  return JSON.stringify(draft);
+}
+
+function invalidateConfigExtensionPreview(message = '\u8349\u7a3f\u5df2\u53d8\u66f4\uff0c\u8bf7\u91cd\u65b0\u9884\u68c0\u3002') {
+  configExtensionsPreviewSeq += 1;
+  configExtensionsPreviewSignature = '';
+  const applyButton = $('#saveConfigExtensionsBtn');
+  if (applyButton) applyButton.disabled = true;
+  const status = $('#configExtensionsPreflightStatus');
+  const diff = $('#configExtensionsDiff');
+  const issues = $('#configExtensionsIssues');
+  if (status) status.textContent = message;
+  diff?.replaceChildren();
+  issues?.replaceChildren();
+}
+
+function configExtensionIssueCopy(issue = {}) {
+  const copy = {
+    rules_limit: '\u9644\u52a0\u89c4\u5219\u884c\u6570\u8d85\u8fc7\u4e0a\u9650\u3002',
+    rule_length: '\u8fd9\u6761\u89c4\u5219\u8fc7\u957f\u3002',
+    rule_format: '\u8fd9\u6761\u89c4\u5219\u4e0d\u662f\u6709\u6548\u7684\u5355\u884c\u89c4\u5219\u3002',
+    terminal_rule: '\u4e0d\u80fd\u6dfb\u52a0 MATCH \u6216 FINAL \u515c\u5e95\u89c4\u5219\u3002',
+    override_limit: 'YAML \u8986\u5199\u5185\u5bb9\u8d85\u8fc7\u4e0a\u9650\u3002',
+    override_yaml: 'YAML \u8bed\u6cd5\u9519\u8bef\u3002',
+    override_root: 'YAML \u9876\u5c42\u5fc5\u987b\u662f\u952e\u503c\u5bf9\u5bf9\u8c61\u3002',
+    protected_key: '\u8be5\u952e\u7531 Aegos \u7ba1\u7406\uff0c\u4e0d\u80fd\u5728\u8986\u5199 YAML \u4e2d\u4fee\u6539\u3002',
+    override_depth: 'YAML \u5d4c\u5957\u5c42\u7ea7\u8fc7\u6df1\u3002',
+    override_nodes: 'YAML \u503c\u7684\u6570\u91cf\u8d85\u8fc7\u4e0a\u9650\u3002',
+    override_key_type: 'YAML \u5bf9\u8c61\u952e\u5fc5\u987b\u662f\u6587\u672c\u3002',
+    override_tag: '\u4e0d\u652f\u6301\u81ea\u5b9a\u4e49 YAML \u6807\u7b7e\u3002'
+  };
+  return copy[issue.code] || '\u914d\u7f6e\u6269\u5c55\u8349\u7a3f\u4e0d\u7b26\u5408\u5b89\u5168\u7ea6\u675f\u3002';
+}
+
+function focusConfigExtensionIssue(issue = {}) {
+  const input = issue.surface === 'rules' ? $('#additionalRulesInput') : $('#overrideScriptInput');
+  if (!input) return;
+  const lineNumber = Math.max(1, Number(issue.line) || 1);
+  const columnNumber = Math.max(1, Number(issue.column) || 1);
+  const lines = String(input.value || '').split(/\r?\n/);
+  const lineIndex = Math.min(lineNumber - 1, Math.max(0, lines.length - 1));
+  const before = lines.slice(0, lineIndex).reduce((total, line) => total + line.length + 1, 0);
+  const start = before + Math.min(columnNumber - 1, lines[lineIndex]?.length || 0);
+  input.focus();
+  input.setSelectionRange(start, before + (lines[lineIndex]?.length || 0));
+}
+
+function renderConfigExtensionPreview(result = {}) {
+  const status = $('#configExtensionsPreflightStatus');
+  const diff = $('#configExtensionsDiff');
+  const issues = $('#configExtensionsIssues');
+  if (!status || !diff || !issues) return;
+  diff.replaceChildren();
+  issues.replaceChildren();
+  const issueItems = Array.isArray(result.issues) ? result.issues : [];
+  if (!result.valid) {
+    status.textContent = `\u9884\u68c0\u672a\u901a\u8fc7\uff1a${issueItems.length || 1} \u5904\u9700\u8981\u4fee\u6539\u3002`;
+    issueItems.forEach((issue) => {
+      const location = issue.line
+        ? `${issue.surface === 'rules' ? '\u89c4\u5219' : 'YAML'} \u7b2c ${issue.line} \u884c${issue.column ? `\u7b2c ${issue.column} \u5217` : ''}`
+        : (issue.surface === 'rules' ? '\u9644\u52a0\u89c4\u5219' : 'YAML \u8986\u5199');
+      const button = el('button', {
+        className: 'config-extension-issue',
+        attrs: { type: 'button' }
+      }, [
+        el('b', { textContent: location }),
+        el('span', { textContent: configExtensionIssueCopy(issue) })
+      ]);
+      button.addEventListener('click', () => focusConfigExtensionIssue(issue));
+      issues.appendChild(button);
+    });
+    return;
+  }
+  if (!result.changed) {
+    status.textContent = '\u9884\u68c0\u901a\u8fc7\uff1a\u8349\u7a3f\u4e0e\u6700\u8fd1\u6210\u529f\u5e94\u7528\u7684\u914d\u7f6e\u4e00\u81f4\u3002';
+    diff.appendChild(el('span', { textContent: '\u65e0\u9700\u91cd\u590d\u5e94\u7528\u3002' }));
+    return;
+  }
+  const summary = result.summary || {};
+  const parts = [
+    `\u89c4\u5219 ${summary.rulesBefore || 0} \u2192 ${summary.rulesAfter || 0}`,
+    `\u65b0\u589e ${summary.rulesAdded || 0}`,
+    `\u5220\u9664 ${summary.rulesRemoved || 0}`
+  ];
+  if (summary.rulesEnabledChanged) parts.push('\u89c4\u5219\u5f00\u5173\u53d8\u66f4');
+  if (summary.overrideChanged) parts.push('YAML \u5185\u5bb9\u53d8\u66f4');
+  if (summary.overrideEnabledChanged) parts.push('YAML \u5f00\u5173\u53d8\u66f4');
+  status.textContent = '\u9884\u68c0\u901a\u8fc7\uff1a\u53ef\u4ee5\u5e94\u7528\u8fd9\u4e9b\u53d8\u66f4\u3002';
+  parts.forEach((part) => diff.appendChild(el('span', { textContent: part })));
+}
+
+async function previewConfigExtensions() {
+  const draft = configExtensionDraft();
+  const signature = configExtensionDraftSignature(draft);
+  const requestSeq = ++configExtensionsPreviewSeq;
+  const result = await invoke('config_extensions_preview', { draft });
+  if (requestSeq !== configExtensionsPreviewSeq ||
+      signature !== configExtensionDraftSignature()) return null;
+  renderConfigExtensionPreview(result);
+  configExtensionsPreviewSignature = result?.valid && result?.changed
+    ? signature
+    : '';
+  const applyButton = $('#saveConfigExtensionsBtn');
+  if (applyButton) applyButton.disabled = !configExtensionsPreviewSignature;
+  return result;
 }
 
 function updateConfigExtensionEditorState() {
@@ -4205,8 +4493,14 @@ function updateConfigExtensionEditorState() {
 }
 
 function syncConfigExtensionEditors(settings = {}) {
-  if (configExtensionsDirty) return;
   const extensions = settings.configExtensions || {};
+  configExtensionsAppliedSnapshot = {
+    additionalRulesEnabled: Boolean(extensions.additionalRulesEnabled),
+    additionalRules: Array.isArray(extensions.additionalRules) ? [...extensions.additionalRules] : [],
+    overrideScriptEnabled: Boolean(extensions.overrideScriptEnabled),
+    overrideScript: String(extensions.overrideScript || '')
+  };
+  if (configExtensionsDirty) return;
   const rulesToggle = $('#additionalRulesToggle');
   const rulesInput = $('#additionalRulesInput');
   const scriptToggle = $('#overrideScriptToggle');
@@ -4221,16 +4515,24 @@ function syncConfigExtensionEditors(settings = {}) {
 }
 
 async function saveConfigExtensions() {
+  const draft = configExtensionDraft();
+  if (!configExtensionsPreviewSignature ||
+      configExtensionsPreviewSignature !== configExtensionDraftSignature(draft)) {
+    invalidateConfigExtensionPreview();
+    throw new Error('\u8349\u7a3f\u5df2\u53d8\u66f4\uff0c\u8bf7\u91cd\u65b0\u9884\u68c0\u540e\u518d\u5e94\u7528\u3002');
+  }
   const updates = {
-    additionalRulesEnabled: Boolean($('#additionalRulesToggle')?.checked),
+    additionalRulesEnabled: draft.additionalRulesEnabled,
     additionalRules: configExtensionRuleLines(),
-    overrideScriptEnabled: Boolean($('#overrideScriptToggle')?.checked),
-    overrideScript: String($('#overrideScriptInput')?.value || '').trim()
+    overrideScriptEnabled: draft.overrideScriptEnabled,
+    overrideScript: draft.overrideScript.trim()
   };
   const result = await updateSettingsJob(updates);
   if (!result) throw new Error(lastBackgroundJobError || '\u914d\u7f6e\u6269\u5c55\u4fdd\u5b58\u5931\u8d25');
   configExtensionsDirty = false;
+  configExtensionsPreviewSignature = '';
   await refreshStatus(true);
+  invalidateConfigExtensionPreview('\u5df2\u5e94\u7528\u5e76\u9a8c\u8bc1\uff1b\u7ee7\u7eed\u4fee\u6539\u524d\u53ef\u968f\u65f6\u6062\u590d\u5230\u5f53\u524d\u6210\u529f\u7248\u672c\u3002');
   setNotice('\u914d\u7f6e\u6269\u5c55\u5df2\u901a\u8fc7\u6821\u9a8c\u5e76\u5e94\u7528\u3002');
   return result;
 }
@@ -4286,18 +4588,30 @@ function ensureSettingsWorkspace() {
   const environmentActions = environment.querySelector('.environment-actions');
   const advancedForm = advanced.querySelector('.form-grid');
   const advancedActions = advanced.querySelector('.settings-actions');
+  const extensionsContent = createConfigExtensionsPanel();
+  if (securityGrid && !securityGrid.querySelector('#localBackupPanel')) {
+    securityGrid.appendChild(el('div', { id: 'localBackupPanelAnchor', className: 'settings-wide-row' }));
+  }
+  const extensionsPanel = panel('extensions', '\u914d\u7f6e\u6269\u5c55', extensionsContent);
+  const extensionsActions = extensionsContent.querySelector('.config-extension-actions');
+  if (extensionsActions) {
+    extensionsPanel.querySelector('.settings-workspace-head')?.appendChild(extensionsActions);
+  }
   [
     panel('takeover', '\u63a5\u7ba1', takeoverGrid, $('#settingsProxySummary')),
     panel('dns', 'DNS', dnsGrid),
     panel('security', '\u5b89\u5168\u4e0e\u517c\u5bb9', securityGrid),
     panel('reliability', '\u81ea\u52a8\u6062\u590d', reliabilityGrid, $('#settingsReliabilitySummary')),
     panel('environment', '\u7cfb\u7edf\u68c0\u67e5', el('div', { className: 'settings-environment-content' }, [environmentList, environmentActions]), $('#environmentSummary')),
-    panel('extensions', '\u914d\u7f6e\u6269\u5c55', createConfigExtensionsPanel()),
+    extensionsPanel,
     panel('advanced', '\u9ad8\u7ea7\u8bbe\u7f6e', el('div', { className: 'settings-advanced-content' }, [advancedForm, advancedActions]))
   ].forEach((item) => content.appendChild(item));
   const workspace = el('div', { className: 'settings-workspace' }, [nav, content]);
   overview?.classList.add('hidden');
   layout.appendChild(workspace);
+  const localBackupAnchor = $('#localBackupPanelAnchor');
+  if (localBackupAnchor) localBackupAnchor.remove();
+  ensureLocalBackupUi();
   primary.remove();
   environment.remove();
   advanced.remove();
@@ -4320,12 +4634,14 @@ function ensureSettingsWorkspace() {
   ['additionalRulesToggle', 'overrideScriptToggle'].forEach((id) => {
     $(`#${id}`)?.addEventListener('change', () => {
       configExtensionsDirty = true;
+      invalidateConfigExtensionPreview();
       updateConfigExtensionEditorState();
     });
   });
   ['additionalRulesInput', 'overrideScriptInput'].forEach((id) => {
     $(`#${id}`)?.addEventListener('input', () => {
       configExtensionsDirty = true;
+      invalidateConfigExtensionPreview();
       updateConfigExtensionEditorState();
     });
   });
@@ -4335,13 +4651,43 @@ function ensureSettingsWorkspace() {
     $('#overrideScriptToggle').checked = false;
     $('#overrideScriptInput').value = '';
     configExtensionsDirty = true;
+    invalidateConfigExtensionPreview();
     updateConfigExtensionEditorState();
   });
+  $('#restoreConfigExtensionsBtn')?.addEventListener('click', () => {
+    const applied = configExtensionsAppliedSnapshot;
+    if (!applied) return;
+    $('#additionalRulesToggle').checked = applied.additionalRulesEnabled;
+    $('#additionalRulesInput').value = applied.additionalRules.join('\n');
+    $('#overrideScriptToggle').checked = applied.overrideScriptEnabled;
+    $('#overrideScriptInput').value = applied.overrideScript;
+    configExtensionsDirty = false;
+    invalidateConfigExtensionPreview('\u5df2\u6062\u590d\u5230\u6700\u8fd1\u4e00\u6b21\u6210\u529f\u5e94\u7528\u7684\u914d\u7f6e\u3002');
+    updateConfigExtensionEditorState();
+  });
+  $('#previewConfigExtensionsBtn')?.addEventListener('click', (event) => {
+    runButtonAction(event.currentTarget, '\u9884\u68c0\u4e2d...', previewConfigExtensions);
+  });
   $('#saveConfigExtensionsBtn')?.addEventListener('click', (event) => {
-    runButtonAction(event.currentTarget, '\u6821\u9a8c\u4e2d...', saveConfigExtensions);
+    runButtonAction(event.currentTarget, '\u5e94\u7528\u4e2d...', saveConfigExtensions);
   });
   settingsWorkspaceReady = true;
   setSettingsCategory(settingsCategory);
+}
+
+function scheduleSettingsWorkspaceWarmup() {
+  if (settingsWorkspaceReady || settingsWorkspaceWarmScheduled) return;
+  settingsWorkspaceWarmScheduled = true;
+  runWhenIdle(() => {
+    settingsWorkspaceWarmScheduled = false;
+    if (settingsWorkspaceReady || foregroundBusy || uiStore.state.page === 'settings') return;
+    const startedAt = performance.now();
+    ensureSettingsWorkspace();
+    ensureTakeoverControls();
+    recordUiPerformance('settings-workspace-warmed', {
+      duration: Math.round((performance.now() - startedAt) * 10) / 10
+    });
+  }, 1200);
 }
 
 function renderProfiles() {
@@ -4461,6 +4807,7 @@ function renderSettings(status) {
   const reliability = settings.reliability || {};
   const permissions = status.permissions || {};
   ensureSettingsWorkspace();
+  renderLocalBackupUi();
   ensureTakeoverControls();
   const adminState = $('#adminState');
   if (adminState) {
@@ -4492,17 +4839,10 @@ function renderSettings(status) {
   $('#dnsCustomNameserversInput').value = Array.isArray(settings.dnsCustomNameservers)
     ? settings.dnsCustomNameservers.join(', ')
     : '';
-  $('#dnsCustomNameserversRow').hidden = dnsMode !== 'custom';
-  $('#dnsModeHint').textContent = dnsMode === 'secure'
-    ? 'TUN 连接时强制接管 DNS，避免系统解析绕过代理。'
-    : dnsMode === 'system'
-      ? '兼容模式：不接管 DNS；不能与 TUN 或 DNS 防泄漏同时使用。'
-      : dnsMode === 'custom'
-        ? '使用你指定的加密 DNS；地址不会显示在诊断日志中。'
-        : '自动使用 Aegos 的加密 DNS；TUN 下建议安全接管。';
+  refreshDnsModeControls();
   $('#killToggle').checked = Boolean(settings.killSwitchEnabled);
   $('#ipv6Toggle').checked = Boolean(settings.ipv6Enabled);
-  $('#ipv6Toggle').disabled = true;
+  if (!latestIpv6DnsSafety) $('#ipv6Toggle').disabled = true;
   $('#allowLanToggle').checked = Boolean(settings.allowLan);
   $('#mixedPortInput').value = mixedPort;
   $('#controllerPortInput').value = controllerPort;
@@ -4515,6 +4855,7 @@ function renderSettings(status) {
   syncConfigExtensionEditors(settings);
   renderEnvironmentReadiness();
   if (latestIpv6DnsSafety) renderIpv6DnsSafety(latestIpv6DnsSafety);
+  if (latestDnsPolicy) renderDnsPolicy(latestDnsPolicy);
 }
 
 function readinessLevelLabel(level = '') {
@@ -4612,12 +4953,17 @@ async function refreshEnvironmentReadiness(showNotice = false) {
 }
 
 function ensureIpv6DnsSafetyUi() {
-  if ($('#ipv6DnsSafetyCard')) return;
-  const securitySections = [...document.querySelectorAll('.settings-section')];
-  const target = securitySections.find((section) => section.textContent.includes('DNS') || section.textContent.includes('IPv6'));
-  if (!target) return;
+  if ($('#ipv6DnsSafetyCard')) return true;
+  const target = document.querySelector('[data-settings-panel="dns"]')
+    || [...document.querySelectorAll('.settings-section')]
+      .find((section) => section.textContent.includes('DNS') || section.textContent.includes('IPv6'));
+  if (!target) return false;
   const card = el('div', { id: 'ipv6DnsSafetyCard', className: 'ipv6-safety-card' }, [
-    el('article', {}, [el('span', { textContent: 'IPv6 \u6a21\u5f0f' }), el('b', { id: 'ipv6AutoModeState', textContent: '\u81ea\u52a8' })]),
+    el('article', {}, [el('span', { textContent: 'IPv6 \u8bf7\u6c42' }), el('b', { id: 'ipv6RequestedState', textContent: '-' })]),
+    el('article', {}, [el('span', { textContent: '\u672c\u673a\u80fd\u529b' }), el('b', { id: 'ipv6LocalCapabilityState', textContent: '-' })]),
+    el('article', {}, [el('span', { textContent: '\u8282\u70b9\u80fd\u529b' }), el('b', { id: 'ipv6NodeCapabilityState', textContent: '-' })]),
+    el('article', {}, [el('span', { textContent: '\u8fd0\u884c\u914d\u7f6e' }), el('b', { id: 'ipv6RuntimeConfigState', textContent: '-' })]),
+    el('article', {}, [el('span', { textContent: '\u5b9e\u9645\u72b6\u6001' }), el('b', { id: 'ipv6EffectiveState', textContent: '-' })]),
     el('article', {}, [el('span', { textContent: 'IPv4 \u51fa\u53e3' }), el('b', { id: 'ipv4OutletState', textContent: '-' })]),
     el('article', {}, [el('span', { textContent: 'IPv6 \u51fa\u53e3' }), el('b', { id: 'ipv6OutletState', textContent: '-' })]),
     el('article', {}, [el('span', { textContent: '\u6cc4\u6f0f' }), el('b', { id: 'ipv6LeakState', textContent: '-' })]),
@@ -4625,37 +4971,291 @@ function ensureIpv6DnsSafetyUi() {
     el('small', { id: 'ipv6PlainPrompt', textContent: 'IPv6 / DNS \u72b6\u6001\u81ea\u52a8\u68c0\u6d4b\uff0c\u4e0d\u4f1a\u6539\u53d8\u5f53\u524d\u8fde\u63a5\u3002' })
   ]);
   target.appendChild(card);
+  return true;
+}
+
+function ensureEgressConsistencyUi() {
+  if ($('#egressConsistencyCard')) return true;
+  const target = document.querySelector('[data-settings-panel="dns"]');
+  if (!target) return false;
+  const card = el('div', { id: 'egressConsistencyCard', className: 'ipv6-safety-card egress-consistency-card' }, [
+    el('article', { className: 'wide' }, [
+      el('span', { textContent: '\u51fa\u53e3\u4e00\u81f4\u6027' }),
+      el('b', { id: 'egressOverallState', textContent: '\u5f85\u9a8c\u8bc1' })
+    ]),
+    el('article', {}, [el('span', { textContent: '\u7528\u6237\u9009\u62e9' }), el('b', { id: 'egressRequestedState', textContent: '-' })]),
+    el('article', {}, [el('span', { textContent: '\u8fd0\u884c\u8282\u70b9' }), el('b', { id: 'egressRuntimeNodeState', textContent: '-' })]),
+    el('article', {}, [el('span', { textContent: 'IPv4 \u89c2\u6d4b' }), el('b', { id: 'egressObservedState', textContent: '-' })]),
+    el('article', {}, [el('span', { textContent: 'DNS \u8def\u7531' }), el('b', { id: 'egressDnsRouteState', textContent: '-' })]),
+    el('article', {}, [el('span', { textContent: 'TUN / DNS' }), el('b', { id: 'egressTunState', textContent: '-' })]),
+    el('article', {}, [el('span', { textContent: 'IPv6 \u7b56\u7565' }), el('b', { id: 'egressIpv6State', textContent: '-' })]),
+    el('small', { id: 'egressConsistencyPrompt', textContent: '\u8fde\u63a5\u540e\u5c06\u540c\u65f6\u9a8c\u8bc1\u51fa\u53e3\u3001DNS\u3001TUN \u4e0e IPv6\u3002' })
+  ]);
+  target.appendChild(card);
+  return true;
+}
+
+function renderEgressConsistency(report = latestEgressConsistency) {
+  if (!report || !ensureEgressConsistencyUi()) return;
+  latestEgressConsistency = report;
+  const identity = report.identity || {};
+  const observed = identity.observed || {};
+  const evidence = report.evidence || {};
+  const overall = $('#egressOverallState');
+  const requested = $('#egressRequestedState');
+  const runtime = $('#egressRuntimeNodeState');
+  const outlet = $('#egressObservedState');
+  const dns = $('#egressDnsRouteState');
+  const tun = $('#egressTunState');
+  const ipv6 = $('#egressIpv6State');
+  const prompt = $('#egressConsistencyPrompt');
+  if (!overall || !requested || !runtime || !outlet || !dns || !tun || !ipv6 || !prompt) return;
+  overall.textContent = report.label || '\u5f85\u9a8c\u8bc1';
+  overall.className = report.state === 'consistent' ? 'ok' : report.state === 'risk' ? 'bad' : report.state === 'partial' ? 'warn' : '';
+  requested.textContent = identity.requested?.node || '\u672a\u9009\u62e9';
+  requested.title = requested.textContent;
+  runtime.textContent = identity.runtime?.node || '\u672a\u8fd0\u884c';
+  runtime.title = runtime.textContent;
+  const freshness = observed.freshness === 'current'
+    ? '\u5f53\u524d'
+    : observed.freshness === 'stale'
+      ? '\u65e7\u8bc1\u636e'
+      : '\u672a\u9a8c\u8bc1';
+  outlet.textContent = observed.ip && observed.ip !== '-' ? `${observed.ip}\uff08${freshness}\uff09` : freshness;
+  outlet.title = outlet.textContent;
+  dns.textContent = evidence.dnsRouteConsistent ? '\u4e0e\u51fa\u53e3\u4e00\u81f4' : '\u5f85\u68c0\u67e5';
+  dns.className = evidence.dnsRouteConsistent ? 'ok' : report.state === 'risk' ? 'bad' : '';
+  tun.textContent = evidence.tunEnabled
+    ? evidence.dnsProtected ? '\u5df2\u63a5\u7ba1' : '\u5f85\u9a8c\u8bc1'
+    : report.fixedNode ? '\u672a\u5f00\u542f' : '\u6309\u9700';
+  tun.className = evidence.dnsProtected ? 'ok' : report.state === 'partial' ? 'warn' : '';
+  ipv6.textContent = evidence.ipv6Consistent ? '\u4e00\u81f4' : '\u6709\u98ce\u9669';
+  ipv6.className = evidence.ipv6Consistent ? 'ok' : 'bad';
+  prompt.textContent = report.plainPrompt || '\u5f53\u524d\u8bc1\u636e\u4e0d\u8db3\uff0c\u4e0d\u80fd\u786e\u8ba4\u56fa\u5b9a\u51fa\u53e3\u5df2\u751f\u6548\u3002';
+}
+
+function ensureDnsPolicyUi() {
+  if ($('#dnsPolicyStatus')) return true;
+  const grid = document.querySelector('[data-settings-panel="dns"] .settings-grid');
+  if (!grid) return false;
+  grid.prepend(el('div', {
+    id: 'dnsPolicyStatus',
+    className: 'dns-policy-status settings-wide-row'
+  }, [
+    el('div', { className: 'dns-policy-copy' }, [
+      icon('icon-shield'),
+      el('span', {}, [
+        el('b', { id: 'dnsPolicyTitle', textContent: '\u6b63\u5728\u8bfb\u53d6 DNS \u4fdd\u62a4\u72b6\u6001' }),
+        el('small', { id: 'dnsPolicyDetail', textContent: '\u8fde\u63a5\u540e\u4f1a\u81ea\u52a8\u9009\u62e9\u5408\u9002\u7684\u89e3\u6790\u8def\u5f84\u3002' })
+      ])
+    ]),
+    el('span', { id: 'dnsPolicyBadge', className: 'dns-policy-badge', textContent: '\u8bfb\u53d6\u4e2d' })
+  ]));
+  return true;
+}
+
+function renderDnsPolicy(policy = latestDnsPolicy) {
+  if (!policy || !ensureDnsPolicyUi()) return;
+  const title = $('#dnsPolicyTitle');
+  const detail = $('#dnsPolicyDetail');
+  const badge = $('#dnsPolicyBadge');
+  const toggle = $('#dnsToggle');
+  const hijackHint = $('#dnsHijackHint');
+  if (!title || !detail || !badge || !toggle || !hijackHint) return;
+  const fixed = Boolean(policy.fixedNode);
+  const running = Boolean(policy.running);
+  const requiresTun = Boolean(policy.requiresTun);
+  const requestedMode = policy.requestedMode || policy.mode || 'auto';
+  const protectionState = policy.protectionState
+    || (policy.route === 'SYSTEM' ? 'compatibility' : 'encrypted');
+  const protectedNow = protectionState === 'protected';
+  if (!running) {
+    title.textContent = requestedMode === 'secure'
+      ? '\u5b89\u5168\u63a5\u7ba1\u5df2\u5c31\u7eea'
+      : requestedMode === 'system'
+        ? '\u7cfb\u7edf DNS \u517c\u5bb9\u6a21\u5f0f\u5df2\u5c31\u7eea'
+        : fixed
+          ? '\u56fa\u5b9a\u8282\u70b9\u4fdd\u62a4\u5df2\u5c31\u7eea'
+          : '\u52a0\u5bc6 DNS \u5df2\u5c31\u7eea';
+    detail.textContent = requestedMode === 'secure'
+      ? '\u8fde\u63a5\u5e76\u5f00\u542f TUN \u540e\u5c06\u5f3a\u5236\u63a5\u7ba1 DNS \u8bf7\u6c42\u3002'
+      : fixed
+      ? '\u8fde\u63a5\u540e\u5c06\u4f7f\u7528\u540c\u51fa\u53e3\u8fdc\u7a0b DNS\uff1b\u5f00\u542f TUN \u53ef\u9632\u6b62\u5e94\u7528\u7ed5\u8fc7\u3002'
+      : requestedMode === 'system'
+        ? '\u8fde\u63a5\u540e\u4fdd\u7559\u7cfb\u7edf DNS\uff0c\u4e0d\u542f\u7528 DNS \u63a5\u7ba1\u3002'
+        : '\u8fde\u63a5\u540e\u5c06\u4f7f\u7528\u52a0\u5bc6 DNS\u3002';
+    badge.textContent = '\u8fde\u63a5\u540e\u542f\u7528';
+  } else if (protectedNow) {
+    title.textContent = requestedMode === 'secure'
+      ? '\u5b89\u5168 DNS \u63a5\u7ba1\u5df2\u5f00\u542f'
+      : fixed
+        ? '\u56fa\u5b9a\u8282\u70b9\u4fdd\u62a4\u5df2\u5f00\u542f'
+        : '\u52a0\u5bc6 DNS \u63a5\u7ba1\u5df2\u5f00\u542f';
+    detail.textContent = fixed
+      ? '\u8fdc\u7a0b DNS \u8ddf\u968f\u5f53\u524d\u56fa\u5b9a\u8282\u70b9\uff0cTUN \u5df2\u63a5\u7ba1 DNS \u8bf7\u6c42\u3002'
+      : '\u5f53\u524d\u52a0\u5bc6 DNS \u7531 TUN \u63a5\u7ba1\uff0c\u9632\u6b62\u7cfb\u7edf\u89e3\u6790\u7ed5\u8fc7\u3002';
+    badge.textContent = '\u5df2\u4fdd\u62a4';
+  } else if (protectionState === 'needs-tun' || requiresTun) {
+    title.textContent = requestedMode === 'secure'
+      ? '\u5b89\u5168\u63a5\u7ba1\u7b49\u5f85 TUN'
+      : '\u8fdc\u7a0b DNS \u5df2\u542f\u7528';
+    detail.textContent = requestedMode === 'secure'
+      ? '\u5df2\u4f7f\u7528\u52a0\u5bc6 DNS\uff0c\u4f46\u672a\u5f00\u542f TUN\uff0c\u5c1a\u4e0d\u80fd\u9632\u6b62\u5e94\u7528\u7ed5\u8fc7\u63a5\u7ba1\u3002'
+      : '\u89e3\u6790\u5df2\u8ddf\u968f\u56fa\u5b9a\u8282\u70b9\uff1b\u672a\u5f00\u542f TUN\uff0c\u90e8\u5206\u5e94\u7528\u4ecd\u53ef\u80fd\u7ed5\u8fc7 DNS \u63a5\u7ba1\u3002';
+    badge.textContent = '\u9700\u5f00\u542f TUN';
+  } else if (protectionState === 'compatibility') {
+    title.textContent = '\u7cfb\u7edf DNS \u517c\u5bb9\u6a21\u5f0f';
+    detail.textContent = '\u5f53\u524d\u4e0d\u63a5\u7ba1 DNS\uff0c\u9002\u5408\u7279\u6b8a\u7f51\u7edc\u7684\u517c\u5bb9\u5904\u7406\u3002';
+    badge.textContent = '\u672a\u63a5\u7ba1';
+  } else if (requestedMode === 'custom') {
+    title.textContent = '\u81ea\u5b9a\u4e49\u52a0\u5bc6 DNS \u5df2\u5f00\u542f';
+    detail.textContent = '\u89e3\u6790\u4f7f\u7528\u4f60\u4fdd\u5b58\u7684\u52a0\u5bc6\u89e3\u6790\u5668\uff0c\u5e76\u8ddf\u968f\u5f53\u524d\u7ebf\u8def\u3002';
+    badge.textContent = '\u81ea\u5b9a\u4e49';
+  } else {
+    title.textContent = '\u4f4e\u5ef6\u8fdf\u52a0\u5bc6 DNS \u5df2\u5f00\u542f';
+    detail.textContent = '\u666e\u901a\u8282\u70b9\u4f7f\u7528\u76f4\u8fde\u52a0\u5bc6\u89e3\u6790\uff0c\u51cf\u5c11\u989d\u5916\u4ee3\u7406\u5f80\u8fd4\u3002';
+    badge.textContent = '\u81ea\u52a8';
+  }
+  const hijackLocked = Boolean(policy.hijackLocked);
+  toggle.checked = Boolean(policy.hijackRequested);
+  toggle.disabled = hijackLocked;
+  hijackHint.textContent = requestedMode === 'system'
+    ? '\u7cfb\u7edf DNS \u517c\u5bb9\u6a21\u5f0f\u4e0d\u4f7f\u7528 DNS \u63a5\u7ba1'
+    : requestedMode === 'secure'
+      ? '\u5b89\u5168\u6a21\u5f0f\u8981\u6c42 DNS \u63a5\u7ba1\uff0c\u7531 Aegos \u9501\u5b9a'
+      : hijackLocked
+        ? '\u56fa\u5b9a\u8282\u70b9\u4e0b\u7531 Aegos \u81ea\u52a8\u5f3a\u5236\u63a5\u7ba1'
+        : fixed
+      ? '\u5f00\u542f TUN \u540e\u5c06\u81ea\u52a8\u5f3a\u5236\u63a5\u7ba1'
+      : '\u963b\u6b62 DNS \u7ed5\u8fc7\u5f53\u524d\u4ee3\u7406';
+  const status = $('#dnsPolicyStatus');
+  status?.classList.toggle('is-protected', protectedNow);
+  status?.classList.toggle('needs-action', protectionState === 'needs-tun');
+}
+
+async function refreshDnsPolicy(policy = null) {
+  const requestSeq = ++dnsPolicySeq;
+  ensureDnsPolicyUi();
+  if (policy) {
+    latestDnsPolicy = policy;
+    renderDnsPolicy(policy);
+    return policy;
+  }
+  if (dnsPolicyBusy) {
+    dnsPolicyQueued = true;
+    return latestDnsPolicy;
+  }
+  dnsPolicyBusy = true;
+  try {
+    const result = await invoke('dns_policy_snapshot');
+    if (requestSeq !== dnsPolicySeq) return latestDnsPolicy;
+    latestDnsPolicy = result;
+    if (isPageActive('settings')) renderDnsPolicy(latestDnsPolicy);
+    return latestDnsPolicy;
+  } catch (err) {
+    if (requestSeq !== dnsPolicySeq) return latestDnsPolicy;
+    const detail = $('#dnsPolicyDetail');
+    if (detail) detail.textContent = `DNS \u72b6\u6001\u8bfb\u53d6\u5931\u8d25\uff1a${err.message || err}`;
+    return null;
+  } finally {
+    dnsPolicyBusy = false;
+    if (dnsPolicyQueued) {
+      dnsPolicyQueued = false;
+      void refreshDnsPolicy();
+    }
+  }
 }
 
 function renderIpv6DnsSafety(data = latestIpv6DnsSafety) {
-  ensureIpv6DnsSafetyUi();
-  if (!data) return;
-  $('#ipv6AutoModeState').textContent = data.mode === 'auto' ? '\u81ea\u52a8' : '-';
-  $('#ipv4OutletState').textContent = data.currentNodeIpv4?.ok ? data.currentNodeIpv4.ip : '';
-  $('#ipv6OutletState').textContent = data.currentNodeIpv6?.ok ? data.currentNodeIpv6.ip : (data.localIpv6?.available ? '\u8282\u70b9\u4e0d\u652f\u6301' : '\u672c\u673a\u65e0 IPv6');
+  if (!data || !ensureIpv6DnsSafetyUi()) return;
+  const requestedState = $('#ipv6RequestedState');
+  const localCapabilityState = $('#ipv6LocalCapabilityState');
+  const nodeCapabilityState = $('#ipv6NodeCapabilityState');
+  const runtimeConfigState = $('#ipv6RuntimeConfigState');
+  const effectiveState = $('#ipv6EffectiveState');
+  const ipv4OutletState = $('#ipv4OutletState');
+  const ipv6OutletState = $('#ipv6OutletState');
+  const ipv6LeakState = $('#ipv6LeakState');
+  const dnsLeakState = $('#dnsLeakState');
+  const prompt = $('#ipv6PlainPrompt');
+  const toggle = $('#ipv6Toggle');
+  const toggleHint = $('#ipv6ToggleHint');
+  if (!requestedState || !localCapabilityState || !nodeCapabilityState || !runtimeConfigState || !effectiveState || !ipv4OutletState || !ipv6OutletState || !ipv6LeakState || !dnsLeakState || !prompt || !toggle || !toggleHint) return;
+  const requested = Boolean(data.requested?.enabled);
+  const nodeState = data.nodeCapability?.state || 'unknown';
+  const runtimeState = data.runtimeConfig?.state || 'unknown';
+  const actualState = data.effective?.state || 'inactive';
+  requestedState.textContent = requested ? '\u5df2\u8bf7\u6c42' : '\u672a\u8bf7\u6c42';
+  localCapabilityState.textContent = data.localCapability?.available ? '\u53ef\u7528' : '\u4e0d\u53ef\u7528';
+  nodeCapabilityState.textContent = nodeState === 'supported'
+    ? '\u652f\u6301'
+    : nodeState === 'unsupported'
+      ? '\u4e0d\u652f\u6301'
+      : '\u5f85\u8fde\u63a5\u68c0\u6d4b';
+  runtimeConfigState.textContent = runtimeState === 'enabled'
+    ? '\u5df2\u542f\u7528'
+    : runtimeState === 'disabled'
+      ? '\u5df2\u5173\u95ed'
+      : runtimeState === 'inactive'
+        ? '\u672a\u8fd0\u884c'
+        : '\u672a\u786e\u8ba4';
+  const effectiveLabels = {
+    active: '\u5df2\u751f\u6548',
+    disabled: '\u5df2\u5173\u95ed',
+    blocked: '\u5df2\u963b\u65ad',
+    'local-unavailable': '\u672c\u673a\u4e0d\u53ef\u7528',
+    'config-mismatch': '\u914d\u7f6e\u672a\u751f\u6548',
+    inactive: '\u672a\u8fd0\u884c'
+  };
+  effectiveState.textContent = effectiveLabels[actualState] || '\u672a\u786e\u8ba4';
+  ipv4OutletState.textContent = data.currentNodeIpv4?.ok ? data.currentNodeIpv4.ip : '';
+  ipv6OutletState.textContent = data.currentNodeIpv6?.ok ? data.currentNodeIpv6.ip : (data.localIpv6?.available ? '\u8282\u70b9\u4e0d\u652f\u6301' : '\u672c\u673a\u65e0 IPv6');
   const leak = data.ipv6Leak || {};
-  $('#ipv6LeakState').textContent = leak.level === 'risk' ? '\u6709\u98ce\u9669' : leak.level === 'blocked' ? '\u5df2\u963b\u65ad' : '\u65e0';
-  $('#ipv6LeakState').classList.toggle('bad', leak.level === 'risk');
-  $('#ipv6LeakState').classList.toggle('ok', leak.level !== 'risk');
-  $('#dnsLeakState').textContent = data.dnsLeak?.ok ? '\u5b89\u5168' : '\u5f02\u5e38';
-  $('#dnsLeakState').classList.toggle('bad', !data.dnsLeak?.ok);
-  $('#dnsLeakState').classList.toggle('ok', Boolean(data.dnsLeak?.ok));
-  $('#ipv6PlainPrompt').textContent = data.plainPrompt || 'IPv6 / DNS \u72b6\u6001\u81ea\u52a8\u68c0\u6d4b\uff0c\u4e0d\u4f1a\u6539\u53d8\u5f53\u524d\u8fde\u63a5\u3002';
+  ipv6LeakState.textContent = leak.level === 'risk' ? '\u6709\u98ce\u9669' : leak.level === 'blocked' ? '\u5df2\u963b\u65ad' : '\u65e0';
+  ipv6LeakState.classList.toggle('bad', leak.level === 'risk');
+  ipv6LeakState.classList.toggle('ok', leak.level !== 'risk');
+  dnsLeakState.textContent = data.dnsLeak?.ok ? '\u5b89\u5168' : '\u5f02\u5e38';
+  dnsLeakState.classList.toggle('bad', !data.dnsLeak?.ok);
+  dnsLeakState.classList.toggle('ok', Boolean(data.dnsLeak?.ok));
+  toggle.checked = requested;
+  toggle.disabled = !data.canChangeRequested;
+  toggleHint.textContent = data.canChangeRequested
+    ? requested
+      ? '\u5f53\u524d\u8bf7\u6c42\u5df2\u4fdd\u5b58\uff1b\u53ef\u5173\u95ed\u5e76\u8ba9 Aegos \u56de\u6eda\u8fd0\u884c\u914d\u7f6e\u3002'
+      : '\u672c\u673a\u548c\u5f53\u524d\u8282\u70b9\u5747\u5df2\u9a8c\u8bc1\u652f\u6301\uff0c\u53ef\u542f\u7528\u3002'
+    : requested
+      ? '\u5f53\u524d\u8bf7\u6c42\u5c1a\u672a\u9a8c\u8bc1\u751f\u6548\uff1b\u8fde\u63a5\u540e\u5c06\u7ee7\u7eed\u68c0\u6d4b\u3002'
+      : '\u53ea\u6709\u8fde\u63a5\u540e\u9a8c\u8bc1\u672c\u673a\u4e0e\u8282\u70b9\u5747\u652f\u6301\u65f6\u624d\u53ef\u542f\u7528\u3002';
+  prompt.textContent = data.plainPrompt || 'IPv6 / DNS \u72b6\u6001\u81ea\u52a8\u68c0\u6d4b\uff0c\u4e0d\u4f1a\u6539\u53d8\u5f53\u524d\u8fde\u63a5\u3002';
+  if (data.egressConsistency) renderEgressConsistency(data.egressConsistency);
 }
 
 async function refreshIpv6DnsSafety() {
-  if (ipv6DnsSafetyBusy) return;
+  const requestSeq = ++ipv6DnsSafetySeq;
+  if (ipv6DnsSafetyBusy) {
+    ipv6DnsSafetyQueued = true;
+    return;
+  }
   ipv6DnsSafetyBusy = true;
   ensureIpv6DnsSafetyUi();
   try {
     const data = await invoke('ipv6_dns_safety_snapshot');
+    if (requestSeq !== ipv6DnsSafetySeq) return;
     latestIpv6DnsSafety = data;
+    latestEgressConsistency = data.egressConsistency || null;
     if (isPageActive('settings')) renderIpv6DnsSafety(data);
   } catch (err) {
+    if (requestSeq !== ipv6DnsSafetySeq) return;
     latestIpv6DnsSafety = null;
-    if (isPageActive('settings')) $('#ipv6PlainPrompt').textContent = `IPv6/DNS \u68c0\u6d4b\u5931\u8d25\uff1a${err.message || err}`;
+    latestEgressConsistency = null;
+    const prompt = isPageActive('settings') ? $('#ipv6PlainPrompt') : null;
+    if (prompt) prompt.textContent = `IPv6/DNS \u68c0\u6d4b\u5931\u8d25\uff1a${err.message || err}`;
   } finally {
     ipv6DnsSafetyBusy = false;
+    if (ipv6DnsSafetyQueued) {
+      ipv6DnsSafetyQueued = false;
+      void refreshIpv6DnsSafety();
+    }
   }
 }
 
@@ -4705,10 +5305,14 @@ function setOutboundIpText(value, title = '') {
   $('#outboundMetric').setAttribute('title', title || text);
 }
 
-function renderOutboundIpFromStatus(value) {
+function renderOutboundIpFromStatus(value, availability = {}) {
   if (outboundIpPendingSeq) return;
   outboundIpLastStable = value || outboundIpLastStable || '-';
-  setOutboundIpText(outboundIpLastStable);
+  const stale = availability.state === 'stale' && outboundIpLastStable !== '-';
+  setOutboundIpText(
+    stale ? `${outboundIpLastStable}\uff08\u65e7\uff09` : outboundIpLastStable,
+    stale ? availability.detail || '\u843d\u5730 IP \u662f\u65e7\u7ed3\u679c' : outboundIpLastStable
+  );
 }
 
 function statusUiSignature(status = {}) {
@@ -4791,6 +5395,7 @@ function renderStatus(status) {
   const systemProxyApplied = Boolean(connection.systemProxyApplied ?? (trafficTakeover && Boolean(settings.systemProxy)));
   const systemProxyWanted = Boolean(connection.systemProxyWanted ?? settings.systemProxy);
   const availability = networkAvailabilityInfo(status);
+  if (!coreReady || trafficTakeover) standbyRemediationNotice = '';
   if (trafficTakeover && !wasTakeover) startedAt = Date.now();
   if (!trafficTakeover) startedAt = Date.now();
   const modeText = modeLabel(status.mode);
@@ -4836,7 +5441,7 @@ function renderStatus(status) {
   $('#tunHomeToggle').checked = Boolean(settings.tunEnabled);
   $('#lanIpState').textContent = status.network?.lanIp || '-';
   $('#proxyPortState').textContent = formatProxyPort(status.network?.proxyEndpoint);
-  renderOutboundIpFromStatus(status.network?.outboundIp || '-');
+  renderOutboundIpFromStatus(status.network?.outboundIp || '-', status.network?.availability || {});
   $('#proxyMetric').textContent = formatProxyPort(status.network?.proxyEndpoint);
 
   renderActiveConnectionMetric();
@@ -5308,13 +5913,22 @@ function scheduleStartupAutoSpeedTest() {
   startupAutoSpeedScheduled = true;
   const deadline = Date.now() + 60000;
   const retry = () => {
+    if (window.__AEGOS_NATIVE_PERF_SUPPRESS_AUTO_SPEED__ === true) return;
     if (!startupAutoSpeedStarted && Date.now() < deadline) setTimeout(start, 600);
   };
   const start = () => {
+    // The hidden native WM-04 harness sets this before its delayed startup
+    // callback runs. It is not a product setting or a user-visible control.
+    if (window.__AEGOS_NATIVE_PERF_SUPPRESS_AUTO_SPEED__ === true) return;
     requestAnimationFrame(() => runWhenIdle(async () => {
+      if (window.__AEGOS_NATIVE_PERF_SUPPRESS_AUTO_SPEED__ === true) return;
       if (startupAutoSpeedStarted) return;
       const hasNodes = (latestGroup?.items || []).some((item) => isRealProxyNodeItem(item));
-      if (!hasNodes || isForegroundHot() || foregroundBusy > 0 || backgroundJobBusy > 0 || isSpeedTestActive()) {
+      // Automatic measurement must never hide a synchronous standby-core start
+      // behind an otherwise idle UI. A user can still measure while disconnected;
+      // that explicit action keeps the existing standby-core path.
+      const coreReady = Boolean(latestStatus?.coreReady ?? latestStatus?.running);
+      if (!hasNodes || !coreReady || isForegroundHot() || foregroundBusy > 0 || backgroundJobBusy > 0 || isSpeedTestActive()) {
         retry();
         return;
       }
@@ -5665,6 +6279,7 @@ async function refreshOutboundIpAfterNodeChange(options = {}) {
       outboundIpLastStable = ip;
       await refreshStatus(true);
       setOutboundIpText(ip);
+      void refreshIpv6DnsSafety();
     },
     successNotice: (value) => seq === outboundIpRequestSeq && options.manual ? `\u843d\u5730 IP \u5df2\u5237\u65b0\uff1a${value?.ip || '-'}` : '',
     failureNotice: (err) => seq === outboundIpRequestSeq && options.manual ? `\u5237\u65b0\u843d\u5730 IP \u5931\u8d25\uff1a${err.message || err}` : ''
@@ -5679,6 +6294,7 @@ async function refreshOutboundIpAfterNodeChange(options = {}) {
       previous === '-' ? '\u67e5\u8be2\u5931\u8d25' : `${previous}（旧）`,
       lastBackgroundJobError || '\u65e0\u6cd5\u83b7\u53d6\u843d\u5730 IP'
     );
+    void refreshIpv6DnsSafety();
   }
   return result;
 }
@@ -5806,26 +6422,28 @@ async function repairSystemProxyJob() {
   return result;
 }
 
+function corePowerSuccessNotice(kind, result) {
+  if (kind === 'stopCore') return '已断开连接';
+  if (kind === 'startCore' && !result?.trafficTakeover) {
+    return result?.message || '核心已启动，但尚未接管流量。请检查系统代理或 TUN 设置后重试连接。';
+  }
+  return '已连接，正在刷新落地 IP';
+}
+
 async function corePowerJob(kind, options = {}) {
   const snapshot = snapshotUiState();
-  const targetTakeover = kind === 'stopCore' ? false : true;
-  if (latestStatus) {
-    latestStatus = {
-      ...latestStatus,
-      running: targetTakeover,
-      coreReady: targetTakeover,
-      trafficTakeover: targetTakeover,
-      standby: false
-    };
-    renderStatus(latestStatus);
-  }
   const result = await runBackgroundJob(kind, {}, {
     pendingNotice: options.pendingNotice,
     progressNotice: (job) => job?.message ? `${job.label}${job.message}` : '',
-    onSuccess: async () => {
+    onSuccess: async (value) => {
+      if (kind === 'startCore' && !value?.trafficTakeover) {
+        standbyRemediationNotice = corePowerSuccessNotice(kind, value);
+      } else if (kind === 'startCore' || kind === 'stopCore') {
+        standbyRemediationNotice = '';
+      }
       await refreshStatus(true);
       await refreshNodes(true);
-      if (kind === 'startCore') void refreshOutboundIpAfterNodeChange();
+      if (kind === 'startCore' && value?.trafficTakeover) void refreshOutboundIpAfterNodeChange();
     },
     successNotice: options.successNotice,
     failureNotice: options.failureNotice
@@ -5883,10 +6501,9 @@ async function toggleCore() {
     setNotice(stopping ? '正在断开连接...' : '正在建立连接...');
     await corePowerJob(stopping ? 'stopCore' : 'startCore', {
       pendingNotice: stopping ? '正在后台断开连接...' : '正在后台建立连接...',
-      successNotice: stopping ? '已断开连接' : '已连接，正在刷新落地 IP',
+      successNotice: (result) => corePowerSuccessNotice(stopping ? 'stopCore' : 'startCore', result),
       failureNotice: (err) => `核心操作失败：${err.message || err}`
     });
-    setNotice(latestStatus?.trafficTakeover ? '已连接，正在刷新落地 IP' : '已断开连接');
   } catch (err) {
     setNotice(`操作失败：${err.message || err}`);
   } finally {
@@ -5932,10 +6549,11 @@ async function applyMode(mode) {
       pendingNotice: '正在切换模式...',
       failureNotice: (err) => `模式切换失败：${err.message || err}`
     }),
-    refresh: async () => {
+    refresh: async (result) => {
       await refreshStatus(true);
       if (isPageActive('routing')) await refreshRoutingSnapshot();
       else scheduleRoutingSnapshotPrefetch();
+      if (result && latestStatus?.trafficTakeover) void refreshOutboundIpAfterNodeChange();
     },
     pendingNotice: '正在切换模式...',
     successNotice: '模式已切换',
@@ -5959,10 +6577,17 @@ async function selectNode(name, groupOverride = '') {
     }),
     refresh: async (result) => {
       await refreshNodes(true, { target: 'nodes' });
+      if (result?.dnsPolicy) await refreshDnsPolicy(result.dnsPolicy);
       if (result) void refreshOutboundIpAfterNodeChange();
     },
     pendingNotice: '正在切换节点...',
-    successNotice: (result) => result ? `已切换节点：${name}` : '',
+    successNotice: (result) => {
+      if (!result) return '';
+      const policy = result.dnsPolicy;
+      if (policy?.fixedNode && policy?.hijackEffective) return `已切换节点：${name}；固定节点保护已开启`;
+      if (policy?.fixedNode && policy?.requiresTun) return `已切换节点：${name}；远程 DNS 已启用，开启 TUN 可防止应用绕过`;
+      return `已切换节点：${name}`;
+    },
     failureNotice: (err) => `节点切换失败：${err.message || err}`
   });
 }
@@ -6580,6 +7205,8 @@ async function updateSetting(key, value) {
       refresh: async () => {
         await refreshStatus(true);
         await refreshNodes(true);
+        if (['tunEnabled', 'dnsHijackEnabled'].includes(key)) await refreshDnsPolicy();
+        if (['tunEnabled', 'dnsHijackEnabled', 'ipv6Enabled'].includes(key)) void refreshIpv6DnsSafety();
       },
       pendingNotice: key === 'tunEnabled'
         ? (wasConnected ? '正在切换 TUN，当前连接会短暂重载...' : '正在保存 TUN 偏好...')
@@ -8721,13 +9348,20 @@ if (updateAllProfilesBtn) updateAllProfilesBtn.onclick = (event) => runButtonAct
   ['tunToggle', 'tunEnabled'],
   ['dnsToggle', 'dnsHijackEnabled'],
   ['killToggle', 'killSwitchEnabled'],
-  ['ipv6Toggle', 'ipv6Enabled'],
   ['allowLanToggle', 'allowLan'],
   ['reliabilityAutoToggle', 'reliabilityAuto'],
   ['profileFailoverToggle', 'reliabilityProfileFailover']
 ].forEach(([id, key]) => {
   $(`#${id}`).onchange = (event) => updateSetting(key, event.target.checked);
 });
+
+$('#ipv6Toggle').onchange = (event) => {
+  if (!latestIpv6DnsSafety?.canChangeRequested) {
+    event.target.checked = Boolean(latestStatus?.settings?.ipv6Enabled);
+    return;
+  }
+  updateSetting('ipv6Enabled', event.target.checked);
+};
 
 function dnsCustomNameserversFromInput() {
   return String($('#dnsCustomNameserversInput').value || '')
@@ -8738,14 +9372,23 @@ function dnsCustomNameserversFromInput() {
 
 function refreshDnsModeControls() {
   const mode = $('#dnsModeSelect').value || 'auto';
+  const tunEnabled = Boolean(latestStatus?.settings?.tunEnabled);
+  const systemOption = $('#dnsModeSelect').querySelector('option[value="system"]');
+  const conflict = mode === 'system' && tunEnabled;
+  if (systemOption) systemOption.disabled = tunEnabled;
+  $('#saveDnsModeBtn').disabled = conflict;
   $('#dnsCustomNameserversRow').hidden = mode !== 'custom';
   $('#dnsModeHint').textContent = mode === 'secure'
-    ? 'TUN 连接时强制接管 DNS，避免系统解析绕过代理。'
+    ? tunEnabled
+      ? 'TUN 已开启：保存后将强制接管 DNS，避免系统解析绕过代理。'
+      : '安全模式会使用加密 DNS；需开启 TUN 才能实际接管并防止应用绕过。'
     : mode === 'system'
-      ? '兼容模式：不接管 DNS；不能与 TUN 或 DNS 防泄漏同时使用。'
+      ? conflict
+        ? '系统 DNS 不能与 TUN 同时使用；请先关闭 TUN，或选择其他 DNS 模式。'
+        : '兼容模式：保留系统 DNS，不启用 DNS 接管。'
       : mode === 'custom'
-        ? '输入 1–4 个 https:// 或 tls:// 解析器。'
-        : '自动使用 Aegos 的加密 DNS；TUN 下建议安全接管。';
+        ? '输入 1–4 个 https:// 或 tls:// 解析器；查询会跟随当前线路。'
+        : '普通节点使用低延迟加密 DNS；固定节点自动改用同出口远程 DNS。';
 }
 
 $('#dnsModeSelect').onchange = refreshDnsModeControls;
@@ -8758,6 +9401,8 @@ $('#saveDnsModeBtn').onclick = (event) => runButtonAction(event.currentTarget, '
   await updateSettingsJob(updates);
   await refreshStatus(true);
   await refreshNodes(true);
+  await refreshDnsPolicy();
+  void refreshIpv6DnsSafety();
 });
 
 $('#homeRegionRow')?.addEventListener('click', (event) => {
@@ -9251,6 +9896,7 @@ Promise.all([setupSpeedTestEvents(), setupRuntimeStatusEvents()])
   .catch(() => false)
   .then(() => initializeAppData())
   .then(() => {
+    scheduleSettingsWorkspaceWarmup();
     scheduleStartupAutoSpeedTest();
   })
   .catch(() => {

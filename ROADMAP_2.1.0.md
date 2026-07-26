@@ -1,5 +1,8 @@
 # Aegos 2.1.0 Roadmap
 
+> Historical archive status (2026-07-26): this versioned roadmap has no
+> execution authority. See docs/roadmap.md and PLANS.md for the current route.
+
 ## Goal
 
 Bring Aegos closer to FlClash-style responsiveness under real subscription scale and slow network conditions.

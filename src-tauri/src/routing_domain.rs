@@ -360,6 +360,40 @@ pub(crate) fn rule_target(rule: &str) -> Option<String> {
     parts.next().map(str::to_string)
 }
 
+/// Validates the target field of existing Mihomo rules after Aegos has
+/// compiled its runtime group catalog. This keeps raw rule vocabulary out of
+/// lifecycle orchestration while ensuring a profile cannot preflight into a
+/// missing target at core launch.
+pub(crate) fn validate_runtime_rule_targets<'a>(
+    rules: impl IntoIterator<Item = (usize, &'a str)>,
+    proxy_names: &HashSet<String>,
+    proxy_group_names: &HashSet<String>,
+) -> Result<(), String> {
+    let mut missing = Vec::new();
+    for (index, rule) in rules {
+        let target = rule_target(rule).unwrap_or_default();
+        let builtin = matches!(
+            target.to_ascii_uppercase().as_str(),
+            "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS" | "COMPATIBLE"
+        );
+        if target.is_empty() {
+            missing.push(format!("rules[{index}] missing target"));
+        } else if !builtin && !proxy_names.contains(&target) && !proxy_group_names.contains(&target)
+        {
+            missing.push(format!("rules[{index}]->{target}"));
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    missing.sort();
+    missing.dedup();
+    Err(format!(
+        "Config preflight failed: rule target(s) missing from proxies and proxy groups: {}",
+        missing.join(", ")
+    ))
+}
+
 pub(crate) fn replace_rule_target(
     rule: &str,
     old_target: &str,
@@ -485,6 +519,22 @@ mod tests {
                 "DOMAIN,keep.example,Proxies".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn runtime_rule_target_validation_handles_match_and_standard_rules() {
+        let proxies = HashSet::from(["Node A".to_string()]);
+        let groups = HashSet::from(["Proxies".to_string()]);
+        validate_runtime_rule_targets(
+            [(0, "MATCH,Proxies"), (1, "DOMAIN,example.com,Node A")],
+            &proxies,
+            &groups,
+        )
+        .expect("known runtime targets");
+
+        let error = validate_runtime_rule_targets([(3, "MATCH,Missing")], &proxies, &groups)
+            .expect_err("missing runtime target");
+        assert!(error.contains("rules[3]->Missing"));
     }
 
     #[test]

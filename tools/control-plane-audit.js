@@ -15,6 +15,8 @@ const appConfig = read('src-tauri', 'src', 'app_config.rs');
 const storage = read('src-tauri', 'src', 'storage_runtime.rs');
 const windowsProcess = read('src-tauri', 'src', 'windows_process.rs');
 const speedRuntime = read('src-tauri', 'src', 'speed_runtime.rs');
+const dnsPolicy = read('src-tauri', 'src', 'dns_policy.rs');
+const nodeSelection = read('src-tauri', 'src', 'node_selection.rs');
 const app = read('src', 'app.js');
 const pkg = JSON.parse(read('package.json'));
 
@@ -115,6 +117,20 @@ check(
     !main.includes('struct SpeedTestTarget') &&
     !main.includes('struct SpeedTargetCatalog'),
   'main.rs coordinates measurement but does not define its domain model'
+);
+
+check(
+  'DNS policy and node selection transactions have focused owners',
+  main.includes('mod dns_policy;') &&
+    main.includes('mod node_selection;') &&
+    !main.includes('fn dns_policy_from_runtime_config(') &&
+    !main.includes('fn change_proxy(') &&
+    dnsPolicy.includes('pub(super) fn from_runtime_config(') &&
+    dnsPolicy.includes('pub(super) fn dns_policy_snapshot(&self)') &&
+    nodeSelection.includes('pub(super) fn change_proxy(&mut self') &&
+    nodeSelection.includes('DNS policy reload failed after node switch:') &&
+    nodeSelection.includes('settings rollback: {}; node rollback: {}; runtime rollback: {}'),
+  'policy snapshot shaping and apply/persist/reload/rollback orchestration stay outside main.rs'
 );
 
 check(

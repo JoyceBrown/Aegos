@@ -2,6 +2,7 @@ use serde::Serialize;
 use serde_json::{json, Value as JsonValue};
 use std::{
     collections::HashMap,
+    panic::{catch_unwind, AssertUnwindSafe},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -36,6 +37,8 @@ pub fn now_secs() -> u64 {
 pub fn new_job_record(id: String, kind: String, label: String) -> JobRecord {
     let now = now_secs();
     let cancellable = kind == "updateAllProfiles";
+    #[cfg(feature = "native-measurement")]
+    let cancellable = cancellable || kind == "nativeMeasurementDelay";
     JobRecord {
         id,
         kind,
@@ -117,6 +120,19 @@ pub fn finish_job(jobs: &JobStore, id: &str, result: Result<JsonValue, String>) 
                 job.error = Some(err);
             }
         }
+    }
+}
+
+pub fn guard_job_worker<F>(jobs: &JobStore, id: &str, worker: F)
+where
+    F: FnOnce(),
+{
+    if catch_unwind(AssertUnwindSafe(worker)).is_err() {
+        finish_job(
+            jobs,
+            id,
+            Err("Background task stopped unexpectedly. Retry the operation.".to_string()),
+        );
     }
 }
 
@@ -225,5 +241,44 @@ mod tests {
                 .and_then(JsonValue::as_bool),
             Some(false)
         );
+    }
+
+    #[cfg(feature = "native-measurement")]
+    #[test]
+    fn native_measurement_job_is_cancellable_in_the_test_build_only() {
+        let job = new_job_record(
+            "job-native-measurement".to_string(),
+            "nativeMeasurementDelay".to_string(),
+            "native measurement".to_string(),
+        );
+        assert!(job.cancellable);
+    }
+
+    #[test]
+    fn panicked_worker_finishes_as_failed_instead_of_staying_running() {
+        let jobs: JobStore = Arc::new(Mutex::new(HashMap::new()));
+        jobs.lock().unwrap().insert(
+            "job-panic".to_string(),
+            new_job_record(
+                "job-panic".to_string(),
+                "diagnostics".to_string(),
+                "diagnostics".to_string(),
+            ),
+        );
+        set_job_state(&jobs, "job-panic", "running", 1, 2, "checking");
+
+        guard_job_worker(&jobs, "job-panic", || panic!("fixture worker panic"));
+
+        let snapshot =
+            job_status_snapshot(&jobs, Some("job-panic".to_string())).expect("failed snapshot");
+        assert_eq!(
+            snapshot.get("state").and_then(JsonValue::as_str),
+            Some("failed")
+        );
+        assert!(snapshot
+            .get("error")
+            .and_then(JsonValue::as_str)
+            .unwrap_or_default()
+            .contains("stopped unexpectedly"));
     }
 }

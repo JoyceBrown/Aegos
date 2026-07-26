@@ -1,5 +1,10 @@
 # Aegos Mihomo API Contract
 
+> Authority note (2026-07-26): this is a durable controller-boundary contract,
+> not an execution plan. Rows marked "planned" define admission and safety
+> requirements only; they cannot authorize implementation. Current work is
+> selected exclusively by `PLANS.md` under `docs/roadmap.md`.
+
 Version: 3.6.33
 Updated: 2026-07-17
 
