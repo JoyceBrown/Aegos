@@ -1,11 +1,11 @@
 # Aegos Windows Real-Use Reliability Plan
 
 plan_id: AEGOS-WINDOWS-RELIABILITY
-status: active
-authority: exclusive
-current_task_id: WR-05
+status: completed
+authority: none
+current_task_id: none
 roadmap_reference: docs/roadmap.md
-continuation_policy: validate_then_advance
+continuation_policy: wait_for_user
 completion_policy: all_required_items
 priority_basis: The current-code three-angle review found P1 truth, recovery,
   and responsiveness defects plus bounded P2 robustness and ownership gaps.
@@ -19,7 +19,7 @@ latest_change_id: CHANGE-034
 latest_change_class: task_adjustment
 change_authority_reference: none
 delegated_execution: none
-on_complete: validate_and_close
+on_complete: wait
 
 ## Objective
 
@@ -257,7 +257,7 @@ satisfied. Missing evidence is `untested`, not passed.
 | WR-02 | completed | Every manual speed-test click paints immediate live numeric progress before real results, and cold-start navigation can leave Connections without waiting behind result rendering or startup work. | CHANGE-029 completed in the source-bound 3.6.67 candidate. |
 | WR-03 | completed | Connection truth, failed recovery, background status availability, and interrupted-takeover evidence remain correct under controlled P1/P2 negative paths. | Closed with host-safe behavioral controls and affected gates; 3.6.67 Release remains historical baseline. |
 | WR-04 | completed | The 3.6.67 UI distinguishes current effective network facts from measurement history without hiding diagnostics or connection management. | Closed with deterministic UI controls and fresh host-safe gates; installer and GitHub delivery remain historical evidence. |
-| WR-05 | active | A source-bound unsigned 3.6.68 installer and matching GitHub Release preserve the completed WR-03/WR-04 work without mutating v3.6.67 history. | CHANGE-034 user-authorized delivery. |
+| WR-05 | completed | A source-bound unsigned 3.6.68 installer and matching GitHub Release preserve the completed WR-03/WR-04 work without mutating v3.6.67 history. | Completed: source/tag `e4dd999f1d97ff079676f109900facceb7dfc572`; remote asset SHA-256 matches the recorded installer. |
 
 WR-03 is a host-safe code and isolated-fixture repair task. It is not authority
 to perform controlled live takeover testing, which remains blocked until a
@@ -316,8 +316,9 @@ installer, or publication occurs.
    digest and source target after upload.
 
 Exit: every mandatory gate passes, installer bytes match the release note and
-remote asset digest, `HEAD`, `origin/main`, and `v3.6.68` resolve to one
-commit, and no host-network or FlClash action occurred.
+remote asset digest, and `v3.6.68` resolves to the exact source/evidence commit
+that produced the asset. A post-publication evidence-only commit may follow on
+`origin/main`; no host-network or FlClash action occurs.
 
 ## WR-01: Establish The Real-Use Defect Baseline
 

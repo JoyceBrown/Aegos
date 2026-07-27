@@ -5,17 +5,17 @@ execution_authority: none
 plan_id: AEGOS-WINDOWS-RELIABILITY
 task_id: WR-05
 change_id: CHANGE-034
-evidence_state: prepublication_complete
+evidence_state: closed
 opened_at: 2026-07-27T12:10:00Z
-updated_at: 2026-07-27T12:36:16Z
+updated_at: 2026-07-27T12:38:19Z
+closed_at: 2026-07-27T12:38:19Z
 base_git_head: 7720fac057ec290b7ddbbb5e5fd3849f71449f1a
 candidate_version: 3.6.68
 host_boundary: Browser fixtures and isolated build data only. No Windows
   takeover, proxy, DNS, firewall, TUN, FlClash, or host-network action.
 
-This register records CHANGE-034 delivery facts. It cannot authorize work.
-The source commit, tag, GitHub Release, remote asset digest, and final closure
-are recorded only after their respective operations complete.
+This register records completed CHANGE-034 delivery facts. It cannot authorize
+follow-on work.
 
 ## Artifact Identity
 
@@ -82,8 +82,15 @@ are recorded only after their respective operations complete.
 - The dirty source/evidence worktree includes cumulative accepted WR-03/WR-04
   repairs plus this delivery work; no unrelated change was reverted.
 
-## Publication Pending
+## Publication Closure
 
-Publish only the artifact named and hashed above after the source/evidence
-commit is pushed. Verify the remote GitHub asset name, size, and SHA-256
-against this record before closing WR-05.
+- Source commit and tag: `e4dd999f1d97ff079676f109900facceb7dfc572` /
+  `v3.6.68`.
+- GitHub Release: `https://github.com/JoyceBrown/Aegos/releases/tag/v3.6.68`
+  published at `2026-07-27T12:38:19Z`.
+- Remote asset: `Aegos_3.6.68_x64-setup.exe`, state `uploaded`,
+  `16,335,672` bytes, digest
+  `sha256:839804d895d4c5af77568e2e876407a6b29f17bf33fdd9e771165ea387b7ade4`.
+- The remote target, asset name, byte count, and SHA-256 equal this record and
+  the local built candidate. The release is public, not draft, not prerelease,
+  and explicitly unsigned.

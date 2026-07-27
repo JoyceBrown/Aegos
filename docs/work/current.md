@@ -1,10 +1,10 @@
 # Current Work Checkpoint
 
 record_kind: checkpoint
-execution_authority: exclusive
+execution_authority: none
 active_plan: ../../PLANS.md
 plan_id: AEGOS-WINDOWS-RELIABILITY
-current_task_id: WR-05
+current_task_id: none
 latest_change_id: CHANGE-034
 latest_change_class: task_adjustment
 updated_at: 2026-07-27
@@ -53,6 +53,13 @@ source-bound unsigned `3.6.68` NSIS installer, commit and push the accepted
 source/evidence, then create a new GitHub Release with the exact installer
 SHA-256. `v3.6.67` remains immutable history. Signing, automatic updates,
 live takeover, FlClash, and host-network changes remain excluded.
+
+WR-05 is complete. `v3.6.68` targets source commit
+`e4dd999f1d97ff079676f109900facceb7dfc572`; the published GitHub Release
+contains `Aegos_3.6.68_x64-setup.exe` (16,335,672 bytes, SHA-256
+`839804d895d4c5af77568e2e876407a6b29f17bf33fdd9e771165ea387b7ade4`).
+The installer is explicitly unsigned. The v3.6.67 tag and asset remain
+unchanged historical evidence.
 
 Signing, automatic updates, feature breadth, new installer/release work, and
 live Windows takeover remain outside this task. FlClash and the host network
@@ -131,6 +138,5 @@ must not be changed.
 
 ## Exact Next Action
 
-Execute WR-05 release gates, build the source-bound 3.6.68 installer, then
-commit, push, tag, create the GitHub Release, and verify the remote asset.
-Do not modify host networking or FlClash.
+WR-05 is closed. Wait for a new explicit user instruction; do not modify host
+networking or FlClash.
