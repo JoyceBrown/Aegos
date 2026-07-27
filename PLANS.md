@@ -1,30 +1,25 @@
 # Aegos Windows Real-Use Reliability Plan
 
 plan_id: AEGOS-WINDOWS-RELIABILITY
-status: completed
-authority: none
-current_task_id: none
+status: active
+authority: exclusive
+current_task_id: WR-05
 roadmap_reference: docs/roadmap.md
 continuation_policy: validate_then_advance
 completion_policy: all_required_items
-priority_basis: The user has rejected the prior WR-02 acceptance result: every
-  manual speed-test click must produce immediate, continuously changing numeric
-  feedback before the first real result, and leaving Connections during cold
-  startup must never wait behind connection rendering or startup work.
-delivery_contract: Reopen WR-02 and repair both rejected interaction paths as
-  one unit, add deterministic regressions that fail the 3.6.66 behavior, run
-  the complete source-bound host-safe matrix, and build one new unsigned local
-  installer from the accepted bytes. The user explicitly authorizes one commit
-  and push of the completed 3.6.67 source, tests, records, and evidence to the
-  configured GitHub origin. The user also explicitly authorizes one public
-  GitHub Release that uploads the accepted unsigned 3.6.67 NSIS asset with its
-  exact SHA-256. Signing, automatic update, and host-network takeover remain
-  excluded.
-latest_change_id: CHANGE-031
+priority_basis: The current-code three-angle review found P1 truth, recovery,
+  and responsiveness defects plus bounded P2 robustness and ownership gaps.
+  The user explicitly directed their repair before any new capability work.
+delivery_contract: Build a new source-bound unsigned 3.6.68 NSIS installer
+  from the completed WR-03/WR-04 work, verify its exact bytes and the full
+  required host-safe matrix, commit and push the source/evidence, then create
+  a new GitHub Release with that exact installer and SHA-256. The existing
+  v3.6.67 tag and asset remain immutable historical evidence.
+latest_change_id: CHANGE-034
 latest_change_class: task_adjustment
 change_authority_reference: none
 delegated_execution: none
-on_complete: wait
+on_complete: validate_and_close
 
 ## Objective
 
@@ -95,6 +90,32 @@ CHANGE-031 is the user's explicit instruction to create the `v3.6.67` GitHub
 Release and upload the exact accepted NSIS installer. The release description
 must state that the installer is unsigned and provide its SHA-256. It does not
 authorize signing, automatic updates, live takeover, or any new product work.
+
+CHANGE-032 is the user's explicit instruction to repair the current-code
+three-angle review findings. It activates WR-03 only for: truthful connected
+presentation, recovery selection rollback, background-read availability,
+corrupt active-takeover evidence, rejected-profile state preservation, and
+focused lock/ownership cleanup. Each repaired P1/P2 requires a deterministic
+known-bad control and an affected host-safe regression. It does not authorize
+controlled live takeover, release, installer work, GitHub publication, signing,
+automatic updates, or any action on FlClash.
+
+CHANGE-033 is the user's explicit instruction to implement the 3.6.67 UI
+review repairs. It activates WR-04 only for truthful separation of effective
+network state from measurement history, unavailable-takeover connection
+guidance, non-stale persistent metrics, explicit kill-switch state, discoverable
+node actions, navigation semantics, accessible truncated profile information,
+and redacted UI fixtures. It does not authorize a broad redesign, a new UI
+framework, installer work, release, GitHub publication, signing, automatic
+updates, live takeover, or any action on FlClash.
+
+CHANGE-034 is the user's explicit instruction to build an installer and
+synchronize GitHub Release delivery after WR-04. It activates WR-05 for one
+new `3.6.68` source-bound unsigned NSIS installer, required release gates,
+one source/evidence commit and push to `origin/main`, and one new GitHub
+Release with the installer SHA-256. It must not replace the existing
+`v3.6.67` tag or asset, claim Authenticode signing, enable automatic updates,
+perform live takeover, or change FlClash or the host network.
 
 ## Baseline And Boundaries
 
@@ -234,10 +255,69 @@ satisfied. Missing evidence is `untested`, not passed.
 | --- | --- | --- | --- |
 | WR-01 | completed | A trustworthy host-safe real-use and delivery baseline. Each examined journey records Aegos intent, managed-runtime fact, UI timing, terminal result, recovery outcome, test-process cleanup, and artifact provenance without claiming untested live Windows facts. | Completed by CHANGE-027. |
 | WR-02 | completed | Every manual speed-test click paints immediate live numeric progress before real results, and cold-start navigation can leave Connections without waiting behind result rendering or startup work. | CHANGE-029 completed in the source-bound 3.6.67 candidate. |
+| WR-03 | completed | Connection truth, failed recovery, background status availability, and interrupted-takeover evidence remain correct under controlled P1/P2 negative paths. | Closed with host-safe behavioral controls and affected gates; 3.6.67 Release remains historical baseline. |
+| WR-04 | completed | The 3.6.67 UI distinguishes current effective network facts from measurement history without hiding diagnostics or connection management. | Closed with deterministic UI controls and fresh host-safe gates; installer and GitHub delivery remain historical evidence. |
+| WR-05 | active | A source-bound unsigned 3.6.68 installer and matching GitHub Release preserve the completed WR-03/WR-04 work without mutating v3.6.67 history. | CHANGE-034 user-authorized delivery. |
 
-`WR-03` is intentionally not a task in this plan. Controlled live takeover
-testing belongs to the roadmap and remains blocked until a separate recoverable
-Windows environment and rollback procedure are available.
+WR-03 is a host-safe code and isolated-fixture repair task. It is not authority
+to perform controlled live takeover testing, which remains blocked until a
+separate recoverable Windows environment and rollback procedure are available.
+
+## WR-04: Repair Truthful, Low-Interference UI Workflows
+
+1. Preserve known-bad UI controls before changing product code: a disconnected
+   state with retained measurements and outlet data; an active takeover with
+   unavailable connectivity; changing traffic while a non-Home page is active;
+   a kill-switch state transition; default node-row action discovery; long
+   profile metadata; and a public-address-shaped screenshot fixture.
+2. Present current runtime, takeover, and connectivity fact separately from
+   recent node measurement. Old node measurements may remain useful, but must
+   be labelled as recent measurement and never imply an effective connection,
+   protocol, proxy port, or outlet. Current outlet identity is shown only when
+   verified; a retained observation is explicitly historical.
+3. Keep Connections readable and operable in all states. The ordinary empty
+   state is used only for verified usable takeover with no active connections.
+   Pending or unavailable takeover must explain the condition and retain a
+   route to diagnostics without hiding any real rows or close actions.
+4. A persistent metric is either refreshed on every visible page or explicitly
+   marked historical. Do not make background polling, navigation, diagnostics,
+   or status-center access less responsive to obtain this result.
+5. Model kill-switch as an explicit binary control with truthful state and
+   existing permission/result handling. Keep node-row commands icon-first with
+   tooltips and accessible names, but do not make enabled controls resemble
+   disabled ones. Add current-page navigation semantics and an accessible full
+   value path for truncated profile details.
+6. Replace public-address-shaped UI smoke values with documentation-safe test
+   addresses and prove UI, screenshot, and export fixture redaction. Do not
+   hide real runtime facts merely to satisfy a screenshot assertion.
+7. Keep the repair in `src/app.js`, `src/index.html`, `src/styles.css`, and
+   focused smoke fixtures unless a proved contract gap requires an existing
+   owner. Do not add a second state owner, new network command, or UI framework.
+
+Exit: each known-bad control rejects the prior presentation and passes the
+repair; fixed window/DPI, interaction, performance, soak, safety, architecture,
+and planning gates pass without relaxed thresholds; no live host-network action,
+installer, or publication occurs.
+
+## WR-05: Source-Bound 3.6.68 Delivery
+
+1. Bump package, Cargo, Tauri, and visible-shell versions together. Preserve
+   `v3.6.67` and its uploaded asset as immutable historical evidence.
+2. Run Rust formatting/tests, interaction, fixed-window/DPI UI, 800-node
+   stress, soak, backend, responsiveness, stability, security, status,
+   control-plane, architecture, planning, installer, and release-structure
+   gates. Do not lower a limit or omit a failing gate.
+3. Build the x64 NSIS installer from the accepted source, calculate its exact
+   SHA-256 and size, and record both in `RELEASE_3.6.68.md`. The release must
+   say that the installer is unsigned; do not claim a signed-trust result.
+4. Commit the complete source and evidence set, push `main` to `origin`, tag
+   the exact pushed commit `v3.6.68`, and create a GitHub Release targeting
+   that tag. Upload only the hash-recorded installer; verify the remote asset
+   digest and source target after upload.
+
+Exit: every mandatory gate passes, installer bytes match the release note and
+remote asset digest, `HEAD`, `origin/main`, and `v3.6.68` resolve to one
+commit, and no host-network or FlClash action occurred.
 
 ## WR-01: Establish The Real-Use Defect Baseline
 
@@ -451,6 +531,41 @@ the full gate matrix below.
    destination within 50 ms, connection rendering must be cancellable/chunked,
    and stale work must not mutate the hidden page after navigation.
 
+## WR-03: Close Current-Code Reliability Findings
+
+1. Preserve deterministic negative controls for every P1/P2 found by the
+   current-code review. At minimum they must reject: connected presentation
+   without usable connectivity, exhausted recovery that changes the selected
+   node, a blocked runtime mutation that delays status/diagnostic reads, an
+   unreadable active-takeover marker, and a rejected profile switch that clears
+   the active profile's speed state.
+2. Make visible connection state depend on takeover and the normalized
+   `networkUsable` fact. A pending, unavailable, or unverified observation is
+   never rendered as connected.
+3. Snapshot runtime state before slow recovery probes. Long controller or
+   network work must not hold the `CoreManager` mutex while status, diagnostics,
+   Connections, or navigation request a read. Use the existing coordinator for
+   mutation exclusivity without inventing another command model.
+4. Capture and restore the complete selected-proxy map when recovery candidates
+   are exhausted. A failed repair must either restore the pre-recovery state or
+   return explicit recovery-required evidence; it cannot silently persist the
+   last failed candidate.
+5. Treat an unreadable active-takeover marker as a visible recovery incident,
+   not an empty state. Preserve the marker for manual evidence and prevent
+   automatic takeover mutation until it is resolved.
+6. Preflight a target profile before cancelling or clearing the active
+   profile's speed state. Replace direct poisoned-lock unwraps on repaired
+   public/worker paths with product errors; remove confirmed dead code only
+   where it has no product behavior.
+7. Keep extraction scoped to the proved paths. Do not raise the control-plane
+   budget, add a second state owner, or use source-string checks as the sole
+   acceptance evidence.
+
+Exit: every WR-03 negative fixture fails before its repair and passes after it;
+affected Rust, interaction, responsiveness, runtime, security, architecture,
+and planning gates pass; no P1 remains open. The published v3.6.67 artifact is
+not relabelled as built from changed source.
+
 ## Completion Rules
 
 - If WR-01 finds no reproducible defect, it may close only with an explicit
@@ -458,6 +573,13 @@ the full gate matrix below.
   WR-02 work.
 - If WR-01 or WR-02 finds a P0/P1, every such finding must be repaired or
   explicitly deferred by the user before the plan can close.
+- WR-03 closes only when every CHANGE-032 P1/P2 has a repaired behavioral
+  control, no open P1 remains, and the current code has passed its affected
+  host-safe gates. A new installer or publication requires separate user
+  authorization.
+- WR-04 closed after its state-truth, stale-summary, action-discoverability,
+  accessibility, and fixture-redaction controls passed with fresh UI evidence.
+  A changed installer or GitHub delivery was neither required nor authorized.
 - `not reproduced` cannot close an already observed P0/P1. A missing negative
   control, stale report, open residual process, or provenance mismatch is an
   incomplete task, not a warning-level completion.
@@ -538,3 +660,4 @@ they count as gates.
 | CHANGE-029 | task_adjustment | Reopens WR-02 because the 3.6.66 acceptance missed immediate numeric pre-result feedback and cold-start navigation away from Connections. Both paths require deterministic negative controls, focused repair, the unchanged full matrix, and a new local unsigned installer; Git, publication, and live takeover remain excluded. |
 | CHANGE-030 | task_adjustment | The user explicitly authorizes one commit and push of the accepted 3.6.67 source, regression coverage, authority records, and redacted evidence to `origin/main`. GitHub Release, artifact upload, signing, automatic updates, live takeover, and new product work remain excluded. |
 | CHANGE-031 | task_adjustment | The user explicitly authorizes one public `v3.6.67` GitHub Release and upload of the exact accepted unsigned NSIS asset. The release body must disclose the unsigned status and SHA-256. Signing, automatic updates, live takeover, and new product work remain excluded. |
+| CHANGE-032 | task_adjustment | The user directs repair of the current-code review findings. WR-03 covers truth-state presentation, recovery rollback and read availability, active-takeover corruption, rejected profile state preservation, and focused lock/dead-code cleanup with behavioral negative controls. Release, installer, GitHub publication, signing, automatic updates, live takeover, and FlClash changes remain excluded. |

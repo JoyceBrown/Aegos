@@ -301,11 +301,27 @@ pub fn recovery_scan(app_data: &Path) -> TakeoverRecoveryScan {
     scan
 }
 
+pub fn active_takeover_state_checked(app_data: &Path) -> Result<ActiveTakeoverState, String> {
+    let path = app_data.join(ACTIVE_STATE_FILE);
+    if !path.exists() {
+        return Ok(ActiveTakeoverState::default());
+    }
+    let raw = fs::read_to_string(&path).map_err(|err| {
+        format!(
+            "active takeover state is unreadable at {}: {err}",
+            path.display()
+        )
+    })?;
+    serde_json::from_str(&raw).map_err(|err| {
+        format!(
+            "active takeover state is corrupt at {}: {err}",
+            path.display()
+        )
+    })
+}
+
 pub fn active_takeover_state(app_data: &Path) -> ActiveTakeoverState {
-    fs::read_to_string(app_data.join(ACTIVE_STATE_FILE))
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default()
+    active_takeover_state_checked(app_data).unwrap_or_default()
 }
 
 pub fn set_component_active(
@@ -314,7 +330,7 @@ pub fn set_component_active(
     active: bool,
 ) -> Result<ActiveTakeoverState, String> {
     let path = app_data.join(ACTIVE_STATE_FILE);
-    let mut state = active_takeover_state(app_data);
+    let mut state = active_takeover_state_checked(app_data)?;
     state.set(component, active)?;
     if state.any_active() {
         let raw = serde_json::to_string_pretty(&state)
@@ -508,6 +524,19 @@ mod tests {
         let scan = recovery_scan(&root);
         assert!(scan.pending.is_empty());
         assert_eq!(scan.unreadable_journals.len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn corrupt_active_takeover_state_is_rejected_instead_of_defaulting_in_critical_paths() {
+        let root = temp_root("corrupt-active-state");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(ACTIVE_STATE_FILE), "not json").unwrap();
+
+        let error = active_takeover_state_checked(&root).unwrap_err();
+        assert!(error.contains("active takeover state is corrupt"));
+        assert!(set_component_active(&root, "tun", true).is_err());
+        assert!(root.join(ACTIVE_STATE_FILE).exists());
         let _ = fs::remove_dir_all(root);
     }
 

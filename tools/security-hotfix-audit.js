@@ -82,7 +82,7 @@ check(
     !mainRs.includes('json!(&self.settings.manual_nodes),') &&
     !mainRs.includes('json!(&snapshot.settings.manual_nodes),') &&
     mainRs.includes('fn manual_node_editor') &&
-    mainRs.includes('state.core.lock().unwrap().manual_node_editor(&name)'),
+    mainRs.includes('lock_state(&state.core, "core")?.manual_node_editor(&name)'),
   'complete fixed-node credentials are available only through the explicit editor command'
 );
 

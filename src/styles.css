@@ -5906,6 +5906,23 @@ h2 {
   width: 9px;
 }
 
+#quickKillBtn .quick-action-state {
+  width: auto;
+  min-width: 0;
+  height: auto;
+  margin-left: auto;
+  padding: 0;
+  color: var(--text-tertiary);
+  background: transparent;
+  box-shadow: none;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+#quickKillBtn[aria-checked="true"] .quick-action-state {
+  color: var(--status-success);
+}
+
 .quick-profile-menu {
   position: fixed;
   z-index: 2147483000;
@@ -7412,7 +7429,7 @@ button.is-pending,
 }
 
 .row-actions {
-  opacity: .42;
+  opacity: .78;
   transition: opacity var(--motion-fast) var(--ease-standard);
 }
 
@@ -8234,6 +8251,8 @@ body::before {
 
 .region-row {
   gap: 8px;
+  /* Keep the initial empty region strip from moving the node workspace. */
+  min-height: 42px;
   padding-block: 6px;
   border: 0;
 }

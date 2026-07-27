@@ -12,7 +12,7 @@ files remain traceability records and cannot create new execution authority.
 | Latest executable-plan record; no task currently active | PLANS.md |
 | Current evidence, dirty-worktree state, and next action | work/current.md; closed WR-01/WR-02 evidence: work/windows-reliability-wr01.md and work/windows-reliability-wr02.md; completed Windows Maturity evidence: work/windows-maturity-wm01.md through work/windows-maturity-wm05.md |
 | Windows real-use reliability decision, assessment, competitor comparison, and route rationale | decisions/windows-reliability-mainline.md |
-| Current local capability delivery facts | RELEASE_3.6.67.md |
+| Current local capability delivery facts | RELEASE_3.6.68.md |
 | Control-plane baseline and acceptance | CONTROL_PLANE_BASELINE.md and CONTROL_PLANE_ACCEPTANCE.md |
 | Aegos/Mihomo boundary | CONTROL_PLANE_BOUNDARY_3.6.49.md |
 | Mihomo controller API boundary | core-api-contract.md; its future endpoint rows are safety criteria, not tasks |

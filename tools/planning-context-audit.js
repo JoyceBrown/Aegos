@@ -36,30 +36,41 @@ const routingExecution = read('ROUTING_PAGE_REAL_USER_EXECUTION_RECORD.md');
 const wm05Evidence = read('docs/work/windows-maturity-wm05.md');
 const wr01Evidence = read('docs/work/windows-reliability-wr01.md');
 const wr02Evidence = read('docs/work/windows-reliability-wr02.md');
+const wr03Evidence = read('docs/work/windows-reliability-wr03.md');
+const wr04Evidence = read('docs/work/windows-reliability-wr04.md');
 
 check(
-  'the Windows real-use reliability plan is completed with no active authority',
+  'the Windows real-use reliability plan has exclusive WR-05 delivery authority',
   value(plan, 'plan_id') === 'AEGOS-WINDOWS-RELIABILITY'
-    && value(plan, 'status') === 'completed'
-    && value(plan, 'authority') === 'none'
-    && (plan.match(/^status: active$/gm) || []).length === 0,
-  value(plan, 'plan_id')
+    && value(plan, 'status') === 'active'
+    && value(plan, 'authority') === 'exclusive'
+    && value(plan, 'current_task_id') === 'WR-05'
+    && (plan.match(/^status: active$/gm) || []).length === 1,
+  value(plan, 'current_task_id')
 );
 
 check(
-  'WR-01 and WR-02 are completed and CHANGE-031 permits one bounded public release',
-  value(plan, 'current_task_id') === 'none'
+  'WR-01 through WR-04 are completed and WR-05 is active after CHANGE-034',
+  value(plan, 'current_task_id') === 'WR-05'
     && plan.includes('| WR-01 | completed |')
     && plan.includes('| WR-02 | completed |')
-    && value(plan, 'latest_change_id') === 'CHANGE-031'
+    && plan.includes('| WR-03 | completed |')
+    && plan.includes('| WR-04 | completed |')
+    && plan.includes('| WR-05 | active |')
+    && value(plan, 'latest_change_id') === 'CHANGE-034'
     && value(plan, 'latest_change_class') === 'task_adjustment'
     && value(plan, 'continuation_policy') === 'validate_then_advance'
     && value(plan, 'completion_policy') === 'all_required_items'
-    && value(plan, 'on_complete') === 'wait'
-    && plan.includes('CHANGE-031 is the user\'s explicit instruction to create the `v3.6.67` GitHub')
-    && plan.includes('must state that the installer is unsigned and provide its SHA-256')
-    && checkpoint.includes('CHANGE-031 is the user\'s explicit instruction to create the public `v3.6.67`')
-    && checkpoint.includes('must state that the asset is unsigned and provide SHA-256'),
+    && value(plan, 'on_complete') === 'validate_and_close'
+    && plan.includes('CHANGE-032 is the user\'s explicit instruction')
+    && plan.includes('CHANGE-033 is the user\'s explicit instruction')
+    && plan.includes('CHANGE-034 is the user\'s explicit instruction')
+    && plan.includes('truthful connected')
+    && plan.includes('truthful separation of effective')
+    && plan.includes('v3.6.67 tag and asset remain immutable')
+    && plan.includes('source-bound unsigned 3.6.68 NSIS installer')
+    && value(checkpoint, 'latest_change_id') === 'CHANGE-034'
+    && value(checkpoint, 'current_task_id') === 'WR-05',
   value(plan, 'current_task_id')
 );
 
@@ -128,9 +139,9 @@ check(
 );
 
 check(
-  'checkpoint records completed WR-02 without gaining execution authority',
+  'checkpoint records the active WR-05 route without creating a second authority',
   value(checkpoint, 'record_kind') === 'checkpoint'
-    && value(checkpoint, 'execution_authority') === 'none'
+    && value(checkpoint, 'execution_authority') === 'exclusive'
     && value(checkpoint, 'plan_id') === value(plan, 'plan_id')
     && value(checkpoint, 'current_task_id') === value(plan, 'current_task_id')
     && value(checkpoint, 'latest_change_id') === value(plan, 'latest_change_id')
@@ -185,6 +196,38 @@ check(
     && wr02Evidence.includes('measurement-only')
     && wr02Evidence.includes('FlClash'),
   value(wr02Evidence, 'evidence_state')
+);
+
+check(
+  'closed WR-03 evidence retains every repaired current-code P1/P2 finding',
+  value(wr03Evidence, 'record_kind') === 'evidence_register'
+    && value(wr03Evidence, 'execution_authority') === 'none'
+    && value(wr03Evidence, 'plan_id') === value(plan, 'plan_id')
+    && value(wr03Evidence, 'task_id') === 'WR-03'
+    && value(wr03Evidence, 'change_id') === 'CHANGE-032'
+    && value(wr03Evidence, 'evidence_state') === 'closed'
+    && ['WR03-001', 'WR03-002', 'WR03-003', 'WR03-004', 'WR03-005', 'WR03-006']
+      .every((finding) => wr03Evidence.includes(`| ${finding} |`))
+    && wr03Evidence.includes('known-bad')
+    && wr03Evidence.includes('No P1 remains open')
+    && wr03Evidence.includes('FlClash'),
+  value(wr03Evidence, 'evidence_state')
+);
+
+check(
+  'closed WR-04 evidence preserves every UI truth and accessibility control',
+  value(wr04Evidence, 'record_kind') === 'evidence_register'
+    && value(wr04Evidence, 'execution_authority') === 'none'
+    && value(wr04Evidence, 'plan_id') === value(plan, 'plan_id')
+    && value(wr04Evidence, 'task_id') === 'WR-04'
+    && value(wr04Evidence, 'change_id') === 'CHANGE-033'
+    && value(wr04Evidence, 'evidence_state') === 'closed'
+    && ['WR04-001', 'WR04-002', 'WR04-003', 'WR04-004', 'WR04-005', 'WR04-006']
+      .every((finding) => wr04Evidence.includes(`| ${finding} |`))
+    && wr04Evidence.includes('known-bad')
+    && wr04Evidence.includes('No P1 remains open')
+    && wr04Evidence.includes('FlClash'),
+  value(wr04Evidence, 'evidence_state')
 );
 
 check(

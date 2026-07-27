@@ -323,6 +323,7 @@ function networkAvailabilityInfo(status = {}) {
   };
   return {
     state,
+    networkUsable: availability.networkUsable === true,
     label: availability.label || labelMap[state] || STATUS_TEXT.unchecked,
     detail: availability.detail || '',
     className: classMap[state] || ''
@@ -522,15 +523,6 @@ function invoke(command, args = {}) {
       recordUiPerformance('invoke-finish', { command, duration: record.duration, state: record.state });
       throw err;
     });
-}
-
-function escapeHtml(value = '') {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
 }
 
 function text(value = '') {
@@ -899,17 +891,27 @@ function persistQuickActionPreferences() {
 }
 
 function connectionEmptyState() {
-  const connected = Boolean(latestStatus?.trafficTakeover);
+  const status = latestStatus || {};
+  const trafficTakeover = Boolean(status.trafficTakeover || status.settings?.proxyTakeover?.active);
+  const availability = networkAvailabilityInfo(status);
+  const connected = Boolean(trafficTakeover && availability.networkUsable);
+  const needsRecovery = trafficTakeover && !availability.networkUsable && availability.state !== 'checking';
   return el('div', { className: 'empty connection-empty' }, [
-    el('b', { textContent: connected ? '\u6682\u65e0\u6d3b\u52a8\u8fde\u63a5' : '\u5c1a\u672a\u5efa\u7acb\u8fde\u63a5' }),
+    el('b', { textContent: needsRecovery ? '\u63a5\u7ba1\u5df2\u751f\u6548\uff0c\u4f46\u7f51\u7edc\u672a\u9a8c\u8bc1' : connected ? '\u6682\u65e0\u6d3b\u52a8\u8fde\u63a5' : trafficTakeover ? '\u6b63\u5728\u9a8c\u8bc1\u7f51\u7edc' : '\u5c1a\u672a\u5efa\u7acb\u8fde\u63a5' }),
     el('span', {
-      textContent: connected
+      textContent: needsRecovery
+        ? availability.detail || '\u8bf7\u5148\u8fd0\u884c\u8bca\u65ad\uff0c\u786e\u8ba4\u63a5\u7ba1\u548c\u8fde\u901a\u6027\u540e\u518d\u67e5\u770b\u6d3b\u52a8\u8fde\u63a5\u3002'
+        : connected
         ? '\u5f53\u524d\u6ca1\u6709\u5e94\u7528\u4ea7\u751f\u4ee3\u7406\u6d41\u91cf\uff0c\u5f00\u59cb\u8bbf\u95ee\u7f51\u7edc\u540e\u4f1a\u81ea\u52a8\u51fa\u73b0\u3002'
-        : '\u8fde\u63a5\u540e\u624d\u80fd\u67e5\u770b\u54ea\u4e9b\u5e94\u7528\u6b63\u5728\u4f7f\u7528\u4ee3\u7406\u3002'
+        : trafficTakeover
+          ? '\u6b63\u5728\u7b49\u5f85\u5f53\u524d\u7f51\u7edc\u9a8c\u8bc1\u5b8c\u6210\u3002'
+          : '\u8fde\u63a5\u540e\u624d\u80fd\u67e5\u770b\u54ea\u4e9b\u5e94\u7528\u6b63\u5728\u4f7f\u7528\u4ee3\u7406\u3002'
     }),
-    connected
-      ? null
-      : el('button', { className: 'ghost compact', dataset: { pageJump: 'home' }, attrs: { type: 'button' }, textContent: '\u8fd4\u56de\u9996\u9875\u8fde\u63a5' })
+    needsRecovery
+      ? el('button', { className: 'ghost compact', dataset: { pageJump: 'diagnostics' }, attrs: { type: 'button' }, textContent: '\u6253\u5f00\u8bca\u65ad' })
+      : connected
+        ? null
+        : el('button', { className: 'ghost compact', dataset: { pageJump: 'home' }, attrs: { type: 'button' }, textContent: '\u8fd4\u56de\u9996\u9875\u8fde\u63a5' })
   ]);
 }
 
@@ -1523,6 +1525,30 @@ function homeCustomizeMenuPoint(event, trigger) {
   return {
     x: rect ? rect.left + Math.min(rect.width / 2, 24) : 8,
     y: rect ? rect.bottom + 6 : 8
+  };
+}
+
+function effectiveConnectionInfo(status = {}) {
+  const availability = networkAvailabilityInfo(status);
+  const trafficTakeover = Boolean(status.trafficTakeover || status.settings?.proxyTakeover?.active);
+  const coreReady = Boolean(status.coreReady ?? status.running);
+  if (trafficTakeover && availability.networkUsable) {
+    return { label: STATUS_TEXT.connected, className: 'ok', connected: true, availability };
+  }
+  if (trafficTakeover && availability.state === 'checking') {
+    return { label: '\u9a8c\u8bc1\u4e2d', className: 'warn', connected: false, availability };
+  }
+  if (trafficTakeover && availability.state === 'stale') {
+    return { label: '\u7ed3\u679c\u5df2\u8fc7\u671f', className: 'warn', connected: false, availability };
+  }
+  if (trafficTakeover) {
+    return { label: '\u7f51\u7edc\u672a\u9a8c\u8bc1', className: 'bad', connected: false, availability };
+  }
+  return {
+    label: coreReady ? STATUS_TEXT.coreStandby : STATUS_TEXT.disconnected,
+    className: '',
+    connected: false,
+    availability
   };
 }
 
@@ -3338,9 +3364,18 @@ function syncShellSummary() {
   const activeJobs = [...jobRecords.values()].filter((job) => !terminalJobStates.has(job.state)).length;
   const status = latestStatus || {};
   const availability = networkAvailabilityInfo(status);
-  const connected = Boolean(status.trafficTakeover || status.settings?.proxyTakeover?.active);
-  const pending = Boolean(corePowerPendingKind || activeJobs);
-  const warning = availability.state === 'unavailable' || Boolean($('#protectionNotice')?.classList.contains('is-bad'));
+  const trafficTakeover = Boolean(status.trafficTakeover || status.settings?.proxyTakeover?.active);
+  const connected = Boolean(trafficTakeover && availability.networkUsable);
+  const pending = Boolean(
+    corePowerPendingKind ||
+    activeJobs ||
+    (trafficTakeover && availability.state === 'checking')
+  );
+  const warning = Boolean(
+    availability.state === 'unavailable' ||
+    (trafficTakeover && !availability.networkUsable && availability.state !== 'checking') ||
+    $('#protectionNotice')?.classList.contains('is-bad')
+  );
   const state = warning ? 'warning' : pending ? 'pending' : connected ? 'connected' : 'idle';
 
   const summary = $('#statusCenterSummary');
@@ -3806,8 +3841,10 @@ function renderUiState(state = uiStore.state) {
   const page = pageNames[state.page] ? state.page : 'home';
   if (renderedPage !== page) {
     navButtons.get(renderedPage)?.classList.remove('active');
+    navButtons.get(renderedPage)?.removeAttribute('aria-current');
     pagePanels.get(renderedPage)?.classList.remove('active');
     navButtons.get(page)?.classList.add('active');
+    navButtons.get(page)?.setAttribute('aria-current', 'page');
     pagePanels.get(page)?.classList.add('active');
     renderedPage = page;
   }
@@ -4760,7 +4797,11 @@ function renderProfiles() {
     const sourceLabel = profileSourceLabel(profile, hasSourceUrl);
     const updatedLabel = profileUpdatedLabel(profile.updated_at);
     const statusItems = [];
-    if (usage) statusItems.push(el('small', { className: 'profile-usage-summary', textContent: usage }));
+    if (usage) statusItems.push(el('small', {
+      className: 'profile-usage-summary',
+      textContent: usage,
+      attrs: { title: usage, tabindex: '0', 'aria-label': `订阅用量：${usage}` }
+    }));
     if (health || active) {
       statusItems.push(el('small', {
         className: `profile-health-summary ${active ? 'is-active' : ''}`,
@@ -4792,10 +4833,15 @@ function renderProfiles() {
         ]),
         el('small', {
           className: 'profile-meta-summary',
-          textContent: [sourceLabel, updatedLabel].filter(Boolean).join(' \u00b7 ')
+          textContent: [sourceLabel, updatedLabel].filter(Boolean).join(' \u00b7 '),
+          attrs: { title: [sourceLabel, updatedLabel].filter(Boolean).join('，'), tabindex: '0', 'aria-label': `订阅信息：${[sourceLabel, updatedLabel].filter(Boolean).join('，')}` }
         }),
       ]),
-      el('small', { className: 'profile-source-summary', textContent: summary }),
+      el('small', {
+        className: 'profile-source-summary',
+        textContent: summary,
+        attrs: { title: summary, tabindex: '0', 'aria-label': `订阅摘要：${summary}` }
+      }),
       el('div', { className: 'profile-status-column' }, statusItems),
       el('div', { className: 'card-actions' }, [
         !active && id !== 'direct' ? el('button', {
@@ -5354,22 +5400,43 @@ function renderLogs() {
   replaceChildrenSafe($('#logRows'), rows.length ? rows : [emptyState('\u6682\u65e0\u5339\u914d\u65e5\u5fd7\u3002')]);
 }
 
-function setOutboundIpText(value, title = '') {
+function setOutboundIpText(value, title = '', sidebar = {}) {
   const text = value || '-';
+  const sidebarText = sidebar.text ?? text;
   $('#outboundIpState').textContent = text;
-  $('#outboundMetric').textContent = text;
+  $('#outboundMetric').textContent = sidebarText;
   $('#outboundIpState').setAttribute('title', title || text);
-  $('#outboundMetric').setAttribute('title', title || text);
+  $('#outboundMetric').setAttribute('title', sidebar.title || title || sidebarText);
+  const label = $('#outboundMetricLabel');
+  if (label) label.textContent = sidebar.label || '\u51fa\u53e3\u89c2\u6d4b';
 }
 
 function renderOutboundIpFromStatus(value, availability = {}) {
   if (outboundIpPendingSeq) return;
-  outboundIpLastStable = value || outboundIpLastStable || '-';
-  const stale = availability.state === 'stale' && outboundIpLastStable !== '-';
-  setOutboundIpText(
-    stale ? `${outboundIpLastStable}\uff08\u65e7\uff09` : outboundIpLastStable,
-    stale ? availability.detail || '\u843d\u5730 IP \u662f\u65e7\u7ed3\u679c' : outboundIpLastStable
-  );
+  const networkUsable = availability.networkUsable === true;
+  const queryFailed = availability.state === 'failed';
+  if (networkUsable && value) outboundIpLastStable = value;
+  const historical = outboundIpLastStable && outboundIpLastStable !== '-';
+  if (networkUsable && value) {
+    setOutboundIpText(value, value, { label: '\u51fa\u53e3\u89c2\u6d4b' });
+    return;
+  }
+  if (queryFailed && !historical) {
+    const failureTitle = availability.detail || '\u65e0\u6cd5\u83b7\u53d6\u843d\u5730 IP';
+    setOutboundIpText('\u67e5\u8be2\u5931\u8d25', failureTitle, {
+      text: '\u67e5\u8be2\u5931\u8d25',
+      title: failureTitle,
+      label: '\u51fa\u53e3\u89c2\u6d4b'
+    });
+    return;
+  }
+  const historyText = historical ? `${outboundIpLastStable}\uff08\u4e0a\u6b21\u89c2\u6d4b\uff09` : '-';
+  const historyTitle = availability.detail || '\u5f53\u524d\u7f51\u7edc\u672a\u9a8c\u8bc1\uff0c\u4e0d\u663e\u793a\u4e3a\u5f53\u524d\u51fa\u53e3\u3002';
+  setOutboundIpText(historyText, historyTitle, {
+    text: historyText,
+    title: historyTitle,
+    label: '\u6700\u8fd1\u51fa\u53e3\u89c2\u6d4b'
+  });
 }
 
 function statusUiSignature(status = {}) {
@@ -5410,7 +5477,6 @@ function runtimeOperationLabel(operation = {}) {
 }
 
 function renderTrafficMetrics(traffic = {}) {
-  if (!isPageActive('home')) return;
   const up = formatRate(traffic.up);
   const down = formatRate(traffic.down);
   const signature = `${up}\u001f${down}`;
@@ -5452,14 +5518,15 @@ function renderStatus(status) {
   const systemProxyApplied = Boolean(connection.systemProxyApplied ?? (trafficTakeover && Boolean(settings.systemProxy)));
   const systemProxyWanted = Boolean(connection.systemProxyWanted ?? settings.systemProxy);
   const availability = networkAvailabilityInfo(status);
+  const effectiveConnection = effectiveConnectionInfo(status);
   if (!coreReady || trafficTakeover) standbyRemediationNotice = '';
   if (trafficTakeover && !wasTakeover) startedAt = Date.now();
   if (!trafficTakeover) startedAt = Date.now();
   const modeText = modeLabel(status.mode);
 
   $('#appVersionLabel').textContent = `v${status.appVersion || defaultAppVersion}`;
-  $('.ring strong').textContent = trafficTakeover ? STATUS_TEXT.connected : coreReady ? STATUS_TEXT.coreStandby : STATUS_TEXT.disconnected;
-  $('.ring').classList.toggle('offline', !trafficTakeover);
+  $('.ring strong').textContent = effectiveConnection.label;
+  $('.ring').classList.toggle('offline', !effectiveConnection.connected);
   renderCurrentNodeIdentity();
   const nodeHost = $('#nodeHost');
   if (nodeHost) nodeHost.textContent = status.network?.proxyEndpoint || '-';
@@ -5488,13 +5555,21 @@ function renderStatus(status) {
   const tunActive = tunPreferred && trafficTakeover;
   $('#tunState').textContent = tunActive ? '已接管' : tunPreferred ? '连接时启用' : STATUS_TEXT.disabled;
   $('#tunState').className = tunActive ? 'ok' : tunPreferred ? 'pending' : '';
-  $('#killState').textContent = enabledLabel(settings.killSwitchEnabled);
-  $('#quickKillBtn')?.classList.toggle('active', Boolean(settings.killSwitchEnabled));
+  const killSwitchEnabled = Boolean(settings.killSwitchEnabled);
+  $('#killState').textContent = enabledLabel(killSwitchEnabled);
+  const quickKill = $('#quickKillBtn');
+  quickKill?.classList.toggle('active', killSwitchEnabled);
+  quickKill?.setAttribute('aria-checked', String(killSwitchEnabled));
+  quickKill?.setAttribute('aria-label', `\u65ad\u7f51\u4fdd\u62a4\uff0c${enabledLabel(killSwitchEnabled)}`);
+  const quickKillState = $('#quickKillState');
+  if (quickKillState) quickKillState.textContent = enabledLabel(killSwitchEnabled);
   $('#proxyState').textContent = systemProxyApplied ? STATUS_TEXT.enabled : systemProxyWanted ? STATUS_TEXT.pending : STATUS_TEXT.disabled;
   $('#proxyState').classList.toggle('is-danger', !systemProxyApplied);
   $('#proxyStateRow').classList.remove('hidden');
   $('#protocolState').textContent = currentProtocol;
-  $('#protocolMetric').textContent = currentProtocol;
+  $('#protocolMetric').textContent = effectiveConnection.label;
+  $('#protocolMetric').className = effectiveConnection.className;
+  $('#protocolMetric').setAttribute('title', effectiveConnection.availability.detail || effectiveConnection.label);
   $('#tunHomeToggle').checked = Boolean(settings.tunEnabled);
   $('#lanIpState').textContent = status.network?.lanIp || '-';
   $('#proxyPortState').textContent = formatProxyPort(status.network?.proxyEndpoint);
@@ -5792,7 +5867,6 @@ async function refreshStatus(force = false) {
 
 function renderActiveConnectionMetric() {
   syncActionAvailability();
-  if (!isPageActive('home')) return;
   const metric = $('#activeConnectionsMetric');
   if (metric) metric.textContent = String(activeConnectionCount || 0);
 }
@@ -6372,7 +6446,7 @@ async function refreshOutboundIpAfterNodeChange(options = {}) {
       outboundIpPendingSeq = 0;
       outboundIpLastStable = ip;
       await refreshStatus(true);
-      setOutboundIpText(ip);
+      renderOutboundIpFromStatus(ip, latestStatus?.network?.availability || {});
       void refreshIpv6DnsSafety();
     },
     successNotice: (value) => seq === outboundIpRequestSeq && options.manual ? `\u843d\u5730 IP \u5df2\u5237\u65b0\uff1a${value?.ip || '-'}` : '',
@@ -6384,10 +6458,12 @@ async function refreshOutboundIpAfterNodeChange(options = {}) {
     await refreshStatus(true);
     const previous = latestStatus?.network?.outboundIp || outboundIpLastStable || '-';
     outboundIpLastStable = previous;
-    setOutboundIpText(
-      previous === '-' ? '\u67e5\u8be2\u5931\u8d25' : `${previous}（旧）`,
-      lastBackgroundJobError || '\u65e0\u6cd5\u83b7\u53d6\u843d\u5730 IP'
-    );
+    renderOutboundIpFromStatus(previous, {
+      ...(latestStatus?.network?.availability || {}),
+      networkUsable: false,
+      state: 'failed',
+      detail: lastBackgroundJobError || '\u65e0\u6cd5\u83b7\u53d6\u843d\u5730 IP'
+    });
     void refreshIpv6DnsSafety();
   }
   return result;

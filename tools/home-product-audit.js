@@ -63,8 +63,11 @@ check(
     outboundBody.includes("setOutboundIpText('\\u67e5\\u8be2\\u4e2d')") &&
     outboundBody.includes('outboundIpPendingSeq = seq') &&
     outboundBody.includes('outboundIpPendingSeq = 0') &&
-    outboundBody.includes('setOutboundIpText(ip)') &&
-    outboundBody.includes("previous === '-' ? '\\u67e5\\u8be2\\u5931\\u8d25'") &&
+    outboundBody.includes('renderOutboundIpFromStatus(ip') &&
+    outboundBody.includes("state: 'failed'") &&
+    appJs.includes("const queryFailed = availability.state === 'failed'") &&
+    appJs.includes('if (queryFailed && !historical)') &&
+    appJs.includes("text: '\\u67e5\\u8be2\\u5931\\u8d25'") &&
     outboundBody.includes('lastBackgroundJobError') &&
     outboundBody.includes('seq !== outboundIpRequestSeq'),
   'old or failed outbound IP lookups must not look like a valid current IP'
@@ -187,7 +190,7 @@ check(
   'current-node metrics are truthful rather than fake load/loss columns',
   indexHtml.includes('class="node-status-card metric-grid"') &&
     (indexHtml.match(/<article><span class="metric-icon/g) || []).length === 9 &&
-    indexHtml.includes('<small>稳定性</small>') &&
+    indexHtml.includes('<small>最近稳定性</small>') &&
     indexHtml.includes('<small>活跃连接</small>') &&
     indexHtml.includes('<small>上次测速</small>') &&
     !indexHtml.includes('<span>丢包率</span>') &&

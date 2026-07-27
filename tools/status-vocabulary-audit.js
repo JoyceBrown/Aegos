@@ -30,6 +30,7 @@ function suspiciousLines(rel) {
 
 const appJs = read('src/app.js');
 const indexHtml = read('src/index.html');
+const interactionSmoke = read('tools/interaction-smoke.js');
 const releaseAudit = read('tools/release-audit.js');
 const coreRuntimeRs = read('src-tauri/src/core_runtime.rs');
 const mainRs = read('src-tauri/src/main.rs');
@@ -63,11 +64,16 @@ check(
   'STATUS_TEXT helpers'
 );
 check(
-  'home, settings, and status center consume shared status helpers',
-  appJs.includes("$('.ring strong').textContent = trafficTakeover ? STATUS_TEXT.connected") &&
+  'home, settings, and status center consume shared effective-network helpers',
+  appJs.includes('function effectiveConnectionInfo(status = {})') &&
+    appJs.includes("$('.ring strong').textContent = effectiveConnection.label") &&
+    appJs.includes("$('#protocolMetric').textContent = effectiveConnection.label") &&
+    !appJs.includes("$('.ring strong').textContent = trafficTakeover ? STATUS_TEXT.connected") &&
     appJs.includes("$('#settingsRuntimeSummary').textContent = runtimeSummaryLabel") &&
-    appJs.includes("$('#proxyState').textContent = systemProxyApplied ? STATUS_TEXT.enabled"),
-  'renderStatus/renderSettings/statusCenter'
+    appJs.includes("$('#proxyState').textContent = systemProxyApplied ? STATUS_TEXT.enabled") &&
+    interactionSmoke.includes('takeover without usable connectivity was presented as connected') &&
+    interactionSmoke.includes('verified usable connectivity was not presented as connected'),
+  'renderStatus/renderSettings/statusCenter plus takeover negative controls'
 );
 check(
   'status center keeps software and network availability truth without duplicate home metrics',

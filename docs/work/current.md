@@ -1,11 +1,11 @@
 # Current Work Checkpoint
 
 record_kind: checkpoint
-execution_authority: none
+execution_authority: exclusive
 active_plan: ../../PLANS.md
 plan_id: AEGOS-WINDOWS-RELIABILITY
-current_task_id: none
-latest_change_id: CHANGE-031
+current_task_id: WR-05
+latest_change_id: CHANGE-034
 latest_change_class: task_adjustment
 updated_at: 2026-07-27
 
@@ -25,19 +25,43 @@ to the configured GitHub `origin/main`. It authorizes one commit and push only;
 it does not authorize a GitHub Release, installer upload, signing, automatic
 updates, new product work, live Windows takeover, or changes to FlClash.
 
-CHANGE-031 is the user's explicit instruction to create the public `v3.6.67`
-GitHub Release and upload the exact accepted NSIS installer. Its release body
-must state that the asset is unsigned and provide SHA-256; signing, automatic
-updates, new product work, live takeover, and changes to FlClash remain out of
-scope.
+CHANGE-031 created the public `v3.6.67` GitHub Release and uploaded the exact
+accepted unsigned NSIS installer. Its source and artifact are now historical
+delivery evidence.
 
-Signing, automatic updates, feature breadth, and live Windows takeover remain
-outside this task. FlClash and the host network must not be changed.
+CHANGE-032 is the user's explicit instruction to repair the current-code
+three-angle review findings under WR-03. The allowed scope is truthful
+connection presentation, failed-recovery rollback, background status and
+diagnostic availability, unreadable active-takeover evidence, rejected-profile
+speed-state preservation, and focused lock/dead-code cleanup. Release,
+installer, GitHub publication, signing, automatic updates, live takeover, and
+changes to FlClash remain excluded.
+
+WR-03 is complete. Its six current-code P1/P2 findings have isolated
+behavioral controls and fresh affected-gate evidence in
+`docs/work/windows-reliability-wr03.md`. No installer, GitHub publication,
+live takeover, or FlClash change was performed.
+
+CHANGE-033 is complete. WR-04 repaired the 3.6.67 UI review findings for
+state-truth presentation, unavailable-takeover guidance, persistent-metric
+freshness, explicit kill-switch state, node-action discoverability,
+navigation/profile accessibility, and redacted UI fixtures. The closed
+evidence is recorded in `docs/work/windows-reliability-wr04.md`.
+
+CHANGE-034 is the user's explicit authorization for WR-05: build a fresh
+source-bound unsigned `3.6.68` NSIS installer, commit and push the accepted
+source/evidence, then create a new GitHub Release with the exact installer
+SHA-256. `v3.6.67` remains immutable history. Signing, automatic updates,
+live takeover, FlClash, and host-network changes remain excluded.
+
+Signing, automatic updates, feature breadth, new installer/release work, and
+live Windows takeover remain outside this task. FlClash and the host network
+must not be changed.
 
 ## Verified Evidence
 
 - Baseline: clean `main`/`origin/main` at `28e539b`, version `3.6.65`.
-- Current candidate version: `3.6.67`; the fresh-target installer is frozen
+- Current candidate version: `3.6.68`; the fresh-target installer is frozen
   for the final source-bound matrix and provenance binding. The rejected
   3.6.66 installer is historical evidence.
 - The v2 acceptance runner executes 25 distinct commands and binds each to
@@ -105,27 +129,8 @@ outside this task. FlClash and the host network must not be changed.
   release gate rejected it. The label was corrected and the installer was
   rebuilt from an empty `candidate-3.6.65-final` target before acceptance.
 
-## Delivery State
-
-The current local unsigned installer is
-`src-tauri/target/release/bundle/nsis/Aegos_3.6.67_x64-setup.exe`, size
-`16322443` bytes, SHA-256
-`4cf7895f68cdbee981f3d4c6b1ed032f52da2fd5eb3c8148b755d8345da57437`.
-It was copied unchanged from the fresh `candidate-3.6.67-change029` target,
-built from `2026-07-27T00:32:50.106Z` through
-`2026-07-27T00:40:53.412Z`.
-
-The user's documentation-only GitHub request advanced `main` and
-`origin/main` to `606658c` with the Chinese `README.md` as the only committed
-file. CHANGE-030 supersedes the prior no-Git restriction only for one commit
-and push of the accepted 3.6.67 source, regression coverage, authority records,
-and redacted evidence. CHANGE-031 additionally authorizes one public GitHub
-Release upload of the exact local unsigned installer; no other asset or update
-channel is authorized.
-
 ## Exact Next Action
 
-After current acceptance, create `v3.6.67` on GitHub and upload the exact
-unsigned installer with its SHA-256 in the release body. Then return to
-`on_complete: wait`; do not start controlled host takeover, unrelated roadmap
-work, signing, automatic updates, or other publication actions.
+Execute WR-05 release gates, build the source-bound 3.6.68 installer, then
+commit, push, tag, create the GitHub Release, and verify the remote asset.
+Do not modify host networking or FlClash.

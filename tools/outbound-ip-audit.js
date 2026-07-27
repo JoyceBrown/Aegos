@@ -49,7 +49,10 @@ check(
   'UI never leaves landing IP stuck or disguised as valid after failure',
   refreshUiBody.includes("setOutboundIpText('\\u67e5\\u8be2\\u4e2d')") &&
     refreshUiBody.includes('outboundIpPendingSeq = 0') &&
-    refreshUiBody.includes("previous === '-' ? '\\u67e5\\u8be2\\u5931\\u8d25' : `${previous}（旧）`") &&
+    refreshUiBody.includes("state: 'failed'") &&
+    appJs.includes("const queryFailed = availability.state === 'failed'") &&
+    appJs.includes('if (queryFailed && !historical)') &&
+    appJs.includes("text: '\\u67e5\\u8be2\\u5931\\u8d25'") &&
     refreshUiBody.includes('lastBackgroundJobError'),
   'failed current lookup shows either an explicit failure or a visibly stale cached IP'
 );

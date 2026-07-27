@@ -1,4 +1,5 @@
 use super::{core_runtime, CoreManager, JsonValue};
+use std::collections::HashMap;
 
 fn route_from_policy(policy: Result<JsonValue, String>) -> Option<String> {
     policy.ok().and_then(|value| {
@@ -14,6 +15,37 @@ fn rollback_status(error: Option<String>) -> String {
 }
 
 impl CoreManager {
+    pub(super) fn current_proxy_selection(&self, group_name: &str) -> Option<String> {
+        self.proxy_groups().as_array().and_then(|groups| {
+            groups.iter().find_map(|group| {
+                (group.get("name").and_then(JsonValue::as_str) == Some(group_name))
+                    .then(|| group.get("now").and_then(JsonValue::as_str))
+                    .flatten()
+                    .map(str::to_string)
+            })
+        })
+    }
+
+    pub(super) fn restore_recovery_selections(
+        &mut self,
+        selections: &HashMap<String, String>,
+        settings_before: HashMap<String, String>,
+    ) -> Result<(), String> {
+        for (group, proxy) in selections {
+            self.change_proxy(group, proxy).map_err(|err| {
+                format!(
+                    "Recovery failed and could not restore {group} -> {proxy}: {err}. Manual recovery is required"
+                )
+            })?;
+        }
+        self.settings.selected_proxy_map = settings_before;
+        self.save_settings().map_err(|err| {
+            format!(
+                "Recovery restored runtime selections but could not restore saved preferences: {err}. Manual recovery is required"
+            )
+        })
+    }
+
     pub(super) fn change_proxy(&mut self, group: &str, proxy: &str) -> Result<bool, String> {
         let groups = self.proxy_groups();
         let preflight = core_runtime::validate_proxy_selection_from_groups(&groups, group, proxy)?;

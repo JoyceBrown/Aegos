@@ -7,6 +7,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const uiSmokeSource = fs.readFileSync(new URL(import.meta.url), 'utf8');
+const forbiddenPublicFixture = ['188', '253', '127', '200'].join('.');
+if (uiSmokeSource.includes(forbiddenPublicFixture)) {
+  throw new Error('UI smoke fixture contains a public-address-shaped value instead of a documentation address.');
+}
 const chromeCandidates = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
@@ -651,7 +656,7 @@ try {
         product: 'Aegos', appVersion: '${pkg.version}', running: false, coreReady: false,
         trafficTakeover: false, standby: false, mode: 'rule', traffic: { up: 0, down: 0 }, logs: [],
         activeProfile: profile,
-        network: { lanIp: '192.168.1.8', proxyEndpoint: '127.0.0.1:7891', outboundIp: '188.253.127.200', availability: { state: 'unverified', label: '未验证', detail: '尚未连接' } },
+        network: { lanIp: '192.168.1.8', proxyEndpoint: '127.0.0.1:7891', outboundIp: '203.0.113.8', availability: { state: 'unverified', label: '未验证', detail: '尚未连接' } },
         permissions: { isAdmin: true, requiresAdminFor: ['TUN', '断网保护'] },
         protection: { label: '未开启' },
         settings: { activeProfileId: profile.id, profiles, mixedPort: 7891, controllerPort: 19091, systemProxy: false, tunEnabled: false, startWithSystemProxy: true, dnsHijackEnabled: true, killSwitchEnabled: false, ipv6Enabled: false, allowLan: false, tunStack: 'mixed', logLevel: 'info', configExtensions: { additionalRulesEnabled: false, additionalRules: [], overrideScriptEnabled: false, overrideScript: '', format: 'yaml' }, reliability: { auto: true, profileFailover: true, failureThreshold: 2, maxDelayMs: 800, candidateLimit: 24 } }

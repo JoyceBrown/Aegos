@@ -10,6 +10,7 @@ mod core_domain;
 mod core_runtime;
 mod dataplane;
 mod diagnostics_runtime;
+mod diagnostics_snapshot;
 mod dns_policy;
 mod egress_identity;
 mod ipv6_policy;
@@ -22,6 +23,7 @@ mod routing_store;
 mod runtime_command;
 mod speed_runtime;
 mod speed_scheduler;
+mod status_snapshot;
 mod storage_runtime;
 mod subscription_runtime;
 mod system_takeover;
@@ -38,6 +40,9 @@ use config_domain::ManualNodeConfig;
 use core_domain::{ProxyCatalog, TrafficSnapshot};
 use dataplane::DataplaneControl;
 use diagnostics_runtime::{logs_export_document, LogEntry, LogStore};
+use diagnostics_snapshot::{
+    take_diagnostics_snapshot, take_diagnostics_snapshot_from_core, DiagnosticsSnapshot,
+};
 use rand::random;
 use reqwest::blocking::Client;
 use routing_domain::{
@@ -57,6 +62,7 @@ use speed_runtime::{
     SpeedTargetCatalog, SpeedTestState, SpeedTestStore, SpeedTestTarget,
 };
 use speed_scheduler::{run_probe_wave, ProbeOutcome, SchedulerPolicy};
+use status_snapshot::{cached_connections_snapshot, cached_status_snapshot};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
@@ -375,7 +381,7 @@ fn export_diagnostics_report_from_state(
     core: Arc<Mutex<CoreManager>>,
     app_data: &Path,
 ) -> Result<JsonValue, String> {
-    let report = diagnostics_detached(core);
+    let report = diagnostics_detached(core)?;
     let export_dir = app_data.join("diagnostics");
     ensure_dir(&export_dir)?;
     let path = export_dir.join(format!("aegos-diagnostics-{}.txt", now_secs()));
@@ -657,6 +663,7 @@ struct CoreManager {
     outbound_observation: egress_identity::EgressObservation,
     outbound_ip_query_generation: u64,
     reliability_failures: u64,
+    takeover_recovery_blocked: Option<String>,
     #[cfg(test)]
     test_fail_next_runtime_apply: Option<String>,
 }
@@ -669,32 +676,15 @@ struct AppState {
     app_data: PathBuf,
     jobs: JobStore,
     operations: runtime_command::RuntimeOperationCoordinator,
+    status_cache: Arc<Mutex<Option<JsonValue>>>,
+    diagnostics_cache: Arc<Mutex<Option<JsonValue>>>,
+    connections_cache: Arc<Mutex<Option<JsonValue>>>,
 }
 
 fn lock_state<'a, T>(state: &'a Mutex<T>, label: &str) -> Result<MutexGuard<'a, T>, String> {
     state
         .lock()
         .map_err(|_| format!("{label} state lock poisoned"))
-}
-
-#[derive(Clone)]
-struct DiagnosticsSnapshot {
-    settings: Settings,
-    profile_metadata_errors: HashMap<String, String>,
-    active_profile: Option<Profile>,
-    core_path: PathBuf,
-    runtime_info: JsonValue,
-    proxy_snapshot_path: PathBuf,
-    running: bool,
-    traffic_takeover: bool,
-    last_traffic: TrafficSnapshot,
-    speed_test: SpeedTestState,
-    lan_ip_cache: String,
-    outbound_ip_cache: String,
-    outbound_ip_checked_at: u64,
-    reliability_failures: u64,
-    recent_logs: Vec<LogEntry>,
-    status_logs: Vec<LogEntry>,
 }
 
 fn now_iso() -> String {
@@ -2001,6 +1991,134 @@ mod tests {
 
         assert!(error.contains("metadata restore failed: settings disk full"));
         assert!(error.contains("runtime restore also failed: controller unavailable"));
+    }
+
+    #[test]
+    fn rejected_profile_preflight_preserves_current_speed_health() -> Result<(), String> {
+        let root =
+            std::env::temp_dir().join(format!("aegos-wr03-profile-preflight-{}", hex_random(8)));
+        let core = Arc::new(Mutex::new(
+            CoreManager::new_with_paths(root.clone(), root.join("missing-mihomo.exe"))
+                .expect("isolated manager"),
+        ));
+        let operations = runtime_command::RuntimeOperationCoordinator::default();
+        let source = include_str!("../fixtures/subscriptions/clash-basic.yaml");
+        let current = add_profile_text_detached(
+            Arc::clone(&core),
+            operations.clone(),
+            "Current profile",
+            source,
+        )
+        .expect("current fixture profile");
+        let rejected =
+            add_profile_text_detached(Arc::clone(&core), operations, "Rejected profile", source)
+                .expect("target fixture profile");
+
+        let mut manager = core.lock().expect("isolated manager lock");
+        manager
+            .set_active_profile(&current.id)
+            .expect("select current profile");
+        let expected_health = NodeHealth {
+            name: "Fixture VLESS".to_string(),
+            protocol: "vless".to_string(),
+            last_delay: 42,
+            median_delay: 42,
+            success_count: 1,
+            status: "healthy".to_string(),
+            ..NodeHealth::default()
+        };
+        lock_state(&manager.speed_test, "speed test")?
+            .health
+            .insert(expected_health.name.clone(), expected_health.clone());
+        fs::write(&rejected.path, "proxy-groups: [").expect("corrupt rejected profile");
+
+        let error = match manager.set_active_profile(&rejected.id) {
+            Ok(_) => panic!("known-bad profile must fail preflight"),
+            Err(error) => error,
+        };
+        assert!(error.contains("Profile switch preflight failed"));
+        assert_eq!(manager.settings.active_profile_id, current.id);
+        assert_eq!(
+            lock_state(&manager.speed_test, "speed test")?
+                .health
+                .get("Fixture VLESS")
+                .map(|health| health.last_delay),
+            Some(expected_health.last_delay),
+            "a rejected target must not clear current speed health"
+        );
+        drop(manager);
+        let _ = fs::remove_dir_all(root);
+        Ok(())
+    }
+
+    #[test]
+    fn exhausted_recovery_restores_the_pre_recovery_proxy_selection() -> Result<(), String> {
+        let root =
+            std::env::temp_dir().join(format!("aegos-wr03-recovery-selection-{}", hex_random(8)));
+        let core = Arc::new(Mutex::new(
+            CoreManager::new_with_paths(root.clone(), root.join("missing-mihomo.exe"))
+                .expect("isolated manager"),
+        ));
+        let profile = add_profile_text_detached(
+            Arc::clone(&core),
+            runtime_command::RuntimeOperationCoordinator::default(),
+            "Recovery fixture",
+            include_str!("../fixtures/subscriptions/clash-basic.yaml"),
+        )
+        .expect("recovery fixture profile");
+
+        let mut manager = core.lock().expect("isolated manager lock");
+        assert_eq!(manager.settings.active_profile_id, profile.id);
+        manager
+            .change_proxy("Fixture", "Fixture SS")
+            .expect("initial fixture selection");
+        let settings_before = manager.settings.selected_proxy_map.clone();
+        manager
+            .change_proxy("Fixture", "Fixture VLESS")
+            .expect("known-bad exhausted candidate selection");
+        assert_eq!(
+            manager.current_proxy_selection("Fixture").as_deref(),
+            Some("Fixture VLESS"),
+            "the test must first reproduce the failed candidate selection"
+        );
+
+        manager.restore_recovery_selections(
+            &HashMap::from([("Fixture".to_string(), "Fixture SS".to_string())]),
+            settings_before,
+        )?;
+        assert_eq!(
+            manager.current_proxy_selection("Fixture").as_deref(),
+            Some("Fixture SS"),
+            "exhausted recovery restores the runtime-visible selection"
+        );
+        assert_eq!(
+            manager
+                .settings
+                .selected_proxy_map
+                .get("Fixture")
+                .map(String::as_str),
+            Some("Fixture SS"),
+            "exhausted recovery restores persisted Aegos intent"
+        );
+        drop(manager);
+        let _ = fs::remove_dir_all(root);
+        Ok(())
+    }
+
+    #[test]
+    fn busy_connections_read_uses_a_cached_snapshot_or_an_explicit_preparing_state() {
+        let cache = Arc::new(Mutex::new(None));
+        let initial_error = cached_connections_snapshot(&cache)
+            .expect_err("a first busy read must not invent connection rows");
+        assert!(initial_error.contains("Connections are preparing"));
+
+        let expected = json!([{ "id": "fixture-connection" }]);
+        *lock_state(&cache, "connections cache").expect("connections cache lock") =
+            Some(expected.clone());
+        assert_eq!(
+            cached_connections_snapshot(&cache).expect("cached connection rows"),
+            expected
+        );
     }
 
     #[test]
@@ -5798,6 +5916,7 @@ impl CoreManager {
             outbound_observation: egress_identity::EgressObservation::default(),
             outbound_ip_query_generation: 0,
             reliability_failures: 0,
+            takeover_recovery_blocked: None,
             #[cfg(test)]
             test_fail_next_runtime_apply: None,
         };
@@ -5929,7 +6048,17 @@ impl CoreManager {
                 self.add_log(&detail, if ok { "warn" } else { "error" });
             }
         }
-        let active = system_takeover::active_takeover_state(&self.app_data);
+        let active = match system_takeover::active_takeover_state_checked(&self.app_data) {
+            Ok(active) => active,
+            Err(err) => {
+                let message = format!(
+                    "Active system takeover evidence is unreadable. Aegos will not change Windows takeover state until it is repaired: {err}"
+                );
+                self.takeover_recovery_blocked = Some(message.clone());
+                self.add_log(&message, "error");
+                return;
+            }
+        };
         for (component, enabled) in [
             ("system-proxy", active.system_proxy),
             ("firewall", active.firewall),
@@ -7829,6 +7958,10 @@ impl CoreManager {
         Ok(runtime_write.digest)
     }
 
+    fn ensure_takeover_recovery_ready(&self) -> Result<(), String> {
+        self.takeover_recovery_blocked.clone().map_or(Ok(()), Err)
+    }
+
     fn apply_takeover_after_core_ready(&mut self, enable_takeover: bool) -> Option<String> {
         let takeover_plan = core_runtime::CoreTrafficTakeoverPlan::after_core_ready(
             enable_takeover,
@@ -7943,6 +8076,9 @@ impl CoreManager {
     }
 
     fn start_with_takeover(&mut self, enable_takeover: bool) -> Result<JsonValue, String> {
+        if enable_takeover {
+            self.ensure_takeover_recovery_ready()?;
+        }
         if !self.core_path.exists() {
             return Err(core_runtime::core_missing_message(&self.core_path));
         }
@@ -8311,6 +8447,9 @@ impl CoreManager {
     }
 
     fn set_system_proxy(&mut self, enable: bool) -> Result<bool, String> {
+        if enable {
+            self.ensure_takeover_recovery_ready()?;
+        }
         if enable && !self.traffic_takeover {
             self.settings.system_proxy = true;
             self.save_settings()?;
@@ -8457,6 +8596,9 @@ impl CoreManager {
     }
 
     fn set_kill_switch(&mut self, enable: bool) -> Result<bool, String> {
+        if enable {
+            self.ensure_takeover_recovery_ready()?;
+        }
         if enable && !is_process_elevated() {
             return Err("Disconnect protection requires administrator permission; restart Aegos as administrator in settings.".to_string());
         }
@@ -10112,7 +10254,15 @@ impl CoreManager {
 
     fn try_recover_current_profile(&mut self) -> Result<Option<JsonValue>, String> {
         let candidates = self.recovery_candidates();
+        let settings_before = self.settings.selected_proxy_map.clone();
+        let mut selections_before = HashMap::new();
         for (group, proxy, delay) in candidates.into_iter().take(5) {
+            if !selections_before.contains_key(&group) {
+                let previous = self.current_proxy_selection(&group).ok_or_else(|| {
+                    format!("Recovery candidate group '{group}' has no current selection")
+                })?;
+                selections_before.insert(group.clone(), previous);
+            }
             self.add_log(
                 format!("Recovery candidate: {group} -> {proxy} ({delay} ms)"),
                 "info",
@@ -10127,6 +10277,13 @@ impl CoreManager {
             }
             self.add_log(
                 format!("Recovery candidate failed after switch: {group} -> {proxy}"),
+                "warn",
+            );
+        }
+        if !selections_before.is_empty() {
+            self.restore_recovery_selections(&selections_before, settings_before)?;
+            self.add_log(
+                "Recovery candidates were exhausted; restored the pre-recovery node selections.",
                 "warn",
             );
         }
@@ -10227,6 +10384,14 @@ impl CoreManager {
             ),
             "info",
         );
+        self.preflight_profile_file(&profile).map_err(|err| {
+            let message = format!(
+                "Profile switch preflight failed for {} at {}: {err}",
+                profile.name, profile.path
+            );
+            self.add_log(&message, "error");
+            message
+        })?;
         if previous_profile_id != id {
             let previous_health = self.speed_test.lock().unwrap().health.clone();
             let _ = persist_profile_speed_health(
@@ -10238,14 +10403,6 @@ impl CoreManager {
             self.reset_speed_test_state("profile switched; previous speed test cancelled", true);
             self.speed_target_catalog = None;
         }
-        self.preflight_profile_file(&profile).map_err(|err| {
-            let message = format!(
-                "Profile switch preflight failed for {} at {}: {err}",
-                profile.name, profile.path
-            );
-            self.add_log(&message, "error");
-            message
-        })?;
         if previous_profile_id != id {
             self.invalidate_egress_observation();
         }
@@ -10606,32 +10763,6 @@ fn node_diagnostics_from_snapshot(
         "suggestions": suggestions,
         "generatedAt": now_secs()
     }))
-}
-
-fn take_diagnostics_snapshot(core: Arc<Mutex<CoreManager>>) -> DiagnosticsSnapshot {
-    let mut core = core.lock().unwrap();
-    if let Some(reason) = core.reap_exited_core() {
-        core.add_log(reason, "warn");
-    }
-    let speed_test = core.speed_test.lock().unwrap().clone();
-    DiagnosticsSnapshot {
-        settings: core.settings.clone(),
-        profile_metadata_errors: core.profile_metadata_errors.clone(),
-        active_profile: core.active_profile(),
-        core_path: core.core_path.clone(),
-        runtime_info: core.core_runtime_info(),
-        proxy_snapshot_path: core.proxy_snapshot_path.clone(),
-        running: core.process.is_some(),
-        traffic_takeover: core.traffic_takeover,
-        last_traffic: core.last_traffic.clone(),
-        speed_test,
-        lan_ip_cache: core.lan_ip_cache.clone(),
-        outbound_ip_cache: core.cached_outbound_ip(),
-        outbound_ip_checked_at: core.outbound_observation.checked_at(),
-        reliability_failures: core.reliability_failures,
-        recent_logs: core.recent_logs(8),
-        status_logs: core.recent_logs(120),
-    }
 }
 
 fn diagnostics_speed_snapshot(speed: &SpeedTestState) -> JsonValue {
@@ -11026,8 +11157,8 @@ fn diagnostics_from_snapshot(snapshot: DiagnosticsSnapshot) -> JsonValue {
     })
 }
 
-fn diagnostics_detached(core: Arc<Mutex<CoreManager>>) -> JsonValue {
-    diagnostics_from_snapshot(take_diagnostics_snapshot(core))
+fn diagnostics_detached(core: Arc<Mutex<CoreManager>>) -> Result<JsonValue, String> {
+    Ok(diagnostics_from_snapshot(take_diagnostics_snapshot(core)?))
 }
 
 fn add_profile_url_detached(
@@ -12024,7 +12155,7 @@ fn start_job(
                 }
                 "diagnostics" => {
                     set_job_state(&jobs, &id, "running", 1, 2, "正在检查网络状态");
-                    Ok(diagnostics_detached(core.clone()))
+                    diagnostics_detached(core.clone())
                 }
                 "repairDiagnostic" => (|| -> Result<JsonValue, String> {
                     let action = payload
@@ -12347,7 +12478,15 @@ fn app_status(state: State<AppState>, app: AppHandle) -> Result<JsonValue, Strin
     let operation_snapshot = state.operations.snapshot();
     let first_lock_started = Instant::now();
     let (observed_running, controller, previous_traffic, refresh_lan_ip) = {
-        let mut core = lock_state(&state.core, "core")?;
+        let mut core = match state.core.try_lock() {
+            Ok(core) => core,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return cached_status_snapshot(&state.status_cache, json!(operation_snapshot))
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err("core state lock poisoned".to_string())
+            }
+        };
         core.status_observation()
     };
     let first_lock_ms = first_lock_started.elapsed().as_millis() as u64;
@@ -12356,7 +12495,15 @@ fn app_status(state: State<AppState>, app: AppHandle) -> Result<JsonValue, Strin
         controller.status_traffic_snapshot_or_idle(observed_running, &previous_traffic);
     let traffic_ms = traffic_started.elapsed().as_millis() as u64;
     let final_lock_started = Instant::now();
-    let mut core = lock_state(&state.core, "core")?;
+    let mut core = match state.core.try_lock() {
+        Ok(core) => core,
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return cached_status_snapshot(&state.status_cache, json!(operation_snapshot))
+        }
+        Err(std::sync::TryLockError::Poisoned(_)) => {
+            return Err("core state lock poisoned".to_string())
+        }
+    };
     let is_admin = cached_process_elevated().unwrap_or(false);
     let mut status =
         core.status_from_observed_traffic(observed_running, observed_traffic, is_admin);
@@ -12373,6 +12520,7 @@ fn app_status(state: State<AppState>, app: AppHandle) -> Result<JsonValue, Strin
             }),
         );
     }
+    *lock_state(&state.status_cache, "status cache")? = Some(status.clone());
     drop(core);
     // The LAN probe is intentionally started after publishing the status
     // snapshot. On cold start it must not win the manager lock race.
@@ -12394,7 +12542,7 @@ fn core_runtime_info(state: State<AppState>) -> Result<JsonValue, String> {
 #[tauri::command]
 fn update_settings(state: State<AppState>, updates: JsonValue) -> Result<JsonValue, String> {
     let _operation = lock_operation_queue(&state.operations, "update_settings command")?;
-    state.core.lock().unwrap().update_settings(updates)
+    lock_state(&state.core, "core")?.update_settings(updates)
 }
 
 #[tauri::command]
@@ -12714,7 +12862,7 @@ fn start_proxy_delay_test(
     app: AppHandle,
     priority_names: Option<Vec<String>>,
 ) -> Result<JsonValue, String> {
-    let already_running = state.speed_test.lock().unwrap().running;
+    let already_running = lock_state(&state.speed_test, "speed test")?.running;
     let snapshot = mark_speed_test_preparing(&state.speed_test, now_secs());
     let run_id = snapshot
         .get("runId")
@@ -12727,10 +12875,12 @@ fn start_proxy_delay_test(
     let speed_test = state.speed_test.clone();
     let priority_names = priority_names.unwrap_or_default();
     thread::spawn(move || {
-        let result =
-            core.lock()
-                .unwrap()
-                .start_proxy_delay_test_for_run(Some(run_id), app, priority_names);
+        let result = core
+            .lock()
+            .map_err(|_| "Speed test core lock is poisoned".to_string())
+            .and_then(|mut core| {
+                core.start_proxy_delay_test_for_run(Some(run_id), app, priority_names)
+            });
         if let Err(err) = result {
             fail_speed_test_if_current(&speed_test, run_id, err, now_secs());
         }
@@ -12766,8 +12916,8 @@ fn test_single_proxy_delay(
     thread::spawn(move || {
         let result = core
             .lock()
-            .unwrap()
-            .test_single_proxy_delay_for_run(name, Some(run_id), app);
+            .map_err(|_| "Single speed test core lock is poisoned".to_string())
+            .and_then(|mut core| core.test_single_proxy_delay_for_run(name, Some(run_id), app));
         if let Err(err) = result {
             fail_speed_test_if_current(&speed_test, run_id, err, now_secs());
         }
@@ -12843,11 +12993,7 @@ fn cancel_proxy_delay_test(state: State<AppState>, app: AppHandle) -> Result<Jso
 #[tauri::command]
 fn recover_network(state: State<AppState>, force: Option<bool>) -> Result<JsonValue, String> {
     let _operation = lock_operation_queue(&state.operations, "recover_network command")?;
-    state
-        .core
-        .lock()
-        .unwrap()
-        .recover_network(force.unwrap_or(false))
+    lock_state(&state.core, "core")?.recover_network(force.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -13011,16 +13157,25 @@ async fn environment_readiness(state: State<'_, AppState>) -> Result<JsonValue, 
 #[tauri::command]
 fn select_best_proxy(state: State<AppState>) -> Result<JsonValue, String> {
     let _operation = lock_operation_queue(&state.operations, "select_best_proxy command")?;
-    state.core.lock().unwrap().select_best_proxy()
+    lock_state(&state.core, "core")?.select_best_proxy()
 }
 
 #[tauri::command]
 fn connections(state: State<AppState>) -> Result<JsonValue, String> {
     let (running, controller) = {
-        let core = state.core.lock().unwrap();
-        (core.process.is_some(), core.core_controller())
+        match state.core.try_lock() {
+            Ok(core) => (core.process.is_some(), core.core_controller()),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return cached_connections_snapshot(&state.connections_cache)
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err("core state lock poisoned".to_string())
+            }
+        }
     };
-    Ok(controller.ui_connections_snapshot_or_empty(running))
+    let snapshot = controller.ui_connections_snapshot_or_empty(running);
+    *lock_state(&state.connections_cache, "connections cache")? = Some(snapshot.clone());
+    Ok(snapshot)
 }
 
 fn split_rule_segments(rule: &str) -> Vec<String> {
@@ -14661,28 +14816,38 @@ fn remove_profile(state: State<AppState>, id: String) -> Result<bool, String> {
 #[tauri::command]
 fn save_manual_node(state: State<AppState>, node: JsonValue) -> Result<JsonValue, String> {
     let _operation = lock_operation_queue(&state.operations, "save_manual_node command")?;
-    state.core.lock().unwrap().save_manual_node(node)
+    lock_state(&state.core, "core")?.save_manual_node(node)
 }
 
 #[tauri::command]
 fn manual_node_editor(state: State<AppState>, name: String) -> Result<JsonValue, String> {
-    state.core.lock().unwrap().manual_node_editor(&name)
+    lock_state(&state.core, "core")?.manual_node_editor(&name)
 }
 
 #[tauri::command]
 fn delete_manual_node(state: State<AppState>, name: String) -> Result<JsonValue, String> {
     let _operation = lock_operation_queue(&state.operations, "delete_manual_node command")?;
-    state.core.lock().unwrap().delete_manual_node(&name)
+    lock_state(&state.core, "core")?.delete_manual_node(&name)
 }
 
 #[tauri::command]
 fn diagnostics(state: State<AppState>) -> Result<JsonValue, String> {
-    Ok(diagnostics_detached(state.core.clone()))
+    let report = match state.core.try_lock() {
+        Ok(core) => diagnostics_from_snapshot(take_diagnostics_snapshot_from_core(core)?),
+        Err(std::sync::TryLockError::WouldBlock) => lock_state(&state.diagnostics_cache, "diagnostics cache")?
+            .clone()
+            .ok_or_else(|| "Diagnostics are preparing; retry after the active operation publishes its first snapshot".to_string())?,
+        Err(std::sync::TryLockError::Poisoned(_)) => {
+            return Err("core state lock poisoned".to_string())
+        }
+    };
+    *lock_state(&state.diagnostics_cache, "diagnostics cache")? = Some(report.clone());
+    Ok(report)
 }
 
 #[tauri::command]
 fn clear_logs(state: State<AppState>) -> Result<bool, String> {
-    state.logs.lock().unwrap().clear();
+    lock_state(&state.logs, "logs")?.clear();
     Ok(true)
 }
 
@@ -14741,6 +14906,9 @@ fn main() {
                 app_data,
                 jobs: Arc::new(Mutex::new(HashMap::new())),
                 operations: runtime_command::RuntimeOperationCoordinator::default(),
+                status_cache: Arc::new(Mutex::new(None)),
+                diagnostics_cache: Arc::new(Mutex::new(None)),
+                connections_cache: Arc::new(Mutex::new(None)),
             });
             thread::spawn(move || {
                 // Integrity metadata is diagnostic information. Read the binary

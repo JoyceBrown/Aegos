@@ -17,6 +17,7 @@ const taskRuntimeRs = readSource('src-tauri', 'src', 'task_runtime.rs');
 const speedRuntimeRs = readSource('src-tauri', 'src', 'speed_runtime.rs');
 const speedSchedulerRs = readSource('src-tauri', 'src', 'speed_scheduler.rs');
 const diagnosticsRuntimeRs = readSource('src-tauri', 'src', 'diagnostics_runtime.rs');
+const diagnosticsSnapshotRs = readSource('src-tauri', 'src', 'diagnostics_snapshot.rs');
 const subscriptionRuntimeRs = readSource('src-tauri', 'src', 'subscription_runtime.rs');
 const manualNodeRuntimeRs = readSource('src-tauri', 'src', 'manual_node_runtime.rs');
 const configDeploymentRs = readSource('src-tauri', 'src', 'config_deployment.rs');
@@ -352,7 +353,7 @@ check(
   mainRs.includes('"Active profile config"') &&
     mainRs.includes('"Profile preflight"') &&
     mainRs.includes('"Recent core logs"') &&
-    mainRs.includes('recent_logs(8)') &&
+    diagnosticsSnapshotRs.includes('recent_logs: core.recent_logs(8)') &&
     mainRs.includes('preflight_runtime_config'),
   'diagnostic checks'
 );
@@ -451,8 +452,10 @@ check(
     mainRs.includes('fn speed_test_status(state: State<AppState>)') &&
     mainRs.includes('speed_test_runtime_snapshot(&state.speed_test, now_secs())') &&
     mainRs.includes('export_logs_from_state(&state.logs, &state.app_data)') &&
-    mainRs.includes('state.logs.lock().unwrap().clear()') &&
+    mainRs.includes('lock_state(&state.logs, "logs")?.clear()') &&
     mainRs.includes('controller.ui_connections_snapshot_or_empty(running)') &&
+    mainRs.includes('state.core.try_lock()') &&
+    mainRs.includes('cached_connections_snapshot(&state.connections_cache)') &&
     mainRs.includes('controller.close_connection_for_ui(&id)') &&
     mainRs.includes('controller.close_all_connections_for_ui()') &&
     coreRuntimeRs.includes('pub fn close_connection_for_ui(&self, id: &str)') &&
@@ -717,7 +720,7 @@ check(
     !publicProfileBody.includes('profile_file_summary') &&
     !publicProfileBody.includes('fs::read_to_string') &&
     mainRs.includes('profile_metadata_errors: HashMap<String, String>') &&
-    mainRs.includes('profile_metadata_errors: core.profile_metadata_errors.clone()') &&
+    diagnosticsSnapshotRs.includes('profile_metadata_errors: core.profile_metadata_errors.clone()') &&
     mainRs.includes('.profile_metadata_errors\n        .remove(&profile.id)') &&
     mainRs.includes('self.profile_metadata_errors.remove(id)'),
   'metadata repair reads once at startup; status, diagnostics, update, and delete use cached evidence'
