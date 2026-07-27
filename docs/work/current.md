@@ -1,11 +1,11 @@
 # Current Work Checkpoint
 
 record_kind: checkpoint
-execution_authority: none
+execution_authority: exclusive
 active_plan: ../../PLANS.md
 plan_id: AEGOS-WINDOWS-RELIABILITY
-current_task_id: none
-latest_change_id: CHANGE-034
+current_task_id: WR-06
+latest_change_id: CHANGE-035
 latest_change_class: task_adjustment
 updated_at: 2026-07-27
 
@@ -61,6 +61,11 @@ contains `Aegos_3.6.68_x64-setup.exe` (16,335,672 bytes, SHA-256
 The installer is explicitly unsigned. The v3.6.67 tag and asset remain
 unchanged historical evidence.
 
+CHANGE-035 is active as WR-06. It permits a focused primary-status vocabulary,
+layout, and rolling-stability repair followed by one unsigned 3.6.69 installer
+and GitHub Release. No live takeover, FlClash, or host-network action is
+authorized.
+
 Signing, automatic updates, feature breadth, new installer/release work, and
 live Windows takeover remain outside this task. FlClash and the host network
 must not be changed.
@@ -68,9 +73,9 @@ must not be changed.
 ## Verified Evidence
 
 - Baseline: clean `main`/`origin/main` at `28e539b`, version `3.6.65`.
-- Current candidate version: `3.6.68`; the fresh-target installer is frozen
-  for the final source-bound matrix and provenance binding. The rejected
-  3.6.66 installer is historical evidence.
+- Current candidate version: `3.6.69`; the fresh-target installer is being
+  validated under WR-06 and 3.6.68 remains immutable historical delivery
+  evidence. The rejected 3.6.66 installer is also historical evidence.
 - The v2 acceptance runner executes 25 distinct commands and binds each to
   current source/gate inputs, timestamps, Windows/toolchain identity, the
   host-safe boundary, and a hashed local log.
@@ -138,5 +143,6 @@ must not be changed.
 
 ## Exact Next Action
 
-WR-05 is closed. Wait for a new explicit user instruction; do not modify host
-networking or FlClash.
+Preserve the WR-06 known-bad controls, repair the conventional primary labels,
+full protection wording, and 10/30-minute stability model; then run the full
+host-safe matrix and deliver 3.6.69. Do not modify host networking or FlClash.

@@ -988,7 +988,8 @@ check(
 check(
   'speed engine tracks node health and low-latency recommendations',
   speedRuntimeRs.includes('pub struct NodeHealth') &&
-    mainRs.includes('fn update_node_health') &&
+    speedRuntimeRs.includes('pub fn record_node_health') &&
+    !mainRs.includes('fn update_node_health') &&
     speedRuntimeRs.includes('failure_streak') &&
     speedRuntimeRs.includes('cooldown_until') &&
     mainRs.includes('lowLatency') &&

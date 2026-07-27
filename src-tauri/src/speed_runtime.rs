@@ -7,6 +7,9 @@ use std::{
 
 pub const SPEED_RESULT_HIGH_CONFIDENCE_SECS: u64 = 600;
 pub const SPEED_RESULT_MEDIUM_CONFIDENCE_SECS: u64 = 1800;
+pub const STABILITY_SHORT_WINDOW_SECS: u64 = 10 * 60;
+pub const STABILITY_LONG_WINDOW_SECS: u64 = 30 * 60;
+const STABILITY_HISTORY_LIMIT: usize = 96;
 
 pub type SpeedTestStore = Arc<Mutex<SpeedTestState>>;
 
@@ -93,6 +96,193 @@ pub struct NodeHealth {
     pub confidence: String,
     pub last_failure_reason: String,
     pub score: i64,
+    pub observations: Vec<LatencyObservation>,
+    pub stability_10m: LatencyStability,
+    pub stability_30m: LatencyStability,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LatencyObservation {
+    pub at: u64,
+    pub delay: i64,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LatencyStability {
+    pub samples: u64,
+    pub average_delay: i64,
+    pub mean_absolute_deviation: i64,
+    pub variation_per_mille: u64,
+}
+
+fn latency_stability(
+    observations: &[LatencyObservation],
+    now: u64,
+    window_secs: u64,
+) -> LatencyStability {
+    let values = observations
+        .iter()
+        .filter(|item| item.delay > 0 && now.saturating_sub(item.at) <= window_secs)
+        .map(|item| item.delay)
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return LatencyStability::default();
+    }
+    let total = values
+        .iter()
+        .fold(0i64, |sum, value| sum.saturating_add(*value));
+    let average_delay = total / values.len() as i64;
+    let deviation_total = values.iter().fold(0i64, |sum, value| {
+        sum.saturating_add((value - average_delay).abs())
+    });
+    let mean_absolute_deviation = deviation_total / values.len() as i64;
+    LatencyStability {
+        samples: values.len() as u64,
+        average_delay,
+        mean_absolute_deviation,
+        variation_per_mille: if average_delay > 0 {
+            (mean_absolute_deviation.saturating_mul(1000) / average_delay) as u64
+        } else {
+            0
+        },
+    }
+}
+
+fn health_status(delay: i64, failure_streak: u64, cooldown_until: u64, now: u64) -> String {
+    if cooldown_until > now {
+        "cooldown".to_string()
+    } else if delay == 0 {
+        "testing".to_string()
+    } else if delay > 0 && delay < 100 && failure_streak == 0 {
+        "low".to_string()
+    } else if delay > 0 {
+        "available".to_string()
+    } else if failure_streak > 0 {
+        "unstable".to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+fn health_score(delay: i64, jitter: i64, failure_streak: u64, protocol: &str) -> i64 {
+    if delay <= 0 {
+        return i64::MAX / 4;
+    }
+    let protocol_penalty = match protocol.trim().to_ascii_lowercase().as_str() {
+        "tuic" | "hysteria" | "hysteria2" => 18,
+        "wireguard" => 12,
+        _ => 0,
+    };
+    delay
+        .saturating_add(jitter.saturating_mul(2))
+        .saturating_add((failure_streak as i64).saturating_mul(120))
+        .saturating_add(protocol_penalty)
+}
+
+pub fn record_node_health(
+    previous: Option<&NodeHealth>,
+    name: &str,
+    protocol: &str,
+    delay: i64,
+    failure_reason: &str,
+    now: u64,
+) -> NodeHealth {
+    let mut health = previous.cloned().unwrap_or_default();
+    let previous_delay = health.last_delay;
+    health.name = name.to_string();
+    health.protocol = protocol.to_string();
+    health.last_tested_at = now;
+    health.last_delay = delay;
+    if delay > 0 {
+        health.success_count = health.success_count.saturating_add(1);
+        health.failure_streak = 0;
+        health.last_success_at = now;
+        health.cooldown_until = 0;
+        health.median_delay = if health.median_delay > 0 {
+            (health.median_delay + delay) / 2
+        } else {
+            delay
+        };
+        health.jitter = if previous_delay > 0 {
+            (delay - previous_delay).abs()
+        } else {
+            0
+        };
+        health.last_failure_reason.clear();
+        health
+            .observations
+            .push(LatencyObservation { at: now, delay });
+        health
+            .observations
+            .retain(|item| now.saturating_sub(item.at) <= STABILITY_LONG_WINDOW_SECS);
+        if health.observations.len() > STABILITY_HISTORY_LIMIT {
+            let keep_from = health.observations.len() - STABILITY_HISTORY_LIMIT;
+            health.observations.drain(0..keep_from);
+        }
+    } else {
+        health.failure_count = health.failure_count.saturating_add(1);
+        health.failure_streak = health.failure_streak.saturating_add(1);
+        health.last_failure_reason = if failure_reason.trim().is_empty() {
+            "timeout".to_string()
+        } else {
+            failure_reason.to_string()
+        };
+        health.cooldown_until = if health.failure_streak >= 2 {
+            now.saturating_add(180)
+        } else {
+            0
+        };
+    }
+    health.stability_10m =
+        latency_stability(&health.observations, now, STABILITY_SHORT_WINDOW_SECS);
+    health.stability_30m = latency_stability(&health.observations, now, STABILITY_LONG_WINDOW_SECS);
+    health.status = health_status(delay, health.failure_streak, health.cooldown_until, now);
+    health.confidence = speed_result_confidence(
+        delay,
+        health.failure_streak,
+        health.last_success_at,
+        health.last_tested_at,
+        health.cooldown_until,
+        now,
+    );
+    health.score = health_score(
+        if health.median_delay > 0 {
+            health.median_delay
+        } else {
+            delay
+        },
+        health.jitter,
+        health.failure_streak,
+        protocol,
+    );
+    health
+}
+
+pub fn refining_node_health(
+    previous: Option<&NodeHealth>,
+    name: &str,
+    protocol: &str,
+    reason: &str,
+    now: u64,
+) -> NodeHealth {
+    let mut health = previous.cloned().unwrap_or_default();
+    health.name = name.to_string();
+    health.protocol = protocol.to_string();
+    health.last_delay = -1;
+    health.last_tested_at = now;
+    health.status = "refining".to_string();
+    health.confidence = "testing".to_string();
+    health.last_failure_reason = format!(
+        "refining:{}",
+        if reason.trim().is_empty() {
+            "timeout"
+        } else {
+            reason.trim()
+        }
+    );
+    health
 }
 
 pub fn speed_result_confidence(
@@ -467,5 +657,26 @@ mod tests {
             speed_result_confidence(80, 0, 100, 100, 200, 120),
             "cooldown"
         );
+    }
+
+    #[test]
+    fn rolling_stability_uses_each_node_history_and_prunes_old_samples() {
+        let first = record_node_health(None, "stable", "trojan", 300, "", 1_000);
+        let second = record_node_health(Some(&first), "stable", "trojan", 304, "", 1_060);
+        let stable = record_node_health(Some(&second), "stable", "trojan", 296, "", 1_120);
+        assert_eq!(stable.stability_10m.samples, 3);
+        assert_eq!(stable.stability_30m.samples, 3);
+        assert!(stable.stability_10m.variation_per_mille <= 80);
+        assert!(stable.stability_30m.variation_per_mille <= 80);
+
+        let volatile = record_node_health(Some(&stable), "stable", "trojan", 80, "", 1_180);
+        let volatile = record_node_health(Some(&volatile), "stable", "trojan", 520, "", 1_240);
+        let volatile = record_node_health(Some(&volatile), "stable", "trojan", 90, "", 1_300);
+        assert!(volatile.stability_10m.variation_per_mille > 200);
+        assert!(volatile.stability_30m.variation_per_mille > 200);
+
+        let expired = record_node_health(Some(&volatile), "stable", "trojan", 300, "", 3_200);
+        assert_eq!(expired.stability_30m.samples, 1);
+        assert_eq!(expired.observations.len(), 1);
     }
 }

@@ -56,6 +56,7 @@ use serde_yaml::{Mapping, Value as YamlValue};
 use sha2::{Digest, Sha256};
 use speed_runtime::{
     fail_speed_test_if_current, mark_single_speed_test_preparing, mark_speed_test_preparing,
+    record_node_health, refining_node_health,
     reset_speed_test_state as reset_speed_test_runtime_state, speed_result_confidence,
     speed_test_progress_snapshot, speed_test_run_is_current,
     speed_test_snapshot as speed_test_runtime_snapshot, DelayTestResult, NodeHealth,
@@ -1169,144 +1170,6 @@ fn log_matches_node(entry: &LogEntry, node: &str) -> bool {
         return false;
     }
     entry.line.to_ascii_lowercase().contains(&node)
-}
-
-fn health_status(delay: i64, failure_streak: u64, cooldown_until: u64, now: u64) -> String {
-    if cooldown_until > now {
-        "cooldown".to_string()
-    } else if delay == 0 {
-        "testing".to_string()
-    } else if delay > 0 && delay < 100 && failure_streak == 0 {
-        "low".to_string()
-    } else if delay > 0 {
-        "available".to_string()
-    } else if failure_streak > 0 {
-        "unstable".to_string()
-    } else {
-        "unknown".to_string()
-    }
-}
-
-fn health_score(delay: i64, jitter: i64, failure_streak: u64, protocol: &str) -> i64 {
-    if delay <= 0 {
-        return i64::MAX / 4;
-    }
-    let protocol_penalty = match protocol_family(protocol) {
-        "tuic" | "hysteria" => 18,
-        "wireguard" => 12,
-        _ => 0,
-    };
-    delay
-        .saturating_add(jitter.saturating_mul(2))
-        .saturating_add((failure_streak as i64).saturating_mul(120))
-        .saturating_add(protocol_penalty)
-}
-
-fn update_node_health(
-    previous: Option<&NodeHealth>,
-    name: &str,
-    protocol: &str,
-    delay: i64,
-    failure_reason: &str,
-    now: u64,
-) -> NodeHealth {
-    let mut health = previous.cloned().unwrap_or_else(|| NodeHealth {
-        name: name.to_string(),
-        protocol: protocol.to_string(),
-        last_delay: -1,
-        median_delay: -1,
-        jitter: 0,
-        success_count: 0,
-        failure_count: 0,
-        failure_streak: 0,
-        last_success_at: 0,
-        last_tested_at: 0,
-        cooldown_until: 0,
-        status: "unknown".to_string(),
-        confidence: "unknown".to_string(),
-        last_failure_reason: String::new(),
-        score: i64::MAX / 4,
-    });
-    let previous_delay = health.last_delay;
-    health.name = name.to_string();
-    health.protocol = protocol.to_string();
-    health.last_tested_at = now;
-    health.last_delay = delay;
-    if delay > 0 {
-        health.success_count = health.success_count.saturating_add(1);
-        health.failure_streak = 0;
-        health.last_success_at = now;
-        health.cooldown_until = 0;
-        health.median_delay = if health.median_delay > 0 {
-            (health.median_delay + delay) / 2
-        } else {
-            delay
-        };
-        health.jitter = if previous_delay > 0 {
-            (delay - previous_delay).abs()
-        } else {
-            0
-        };
-        health.last_failure_reason.clear();
-    } else {
-        health.failure_count = health.failure_count.saturating_add(1);
-        health.failure_streak = health.failure_streak.saturating_add(1);
-        health.last_failure_reason = if failure_reason.trim().is_empty() {
-            "timeout".to_string()
-        } else {
-            failure_reason.to_string()
-        };
-        health.cooldown_until = if health.failure_streak >= 2 {
-            now.saturating_add(180)
-        } else {
-            0
-        };
-    }
-    health.status = health_status(delay, health.failure_streak, health.cooldown_until, now);
-    health.confidence = speed_result_confidence(
-        delay,
-        health.failure_streak,
-        health.last_success_at,
-        health.last_tested_at,
-        health.cooldown_until,
-        now,
-    );
-    health.score = health_score(
-        if health.median_delay > 0 {
-            health.median_delay
-        } else {
-            delay
-        },
-        health.jitter,
-        health.failure_streak,
-        protocol,
-    );
-    health
-}
-
-fn refining_node_health(
-    previous: Option<&NodeHealth>,
-    name: &str,
-    protocol: &str,
-    reason: &str,
-    now: u64,
-) -> NodeHealth {
-    let mut health = previous.cloned().unwrap_or_default();
-    health.name = name.to_string();
-    health.protocol = protocol.to_string();
-    health.last_delay = -1;
-    health.last_tested_at = now;
-    health.status = "refining".to_string();
-    health.confidence = "testing".to_string();
-    health.last_failure_reason = format!(
-        "refining:{}",
-        if reason.trim().is_empty() {
-            "timeout"
-        } else {
-            reason.trim()
-        }
-    );
-    health
 }
 
 fn speed_test_ordered_targets(
@@ -4046,20 +3909,20 @@ rules:
 
     #[test]
     fn node_health_tracks_success_failure_and_cooldown() {
-        let first = update_node_health(None, "HK 02", "trojan", 48, "", 100);
+        let first = record_node_health(None, "HK 02", "trojan", 48, "", 100);
         assert_eq!(first.status, "low");
         assert_eq!(first.confidence, "high");
         assert_eq!(first.failure_streak, 0);
         assert!(first.score < 100);
 
-        let failed_once = update_node_health(Some(&first), "HK 02", "trojan", -1, "timeout", 110);
+        let failed_once = record_node_health(Some(&first), "HK 02", "trojan", -1, "timeout", 110);
         assert_eq!(failed_once.failure_streak, 1);
         assert_eq!(failed_once.status, "unstable");
         assert_eq!(failed_once.confidence, "low");
         assert_eq!(failed_once.last_failure_reason, "timeout");
 
         let failed_twice =
-            update_node_health(Some(&failed_once), "HK 02", "trojan", -1, "dns", 120);
+            record_node_health(Some(&failed_once), "HK 02", "trojan", -1, "dns", 120);
         assert_eq!(failed_twice.failure_streak, 2);
         assert!(failed_twice.cooldown_until > 120);
         assert_eq!(failed_twice.status, "cooldown");
@@ -4412,11 +4275,11 @@ rules:
         let mut health = HashMap::new();
         health.insert(
             "Fast".to_string(),
-            update_node_health(None, "Fast", "trojan", 48, "", 100),
+            record_node_health(None, "Fast", "trojan", 48, "", 100),
         );
         health.insert(
             "Slow".to_string(),
-            update_node_health(None, "Slow", "ss", 120, "", 100),
+            record_node_health(None, "Slow", "ss", 120, "", 100),
         );
         let best = speed_recommendation(&targets, &health, 100).expect("best candidate");
         assert_eq!(best.get("proxy").and_then(JsonValue::as_str), Some("Fast"));
@@ -9679,7 +9542,7 @@ impl CoreManager {
                             speed.completed += 1;
                             let health = if result.delay > 0 {
                                 speed.ok += 1;
-                                update_node_health(
+                                record_node_health(
                                     speed.health.get(&target.name),
                                     &target.name,
                                     &target.protocol,
@@ -9843,7 +9706,7 @@ impl CoreManager {
                                     speed.ok += 1;
                                     speed.failed = speed.failed.saturating_sub(1);
                                 }
-                                let health = update_node_health(
+                                let health = record_node_health(
                                     speed.health.get(&target.name),
                                     &target.name,
                                     &target.protocol,
@@ -10071,7 +9934,7 @@ impl CoreManager {
                     speed.first_result_at_ms = now_millis();
                     speed.fast_completed_at_ms = speed.first_result_at_ms;
                     speed.completed_at_ms = speed.first_result_at_ms;
-                    let health = update_node_health(
+                    let health = record_node_health(
                         speed.health.get(&target.name),
                         &target.name,
                         &target.protocol,

@@ -859,7 +859,11 @@ try {
     const stoppedStartupSpeedCalls = window.__aegosCalls.filter((item) => item.command === 'start_proxy_delay_test');
     if (stoppedStartupSpeedCalls.length) throw new Error('automatic startup speed test implicitly started a stopped core');
     window.__aegosState.running = true;
+    window.__aegosState.trafficTakeover = false;
     await refreshStatus(true);
+    if (document.querySelector('.ring strong')?.textContent.includes('\u6838\u5fc3\u5f85\u547d') || document.querySelector('.notice')?.textContent.includes('\u6838\u5fc3\u5f85\u547d') || document.querySelector('.notice')?.textContent.includes('\u5c1a\u672a\u63a5\u7ba1')) {
+      throw new Error('primary disconnected status exposed internal standby or takeover wording');
+    }
     window.__aegosState.trafficTakeover = true;
     window.__aegosState.networkAvailability = 'checking';
     window.__aegosState.networkUsable = false;
@@ -870,8 +874,8 @@ try {
     if (document.querySelector('.ring strong')?.textContent === '\u5df2\u8fde\u63a5' || document.querySelector('#protocolMetric')?.textContent === '\u5df2\u8fde\u63a5') {
       throw new Error('takeover without usable connectivity claimed an effective connection in the persistent status');
     }
-    if (!document.querySelector('#outboundMetricLabel')?.textContent.includes('\u89c2\u6d4b')) {
-      throw new Error('unverified outbound identity was not labelled as an observation');
+    if (document.querySelector('#outboundMetricLabel')?.textContent !== '\u843d\u5730 IP') {
+      throw new Error('outbound identity did not keep the conventional landing IP label');
     }
     window.__aegosState.networkAvailability = 'unavailable';
     await refreshStatus(true);
@@ -1107,7 +1111,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 420));
     if (!document.querySelector('#quickKillBtn .kill-icon')) throw new Error('disconnect protection icon is not using stable css icon');
     if (!document.querySelector('#quickKillBtn')?.classList.contains('active')) throw new Error('visible disconnect protection action did not update immediately');
-    if (document.querySelector('#quickKillBtn')?.getAttribute('role') !== 'switch' || document.querySelector('#quickKillBtn')?.getAttribute('aria-checked') !== 'true' || !document.querySelector('#quickKillState')?.textContent.includes('\u5df2\u5f00\u542f')) throw new Error('disconnect protection state is not explicit and accessible');
+    if (document.querySelector('#quickKillBtn')?.getAttribute('role') !== 'switch' || document.querySelector('#quickKillBtn')?.getAttribute('aria-checked') !== 'true' || document.querySelector('#quickKillBtn')?.getAttribute('aria-label') !== '\u65ad\u7f51\u4fdd\u62a4' || document.querySelector('#quickKillState') || document.querySelector('#quickKillBtn .quick-action-label')?.textContent.trim() !== '\u65ad\u7f51\u4fdd\u62a4') throw new Error('disconnect protection must keep full wording without a redundant visible state suffix');
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'updateSetting' && item.args.payload?.key === 'killSwitchEnabled')) throw new Error('quick kill protection did not call backend setting');
     await click('#quickUpdateSubBtn');
     if (!document.querySelector('[data-home-mode="region"]')?.classList.contains('active')) throw new Error('home did not default to common regions');
@@ -1156,9 +1160,28 @@ try {
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'changeProxy')) throw new Error('auto group lock did not use background proxy change job');
     await new Promise((resolve) => setTimeout(resolve, 1000));
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'refreshOutboundIp')) throw new Error('node switch did not auto refresh outbound IP');
-    if (!document.querySelector('#outboundMetric')?.textContent.includes('203.0.113.8') || document.querySelector('#outboundMetricLabel')?.textContent !== '\u51fa\u53e3\u89c2\u6d4b') throw new Error('auto refreshed verified outbound IP did not render as current');
+    if (!document.querySelector('#outboundMetric')?.textContent.includes('203.0.113.8') || document.querySelector('#outboundMetricLabel')?.textContent !== '\u843d\u5730 IP') throw new Error('auto refreshed verified outbound IP did not render as current');
     journeys.nodeAndOutboundIp = true;
     if (!document.querySelector('#homeNodeRows .row[data-node]')?.textContent.includes('ms')) throw new Error('home node delays did not update after quick speed test');
+    const stabilityName = selectedNode || latestGroup?.now;
+    speedResultOverlay.set(stabilityName, {
+      delay: 300,
+      alive: true,
+      healthStatus: 'available',
+      healthConfidence: 'high',
+      lastTestedAt: Math.floor(Date.now() / 1000),
+      stability10m: { samples: 3, variationPermille: 8 },
+      stability30m: { samples: 3, variationPermille: 10 }
+    });
+    renderHomeNodeSummary(summaryRowsFromLatestGroup());
+    if (document.querySelector('#stabilityMetric')?.textContent.trim() !== '\u9ad8') throw new Error('stable high-latency samples were incorrectly ranked as unstable');
+    speedResultOverlay.set(stabilityName, {
+      ...speedResultOverlay.get(stabilityName),
+      stability10m: { samples: 3, variationPermille: 420 },
+      stability30m: { samples: 3, variationPermille: 460 }
+    });
+    renderHomeNodeSummary(summaryRowsFromLatestGroup());
+    if (document.querySelector('#stabilityMetric')?.textContent.trim() !== '\u4f4e') throw new Error('volatile rolling samples were not ranked as low stability');
     const switchCallsBeforeCurrentNodeTest = window.__aegosCalls.filter((item) => item.command === 'change_proxy' || (item.command === 'start_job' && item.args.kind === 'changeProxy')).length;
     const currentNodeButton = document.querySelector('#currentNodeTestBtn');
     const currentNodeButtonWidth = currentNodeButton?.getBoundingClientRect().width || 0;
@@ -1180,7 +1203,7 @@ try {
     if (!document.querySelector('#currentNodeTestBtn > #delayMetric')) throw new Error('current node delay result is not rendered inside the speed-test action');
     const stabilityStyle = getComputedStyle(document.querySelector('#stabilityMetric'));
     if (stabilityStyle.backgroundColor !== 'rgba(0, 0, 0, 0)') throw new Error('home stability metric rendered a colored background block');
-    if (!/metric-stability-(high|medium|low)/.test(document.querySelector('#stabilityMetric')?.className || '')) throw new Error('home stability metric did not use dedicated level text class');
+    if (!/metric-stability-(high|medium|low|muted)/.test(document.querySelector('#stabilityMetric')?.className || '')) throw new Error('home stability metric did not use a dedicated level or sample-collection text class');
     if (!document.querySelector('#lastTestedMetric')?.textContent.trim() || document.querySelector('#lastTestedMetric')?.textContent.includes('\u672a')) throw new Error('current node last tested time did not render after refresh');
     if (!document.querySelector('.delay-good') || !document.querySelector('.delay-bad')) throw new Error('delay color classes did not render green/red states');
     if (document.querySelector('#connectBtn')?.textContent.trim() === '\u65ad\u5f00\u8fde\u63a5') {
@@ -1539,6 +1562,10 @@ try {
     if (window.__aegosCalls.length !== callsBeforeConnectionDraft) throw new Error('connection draft action triggered a backend command');
     await click('[data-page="connections"]');
     await click('#refreshConnectionsBtn');
+    for (let attempt = 0; attempt < 30 && (pageCacheState.connections.loading || document.querySelector('#closeAllConnectionsBtn')?.disabled); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    if (pageCacheState.connections.loading || document.querySelector('#closeAllConnectionsBtn')?.disabled) throw new Error('connection refresh did not make the destructive action available');
     document.querySelector('#closeAllConnectionsBtn').click();
     await new Promise((resolve) => setTimeout(resolve, 20));
     if (document.querySelector('#appDialogOverlay')?.classList.contains('hidden')) throw new Error('close all connections did not require confirmation');
@@ -1673,7 +1700,7 @@ try {
     if (!document.querySelector('#ipv6RequestedState') || !document.querySelector('#ipv6LocalCapabilityState') || !document.querySelector('#ipv6NodeCapabilityState') || !document.querySelector('#ipv6RuntimeConfigState') || !document.querySelector('#ipv6EffectiveState')) throw new Error('IPv6 request/capability/runtime/effective states were not separated');
     if (!document.querySelector('#egressConsistencyCard') || document.querySelector('#egressOverallState')?.textContent !== '普通出口已验证' || !document.querySelector('#egressDnsRouteState')?.textContent.includes('一致')) throw new Error('egress identity/DNS/TUN/IPv6 consistency report did not render');
     renderOutboundIpFromStatus('203.0.113.8', { state: 'stale', detail: 'old identity' });
-    if (!document.querySelector('#outboundIpState')?.textContent.includes('旧')) throw new Error('stale outbound observation was displayed as current');
+    if (!document.querySelector('#outboundIpState')?.textContent.includes('历史')) throw new Error('stale outbound observation was displayed as current');
     outboundIpLastStable = '-';
     renderOutboundIpFromStatus('-', { state: 'failed', detail: 'provider unavailable' });
     if (document.querySelector('#outboundIpState')?.textContent !== '查询失败' || document.querySelector('#outboundMetric')?.textContent !== '查询失败') throw new Error('failed first outbound IP lookup was not displayed explicitly');
@@ -1844,10 +1871,10 @@ try {
     window.__aegosStandbyNextCorePower = 'startCore';
     await click('#connectBtn');
     await new Promise((resolve) => setTimeout(resolve, 420));
-    if (document.querySelector('.ring strong')?.textContent !== '\u6838\u5fc3\u5f85\u547d') throw new Error('takeover failure did not retain the terminal standby state');
+    if (document.querySelector('.ring strong')?.textContent !== '\u672a\u8fde\u63a5') throw new Error('takeover failure did not present the terminal disconnected state');
     if (document.querySelector('#connectBtn')?.textContent !== '\u8fde\u63a5') throw new Error('takeover failure did not restore the retry action');
     const standbyNotice = document.querySelector('#protectionNotice')?.textContent || '';
-    if (!standbyNotice.includes('\u7cfb\u7edf\u4ee3\u7406\u63a5\u7ba1\u672a\u5b8c\u6210') || standbyNotice.includes('\u5df2\u65ad\u5f00')) throw new Error('takeover failure did not expose a remediation notice');
+    if (!standbyNotice.includes('\u672a\u5b8c\u6210\u8fde\u63a5') || standbyNotice.includes('\u5df2\u65ad\u5f00')) throw new Error('takeover failure did not expose a remediation notice');
     window.__aegosStandbyNextCorePower = '';
     journeys.corePowerPendingUsesVerifiedState = true;
     const cancellableJob = await window.__TAURI__.core.invoke('start_job', { kind: 'updateAllProfiles', payload: { keepRunning: true } });

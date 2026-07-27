@@ -5906,23 +5906,6 @@ h2 {
   width: 9px;
 }
 
-#quickKillBtn .quick-action-state {
-  width: auto;
-  min-width: 0;
-  height: auto;
-  margin-left: auto;
-  padding: 0;
-  color: var(--text-tertiary);
-  background: transparent;
-  box-shadow: none;
-  font-size: 10px;
-  font-weight: 750;
-}
-
-#quickKillBtn[aria-checked="true"] .quick-action-state {
-  color: var(--status-success);
-}
-
 .quick-profile-menu {
   position: fixed;
   z-index: 2147483000;
@@ -9442,4 +9425,31 @@ body::before {
 
 .home-node-list .row > :nth-child(5) {
   padding-right: 18px;
+}
+
+/* 3.6.69: the status card is a compact reference surface, not a clipped label rail. */
+.node-status-card.metric-grid article {
+  grid-template-columns: 18px max-content minmax(0, 1fr);
+}
+
+.node-status-card.metric-grid small,
+.node-status-card.metric-grid strong,
+.node-status-card.metric-grid #outboundMetric {
+  max-width: none;
+  min-width: 0;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.node-status-card.metric-grid #outboundMetric {
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+#quickKillBtn .quick-action-label {
+  flex: 0 0 auto;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
 }

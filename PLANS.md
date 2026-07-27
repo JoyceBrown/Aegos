@@ -1,25 +1,25 @@
 # Aegos Windows Real-Use Reliability Plan
 
 plan_id: AEGOS-WINDOWS-RELIABILITY
-status: completed
-authority: none
-current_task_id: none
+status: active
+authority: exclusive
+current_task_id: WR-06
 roadmap_reference: docs/roadmap.md
-continuation_policy: wait_for_user
+continuation_policy: validate_then_advance
 completion_policy: all_required_items
 priority_basis: The current-code three-angle review found P1 truth, recovery,
   and responsiveness defects plus bounded P2 robustness and ownership gaps.
   The user explicitly directed their repair before any new capability work.
-delivery_contract: Build a new source-bound unsigned 3.6.68 NSIS installer
-  from the completed WR-03/WR-04 work, verify its exact bytes and the full
-  required host-safe matrix, commit and push the source/evidence, then create
-  a new GitHub Release with that exact installer and SHA-256. The existing
-  v3.6.67 tag and asset remain immutable historical evidence.
-latest_change_id: CHANGE-034
+delivery_contract: Repair the user-visible high-frequency status vocabulary,
+  layout, and stability model; then build a new source-bound unsigned 3.6.69
+  NSIS installer, verify its exact bytes and the full required host-safe
+  matrix, commit and push the source/evidence, and create a matching GitHub
+  Release. Existing release tags and assets remain immutable historical evidence.
+latest_change_id: CHANGE-035
 latest_change_class: task_adjustment
 change_authority_reference: none
 delegated_execution: none
-on_complete: wait
+on_complete: validate_and_close
 
 ## Objective
 
@@ -116,6 +116,17 @@ one source/evidence commit and push to `origin/main`, and one new GitHub
 Release with the installer SHA-256. It must not replace the existing
 `v3.6.67` tag or asset, claim Authenticode signing, enable automatic updates,
 perform live takeover, or change FlClash or the host network.
+
+CHANGE-035 is the user's explicit correction of the 3.6.68 primary UI. It
+activates WR-06 for only: conventional high-frequency labels (`延迟`, `稳定性`,
+`落地 IP`), removal of core-standby and unclaimed-takeover language from the
+Home primary surface, full untruncated disconnect-protection wording without
+an `未开启` suffix, and a stability model based on 10/30-minute measurement
+variance around a rolling average rather than a one-run relative ranking. It
+authorizes focused code, fixture, visual, interaction, performance, installer,
+commit/push, and one new GitHub Release. It does not authorize live takeover,
+FlClash or host-network changes, signing, automatic updates, a UI framework,
+or unrelated product work.
 
 ## Baseline And Boundaries
 
@@ -258,6 +269,7 @@ satisfied. Missing evidence is `untested`, not passed.
 | WR-03 | completed | Connection truth, failed recovery, background status availability, and interrupted-takeover evidence remain correct under controlled P1/P2 negative paths. | Closed with host-safe behavioral controls and affected gates; 3.6.67 Release remains historical baseline. |
 | WR-04 | completed | The 3.6.67 UI distinguishes current effective network facts from measurement history without hiding diagnostics or connection management. | Closed with deterministic UI controls and fresh host-safe gates; installer and GitHub delivery remain historical evidence. |
 | WR-05 | completed | A source-bound unsigned 3.6.68 installer and matching GitHub Release preserve the completed WR-03/WR-04 work without mutating v3.6.67 history. | Completed: source/tag `e4dd999f1d97ff079676f109900facceb7dfc572`; remote asset SHA-256 matches the recorded installer. |
+| WR-06 | active | The primary status surface uses conventional labels, untruncated protection language, and rolling measurement stability. | CHANGE-035 user-authorized repair and 3.6.69 delivery. |
 
 WR-03 is a host-safe code and isolated-fixture repair task. It is not authority
 to perform controlled live takeover testing, which remains blocked until a
@@ -319,6 +331,36 @@ Exit: every mandatory gate passes, installer bytes match the release note and
 remote asset digest, and `v3.6.68` resolves to the exact source/evidence commit
 that produced the asset. A post-publication evidence-only commit may follow on
 `origin/main`; no host-network or FlClash action occurs.
+
+## WR-06: Conventional Primary Status And Rolling Stability
+
+1. Preserve deterministic known-bad controls for the clipped sidebar labels,
+   the `核心待命`/`尚未接管系统流量` primary copy, the abbreviated or `未开启`
+   disconnect-protection presentation, and a one-sample relative stability
+   rating that contradicts a stable 10/30-minute history.
+2. Replace only the primary-surface vocabulary with `延迟`, `稳定性`, and
+   `落地 IP`. Keep detailed effective-state and recovery evidence available in
+   status center and diagnostics; do not claim connection where runtime facts
+   do not support it.
+3. Make the sidebar metric grid guarantee full readable labels and values at
+   every existing fixed window/DPI configuration. Do not hide a label merely
+   to make the visual check pass.
+4. Store bounded per-node latency observations and derive stability from
+   10-minute and 30-minute rolling average/deviation evidence. A node whose
+   observations remain near its rolling mean is high stability; materially
+   volatile or insufficient history is never shown as high. The model remains
+   measurement-only and cannot change a node or network state.
+5. Run focused behavior controls plus the unchanged Rust, interaction, fixed
+   window/DPI UI, 800-node stress, soak, responsiveness, stability, security,
+   control-plane, architecture, planning, installer, and release gates.
+6. Build source-bound unsigned `3.6.69` NSIS bytes, record exact size/hash,
+   push the source/evidence, tag the source commit `v3.6.69`, create a new
+   GitHub Release, and verify its remote target, asset size, and SHA-256.
+
+Exit: every known-bad control rejects the previous behavior; all existing
+matrix floors remain intact; labels and values fit without clipping; the
+artifact and public release match exact bytes; and no live host-network or
+FlClash action occurs.
 
 ## WR-01: Establish The Real-Use Defect Baseline
 

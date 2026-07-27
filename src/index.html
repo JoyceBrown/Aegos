@@ -19,7 +19,7 @@
         <div class="brand-mark"><img class="brand-logo" src="assets/brand/aegos-mark-64.png" alt=""></div>
         <div>
           <strong class="brand-name">Aegos</strong>
-          <span id="appVersionLabel" class="brand-version">v3.6.68</span>
+          <span id="appVersionLabel" class="brand-version">v3.6.69</span>
         </div>
       </section>
 
@@ -36,11 +36,11 @@
       <section class="node-status-card metric-grid" aria-label="运行与测量状态">
         <header><strong>运行与测量</strong></header>
         <article><span class="metric-icon cyan aegos-icon icon-protocol" aria-hidden="true"></span><small>当前网络</small><strong id="protocolMetric">未连接</strong></article>
-        <article><span class="metric-icon purple aegos-icon icon-latency" aria-hidden="true"></span><small>最近延迟</small><strong class="metric-inline"><button id="currentNodeTestBtn" class="metric-delay-action" aria-label="测速当前节点" title="测速当前节点"><span id="delayMetric">-</span></button></strong></article>
-        <article><span class="metric-icon blue aegos-icon icon-loss" aria-hidden="true"></span><small>最近稳定性</small><strong id="stabilityMetric">未测速</strong></article>
+        <article><span class="metric-icon purple aegos-icon icon-latency" aria-hidden="true"></span><small>延迟</small><strong class="metric-inline"><button id="currentNodeTestBtn" class="metric-delay-action" aria-label="测速当前节点" title="测速当前节点"><span id="delayMetric">-</span></button></strong></article>
+        <article><span class="metric-icon blue aegos-icon icon-loss" aria-hidden="true"></span><small>稳定性</small><strong id="stabilityMetric">未测速</strong></article>
         <article><span class="metric-icon amber aegos-icon icon-load" aria-hidden="true"></span><small>活跃连接</small><strong id="activeConnectionsMetric">0</strong></article>
         <article><span class="metric-icon purple aegos-icon icon-port" aria-hidden="true"></span><small>本地端口</small><strong id="proxyMetric">-</strong></article>
-        <article><span class="metric-icon violet aegos-icon icon-ip" aria-hidden="true"></span><small id="outboundMetricLabel">出口观测</small><strong id="outboundMetric">-</strong></article>
+        <article><span class="metric-icon violet aegos-icon icon-ip" aria-hidden="true"></span><small id="outboundMetricLabel">落地 IP</small><strong id="outboundMetric">-</strong></article>
         <article><span class="metric-icon teal aegos-icon icon-clock" aria-hidden="true"></span><small>上次测速</small><strong id="lastTestedMetric">未测速</strong></article>
         <article><span class="metric-icon up aegos-icon icon-upload" aria-hidden="true"></span><small>上传</small><strong id="upRate">0 B/s</strong></article>
         <article><span class="metric-icon down aegos-icon icon-download" aria-hidden="true"></span><small>下载</small><strong id="downRate">0 B/s</strong></article>
@@ -109,7 +109,7 @@
               <div class="quick-row action-row">
                 <button id="quickTestBtn" data-quick-action="quickTestBtn"><span class="aegos-icon icon-speed" aria-hidden="true"></span><span class="quick-action-label">一键测速</span></button>
                 <button id="quickUpdateSubBtn" data-quick-action="quickUpdateSubBtn"><span class="aegos-icon icon-refresh" aria-hidden="true"></span><span class="quick-action-label">&#26356;&#26032;&#35746;&#38405;</span></button>
-                <button id="quickKillBtn" data-quick-action="quickKillBtn" role="switch" aria-checked="false" aria-label="断网保护，已关闭"><span class="kill-icon aegos-icon icon-shield" aria-hidden="true"></span><span class="quick-action-label">断网保护</span><span id="quickKillState" class="quick-action-state">已关闭</span></button>
+                <button id="quickKillBtn" data-quick-action="quickKillBtn" role="switch" aria-checked="false" aria-label="断网保护"><span class="kill-icon aegos-icon icon-shield" aria-hidden="true"></span><span class="quick-action-label">断网保护</span></button>
                 <button id="quickProfileBtn" data-quick-action="quickProfileBtn"><span class="aegos-icon icon-subscription" aria-hidden="true"></span><span class="quick-action-label">切换订阅</span></button>
                 <button id="quickDiagnosticsBtn" class="hidden" data-quick-action="quickDiagnosticsBtn"><span class="aegos-icon icon-diagnostics" aria-hidden="true"></span><span class="quick-action-label">运行诊断</span></button>
                 <button id="quickRecoverBtn" class="hidden" data-quick-action="quickRecoverBtn"><span class="aegos-icon icon-refresh" aria-hidden="true"></span><span class="quick-action-label">网络恢复</span></button>

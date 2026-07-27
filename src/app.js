@@ -338,10 +338,10 @@ function statusSurfaceNotice(status = {}, settings = {}, protection = {}, availa
   const systemProxyApplied = Boolean(connection.systemProxyApplied ?? (trafficTakeover && Boolean(settings.systemProxy)));
 
   if (!coreReady) {
-    return '\u6838\u5fc3\u672a\u8fd0\u884c\uff0c\u5f53\u524d\u6ca1\u6709\u6d41\u91cf\u63a5\u7ba1\u3002';
+    return '\u5f53\u524d\u672a\u8fde\u63a5\u3002\u9009\u62e9\u8282\u70b9\u540e\u70b9\u51fb\u201c\u8fde\u63a5\u201d\u3002';
   }
   if (!trafficTakeover) {
-    return standbyRemediationNotice || '\u6838\u5fc3\u5f85\u547d\uff0c\u5c1a\u672a\u63a5\u7ba1\u7cfb\u7edf\u6d41\u91cf\u3002';
+    return standbyRemediationNotice || '\u5f53\u524d\u672a\u8fde\u63a5\u3002\u9009\u62e9\u8282\u70b9\u540e\u70b9\u51fb\u201c\u8fde\u63a5\u201d\u3002';
   }
   if (systemProxyWanted && !systemProxyApplied) {
     return '\u7cfb\u7edf\u4ee3\u7406\u5f85\u751f\u6548\uff0c\u8bf7\u4f7f\u7528\u8bca\u65ad\u68c0\u67e5\u7aef\u53e3\u548c Windows \u4ee3\u7406\u72b6\u6001\u3002';
@@ -1531,7 +1531,6 @@ function homeCustomizeMenuPoint(event, trigger) {
 function effectiveConnectionInfo(status = {}) {
   const availability = networkAvailabilityInfo(status);
   const trafficTakeover = Boolean(status.trafficTakeover || status.settings?.proxyTakeover?.active);
-  const coreReady = Boolean(status.coreReady ?? status.running);
   if (trafficTakeover && availability.networkUsable) {
     return { label: STATUS_TEXT.connected, className: 'ok', connected: true, availability };
   }
@@ -1545,7 +1544,7 @@ function effectiveConnectionInfo(status = {}) {
     return { label: '\u7f51\u7edc\u672a\u9a8c\u8bc1', className: 'bad', connected: false, availability };
   }
   return {
-    label: coreReady ? STATUS_TEXT.coreStandby : STATUS_TEXT.disconnected,
+    label: STATUS_TEXT.disconnected,
     className: '',
     connected: false,
     availability
@@ -2711,6 +2710,8 @@ function applySpeedStatusToNodes(status = {}, options = {}) {
       failureStreak: Number(speedHealthValue(itemHealth, 'failureStreak', 'failure_streak') ?? current.failureStreak ?? 0),
       lastFailureReason: speedHealthValue(itemHealth, 'lastFailureReason', 'last_failure_reason') || current.lastFailureReason || current.last_failure_reason || '',
       lastTestedAt,
+      stability10m: speedHealthValue(itemHealth, 'stability10m', 'stability_10m') || current.stability10m || current.stability_10m || {},
+      stability30m: speedHealthValue(itemHealth, 'stability30m', 'stability_30m') || current.stability30m || current.stability_30m || {},
       recommended: isRecommended
     };
     const itemChanged = next.delay !== current.delay
@@ -2719,6 +2720,8 @@ function applySpeedStatusToNodes(status = {}, options = {}) {
       || next.failureStreak !== current.failureStreak
       || next.lastFailureReason !== (current.lastFailureReason || current.last_failure_reason || '')
       || next.lastTestedAt !== current.lastTestedAt
+      || JSON.stringify(next.stability10m) !== JSON.stringify(current.stability10m || current.stability_10m || {})
+      || JSON.stringify(next.stability30m) !== JSON.stringify(current.stability30m || current.stability_30m || {})
       || next.recommended !== current.recommended;
     if (!itemChanged) return;
     speedResultOverlay.set(name, next);
@@ -3122,18 +3125,17 @@ function confidenceClass(value) {
   return 'confidence-muted';
 }
 
-function averageAvailableDelay(rows = []) {
-  const delays = rows.map((row) => Number(row?.[3] || -1)).filter((delay) => delay > 0);
-  if (!delays.length) return 0;
-  return delays.reduce((sum, delay) => sum + delay, 0) / delays.length;
+function rollingStabilityWindow(value = {}) {
+  return {
+    samples: Number(value.samples || 0),
+    variationPermille: Number(value.variationPermille ?? value.variation_per_mille ?? Number.MAX_SAFE_INTEGER)
+  };
 }
 
-function stabilityInfo(row, rows = []) {
+function stabilityInfo(row) {
   if (!row) return { label: '\u672a\u6d4b\u901f', level: 'unknown', className: 'confidence-muted', metricClassName: 'metric-stability-muted' };
   const delay = Number(row[3] || -1);
   const healthStatus = String(row[7] || 'unknown');
-  const medianDelay = Number(row[8] || delay);
-  const jitter = Number(row[9] || 0);
   const failureStreak = Number(row[12] || 0);
   const confidence = String(row[16] || 'unknown');
   const failureReason = String(row[18] || '');
@@ -3149,14 +3151,21 @@ function stabilityInfo(row, rows = []) {
   if (failureStreak >= 2 || healthStatus === 'cooldown' || confidence === 'failed') {
     return { label: '\u4f4e', level: 'low', className: 'confidence-bad', metricClassName: 'metric-stability-low' };
   }
-  const baseline = averageAvailableDelay(rows);
-  const relative = baseline > 0 ? delay / baseline : 1;
-  const jitterRatio = delay > 0 ? jitter / delay : 1;
-  const confidenceOk = confidence === 'high' || confidence === 'medium';
-  if (confidenceOk && failureStreak === 0 && delay < 100 && relative <= 0.95 && jitterRatio <= 0.45 && medianDelay <= delay * 1.25) {
+  const history = speedOverlayForItem({ name: row[1] });
+  const shortWindow = rollingStabilityWindow(history.stability10m || history.stability_10m);
+  const longWindow = rollingStabilityWindow(history.stability30m || history.stability_30m);
+  const testedAt = Number(history.lastTestedAt ?? history.last_tested_at ?? row[17] ?? 0);
+  if (testedAt > 0 && Math.floor(Date.now() / 1000) - testedAt > 30 * 60) {
+    return { label: '\u6837\u672c\u8fc7\u671f', level: 'stale', className: 'confidence-muted', metricClassName: 'metric-stability-muted' };
+  }
+  if (shortWindow.samples < 3 || longWindow.samples < 3) {
+    return { label: '\u6837\u672c\u79ef\u7d2f\u4e2d', level: 'collecting', className: 'confidence-muted', metricClassName: 'metric-stability-muted' };
+  }
+  const variationPermille = Math.max(shortWindow.variationPermille, longWindow.variationPermille);
+  if (variationPermille <= 80) {
     return { label: '\u9ad8', level: 'high', className: 'confidence-good', metricClassName: 'metric-stability-high' };
   }
-  if (failureStreak <= 1 && relative <= 1.35 && jitterRatio <= 0.85 && delay < 220) {
+  if (variationPermille <= 200) {
     return { label: '\u4e2d', level: 'medium', className: 'confidence-warn', metricClassName: 'metric-stability-medium' };
   }
   return { label: '\u4f4e', level: 'low', className: 'confidence-bad', metricClassName: 'metric-stability-low' };
@@ -3218,7 +3227,7 @@ function renderHomeNodeSummary(rows = []) {
   const currentRow = currentNodeRow(sourceRows);
   const currentDelay = nodeDelayText(currentRow);
   const currentDelayClass = delayClass(currentRow?.[3]);
-  const stability = stabilityInfo(currentRow, sourceRows);
+  const stability = stabilityInfo(currentRow);
 
   const delayMetric = $('#delayMetric');
   if (delayMetric) {
@@ -5408,7 +5417,7 @@ function setOutboundIpText(value, title = '', sidebar = {}) {
   $('#outboundIpState').setAttribute('title', title || text);
   $('#outboundMetric').setAttribute('title', sidebar.title || title || sidebarText);
   const label = $('#outboundMetricLabel');
-  if (label) label.textContent = sidebar.label || '\u51fa\u53e3\u89c2\u6d4b';
+  if (label) label.textContent = sidebar.label || '\u843d\u5730 IP';
 }
 
 function renderOutboundIpFromStatus(value, availability = {}) {
@@ -5416,9 +5425,12 @@ function renderOutboundIpFromStatus(value, availability = {}) {
   const networkUsable = availability.networkUsable === true;
   const queryFailed = availability.state === 'failed';
   if (networkUsable && value) outboundIpLastStable = value;
-  const historical = outboundIpLastStable && outboundIpLastStable !== '-';
+  const historicalValue = outboundIpLastStable && outboundIpLastStable !== '-'
+    ? outboundIpLastStable
+    : (!networkUsable && value && value !== '-' ? value : '');
+  const historical = Boolean(historicalValue);
   if (networkUsable && value) {
-    setOutboundIpText(value, value, { label: '\u51fa\u53e3\u89c2\u6d4b' });
+    setOutboundIpText(value, value, { label: '\u843d\u5730 IP' });
     return;
   }
   if (queryFailed && !historical) {
@@ -5426,16 +5438,16 @@ function renderOutboundIpFromStatus(value, availability = {}) {
     setOutboundIpText('\u67e5\u8be2\u5931\u8d25', failureTitle, {
       text: '\u67e5\u8be2\u5931\u8d25',
       title: failureTitle,
-      label: '\u51fa\u53e3\u89c2\u6d4b'
+      label: '\u843d\u5730 IP'
     });
     return;
   }
-  const historyText = historical ? `${outboundIpLastStable}\uff08\u4e0a\u6b21\u89c2\u6d4b\uff09` : '-';
+  const historyText = historical ? `${historicalValue}\uff08\u5386\u53f2\uff09` : '-';
   const historyTitle = availability.detail || '\u5f53\u524d\u7f51\u7edc\u672a\u9a8c\u8bc1\uff0c\u4e0d\u663e\u793a\u4e3a\u5f53\u524d\u51fa\u53e3\u3002';
   setOutboundIpText(historyText, historyTitle, {
     text: historyText,
     title: historyTitle,
-    label: '\u6700\u8fd1\u51fa\u53e3\u89c2\u6d4b'
+    label: '\u843d\u5730 IP'
   });
 }
 
@@ -5560,9 +5572,7 @@ function renderStatus(status) {
   const quickKill = $('#quickKillBtn');
   quickKill?.classList.toggle('active', killSwitchEnabled);
   quickKill?.setAttribute('aria-checked', String(killSwitchEnabled));
-  quickKill?.setAttribute('aria-label', `\u65ad\u7f51\u4fdd\u62a4\uff0c${enabledLabel(killSwitchEnabled)}`);
-  const quickKillState = $('#quickKillState');
-  if (quickKillState) quickKillState.textContent = enabledLabel(killSwitchEnabled);
+  quickKill?.setAttribute('aria-label', '\u65ad\u7f51\u4fdd\u62a4');
   $('#proxyState').textContent = systemProxyApplied ? STATUS_TEXT.enabled : systemProxyWanted ? STATUS_TEXT.pending : STATUS_TEXT.disabled;
   $('#proxyState').classList.toggle('is-danger', !systemProxyApplied);
   $('#proxyStateRow').classList.remove('hidden');
@@ -6595,7 +6605,7 @@ async function repairSystemProxyJob() {
 function corePowerSuccessNotice(kind, result) {
   if (kind === 'stopCore') return '已断开连接';
   if (kind === 'startCore' && !result?.trafficTakeover) {
-    return result?.message || '核心已启动，但尚未接管流量。请检查系统代理或 TUN 设置后重试连接。';
+    return '未完成连接，请检查设置后重试。';
   }
   return '已连接，正在刷新落地 IP';
 }

@@ -41,37 +41,44 @@ const wr04Evidence = read('docs/work/windows-reliability-wr04.md');
 const wr05Evidence = read('docs/work/windows-reliability-wr05.md');
 
 check(
-  'the Windows real-use reliability plan is closed after WR-05 delivery',
+  'the Windows real-use reliability plan has exclusive WR-06 repair authority',
   value(plan, 'plan_id') === 'AEGOS-WINDOWS-RELIABILITY'
-    && value(plan, 'status') === 'completed'
-    && value(plan, 'authority') === 'none'
-    && value(plan, 'current_task_id') === 'none'
-    && (plan.match(/^status: completed$/gm) || []).length === 1,
+    && value(plan, 'status') === 'active'
+    && value(plan, 'authority') === 'exclusive'
+    && value(plan, 'current_task_id') === 'WR-06'
+    && (plan.match(/^status: active$/gm) || []).length === 1,
   value(plan, 'current_task_id')
 );
 
 check(
-  'WR-01 through WR-05 are completed after CHANGE-034 delivery',
-  value(plan, 'current_task_id') === 'none'
+  'WR-01 through WR-05 are completed and WR-06 is active after CHANGE-035',
+  value(plan, 'current_task_id') === 'WR-06'
     && plan.includes('| WR-01 | completed |')
     && plan.includes('| WR-02 | completed |')
     && plan.includes('| WR-03 | completed |')
     && plan.includes('| WR-04 | completed |')
     && plan.includes('| WR-05 | completed |')
-    && value(plan, 'latest_change_id') === 'CHANGE-034'
+    && plan.includes('| WR-06 | active |')
+    && value(plan, 'latest_change_id') === 'CHANGE-035'
     && value(plan, 'latest_change_class') === 'task_adjustment'
-    && value(plan, 'continuation_policy') === 'wait_for_user'
+    && value(plan, 'continuation_policy') === 'validate_then_advance'
     && value(plan, 'completion_policy') === 'all_required_items'
-    && value(plan, 'on_complete') === 'wait'
+    && value(plan, 'on_complete') === 'validate_and_close'
     && plan.includes('CHANGE-032 is the user\'s explicit instruction')
     && plan.includes('CHANGE-033 is the user\'s explicit instruction')
     && plan.includes('CHANGE-034 is the user\'s explicit instruction')
+    && plan.includes('CHANGE-035 is the user\'s explicit correction')
     && plan.includes('truthful connected')
     && plan.includes('truthful separation of effective')
-    && plan.includes('v3.6.67 tag and asset remain immutable')
-    && plan.includes('source-bound unsigned 3.6.68 NSIS installer')
-    && value(checkpoint, 'latest_change_id') === 'CHANGE-034'
-    && value(checkpoint, 'current_task_id') === 'none'
+    && plan.includes('must not replace the existing')
+    && plan.includes('v3.6.67')
+    && plan.includes('source-bound unsigned')
+    && plan.includes('3.6.68')
+    && plan.includes('NSIS installer')
+    && plan.includes('10/30-minute measurement')
+    && plan.includes('variance around a rolling average')
+    && value(checkpoint, 'latest_change_id') === 'CHANGE-035'
+    && value(checkpoint, 'current_task_id') === 'WR-06'
     && value(wr05Evidence, 'evidence_state') === 'closed'
     && wr05Evidence.includes('Aegos_3.6.68_x64-setup.exe')
     && wr05Evidence.includes('839804d895d4c5af77568e2e876407a6b29f17bf33fdd9e771165ea387b7ade4'),
@@ -143,9 +150,9 @@ check(
 );
 
 check(
-  'checkpoint records the closed WR-05 delivery without creating a second authority',
+  'checkpoint records the active WR-06 route without creating a second authority',
   value(checkpoint, 'record_kind') === 'checkpoint'
-    && value(checkpoint, 'execution_authority') === 'none'
+    && value(checkpoint, 'execution_authority') === 'exclusive'
     && value(checkpoint, 'plan_id') === value(plan, 'plan_id')
     && value(checkpoint, 'current_task_id') === value(plan, 'current_task_id')
     && value(checkpoint, 'latest_change_id') === value(plan, 'latest_change_id')

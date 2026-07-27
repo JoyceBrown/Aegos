@@ -190,12 +190,16 @@ check(
   'current-node metrics are truthful rather than fake load/loss columns',
   indexHtml.includes('class="node-status-card metric-grid"') &&
     (indexHtml.match(/<article><span class="metric-icon/g) || []).length === 9 &&
-    indexHtml.includes('<small>最近稳定性</small>') &&
+    indexHtml.includes('<small>延迟</small>') &&
+    indexHtml.includes('<small>稳定性</small>') &&
+    indexHtml.includes('<small id="outboundMetricLabel">落地 IP</small>') &&
     indexHtml.includes('<small>活跃连接</small>') &&
     indexHtml.includes('<small>上次测速</small>') &&
     !indexHtml.includes('<span>丢包率</span>') &&
     !indexHtml.includes('<span>负载</span>') &&
     appJs.includes('function stabilityInfo') &&
+    appJs.includes('function rollingStabilityWindow') &&
+    !appJs.includes('function averageAvailableDelay') &&
     appJs.includes('function lastTestedText') &&
     appJs.includes('active_connection_count'),
   'the sidebar node card keeps real stability, connection, test-age, endpoint, and traffic readings'
