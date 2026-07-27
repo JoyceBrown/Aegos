@@ -1,9 +1,9 @@
 # Aegos Windows Real-Use Reliability Plan
 
 plan_id: AEGOS-WINDOWS-RELIABILITY
-status: active
-authority: exclusive
-current_task_id: WR-06
+status: completed
+authority: none
+current_task_id: none
 roadmap_reference: docs/roadmap.md
 continuation_policy: validate_then_advance
 completion_policy: all_required_items
@@ -269,7 +269,7 @@ satisfied. Missing evidence is `untested`, not passed.
 | WR-03 | completed | Connection truth, failed recovery, background status availability, and interrupted-takeover evidence remain correct under controlled P1/P2 negative paths. | Closed with host-safe behavioral controls and affected gates; 3.6.67 Release remains historical baseline. |
 | WR-04 | completed | The 3.6.67 UI distinguishes current effective network facts from measurement history without hiding diagnostics or connection management. | Closed with deterministic UI controls and fresh host-safe gates; installer and GitHub delivery remain historical evidence. |
 | WR-05 | completed | A source-bound unsigned 3.6.68 installer and matching GitHub Release preserve the completed WR-03/WR-04 work without mutating v3.6.67 history. | Completed: source/tag `e4dd999f1d97ff079676f109900facceb7dfc572`; remote asset SHA-256 matches the recorded installer. |
-| WR-06 | active | The primary status surface uses conventional labels, untruncated protection language, and rolling measurement stability. | CHANGE-035 user-authorized repair and 3.6.69 delivery. |
+| WR-06 | completed | The primary status surface uses conventional labels, untruncated protection language, and rolling measurement stability. | Completed: source/tag `ea655b417c2cb6e09d6d93f893912ec3afb41895`; remote unsigned asset SHA-256 matches the recorded installer. |
 
 WR-03 is a host-safe code and isolated-fixture repair task. It is not authority
 to perform controlled live takeover testing, which remains blocked until a

@@ -5,9 +5,10 @@ execution_authority: none
 plan_id: AEGOS-WINDOWS-RELIABILITY
 task_id: WR-06
 change_id: CHANGE-035
-evidence_state: accepted_pending_publication
+evidence_state: closed
 opened_at: 2026-07-27T13:45:19Z
-updated_at: 2026-07-27T14:11:16Z
+updated_at: 2026-07-27T14:14:24Z
+closed_at: 2026-07-27T14:14:24Z
 base_git_head: 9353622b42f64937b68f68f2a36277fd70ff9d28
 host_boundary: Host-safe fixture, browser, and native probe validation only. No
   Windows takeover, proxy, DNS, firewall, TUN, FlClash, or host-network action.
@@ -69,5 +70,4 @@ further product work or publication by itself.
 - The shared-host boundary held throughout. No FlClash process, Windows system
   proxy, TUN, DNS, firewall, kill switch, or live network takeover was changed.
 
-No P0 or P1 remains open for CHANGE-035. Publication remains a separate
-delivery action authorized by the active plan and user request.
+No P0 or P1 remains open for CHANGE-035. Publication is complete.

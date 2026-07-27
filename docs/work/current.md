@@ -1,10 +1,10 @@
 # Current Work Checkpoint
 
 record_kind: checkpoint
-execution_authority: exclusive
+execution_authority: none
 active_plan: ../../PLANS.md
 plan_id: AEGOS-WINDOWS-RELIABILITY
-current_task_id: WR-06
+current_task_id: none
 latest_change_id: CHANGE-035
 latest_change_class: task_adjustment
 updated_at: 2026-07-27
@@ -61,10 +61,14 @@ contains `Aegos_3.6.68_x64-setup.exe` (16,335,672 bytes, SHA-256
 The installer is explicitly unsigned. The v3.6.67 tag and asset remain
 unchanged historical evidence.
 
-CHANGE-035 is active as WR-06. It permits a focused primary-status vocabulary,
-layout, and rolling-stability repair followed by one unsigned 3.6.69 installer
-and GitHub Release. No live takeover, FlClash, or host-network action is
-authorized.
+WR-06 is complete. `v3.6.69` targets source commit
+`ea655b417c2cb6e09d6d93f893912ec3afb41895`; the published GitHub Release at
+`https://github.com/JoyceBrown/Aegos/releases/tag/v3.6.69` contains
+`Aegos_3.6.69_x64-setup.exe` (16,345,798 bytes, SHA-256
+`a85a8335ce67c6fa30fe8cca9eeeb89aa9198dd9fa76086b5a84d8cf3789a4cd`).
+The installer is unsigned. GitHub asset metadata and a separately downloaded
+copy both match the recorded hash. Earlier release tags and assets remain
+immutable historical evidence.
 
 Signing, automatic updates, feature breadth, new installer/release work, and
 live Windows takeover remain outside this task. FlClash and the host network
@@ -73,9 +77,10 @@ must not be changed.
 ## Verified Evidence
 
 - Baseline: clean `main`/`origin/main` at `28e539b`, version `3.6.65`.
-- Current candidate version: `3.6.69`; the fresh-target installer is being
-  validated under WR-06 and 3.6.68 remains immutable historical delivery
-  evidence. The rejected 3.6.66 installer is also historical evidence.
+- Current completed delivery version: `3.6.69`; its source-bound unsigned
+  installer and GitHub Release are recorded in
+  `docs/work/windows-reliability-wr06.md`. 3.6.68 remains immutable historical
+  delivery evidence. The rejected 3.6.66 installer is also historical evidence.
 - The v2 acceptance runner executes 25 distinct commands and binds each to
   current source/gate inputs, timestamps, Windows/toolchain identity, the
   host-safe boundary, and a hashed local log.
@@ -143,6 +148,5 @@ must not be changed.
 
 ## Exact Next Action
 
-Preserve the WR-06 known-bad controls, repair the conventional primary labels,
-full protection wording, and 10/30-minute stability model; then run the full
-host-safe matrix and deliver 3.6.69. Do not modify host networking or FlClash.
+Wait for a new explicit user instruction. Do not select a roadmap task,
+modify host networking, or change FlClash.

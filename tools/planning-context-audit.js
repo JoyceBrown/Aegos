@@ -39,26 +39,27 @@ const wr02Evidence = read('docs/work/windows-reliability-wr02.md');
 const wr03Evidence = read('docs/work/windows-reliability-wr03.md');
 const wr04Evidence = read('docs/work/windows-reliability-wr04.md');
 const wr05Evidence = read('docs/work/windows-reliability-wr05.md');
+const wr06Evidence = read('docs/work/windows-reliability-wr06.md');
 
 check(
-  'the Windows real-use reliability plan has exclusive WR-06 repair authority',
+  'the Windows real-use reliability plan is closed after WR-06 delivery',
   value(plan, 'plan_id') === 'AEGOS-WINDOWS-RELIABILITY'
-    && value(plan, 'status') === 'active'
-    && value(plan, 'authority') === 'exclusive'
-    && value(plan, 'current_task_id') === 'WR-06'
-    && (plan.match(/^status: active$/gm) || []).length === 1,
+    && value(plan, 'status') === 'completed'
+    && value(plan, 'authority') === 'none'
+    && value(plan, 'current_task_id') === 'none'
+    && (plan.match(/^status: completed$/gm) || []).length === 1,
   value(plan, 'current_task_id')
 );
 
 check(
-  'WR-01 through WR-05 are completed and WR-06 is active after CHANGE-035',
-  value(plan, 'current_task_id') === 'WR-06'
+  'WR-01 through WR-06 are completed after CHANGE-035 delivery',
+  value(plan, 'current_task_id') === 'none'
     && plan.includes('| WR-01 | completed |')
     && plan.includes('| WR-02 | completed |')
     && plan.includes('| WR-03 | completed |')
     && plan.includes('| WR-04 | completed |')
     && plan.includes('| WR-05 | completed |')
-    && plan.includes('| WR-06 | active |')
+    && plan.includes('| WR-06 | completed |')
     && value(plan, 'latest_change_id') === 'CHANGE-035'
     && value(plan, 'latest_change_class') === 'task_adjustment'
     && value(plan, 'continuation_policy') === 'validate_then_advance'
@@ -78,10 +79,13 @@ check(
     && plan.includes('10/30-minute measurement')
     && plan.includes('variance around a rolling average')
     && value(checkpoint, 'latest_change_id') === 'CHANGE-035'
-    && value(checkpoint, 'current_task_id') === 'WR-06'
+    && value(checkpoint, 'current_task_id') === 'none'
     && value(wr05Evidence, 'evidence_state') === 'closed'
     && wr05Evidence.includes('Aegos_3.6.68_x64-setup.exe')
-    && wr05Evidence.includes('839804d895d4c5af77568e2e876407a6b29f17bf33fdd9e771165ea387b7ade4'),
+    && wr05Evidence.includes('839804d895d4c5af77568e2e876407a6b29f17bf33fdd9e771165ea387b7ade4')
+    && value(wr06Evidence, 'evidence_state') === 'closed'
+    && wr06Evidence.includes('Aegos_3.6.69_x64-setup.exe')
+    && wr06Evidence.includes('a85a8335ce67c6fa30fe8cca9eeeb89aa9198dd9fa76086b5a84d8cf3789a4cd'),
   value(plan, 'current_task_id')
 );
 
@@ -150,9 +154,9 @@ check(
 );
 
 check(
-  'checkpoint records the active WR-06 route without creating a second authority',
+  'checkpoint records the closed WR-06 route without creating a second authority',
   value(checkpoint, 'record_kind') === 'checkpoint'
-    && value(checkpoint, 'execution_authority') === 'exclusive'
+    && value(checkpoint, 'execution_authority') === 'none'
     && value(checkpoint, 'plan_id') === value(plan, 'plan_id')
     && value(checkpoint, 'current_task_id') === value(plan, 'current_task_id')
     && value(checkpoint, 'latest_change_id') === value(plan, 'latest_change_id')
@@ -242,6 +246,22 @@ check(
 );
 
 check(
+  'closed WR-06 evidence preserves vocabulary, stability, and published artifact facts',
+  value(wr06Evidence, 'record_kind') === 'evidence_register'
+    && value(wr06Evidence, 'execution_authority') === 'none'
+    && value(wr06Evidence, 'plan_id') === value(plan, 'plan_id')
+    && value(wr06Evidence, 'task_id') === 'WR-06'
+    && value(wr06Evidence, 'change_id') === 'CHANGE-035'
+    && value(wr06Evidence, 'evidence_state') === 'closed'
+    && ['WR06-001', 'WR06-002', 'WR06-003', 'WR06-004']
+      .every((finding) => wr06Evidence.includes(`| ${finding} |`))
+    && wr06Evidence.includes('10/30-minute')
+    && wr06Evidence.includes('a85a8335ce67c6fa30fe8cca9eeeb89aa9198dd9fa76086b5a84d8cf3789a4cd')
+    && wr06Evidence.includes('FlClash'),
+  value(wr06Evidence, 'evidence_state')
+);
+
+check(
   'product and architecture keep the reliability-first Windows boundary',
   product.includes('## Windows Reliability Definition')
     && product.includes('not an implicit future queue')
@@ -252,7 +272,7 @@ check(
 );
 
 check(
-  'the active plan excludes unauthorized breadth and distribution work',
+  'the completed plan retains its unauthorized breadth and distribution exclusions',
   plan.includes('Signing, GitHub publishing')
     && plan.includes('WebDAV, cloud backup')
     && plan.includes('Windows ARM64, macOS, Linux')
