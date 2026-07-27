@@ -5,7 +5,7 @@ execution_authority: none
 active_plan: ../../PLANS.md
 plan_id: AEGOS-WINDOWS-RELIABILITY
 current_task_id: none
-latest_change_id: CHANGE-030
+latest_change_id: CHANGE-031
 latest_change_class: task_adjustment
 updated_at: 2026-07-27
 
@@ -25,9 +25,14 @@ to the configured GitHub `origin/main`. It authorizes one commit and push only;
 it does not authorize a GitHub Release, installer upload, signing, automatic
 updates, new product work, live Windows takeover, or changes to FlClash.
 
-Signing, Git actions, GitHub Release publication, automatic updates, feature
-breadth, and live Windows takeover remain outside this task. FlClash and the
-host network must not be changed.
+CHANGE-031 is the user's explicit instruction to create the public `v3.6.67`
+GitHub Release and upload the exact accepted NSIS installer. Its release body
+must state that the asset is unsigned and provide SHA-256; signing, automatic
+updates, new product work, live takeover, and changes to FlClash remain out of
+scope.
+
+Signing, automatic updates, feature breadth, and live Windows takeover remain
+outside this task. FlClash and the host network must not be changed.
 
 ## Verified Evidence
 
@@ -114,12 +119,13 @@ The user's documentation-only GitHub request advanced `main` and
 `origin/main` to `606658c` with the Chinese `README.md` as the only committed
 file. CHANGE-030 supersedes the prior no-Git restriction only for one commit
 and push of the accepted 3.6.67 source, regression coverage, authority records,
-and redacted evidence. The local unsigned installer remains local and is not
-part of a GitHub Release or upload.
+and redacted evidence. CHANGE-031 additionally authorizes one public GitHub
+Release upload of the exact local unsigned installer; no other asset or update
+channel is authorized.
 
 ## Exact Next Action
 
-Complete the one authorized 3.6.67 source-and-evidence commit and push after
-current acceptance has been verified. Then return to `on_complete: wait`; do
-not start controlled host takeover, unrelated roadmap work, a GitHub Release,
-or other publication actions.
+After current acceptance, create `v3.6.67` on GitHub and upload the exact
+unsigned installer with its SHA-256 in the release body. Then return to
+`on_complete: wait`; do not start controlled host takeover, unrelated roadmap
+work, signing, automatic updates, or other publication actions.

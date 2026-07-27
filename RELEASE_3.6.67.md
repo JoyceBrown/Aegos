@@ -1,8 +1,8 @@
 # Aegos 3.6.67
 
-Status: validated local unsigned WR-02 CHANGE-029 candidate.
+Status: validated unsigned `v3.6.67` GitHub Release asset.
 
-This candidate replaces the rejected 3.6.66 responsiveness result. Manual
+This release replaces the rejected 3.6.66 responsiveness result. Manual
 speed tests now provide honest, continuously changing numeric feedback before
 the first measured result, and cold-start Connections work can no longer hold
 navigation behind a large result render or queued page prewarm.
@@ -48,5 +48,5 @@ The runtime and recovery contract remains explicitly covered by:
 - NSIS name: `Aegos_3.6.67_x64-setup.exe`
 - Size: `16322443` bytes
 - SHA-256: `4cf7895f68cdbee981f3d4c6b1ed032f52da2fd5eb3c8148b755d8345da57437`
-- Signature: unsigned local candidate
-- Publication: no GitHub Release and no update-channel publication
+- Signature: unsigned. Verify the SHA-256 above before installation.
+- Publication: one public GitHub Release asset; no automatic-update channel

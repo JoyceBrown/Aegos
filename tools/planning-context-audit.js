@@ -47,20 +47,19 @@ check(
 );
 
 check(
-  'WR-01 and WR-02 are completed and CHANGE-030 permits one bounded Git sync',
+  'WR-01 and WR-02 are completed and CHANGE-031 permits one bounded public release',
   value(plan, 'current_task_id') === 'none'
     && plan.includes('| WR-01 | completed |')
     && plan.includes('| WR-02 | completed |')
-    && value(plan, 'latest_change_id') === 'CHANGE-030'
+    && value(plan, 'latest_change_id') === 'CHANGE-031'
     && value(plan, 'latest_change_class') === 'task_adjustment'
     && value(plan, 'continuation_policy') === 'validate_then_advance'
     && value(plan, 'completion_policy') === 'all_required_items'
     && value(plan, 'on_complete') === 'wait'
-    && plan.includes('CHANGE-030 is the user\'s explicit request to synchronize the completed 3.6.67')
-    && plan.includes('does not authorize a GitHub Release, artifact upload, signing, automatic')
-    && checkpoint.includes('CHANGE-030 is the user\'s explicit instruction to synchronize the accepted')
-    && checkpoint.includes('It authorizes one commit and push only;')
-    && checkpoint.includes('does not authorize a GitHub Release, installer upload, signing, automatic'),
+    && plan.includes('CHANGE-031 is the user\'s explicit instruction to create the `v3.6.67` GitHub')
+    && plan.includes('must state that the installer is unsigned and provide its SHA-256')
+    && checkpoint.includes('CHANGE-031 is the user\'s explicit instruction to create the public `v3.6.67`')
+    && checkpoint.includes('must state that the asset is unsigned and provide SHA-256'),
   value(plan, 'current_task_id')
 );
 

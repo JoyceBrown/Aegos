@@ -16,9 +16,11 @@ delivery_contract: Reopen WR-02 and repair both rejected interaction paths as
   the complete source-bound host-safe matrix, and build one new unsigned local
   installer from the accepted bytes. The user explicitly authorizes one commit
   and push of the completed 3.6.67 source, tests, records, and evidence to the
-  configured GitHub origin. GitHub Release, signing, automatic update, and
-  host-network takeover remain excluded.
-latest_change_id: CHANGE-030
+  configured GitHub origin. The user also explicitly authorizes one public
+  GitHub Release that uploads the accepted unsigned 3.6.67 NSIS asset with its
+  exact SHA-256. Signing, automatic update, and host-network takeover remain
+  excluded.
+latest_change_id: CHANGE-031
 latest_change_class: task_adjustment
 change_authority_reference: none
 delegated_execution: none
@@ -88,6 +90,11 @@ candidate with GitHub. It authorizes one source-and-evidence commit and push to
 the configured `origin/main` after current source-bound acceptance succeeds.
 It does not authorize a GitHub Release, artifact upload, signing, automatic
 update, live takeover, or any new product work.
+
+CHANGE-031 is the user's explicit instruction to create the `v3.6.67` GitHub
+Release and upload the exact accepted NSIS installer. The release description
+must state that the installer is unsigned and provide its SHA-256. It does not
+authorize signing, automatic updates, live takeover, or any new product work.
 
 ## Baseline And Boundaries
 
@@ -530,3 +537,4 @@ they count as gates.
 | CHANGE-028 | task_adjustment | Activates WR-02 for two bundled user-reported responsiveness defects: delayed or apparently unchanged repeated speed-test feedback, and first-entry stutter on Nodes/Connections after startup. It permits focused repair, regressions, full host-safe validation, and one unsigned local installer, but no Git or publication action. |
 | CHANGE-029 | task_adjustment | Reopens WR-02 because the 3.6.66 acceptance missed immediate numeric pre-result feedback and cold-start navigation away from Connections. Both paths require deterministic negative controls, focused repair, the unchanged full matrix, and a new local unsigned installer; Git, publication, and live takeover remain excluded. |
 | CHANGE-030 | task_adjustment | The user explicitly authorizes one commit and push of the accepted 3.6.67 source, regression coverage, authority records, and redacted evidence to `origin/main`. GitHub Release, artifact upload, signing, automatic updates, live takeover, and new product work remain excluded. |
+| CHANGE-031 | task_adjustment | The user explicitly authorizes one public `v3.6.67` GitHub Release and upload of the exact accepted unsigned NSIS asset. The release body must disclose the unsigned status and SHA-256. Signing, automatic updates, live takeover, and new product work remain excluded. |
