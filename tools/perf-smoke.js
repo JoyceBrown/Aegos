@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -33,24 +33,36 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function terminatePerfChrome() {
-  try { chrome.kill(); } catch {}
+function terminateTestChromeProcesses(dir) {
   if (process.platform !== 'win32') return;
-  const detachedCleanup = (command, args) => {
+  const escapedDir = dir.replaceAll("'", "''");
+  const query = `Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | Where-Object { $_.CommandLine -like '*${escapedDir}*' } | ForEach-Object { $_.ProcessId }`;
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', query], {
+    encoding: 'utf8',
+    windowsHide: true
+  });
+  for (const pid of String(result.stdout || '').match(/\d+/g) || []) {
+    spawnSync('taskkill.exe', ['/PID', pid, '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+  }
+}
+
+async function removeTestUserDataDir(dir) {
+  const deadline = Date.now() + 15000;
+  let absentSince = 0;
+  do {
+    terminateTestChromeProcesses(dir);
     try {
-      const child = spawn(command, args, {
-        stdio: 'ignore',
-        detached: true,
-        windowsHide: true
-      });
-      child.unref();
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 4, retryDelay: 250 });
     } catch {}
-  };
-  if (chrome.pid) detachedCleanup('taskkill', ['/PID', String(chrome.pid), '/T', '/F']);
-  // Chrome may detach renderer descendants after its browser process exits.
-  // The dedicated profile prefix cannot target a user Chrome session.
-  const command = "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | Where-Object { $_.CommandLine -match 'aegos-perf-smoke-' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
-  detachedCleanup('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command]);
+    if (!fs.existsSync(dir)) {
+      if (!absentSince) absentSince = Date.now();
+      if (Date.now() - absentSince >= 1000) return true;
+    } else {
+      absentSince = 0;
+    }
+    await delay(200);
+  } while (Date.now() < deadline);
+  return !fs.existsSync(dir);
 }
 
 function httpJson(route, method = 'GET') {
@@ -137,6 +149,9 @@ chrome.unref();
 let page;
 try {
   await waitForChrome();
+  // Keep Chrome process startup outside the application startup sample. The
+  // native harness separately measures WebView2's first actionable frame.
+  await delay(250);
   const target = await httpJson(`/json/new?${encodeURIComponent(appUrl)}`, 'PUT');
   page = await createCdpClient(target.webSocketDebuggerUrl);
   await page.send('Page.enable');
@@ -185,7 +200,7 @@ try {
             button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
             captureColdRoutingReadiness();
           };
-          setTimeout(openColdRouting, 24);
+          setTimeout(openColdRouting, 900);
         }, { once: true });
         const nativeSetInterval = window.setInterval.bind(window);
         const nativeClearInterval = window.clearInterval.bind(window);
@@ -229,6 +244,7 @@ try {
         let speedCompleted = 0;
         let speedOk = 0;
         let speedFailed = 0;
+        let connectionCallCount = 0;
         const speedDelays = {};
         const speedHealth = {};
         const eventListeners = new Map();
@@ -238,6 +254,7 @@ try {
           bursts: 0,
           burstDurations: [],
           startedAt: 0,
+          firstResultAt: 0,
           completedAt: 0,
           completed: false
         };
@@ -295,7 +312,10 @@ try {
           const listeners = eventListeners.get(eventName) || [];
           if (eventName === 'aegos-speed-test') {
             speedEventStats.emitted += 1;
-            if (payload?.kind === 'result') speedEventStats.results += 1;
+            if (payload?.kind === 'result') {
+              speedEventStats.results += 1;
+              if (!speedEventStats.firstResultAt) speedEventStats.firstResultAt = performance.now();
+            }
             if (payload?.kind === 'complete') speedEventStats.completed = true;
           }
           listeners.forEach((listener) => listener({ event: eventName, payload }));
@@ -372,11 +392,15 @@ try {
               profileId: profiles[1].id,
               status: speedStatus()
             });
-            emitBatch();
+            setTimeout(emitBatch, speedRunId >= 2 ? 260 : 0);
           }, 4);
         };
         window.__aegosCalls = calls;
-        window.__aegosSpeedEventStats = () => ({ ...speedEventStats, burstDurations: [...speedEventStats.burstDurations] });
+        window.__aegosSpeedEventStats = () => ({
+          ...speedEventStats,
+          runId: speedRunId,
+          burstDurations: [...speedEventStats.burstDurations]
+        });
         window.__TAURI__ = {
           event: {
             listen: async (eventName, listener) => {
@@ -394,7 +418,21 @@ try {
           if (command === 'app_status') { await new Promise((resolve) => setTimeout(resolve, 90)); return status(); }
           if (command === 'proxy_groups') { await new Promise((resolve) => setTimeout(resolve, 130)); return groups; }
           if (command === 'connections') {
+            connectionCallCount += 1;
             await new Promise((resolve) => setTimeout(resolve, 120));
+            if (connectionCallCount === 3) {
+              return Array.from({ length: 1200 }, (_, index) => ({
+                id: 'bulk-' + index,
+                target: 'bulk-' + index + '.example',
+                rule: 'MATCH',
+                route: ['GLOBAL', 'HK 01'],
+                upload: index,
+                download: index * 2,
+                process: 'browser.exe',
+                network: 'tcp',
+                protocol: 'HTTPS'
+              }));
+            }
             return [{ id: '1', target: 'example.com', rule: 'MATCH', route: ['GLOBAL', 'HK 01'], upload: 1, download: 2, process: 'browser.exe', network: 'tcp', protocol: 'HTTPS' }];
           }
           if (command === 'routing_snapshot') {
@@ -461,6 +499,7 @@ try {
             speedEventStats.bursts = 0;
             speedEventStats.burstDurations = [];
             speedEventStats.startedAt = 0;
+            speedEventStats.firstResultAt = 0;
             speedEventStats.completedAt = 0;
             speedEventStats.completed = false;
             scheduleSpeedEvents();
@@ -575,7 +614,17 @@ try {
         : startupRoutingCall.at - window.__aegosStartup.statusReadyAt,
       coldRoutingContentMs: window.__aegosStartup.coldRoutingReadyAt == null || window.__aegosStartup.coldRoutingClickAt == null
         ? null
-        : Math.max(0, window.__aegosStartup.coldRoutingReadyAt - window.__aegosStartup.coldRoutingClickAt)
+        : Math.max(0, window.__aegosStartup.coldRoutingReadyAt - window.__aegosStartup.coldRoutingClickAt),
+      nodePrewarmMs: (() => {
+        const entry = (window.__aegosPerformanceSnapshot?.().trace || [])
+          .find((item) => item.kind === 'node-page-prewarmed');
+        return entry ? Math.max(0, Number(entry.at || 0) - startupStartedAt) : null;
+      })(),
+      connectionsPrewarmMs: (() => {
+        const entry = (window.__aegosPerformanceSnapshot?.().trace || [])
+          .find((item) => item.kind === 'connections-page-prewarmed');
+        return entry ? Math.max(0, Number(entry.at || 0) - startupStartedAt) : null;
+      })()
     };
     const connectionsInitialCount = commandCount('connections');
     const connectionsClickAt = performance.now();
@@ -583,8 +632,44 @@ try {
     const connectionsDispatched = await waitFor(() => commandCount('connections') > connectionsInitialCount);
     const connectionsCall = [...window.__aegosCalls].reverse().find((item) => item.command === 'connections');
     const connectionsDispatchMs = connectionsDispatched && connectionsCall ? connectionsCall.at - connectionsClickAt : Infinity;
+    document.querySelector('[data-page="routing"]')?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
+    await nextFrame();
+    document.querySelector('[data-page="connections"]')?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
     const connectionsContentReady = await waitFor(() => document.querySelectorAll('#connectionRows .simple-row').length > 0);
     const connectionsContentMs = connectionsContentReady ? performance.now() - connectionsClickAt : Infinity;
+    const connectionsReentryCalls = commandCount('connections') - connectionsInitialCount;
+    const connectionExitStartedAt = performance.now();
+    void window.refreshConnections?.();
+    const connectionLargeRenderStarted = await waitFor(() => (
+      (window.__aegosPerformanceSnapshot?.().trace || []).some((item) => (
+        item.kind === 'connection-render-chunk'
+        && item.itemCount === 1200
+        && item.at >= connectionExitStartedAt
+      ))
+    ), 800);
+    const connectionExitInputAt = performance.now();
+    window.setPage?.('home');
+    const connectionExitReturnedAt = performance.now();
+    const connectionExitFrameAt = await nextFrame();
+    const connectionRowsAtExit = document.querySelectorAll('#connectionRows .simple-row').length;
+    const connectionRenderCancelled = await waitFor(() => (
+      (window.__aegosPerformanceSnapshot?.().trace || []).some((item) => (
+        item.kind === 'connection-render-cancelled'
+        && item.itemCount === 1200
+        && item.at >= connectionExitStartedAt
+      ))
+    ), 300);
+    await wait(80);
+    const connectionRowsAfterExit = document.querySelectorAll('#connectionRows .simple-row').length;
+    const connectionExit = {
+      largeRenderStarted: connectionLargeRenderStarted,
+      synchronousMs: Math.max(0, connectionExitReturnedAt - connectionExitInputAt),
+      firstFrameMs: Math.max(0, connectionExitFrameAt - connectionExitInputAt),
+      cancelled: connectionRenderCancelled,
+      rowsAtExit: connectionRowsAtExit,
+      rowsAfterExit: connectionRowsAfterExit,
+      activePage: document.querySelector('.nav button.active')?.dataset.page || ''
+    };
     const routingInitialCount = commandCount('routing_snapshot');
     const routingClickAt = performance.now();
     document.querySelector('[data-page="routing"]').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
@@ -623,9 +708,47 @@ try {
     const connectionsBefore = commandCount('connections');
     const routingBefore = commandCount('routing_snapshot');
     const diagnosticsBefore = commandCount('diagnostics');
+    document.querySelector('[data-page="nodes"]')?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
+    await nextFrame();
+    await nextFrame();
     document.querySelector('#batchTestBtn')?.click();
     await waitFor(() => window.__aegosSpeedEventStats().completed, 3000);
     await wait(120);
+    const firstSpeedRun = window.__aegosSpeedEventStats();
+    const repeatedSpeedStartedAt = performance.now();
+    let repeatedFeedbackAt = null;
+    let repeatedProgressiveResultAt = null;
+    const repeatedWaitingValues = new Set();
+    const captureRepeatedSpeedPaint = () => {
+      const stats = window.__aegosSpeedEventStats();
+      const delays = [...document.querySelectorAll('#nodeRows .node-delay')].map((item) => item.textContent.trim());
+      const waiting = delays.filter((value) => /^\u7b49\u5f85\\s+\\d+\\.\\d+s$/i.test(value));
+      if (waiting.length && repeatedFeedbackAt == null) repeatedFeedbackAt = performance.now();
+      if (stats.results === 0) waiting.forEach((value) => repeatedWaitingValues.add(value));
+      if (repeatedProgressiveResultAt == null && stats.results > 0 && !stats.completed && delays.some((value) => /^\\d+\\s*ms$/i.test(value))) {
+        repeatedProgressiveResultAt = performance.now();
+      }
+    };
+    const repeatedSpeedObserver = new MutationObserver(captureRepeatedSpeedPaint);
+    repeatedSpeedObserver.observe(document.querySelector('#nodeRows'), { childList: true, subtree: true, characterData: true, attributes: true });
+    document.querySelector('#batchTestBtn')?.click();
+    captureRepeatedSpeedPaint();
+    await waitFor(() => window.__aegosSpeedEventStats().startedAt >= repeatedSpeedStartedAt, 500);
+    const secondSpeedRunId = window.__aegosSpeedEventStats().runId;
+    await waitFor(() => window.__aegosSpeedEventStats().completed, 3000);
+    await wait(120);
+    repeatedSpeedObserver.disconnect();
+    const repeatedSpeed = {
+      firstRunId: Number(firstSpeedRun.runId || 0),
+      secondRunId: Number(secondSpeedRunId || 0),
+      feedbackMs: repeatedFeedbackAt == null ? null : Math.max(0, repeatedFeedbackAt - repeatedSpeedStartedAt),
+      waitingValues: [...repeatedWaitingValues],
+      firstResultEmittedMs: Math.max(0, Number(window.__aegosSpeedEventStats().firstResultAt || 0) - repeatedSpeedStartedAt),
+      progressiveResultMs: repeatedProgressiveResultAt == null ? null : Math.max(0, repeatedProgressiveResultAt - repeatedSpeedStartedAt),
+      resultPaintLagMs: repeatedProgressiveResultAt == null
+        ? null
+        : Math.max(0, repeatedProgressiveResultAt - Number(window.__aegosSpeedEventStats().firstResultAt || repeatedProgressiveResultAt))
+    };
     let lastRapidPage = 'home';
     const rapidNavStartedAt = performance.now();
     for (let i = 0; i < 420; i += 1) {
@@ -828,6 +951,7 @@ try {
         maxFrameMs: Math.max(0, ...speedFrames),
         maxBurstMs: Math.max(0, ...speedEventStats.burstDurations)
       },
+      repeatedSpeed,
       startup,
       calls: {
         connectionsBefore,
@@ -849,6 +973,8 @@ try {
         connectionsDispatchMs,
         connectionsContentMs,
         connectionsContentReady,
+        connectionsReentryCalls,
+        connectionExit,
         routingDispatchMs,
         routingContentMs,
         routingContentReady,
@@ -909,8 +1035,11 @@ try {
   if (report.calls.callsAddedByFilters !== 0) failures.push('filter/search interactions triggered backend calls');
   if (!hasFiniteMs(report.pageLoad.connectionsDispatchMs) || report.pageLoad.connectionsDispatchMs > 120) failures.push(`connections first-load dispatch too slow: ${formatMs(report.pageLoad.connectionsDispatchMs)}`);
   if (!report.pageLoad.connectionsContentReady || !hasFiniteMs(report.pageLoad.connectionsContentMs) || report.pageLoad.connectionsContentMs > 400) failures.push(`connections first content too slow: ${formatMs(report.pageLoad.connectionsContentMs)}`);
+  if (report.pageLoad.connectionsReentryCalls < 2) failures.push(`connections re-entry did not queue a replacement load: calls=${report.pageLoad.connectionsReentryCalls}`);
   if (!hasFiniteMs(report.pageLoad.routingDispatchMs) || report.pageLoad.routingDispatchMs > 120) failures.push(`routing first-load dispatch too slow: ${formatMs(report.pageLoad.routingDispatchMs)}`);
   if (!report.pageLoad.routingContentReady || !hasFiniteMs(report.pageLoad.routingContentMs) || report.pageLoad.routingContentMs > 400) failures.push(`routing first content too slow: ${formatMs(report.pageLoad.routingContentMs)}`);
+  if (!hasFiniteMs(report.startup.nodePrewarmMs) || report.startup.nodePrewarmMs > 700) failures.push(`startup node prewarm missed the 700ms readiness budget: ${formatMs(report.startup.nodePrewarmMs)}`);
+  if (!hasFiniteMs(report.startup.connectionsPrewarmMs) || report.startup.connectionsPrewarmMs > 700) failures.push(`startup connections prewarm missed the 700ms readiness budget: ${formatMs(report.startup.connectionsPrewarmMs)}`);
   if (report.pageLoad.routingHiddenRuleRows > 1) failures.push(`collapsed routing details rendered ${report.pageLoad.routingHiddenRuleRows} hidden rule rows`);
   if (!report.pageLoad.advancedReady || !hasFiniteMs(report.pageLoad.advancedOpenMs) || report.pageLoad.advancedOpenMs > 150) failures.push(`routing details expansion too slow: ${formatMs(report.pageLoad.advancedOpenMs)}`);
   if (report.pageLoad.routingVisibleAdvancedRows > 40 || !report.pageLoad.routingHasLoadMore) failures.push(`routing details are not paged: rows=${report.pageLoad.routingVisibleAdvancedRows} loadMore=${report.pageLoad.routingHasLoadMore}`);
@@ -926,6 +1055,15 @@ try {
     failures.push(`speed events blocked rendering: frames=${report.speedStream.frameCount} p95=${report.speedStream.p95FrameMs.toFixed(1)}ms max=${report.speedStream.maxFrameMs.toFixed(1)}ms`);
   }
   if (report.speedStream.maxBurstMs > 24) failures.push(`single speed event burst blocked the UI thread: ${report.speedStream.maxBurstMs.toFixed(1)}ms`);
+  if (!report.repeatedSpeed.firstRunId || report.repeatedSpeed.secondRunId <= report.repeatedSpeed.firstRunId) failures.push(`repeated speed test did not receive a new run id: ${JSON.stringify(report.repeatedSpeed)}`);
+  if (!hasFiniteMs(report.repeatedSpeed.feedbackMs) || report.repeatedSpeed.feedbackMs > 50) failures.push(`repeated speed test did not show numeric feedback within 50ms: ${formatMs(report.repeatedSpeed.feedbackMs)}`);
+  if ((report.repeatedSpeed.waitingValues || []).length < 3) failures.push(`repeated speed feedback did not advance three times before the first result: ${JSON.stringify(report.repeatedSpeed.waitingValues)}`);
+  if (report.repeatedSpeed.firstResultEmittedMs < 200) failures.push(`repeated speed negative control did not delay the first real result: ${formatMs(report.repeatedSpeed.firstResultEmittedMs)}`);
+  if (!hasFiniteMs(report.repeatedSpeed.resultPaintLagMs) || report.repeatedSpeed.resultPaintLagMs > 50) failures.push(`repeated speed result was not painted within 50ms of its event: ${formatMs(report.repeatedSpeed.resultPaintLagMs)}`);
+  if (!report.pageLoad.connectionExit.largeRenderStarted) failures.push('cold Connections exit negative control did not start the 1200-row render');
+  if (report.pageLoad.connectionExit.synchronousMs > 12 || report.pageLoad.connectionExit.firstFrameMs > 50) failures.push(`leaving Connections blocked navigation: sync=${formatMs(report.pageLoad.connectionExit.synchronousMs)} frame=${formatMs(report.pageLoad.connectionExit.firstFrameMs)}`);
+  if (!report.pageLoad.connectionExit.cancelled || report.pageLoad.connectionExit.rowsAfterExit !== report.pageLoad.connectionExit.rowsAtExit) failures.push(`stale Connections rendering continued after navigation: ${JSON.stringify(report.pageLoad.connectionExit)}`);
+  if (report.pageLoad.connectionExit.activePage !== 'home') failures.push(`Connections exit settled on ${report.pageLoad.connectionExit.activePage}, expected home`);
   if (report.resources.visibleRows > 100 || report.resources.homeRows > 8) failures.push(`node list is not windowed: nodes=${report.resources.visibleRows} home=${report.resources.homeRows}`);
   if (!report.resources.allNodesReachable) failures.push('virtual node list does not reach the final matching node');
   if (report.resources.liveDomNodes > 4200) failures.push(`final DOM exceeded the bounded page budget: ${report.resources.liveDomNodes} live nodes`);
@@ -977,13 +1115,20 @@ try {
         durationMs: result.speedStream.durationMs,
         p95FrameMs: result.speedStream.p95FrameMs,
         maxFrameMs: result.speedStream.maxFrameMs
-      }
+      },
+      repeatedSpeed: result.repeatedSpeed,
+      connectionExit: result.pageLoad.connectionExit
     };
   console.log(JSON.stringify(terminalReport, null, 2));
   if (!result.ok) process.exitCode = 2;
 } finally {
   try { await page?.close(); } catch {}
-  terminatePerfChrome();
-  await delay(300);
-  try { fs.rmSync(userDataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 150 }); } catch {}
+  try { chrome.kill(); } catch {}
+  if (chrome.pid && process.platform === 'win32') {
+    spawnSync('taskkill.exe', ['/PID', String(chrome.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+  }
+  if (!(await removeTestUserDataDir(userDataDir))) {
+    console.error(`Performance smoke temporary root was not removed: ${userDataDir}`);
+    process.exitCode = 2;
+  }
 }

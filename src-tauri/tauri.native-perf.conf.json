@@ -1,5 +1,20 @@
 {
   "app": {
+    "security": {
+      "capabilities": [
+        {
+          "identifier": "native-performance-measurement",
+          "description": "Test-only offscreen native performance window controls",
+          "windows": ["main"],
+          "permissions": [
+            "core:default",
+            "core:window:allow-start-dragging",
+            "core:window:allow-set-position",
+            "core:window:allow-show"
+          ]
+        }
+      ]
+    },
     "windows": [
       {
         "label": "main",
@@ -9,10 +24,16 @@
         "minWidth": 920,
         "minHeight": 640,
         "center": false,
+        "x": -32000,
+        "y": -32000,
+        "preventOverflow": false,
         "decorations": false,
         "transparent": false,
         "resizable": true,
-        "visible": false
+        "visible": false,
+        "focus": false,
+        "skipTaskbar": true,
+        "alwaysOnBottom": true
       }
     ]
   }

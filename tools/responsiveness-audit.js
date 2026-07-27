@@ -188,6 +188,19 @@ check(
 );
 
 check(
+  'cold Connections work is cancellable and yields to navigation input',
+  setPageBody.includes('cancelNodePagePrewarm()') &&
+    setPageBody.includes("if (next !== 'connections') connectionRenderGeneration += 1") &&
+    appJs.includes('async function renderConnectionRows') &&
+    appJs.includes('const chunkSize = 24') &&
+    appJs.includes('await yieldToMainThread()') &&
+    appJs.includes("recordUiPerformance('connection-render-cancelled'") &&
+    perfSmoke.includes('cold Connections exit negative control did not start the 1200-row render') &&
+    perfSmoke.includes('stale Connections rendering continued after navigation'),
+  'startup prewarm and large connection results must stop at a user navigation boundary'
+);
+
+check(
   'foreground commands preempt startup measurement and retry it only after idle',
   appJs.includes('const foregroundJobKinds = new Set([') &&
     foregroundSpeedPreemptionCoreBody.includes("invoke('cancel_proxy_delay_test')") &&

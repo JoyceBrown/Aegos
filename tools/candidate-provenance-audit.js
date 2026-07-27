@@ -15,7 +15,9 @@ const gateFiles = [
   'AGENTS.md', 'PLANS.md', 'README.md', `RELEASE_${currentVersion}.md`, 'package.json',
   'docs/INDEX.md', 'docs/product.md', 'docs/architecture.md', 'docs/roadmap.md',
   'docs/decisions/windows-reliability-mainline.md', 'docs/work/current.md',
-  'docs/work/windows-reliability-wr01.md', 'tools/candidate-provenance-audit.js',
+  'docs/work/windows-reliability-wr01.md', 'docs/work/windows-reliability-wr02.md',
+  'src-tauri/tauri.native-perf.conf.json',
+  'tools/candidate-provenance-audit.js',
   'tools/wr01-acceptance.js', 'tools/planning-context-audit.js',
   'tools/installer-candidate-audit.js', 'tools/installer-regression-audit.js',
   'tools/release-audit.js', 'tools/release-trust-audit.js'

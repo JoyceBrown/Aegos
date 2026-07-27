@@ -1,0 +1,762 @@
+{
+  "ok": true,
+  "version": "3.6.67",
+  "fixture": {
+    "nodeCount": 800,
+    "streamedBatchSize": 20,
+    "streamedBatchDelayMs": 12,
+    "mode": "stress",
+    "compositor": "headless-software"
+  },
+  "generatedAt": "2026-07-27T08:59:09.558Z",
+  "failures": [],
+  "longTaskBudget": {
+    "severeMs": 180,
+    "maxMs": 300,
+    "maxSevereCount": 1
+  },
+  "nav": {
+    "count": 420,
+    "avgMs": 0.11547619033427466,
+    "p95Ms": 0.20000004768371582,
+    "maxMs": 0.5,
+    "activeFailures": []
+  },
+  "menu": {
+    "count": 80,
+    "avgMs": 0.06249999925494194,
+    "p95Ms": 0.19999998807907104,
+    "maxMs": 0.2999999523162842
+  },
+  "filters": {
+    "count": 130,
+    "avgMs": 0.10384615201216478,
+    "p95Ms": 0.20000004768371582,
+    "maxMs": 0.5
+  },
+  "visualFluidity": {
+    "frameCount": 756,
+    "p95FrameMs": 16.800000000000182,
+    "maxFrameMs": 50.100000000000136,
+    "framesOver50Ms": 1,
+    "rapidNavFrameCount": 140,
+    "rapidNavMaxFrameMs": 49.90000000000009,
+    "visualNavFrameCount": 210,
+    "visualNavP95FrameMs": 16.700000000000728,
+    "visualNavMaxFrameMs": 33.399999999999636,
+    "visualNavTransitions": [
+      {
+        "from": "settings",
+        "to": "home",
+        "firstFrameMs": 14.600000047683352,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 81.20000004768372,
+        "visibleElements": 166
+      },
+      {
+        "from": "home",
+        "to": "nodes",
+        "firstFrameMs": 15.100000035762605,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 81.80000003576242,
+        "visibleElements": 668
+      },
+      {
+        "from": "nodes",
+        "to": "connections",
+        "firstFrameMs": 15.300000011920929,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 82.00000001192075,
+        "visibleElements": 208
+      },
+      {
+        "from": "connections",
+        "to": "routing",
+        "firstFrameMs": 15.60000001192111,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 82.30000001192093,
+        "visibleElements": 345
+      },
+      {
+        "from": "routing",
+        "to": "profiles",
+        "firstFrameMs": 15.400000047683534,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 82.0000000476839,
+        "visibleElements": 45
+      },
+      {
+        "from": "profiles",
+        "to": "diagnostics",
+        "firstFrameMs": 14.30000004768408,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 80.90000004768353,
+        "visibleElements": 42
+      },
+      {
+        "from": "diagnostics",
+        "to": "settings",
+        "firstFrameMs": 13.800000035762423,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 80.40000003576279,
+        "visibleElements": 243
+      },
+      {
+        "from": "settings",
+        "to": "home",
+        "firstFrameMs": 15.100000035762605,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 81.70000003576297,
+        "visibleElements": 166
+      },
+      {
+        "from": "home",
+        "to": "nodes",
+        "firstFrameMs": 14.400000035762787,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 81.00000003576315,
+        "visibleElements": 668
+      },
+      {
+        "from": "nodes",
+        "to": "connections",
+        "firstFrameMs": 14.800000000000182,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 81.5,
+        "visibleElements": 208
+      },
+      {
+        "from": "connections",
+        "to": "routing",
+        "firstFrameMs": 14.500000011920747,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 81.10000001192111,
+        "visibleElements": 345
+      },
+      {
+        "from": "routing",
+        "to": "profiles",
+        "firstFrameMs": 15.100000023841858,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 81.70000002384222,
+        "visibleElements": 45
+      },
+      {
+        "from": "profiles",
+        "to": "diagnostics",
+        "firstFrameMs": 14.90000002384204,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 81.60000002384186,
+        "visibleElements": 42
+      },
+      {
+        "from": "diagnostics",
+        "to": "settings",
+        "firstFrameMs": 15.000000011920747,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 81.60000001192111,
+        "visibleElements": 243
+      },
+      {
+        "from": "settings",
+        "to": "home",
+        "firstFrameMs": 14.5,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 81.10000000000036,
+        "visibleElements": 166
+      },
+      {
+        "from": "home",
+        "to": "nodes",
+        "firstFrameMs": 14.600000047683352,
+        "p95FrameMs": 16.700000000000728,
+        "maxFrameMs": 16.700000000000728,
+        "settleMs": 81.20000004768372,
+        "visibleElements": 668
+      },
+      {
+        "from": "nodes",
+        "to": "connections",
+        "firstFrameMs": 15.200000023842222,
+        "p95FrameMs": 16.799999999999272,
+        "maxFrameMs": 16.799999999999272,
+        "settleMs": 81.90000002384204,
+        "visibleElements": 208
+      },
+      {
+        "from": "connections",
+        "to": "routing",
+        "firstFrameMs": 14.700000047683716,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 81.30000004768408,
+        "visibleElements": 345
+      },
+      {
+        "from": "routing",
+        "to": "profiles",
+        "firstFrameMs": 15.200000035762969,
+        "p95FrameMs": 16.700000000000728,
+        "maxFrameMs": 16.700000000000728,
+        "settleMs": 81.90000003576279,
+        "visibleElements": 45
+      },
+      {
+        "from": "profiles",
+        "to": "diagnostics",
+        "firstFrameMs": 14.900000011921293,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 81.60000001192111,
+        "visibleElements": 42
+      },
+      {
+        "from": "diagnostics",
+        "to": "settings",
+        "firstFrameMs": 15.100000023841858,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 81.70000002384222,
+        "visibleElements": 243
+      },
+      {
+        "from": "settings",
+        "to": "home",
+        "firstFrameMs": 14.800000023841676,
+        "p95FrameMs": 16.700000000000728,
+        "maxFrameMs": 16.700000000000728,
+        "settleMs": 81.60000002384186,
+        "visibleElements": 166
+      },
+      {
+        "from": "home",
+        "to": "nodes",
+        "firstFrameMs": 15.400000011921293,
+        "p95FrameMs": 16.800000000000182,
+        "maxFrameMs": 16.800000000000182,
+        "settleMs": 82.10000001192111,
+        "visibleElements": 668
+      },
+      {
+        "from": "nodes",
+        "to": "connections",
+        "firstFrameMs": 14.600000023841858,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 81.20000002384222,
+        "visibleElements": 208
+      },
+      {
+        "from": "connections",
+        "to": "routing",
+        "firstFrameMs": 14.40000002384204,
+        "p95FrameMs": 16.699999999999818,
+        "maxFrameMs": 16.699999999999818,
+        "settleMs": 81.10000002384186,
+        "visibleElements": 345
+      },
+      {
+        "from": "routing",
+        "to": "profiles",
+        "firstFrameMs": 15.50000003576315,
+        "p95FrameMs": 16.700000000000728,
+        "maxFrameMs": 16.700000000000728,
+        "settleMs": 82.20000003576297,
+        "visibleElements": 45
+      },
+      {
+        "from": "profiles",
+        "to": "diagnostics",
+        "firstFrameMs": 14.899999999999636,
+        "p95FrameMs": 16.700000000000728,
+        "maxFrameMs": 16.700000000000728,
+        "settleMs": 81.60000000000036,
+        "visibleElements": 42
+      },
+      {
+        "from": "diagnostics",
+        "to": "settings",
+        "firstFrameMs": 14.500000011920747,
+        "p95FrameMs": 16.700000000000728,
+        "maxFrameMs": 16.700000000000728,
+        "settleMs": 81.20000001192057,
+        "visibleElements": 243
+      },
+      {
+        "from": "settings",
+        "to": "home",
+        "firstFrameMs": 14.30000004768408,
+        "p95FrameMs": 16.700000000000728,
+        "maxFrameMs": 16.700000000000728,
+        "settleMs": 80.90000004768444,
+        "visibleElements": 166
+      },
+      {
+        "from": "home",
+        "to": "nodes",
+        "firstFrameMs": 30.100000000000364,
+        "p95FrameMs": 33.29999999999927,
+        "maxFrameMs": 33.29999999999927,
+        "settleMs": 113.39999999999964,
+        "visibleElements": 668
+      },
+      {
+        "from": "nodes",
+        "to": "connections",
+        "firstFrameMs": 14.600000000000364,
+        "p95FrameMs": 16.700000000000728,
+        "maxFrameMs": 16.700000000000728,
+        "settleMs": 81.20000000000073,
+        "visibleElements": 208
+      },
+      {
+        "from": "connections",
+        "to": "routing",
+        "firstFrameMs": 15,
+        "p95FrameMs": 16.69999999999891,
+        "maxFrameMs": 16.69999999999891,
+        "settleMs": 81.5,
+        "visibleElements": 345
+      },
+      {
+        "from": "routing",
+        "to": "profiles",
+        "firstFrameMs": 15.100000011920201,
+        "p95FrameMs": 16.700000000000728,
+        "maxFrameMs": 16.700000000000728,
+        "settleMs": 81.70000001192057,
+        "visibleElements": 45
+      },
+      {
+        "from": "profiles",
+        "to": "diagnostics",
+        "firstFrameMs": 14.900000035762787,
+        "p95FrameMs": 16.799999999999272,
+        "maxFrameMs": 16.799999999999272,
+        "settleMs": 81.60000003576351,
+        "visibleElements": 42
+      },
+      {
+        "from": "diagnostics",
+        "to": "settings",
+        "firstFrameMs": 14.899999999999636,
+        "p95FrameMs": 16.700000000000728,
+        "maxFrameMs": 16.700000000000728,
+        "settleMs": 81.60000000000036,
+        "visibleElements": 243
+      },
+      {
+        "from": "settings",
+        "to": "home",
+        "firstFrameMs": 14.40000002384113,
+        "p95FrameMs": 16.700000000000728,
+        "maxFrameMs": 16.700000000000728,
+        "settleMs": 81.0000000238415,
+        "visibleElements": 166
+      },
+      {
+        "from": "home",
+        "to": "nodes",
+        "firstFrameMs": 14.600000000000364,
+        "p95FrameMs": 16.700000000000728,
+        "maxFrameMs": 16.700000000000728,
+        "settleMs": 81.29999999999927,
+        "visibleElements": 668
+      },
+      {
+        "from": "nodes",
+        "to": "connections",
+        "firstFrameMs": 14.399999999999636,
+        "p95FrameMs": 16.700000000000728,
+        "maxFrameMs": 16.700000000000728,
+        "settleMs": 81.10000000000036,
+        "visibleElements": 208
+      },
+      {
+        "from": "connections",
+        "to": "routing",
+        "firstFrameMs": 15.300000023842586,
+        "p95FrameMs": 16.700000000000728,
+        "maxFrameMs": 16.700000000000728,
+        "settleMs": 82.0000000238415,
+        "visibleElements": 345
+      },
+      {
+        "from": "routing",
+        "to": "profiles",
+        "firstFrameMs": 14.400000011921293,
+        "p95FrameMs": 16.700000000000728,
+        "maxFrameMs": 16.700000000000728,
+        "settleMs": 81.00000001192166,
+        "visibleElements": 45
+      },
+      {
+        "from": "profiles",
+        "to": "diagnostics",
+        "firstFrameMs": 14.200000011920565,
+        "p95FrameMs": 16.700000000000728,
+        "maxFrameMs": 16.700000000000728,
+        "settleMs": 80.80000001192093,
+        "visibleElements": 42
+      },
+      {
+        "from": "diagnostics",
+        "to": "settings",
+        "firstFrameMs": 14.400000047684443,
+        "p95FrameMs": 16.700000000000728,
+        "maxFrameMs": 16.700000000000728,
+        "settleMs": 81.10000004768335,
+        "visibleElements": 243
+      }
+    ],
+    "unexpectedLayoutShift": 0.019208707710961122,
+    "layoutShifts": [
+      {
+        "value": 0.011119526576760453,
+        "hadRecentInput": false,
+        "startTime": 71.79999995231628,
+        "sources": [
+          "#homeNodeRows",
+          "div.home-row-head"
+        ]
+      },
+      {
+        "value": 0.007631449063805365,
+        "hadRecentInput": false,
+        "startTime": 261.2999999523163,
+        "sources": [
+          "div.hero-head",
+          "section.quick node-quick-action",
+          "#protectionNotice",
+          "div.mode-box",
+          "#delayMetric"
+        ]
+      },
+      {
+        "value": 0.000025118270448389933,
+        "hadRecentInput": false,
+        "startTime": 1682.7999999523163,
+        "sources": [
+          "#activeConnectionsMetric"
+        ]
+      },
+      {
+        "value": 0.00010815344998672782,
+        "hadRecentInput": false,
+        "startTime": 1875.3999999761581,
+        "sources": [
+          "#delayMetric",
+          "#stabilityMetric"
+        ]
+      },
+      {
+        "value": 0.00010815344998672782,
+        "hadRecentInput": false,
+        "startTime": 1950.7999999523163,
+        "sources": [
+          "#delayMetric",
+          "#stabilityMetric"
+        ]
+      },
+      {
+        "value": 0.00010815344998672782,
+        "hadRecentInput": false,
+        "startTime": 2552.899999976158,
+        "sources": [
+          "#delayMetric",
+          "#stabilityMetric"
+        ]
+      },
+      {
+        "value": 0.00010815344998672782,
+        "hadRecentInput": false,
+        "startTime": 2865.7999999523163,
+        "sources": [
+          "#delayMetric",
+          "#stabilityMetric"
+        ]
+      }
+    ]
+  },
+  "speedStream": {
+    "emitted": 802,
+    "results": 800,
+    "bursts": 40,
+    "burstDurations": [
+      0.10000002384185791,
+      0,
+      0.10000002384185791,
+      0,
+      0,
+      0,
+      0.10000002384185791,
+      0.10000002384185791,
+      0.30000001192092896,
+      0.30000001192092896,
+      0.10000002384185791,
+      0.10000002384185791,
+      0.10000002384185791,
+      0.19999998807907104,
+      0.19999998807907104,
+      0,
+      0.10000002384185791,
+      0.19999998807907104,
+      0,
+      0.10000002384185791,
+      0,
+      0.10000002384185791,
+      0,
+      0,
+      0.10000002384185791,
+      0,
+      0,
+      0,
+      0,
+      0.09999996423721313,
+      0,
+      0.19999998807907104,
+      0.20000004768371582,
+      0.19999998807907104,
+      0.10000002384185791,
+      0.10000002384185791,
+      0.19999998807907104,
+      0,
+      0.30000001192092896,
+      0.09999996423721313
+    ],
+    "startedAt": 2555,
+    "firstResultAt": 2817.199999988079,
+    "completedAt": 3337.599999964237,
+    "completed": true,
+    "runId": 2,
+    "durationMs": 782.5999999642372,
+    "frameCount": 54,
+    "p95FrameMs": 16.700000000000273,
+    "maxFrameMs": 16.800000000000182,
+    "maxBurstMs": 0.30000001192092896
+  },
+  "repeatedSpeed": {
+    "firstRunId": 1,
+    "secondRunId": 2,
+    "feedbackMs": 3.900000035762787,
+    "waitingValues": [
+      "等待 0.0s",
+      "等待 0.1s",
+      "等待 0.2s"
+    ],
+    "firstResultEmittedMs": 273.60000002384186,
+    "progressiveResultMs": 303.4000000357628,
+    "resultPaintLagMs": 29.80000001192093
+  },
+  "startup": {
+    "statusContentMs": 149.19999998807907,
+    "homeNodesContentMs": 214.10000002384186,
+    "backendDispatchGapMs": 0,
+    "routingDispatchMs": null,
+    "routingAfterStatusMs": null,
+    "coldRoutingContentMs": 178.80000001192093,
+    "nodePrewarmMs": 306.9000000357628,
+    "connectionsPrewarmMs": 352.80000003576276
+  },
+  "calls": {
+    "connectionsBefore": 3,
+    "routingBefore": 1,
+    "diagnosticsBefore": 0,
+    "connectionsBeforeQuiet": 3,
+    "routingBeforeQuiet": 1,
+    "diagnosticsBeforeQuiet": 0,
+    "connectionsAfterSettle": 3,
+    "routingAfterSettle": 1,
+    "callsAddedByMenus": 0,
+    "callsAddedByFilters": 0,
+    "speedPollCount": 0,
+    "jobPollCount": 8,
+    "listJobPollCount": 0
+  },
+  "resources": {
+    "timerStats": {
+      "intervals": 3,
+      "timeouts": 0
+    },
+    "heap": {
+      "used": 4828586,
+      "total": 22484734
+    },
+    "visibleRows": 34,
+    "homeRows": 8,
+    "allElements": 1916,
+    "liveDomNodes": 3252,
+    "allNodesReachable": true
+  },
+  "pageLoad": {
+    "connectionsDispatchMs": 33.80000001192093,
+    "connectionsContentMs": 285,
+    "connectionsContentReady": true,
+    "connectionsReentryCalls": 2,
+    "connectionExit": {
+      "largeRenderStarted": true,
+      "synchronousMs": 0.30000001192092896,
+      "firstFrameMs": 11.800000047683625,
+      "cancelled": true,
+      "rowsAtExit": 24,
+      "rowsAfterExit": 24,
+      "activePage": "home"
+    },
+    "routingDispatchMs": 0,
+    "routingContentMs": 0.5,
+    "routingContentReady": true,
+    "routingHiddenRuleRows": 0,
+    "routingWasPrefetched": true,
+    "advancedOpenMs": 2,
+    "advancedReady": true,
+    "routingVisibleAdvancedRows": 40,
+    "routingHasLoadMore": true,
+    "routingRowsAfterNextPage": 40,
+    "routingPageChanged": true
+  },
+  "finalRapidPage": "settings",
+  "lastRapidPage": "settings",
+  "longTasks": [
+    {
+      "duration": 63,
+      "startTime": 1796.2999999523163
+    },
+    {
+      "duration": 56,
+      "startTime": 3735.199999988079
+    }
+  ],
+  "phases": [
+    {
+      "name": "start",
+      "at": 1220.2999999523163
+    },
+    {
+      "name": "first-pages-ready",
+      "at": 1781.0999999642372
+    },
+    {
+      "name": "rapid-nav-complete",
+      "at": 5897.299999952316
+    },
+    {
+      "name": "visual-nav-complete",
+      "at": 9429.599999964237
+    },
+    {
+      "name": "menus-complete",
+      "at": 10028
+    },
+    {
+      "name": "filters-complete",
+      "at": 10980.699999988079
+    },
+    {
+      "name": "background-jobs-complete",
+      "at": 14382.099999964237
+    }
+  ],
+  "runtime": {
+    "domBefore": {
+      "documents": 62,
+      "nodes": 7413,
+      "jsEventListeners": 333
+    },
+    "domAfter": {
+      "documents": 37,
+      "nodes": 4598,
+      "jsEventListeners": 182
+    },
+    "metricsBefore": {
+      "Timestamp": 518345.203598,
+      "AudioHandlers": 0,
+      "AudioWorkletProcessors": 0,
+      "Documents": 62,
+      "Frames": 33,
+      "JSEventListeners": 333,
+      "LayoutObjects": 1819,
+      "MediaKeySessions": 0,
+      "MediaKeys": 0,
+      "Nodes": 7413,
+      "Resources": 37,
+      "ContextLifecycleStateObservers": 78,
+      "V8PerContextDatas": 2,
+      "WorkerGlobalScopes": 0,
+      "UACSSResources": 0,
+      "RTCPeerConnections": 0,
+      "ResourceFetchers": 62,
+      "AdSubframes": 0,
+      "DetachedScriptStates": 1,
+      "ArrayBufferContents": 0,
+      "LayoutCount": 0,
+      "RecalcStyleCount": 0,
+      "LayoutDuration": 0,
+      "RecalcStyleDuration": 0,
+      "DevToolsCommandDuration": 0.000105,
+      "ScriptDuration": 0,
+      "V8CompileDuration": 0,
+      "TaskDuration": 0.000178,
+      "TaskOtherDuration": 0.000073,
+      "ThreadTime": 0.000328,
+      "ProcessTime": 0.962433,
+      "JSHeapUsedSize": 3220800,
+      "JSHeapTotalSize": 6029312,
+      "FirstMeaningfulPaint": 518344.337162,
+      "DomContentLoaded": 518344.059933,
+      "NavigationStart": 518343.986649
+    },
+    "metricsAfter": {
+      "Timestamp": 518358.452656,
+      "AudioHandlers": 0,
+      "AudioWorkletProcessors": 0,
+      "Documents": 37,
+      "Frames": 37,
+      "JSEventListeners": 182,
+      "LayoutObjects": 1241,
+      "MediaKeySessions": 0,
+      "MediaKeys": 0,
+      "Nodes": 4598,
+      "Resources": 40,
+      "ContextLifecycleStateObservers": 49,
+      "V8PerContextDatas": 1,
+      "WorkerGlobalScopes": 0,
+      "UACSSResources": 0,
+      "RTCPeerConnections": 0,
+      "ResourceFetchers": 37,
+      "AdSubframes": 0,
+      "DetachedScriptStates": 0,
+      "ArrayBufferContents": 0,
+      "LayoutCount": 497,
+      "RecalcStyleCount": 665,
+      "LayoutDuration": 1.072302,
+      "RecalcStyleDuration": 0.774961,
+      "DevToolsCommandDuration": 0.001837,
+      "ScriptDuration": 0.972385,
+      "V8CompileDuration": 0,
+      "TaskDuration": 4.614927,
+      "TaskOtherDuration": 1.793442,
+      "ThreadTime": 4.615283,
+      "ProcessTime": 7.835202,
+      "JSHeapUsedSize": 2950880,
+      "JSHeapTotalSize": 3670016,
+      "FirstMeaningfulPaint": 518344.337162,
+      "DomContentLoaded": 518344.059933,
+      "NavigationStart": 518343.986649
+    }
+  }
+}

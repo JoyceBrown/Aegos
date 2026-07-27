@@ -6,7 +6,7 @@ updated_at: 2026-07-27
 
 This document owns long-term order and rationale only. It cannot authorize
 code changes. `PLANS.md` is the only plan record that may become executable;
-it is currently completed and has no active task.
+its current metadata determines whether a task is active.
 
 ## Mainline Outcome
 
@@ -44,9 +44,9 @@ starts with real-use defect evidence rather than declaring the product finished.
 | 3 | Prove real Windows takeover and recovery only in a dedicated, recoverable lab. | Explicit recovery procedure and separate environment; never the shared FlClash host. | Uncontrolled host-network changes. |
 | 4 | Reduce a specific orchestration hotspot only when a reproduced fault or trace proves its ownership. | A focused failing path and regression. | Architecture-only rewrites and dual paths. |
 
-The completed WR-01 plan covered and closed the first two outcomes for the
-host-safe evidence boundary. The later outcomes are not task backlogs and do
-not begin automatically.
+The completed WR-01 and CHANGE-029 WR-02 work covered and closed the first two outcomes
+for the host-safe evidence boundary. The later outcomes are not task backlogs
+and do not begin automatically.
 
 ## Priority Rules
 

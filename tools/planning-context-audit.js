@@ -35,6 +35,7 @@ const routingAcceptance = read('ROUTING_PAGE_REAL_USER_ACCEPTANCE_STANDARD.md');
 const routingExecution = read('ROUTING_PAGE_REAL_USER_EXECUTION_RECORD.md');
 const wm05Evidence = read('docs/work/windows-maturity-wm05.md');
 const wr01Evidence = read('docs/work/windows-reliability-wr01.md');
+const wr02Evidence = read('docs/work/windows-reliability-wr02.md');
 
 check(
   'the Windows real-use reliability plan is completed with no active authority',
@@ -46,13 +47,20 @@ check(
 );
 
 check(
-  'WR-01 is completed and WR-02 was not invented',
+  'WR-01 and WR-02 are completed and CHANGE-030 permits one bounded Git sync',
   value(plan, 'current_task_id') === 'none'
     && plan.includes('| WR-01 | completed |')
-    && plan.includes('| WR-02 | not_activated |')
+    && plan.includes('| WR-02 | completed |')
+    && value(plan, 'latest_change_id') === 'CHANGE-030'
+    && value(plan, 'latest_change_class') === 'task_adjustment'
     && value(plan, 'continuation_policy') === 'validate_then_advance'
     && value(plan, 'completion_policy') === 'all_required_items'
-    && value(plan, 'on_complete') === 'wait',
+    && value(plan, 'on_complete') === 'wait'
+    && plan.includes('CHANGE-030 is the user\'s explicit request to synchronize the completed 3.6.67')
+    && plan.includes('does not authorize a GitHub Release, artifact upload, signing, automatic')
+    && checkpoint.includes('CHANGE-030 is the user\'s explicit instruction to synchronize the accepted')
+    && checkpoint.includes('It authorizes one commit and push only;')
+    && checkpoint.includes('does not authorize a GitHub Release, installer upload, signing, automatic'),
   value(plan, 'current_task_id')
 );
 
@@ -87,6 +95,7 @@ check(
       || checkpoint.includes('Continue `WR-01` at WR01-A3')
       || checkpoint.includes('Continue CHANGE-027')
       || checkpoint.includes('WR-01 and CHANGE-027 are complete')
+      || checkpoint.includes('CHANGE-029 closed the reopened WR-02')
     ),
   'A0-A6 route and source-bound candidate closure'
 );
@@ -110,17 +119,17 @@ check(
 );
 
 check(
-  'roadmap is directional and aligned with the completed reliability plan',
+  'roadmap stays directional while PLANS owns active authority',
   value(roadmap, 'roadmap_id') === 'AEGOS-WINDOWS-RELIABILITY'
     && value(roadmap, 'execution_authority') === 'none'
     && roadmap.includes('## Ordered Direction')
-    && roadmap.includes('The completed WR-01 plan covered and closed the first two outcomes')
-    && roadmap.includes('it is currently completed and has no active task'),
+    && roadmap.includes('The completed WR-01 and CHANGE-029 WR-02 work covered and closed the first two outcomes')
+    && roadmap.includes('its current metadata determines whether a task is active'),
   value(roadmap, 'roadmap_id')
 );
 
 check(
-  'checkpoint records plan closure without gaining execution authority',
+  'checkpoint records completed WR-02 without gaining execution authority',
   value(checkpoint, 'record_kind') === 'checkpoint'
     && value(checkpoint, 'execution_authority') === 'none'
     && value(checkpoint, 'plan_id') === value(plan, 'plan_id')
@@ -167,6 +176,19 @@ check(
 );
 
 check(
+  'closed WR-02 evidence retains all repaired findings and safety boundaries',
+  value(wr02Evidence, 'record_kind') === 'evidence_register'
+    && value(wr02Evidence, 'execution_authority') === 'none'
+    && value(wr02Evidence, 'plan_id') === value(plan, 'plan_id')
+    && value(wr02Evidence, 'task_id') === 'WR-02'
+    && value(wr02Evidence, 'evidence_state') === 'closed'
+    && ['WR02-001', 'WR02-002', 'WR02-003', 'WR02-004'].every((finding) => wr02Evidence.includes(`| ${finding} | P1 | repaired |`))
+    && wr02Evidence.includes('measurement-only')
+    && wr02Evidence.includes('FlClash'),
+  value(wr02Evidence, 'evidence_state')
+);
+
+check(
   'product and architecture keep the reliability-first Windows boundary',
   product.includes('## Windows Reliability Definition')
     && product.includes('not an implicit future queue')
@@ -177,7 +199,7 @@ check(
 );
 
 check(
-  'the completed plan excludes unauthorized breadth and distribution work',
+  'the active plan excludes unauthorized breadth and distribution work',
   plan.includes('Signing, GitHub publishing')
     && plan.includes('WebDAV, cloud backup')
     && plan.includes('Windows ARM64, macOS, Linux')

@@ -7,15 +7,18 @@ current_task_id: none
 roadmap_reference: docs/roadmap.md
 continuation_policy: validate_then_advance
 completion_policy: all_required_items
-priority_basis: The user requires real Windows reliability and repair of
-reproducible freezes or incorrect network state before any feature breadth,
-distribution work, or platform expansion.
-delivery_contract: A redacted Windows reliability evidence register, focused
-  regressions for every repaired defect, an executable source-bound acceptance
-  report, one unsigned local installer, and one Git commit pushed to the
-  configured origin after every required gate passes. No GitHub Release,
-  signing, automatic update, or host-network takeover is authorized.
-latest_change_id: CHANGE-027
+priority_basis: The user has rejected the prior WR-02 acceptance result: every
+  manual speed-test click must produce immediate, continuously changing numeric
+  feedback before the first real result, and leaving Connections during cold
+  startup must never wait behind connection rendering or startup work.
+delivery_contract: Reopen WR-02 and repair both rejected interaction paths as
+  one unit, add deterministic regressions that fail the 3.6.66 behavior, run
+  the complete source-bound host-safe matrix, and build one new unsigned local
+  installer from the accepted bytes. The user explicitly authorizes one commit
+  and push of the completed 3.6.67 source, tests, records, and evidence to the
+  configured GitHub origin. GitHub Release, signing, automatic update, and
+  host-network takeover remain excluded.
+latest_change_id: CHANGE-030
 latest_change_class: task_adjustment
 change_authority_reference: none
 delegated_execution: none
@@ -64,25 +67,45 @@ baseline, and push that commit to the configured GitHub origin. This is a
 task adjustment, not a public-release or product-scope change. GitHub Release,
 signing, automatic updates, and live Windows takeover remain excluded.
 
+CHANGE-028 is the user's explicit report of two coupled responsiveness defects:
+repeated speed tests do not provide prompt, visibly changing node results, and
+the first one or two visits to Nodes or Connections after startup visibly
+stutter. It activates WR-02 as one atomic repair. It authorizes focused UI,
+measurement-event, page-loading, and regression changes plus one local
+unsigned installer; it does not authorize publication, Git actions, live
+takeover, or unrelated architecture work.
+
+CHANGE-029 is the user's rejection of the 3.6.66 WR-02 acceptance result. A
+testing label alone is not sufficient feedback: each manual click must paint a
+numeric elapsed-measurement indicator immediately and keep it moving until a
+real result or terminal failure replaces it. The cold-start regression must
+also cover leaving Connections while its request, result preparation, startup
+prewarm, or startup node work is pending. It reopens WR-02 without changing the
+measurement-only or host-safety boundaries.
+
+CHANGE-030 is the user's explicit request to synchronize the completed 3.6.67
+candidate with GitHub. It authorizes one source-and-evidence commit and push to
+the configured `origin/main` after current source-bound acceptance succeeds.
+It does not authorize a GitHub Release, artifact upload, signing, automatic
+update, live takeover, or any new product work.
+
 ## Baseline And Boundaries
 
-- Baseline: `main` at `3ce91f1` / `v3.6.57`; the local worktree contains the
-  cumulative 3.6.58 through 3.6.65 implementation and evidence. Preserve it
-  until the authorized CHANGE-027 commit and push establish a recoverable
-  baseline.
+- Baseline: clean `main` at `28e539b` / `3.6.65`, already synchronized with
+  `origin/main` by the completed CHANGE-027 delivery.
 - Verified prior evidence: 222 Rust tests, interaction/UI, 800-node stress,
   soak, backend, responsiveness, stability, security, DNS/IPv6, installer,
   release, architecture, planning, and control-plane gates passed for WM-05.
-- Current capacity warning: `main.rs=11689/11770` and
+- Current capacity warning: `main.rs=11691/11770` and
   `core_runtime.rs=2866/2900` production lines. The budgets and assertions are
   hard limits, not values to raise.
 - Verified lifecycle closure: the exact interrupted managed-core cases now use
   Windows Job Object ownership, preserve the same-executable sentinel, and
   leave no owned process, listener, or root. Historical residues were removed
   only after exact identity revalidation.
-- Current delivery finding: 3.6.62 through 3.6.64 installers are historical
-  evidence. CHANGE-027 must produce and bind the new 3.6.65 candidate before
-  any installer is described as current.
+- Current delivery finding: the accepted 3.6.65 installer is the baseline
+  artifact. Any WR-02 product change makes it historical and requires a new
+  source-bound candidate before another installer is described as current.
 - Aegos owns product intent, transactions, Windows takeover facts, diagnostics,
   and recovery. Mihomo remains the one managed data plane.
 - FlClash is a dependency of this host. Do not stop, restart, configure, or
@@ -203,7 +226,7 @@ satisfied. Missing evidence is `untested`, not passed.
 | ID | Status | User-visible result | Start condition |
 | --- | --- | --- | --- |
 | WR-01 | completed | A trustworthy host-safe real-use and delivery baseline. Each examined journey records Aegos intent, managed-runtime fact, UI timing, terminal result, recovery outcome, test-process cleanup, and artifact provenance without claiming untested live Windows facts. | Completed by CHANGE-027. |
-| WR-02 | not_activated | Close a newly reproduced user-visible P0/P1 in its owning transaction. | Requires a new explicit defect entry and user priority; no qualifying defect remains from WR-01. |
+| WR-02 | completed | Every manual speed-test click paints immediate live numeric progress before real results, and cold-start navigation can leave Connections without waiting behind result rendering or startup work. | CHANGE-029 completed in the source-bound 3.6.67 candidate. |
 
 `WR-03` is intentionally not a task in this plan. Controlled live takeover
 testing belongs to the roadmap and remains blocked until a separate recoverable
@@ -378,9 +401,10 @@ distribution lane.
 
 ## WR-02: Close A Reproducible Defect
 
-This task starts only with a concrete WR-01 register entry. It must name the
-user journey, failure trigger, expected and observed terminal states, recovery
-contract, owning module, and focused regression before code changes begin.
+This task starts with the two concrete CHANGE-028 entries in
+`docs/work/windows-reliability-wr02.md`. They name the user journey, failure
+trigger, expected and observed visible states, owner candidates, and focused
+regression before product code changes begin.
 
 P0 and P1 defects take precedence over P2 polish. A freeze, blocked navigation,
 optimistic success, permanent pending state, non-recoverable rollback, orphaned
@@ -388,6 +412,37 @@ managed process, or falsely current delivery artifact is a P1 until evidence
 proves otherwise. The fix must preserve browsing and diagnostics during
 background work, remove any replaced path, and re-run the affected journey plus
 the full gate matrix below.
+
+### WR-02 Acceptance Route
+
+1. Preserve a failing behavioral reproduction for repeated speed-result
+   events that arrive inside the current visible-update throttle window. A
+   second run must receive a new run ID, immediately show an observable
+   testing state, paint progressive results without waiting for terminal
+   completion, and never lose a deferred visible update.
+2. Reproduce startup navigation while initial status, node data, prewarming,
+   and background prefetch can overlap. Nodes and Connections must activate
+   synchronously without a main-thread task over 50 ms; their first frame must
+   remain within 50 ms in the representative native probe, and loading/content
+   progress must be visible rather than presenting a frozen page.
+3. Repair the smallest owning UI scheduling or measurement event path. Do not
+   change probe semantics, connect or switch nodes during measurement, widen a
+   budget, or extract unrelated Mihomo/controller behavior.
+4. Run the focused repeated-speed and cold-navigation regression first, then
+   interaction, stress, native enabled/suppressed, responsiveness, stability,
+   control-plane, security, and the complete 25-command source-bound matrix.
+5. After final source and gate bytes settle, bump the candidate version, build
+   once in a new empty target, bind provenance, and run installer/release
+   structure gates. The artifact remains local and unsigned.
+6. Preserve a 3.6.66 negative control in which the first real probe is delayed:
+   the test must fail when the UI shows only a static testing label. The repair
+   must paint a clearly labelled elapsed value within the first actionable
+   frame and advance it at least twice before the delayed real result arrives;
+   elapsed progress must never be presented as measured latency.
+7. Preserve a cold-start Connections negative control with delayed and large
+   response preparation. A user input that leaves Connections must paint the
+   destination within 50 ms, connection rendering must be cancellable/chunked,
+   and stale work must not mutate the hidden page after navigation.
 
 ## Completion Rules
 
@@ -472,3 +527,6 @@ they count as gates.
 | CHANGE-021 | task_adjustment | Keeps the Windows reliability route and makes WR-01 actionable from the 2026-07-26 audit: close isolated managed-process leakage, fault-inject the core log reader, stop treating the older installer as a current-worktree build, and require source-bound local candidate evidence before delivery. |
 | CHANGE-022 | task_adjustment | Keeps WR-01 and strengthens its execution and acceptance integrity at the user's request. It adds ordered A0-A6 stages, deterministic known-bad controls, immutable verified matrix floors, content-bound evidence freshness, exact no-collateral process criteria, and a source-bound candidate gate so stale or weakened evidence cannot pass. |
 | CHANGE-027 | task_adjustment | Closes the six identified completion gaps as one unit: executable evidence, current full matrix, consistent authority records, a source-bound unsigned installer, a recoverable Git baseline, and one push to the configured GitHub origin. It does not authorize a GitHub Release, signing, automatic updates, or live takeover. |
+| CHANGE-028 | task_adjustment | Activates WR-02 for two bundled user-reported responsiveness defects: delayed or apparently unchanged repeated speed-test feedback, and first-entry stutter on Nodes/Connections after startup. It permits focused repair, regressions, full host-safe validation, and one unsigned local installer, but no Git or publication action. |
+| CHANGE-029 | task_adjustment | Reopens WR-02 because the 3.6.66 acceptance missed immediate numeric pre-result feedback and cold-start navigation away from Connections. Both paths require deterministic negative controls, focused repair, the unchanged full matrix, and a new local unsigned installer; Git, publication, and live takeover remain excluded. |
+| CHANGE-030 | task_adjustment | The user explicitly authorizes one commit and push of the accepted 3.6.67 source, regression coverage, authority records, and redacted evidence to `origin/main`. GitHub Release, artifact upload, signing, automatic updates, live takeover, and new product work remain excluded. |

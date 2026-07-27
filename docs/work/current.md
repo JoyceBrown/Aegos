@@ -5,7 +5,7 @@ execution_authority: none
 active_plan: ../../PLANS.md
 plan_id: AEGOS-WINDOWS-RELIABILITY
 current_task_id: none
-latest_change_id: CHANGE-027
+latest_change_id: CHANGE-030
 latest_change_class: task_adjustment
 updated_at: 2026-07-27
 
@@ -14,22 +14,27 @@ authorize work only while marked active and exclusive.
 
 ## Current Decision
 
-WR-01 and CHANGE-027 are complete. The six-item closure produced executable
-evidence, a current host-safe matrix, aligned authority records, one fresh
-source-bound unsigned installer, and an authorized Git completion baseline.
-There is no active WR-02 because no qualifying user-visible P0/P1 remains.
+CHANGE-029 closed the reopened WR-02 after user acceptance rejected the 3.6.66
+result. Manual speed tests now show honest, continuously changing elapsed
+feedback before the first real result, and navigation away from Connections
+preempts startup prewarm and obsolete connection-row construction.
 
-Signing, GitHub Release publication, automatic updates, feature breadth, and
-live Windows takeover remain outside the completed task. FlClash and the host
-network were not changed.
+CHANGE-030 is the user's explicit instruction to synchronize the accepted
+3.6.67 source, regression coverage, authority records, and redacted evidence
+to the configured GitHub `origin/main`. It authorizes one commit and push only;
+it does not authorize a GitHub Release, installer upload, signing, automatic
+updates, new product work, live Windows takeover, or changes to FlClash.
+
+Signing, Git actions, GitHub Release publication, automatic updates, feature
+breadth, and live Windows takeover remain outside this task. FlClash and the
+host network must not be changed.
 
 ## Verified Evidence
 
-- Candidate version: `3.6.65`.
-- Installer: `src-tauri/target/release/bundle/nsis/Aegos_3.6.65_x64-setup.exe`.
-- Installer size: `16,325,000` bytes.
-- Installer SHA-256:
-  `93d5691de31c5fe436b596c2075a5e0f62697464d998f5ec8a51b23fef462323`.
+- Baseline: clean `main`/`origin/main` at `28e539b`, version `3.6.65`.
+- Current candidate version: `3.6.67`; the fresh-target installer is frozen
+  for the final source-bound matrix and provenance binding. The rejected
+  3.6.66 installer is historical evidence.
 - The v2 acceptance runner executes 25 distinct commands and binds each to
   current source/gate inputs, timestamps, Windows/toolchain identity, the
   host-safe boundary, and a hashed local log.
@@ -43,6 +48,28 @@ network were not changed.
   missing/tampered logs, declared zero exits, duplicate/missing commands,
   matrix reduction, missing identity, open P1, changed Mihomo, and tampered
   acceptance/artifact bytes.
+- Known-bad speed evidence retained run ID `1` on the attempted second click
+  and painted no progressive value before terminal because the completed
+  backend run still had a throttled foreground UI queue.
+- The repaired 800-node negative control advances run IDs `1 -> 2`, paints
+  honest elapsed feedback in `4.9 ms`, advances through `0.0/0.1/0.2 s`
+  while the first real result is deliberately held for `269.3 ms`, and paints
+  that result `31.3 ms` after its event.
+- The 1200-row Connections negative control leaves synchronously in `0.2 ms`,
+  paints Home in `5.4 ms`, cancels obsolete rendering after 24 rows, and does
+  not append hidden rows after navigation.
+- The connection leave/return regression now queues a replacement request
+  instead of losing both the obsolete first result and the return visit.
+- Browser harness cleanup is fail-closed for performance, UI, and soak runs:
+  it terminates only Chrome processes bound to the run's exact temporary
+  profile, retries deletion for 15 seconds, observes the root absent for one
+  second, and fails the test if residue remains. Focused reruns left zero new
+  roots; 244 historical smoke profiles (5,788,681,663 bytes) were removed
+  with zero failures while the user's Aegos/Mihomo instance remained running.
+- Native enabled/suppressed comparisons pass the new actionable-startup gate:
+  the final focused samples painted Nodes in `14.5/1.1 ms` and Connections in
+  `33.4/22.2 ms`, synchronous work stayed below `1 ms`, and no
+  activation task exceeded `50 ms`.
 
 ## Failed Attempts Retained
 
@@ -53,20 +80,46 @@ network were not changed.
   the test-only feature was isolated instead of stopping the user application.
 - The first release skeleton omitted the four runtime/recovery command names;
   the runtime-regression gate rejected it and the record was corrected.
+- A final-matrix native run caught a `60.9 ms` first Nodes frame even though
+  synchronous work was `0.7 ms`. Its trace proved settings workspace warmup
+  overlapped the navigation, so that low-priority work now defers after recent
+  input/navigation and retries later.
+- Suppressed-speed native samples then exposed hidden-WebView2 frame
+  throttling at `54.2-55.7 ms` with no long task. The isolated harness now
+  measures a visible-compositor window fixed offscreen, unfocused, and absent
+  from the taskbar; the `50 ms` product gate was not widened.
+- During CHANGE-030 synchronization validation, the just-shown offscreen
+  window acknowledged a single `requestAnimationFrame` before a physically
+  actionable presented frame. The next simulated Nodes input measured
+  `56.3 ms` despite `0.7 ms` synchronous work and no activation-window long
+  task. The native probe now requires three compositor frames before modelling
+  physical input; it retains all pages, fixed window/DPI configurations,
+  startup overlap, and the `50 ms` navigation limit. The focused enabled-mode
+  repair sample then measured Nodes at `26.8 ms` and Connections at `33.7 ms`.
 - The first 3.6.65 installer retained a `v3.6.63` sidebar fallback label; the
   release gate rejected it. The label was corrected and the installer was
   rebuilt from an empty `candidate-3.6.65-final` target before acceptance.
 
 ## Delivery State
 
-The source completion commit must contain the cumulative preserved worktree
-and be pushed to the configured `origin`. This external state is verified and
-reported by Git rather than predicted in this checkpoint. If that commit is
-already present on `origin/main`, wait for a new explicit user-visible
-priority; otherwise finish only the authorized commit/push delivery step.
+The current local unsigned installer is
+`src-tauri/target/release/bundle/nsis/Aegos_3.6.67_x64-setup.exe`, size
+`16322443` bytes, SHA-256
+`4cf7895f68cdbee981f3d4c6b1ed032f52da2fd5eb3c8148b755d8345da57437`.
+It was copied unchanged from the fresh `candidate-3.6.67-change029` target,
+built from `2026-07-27T00:32:50.106Z` through
+`2026-07-27T00:40:53.412Z`.
+
+The user's documentation-only GitHub request advanced `main` and
+`origin/main` to `606658c` with the Chinese `README.md` as the only committed
+file. CHANGE-030 supersedes the prior no-Git restriction only for one commit
+and push of the accepted 3.6.67 source, regression coverage, authority records,
+and redacted evidence. The local unsigned installer remains local and is not
+part of a GitHub Release or upload.
 
 ## Exact Next Action
 
-With the completion commit present on `origin/main`, wait. Do not activate
-WR-02, signing, a GitHub Release, automatic updates, feature work, or live
-takeover without a new explicit user instruction.
+Complete the one authorized 3.6.67 source-and-evidence commit and push after
+current acceptance has been verified. Then return to `on_complete: wait`; do
+not start controlled host takeover, unrelated roadmap work, a GitHub Release,
+or other publication actions.

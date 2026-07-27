@@ -219,7 +219,9 @@ async function evaluate(cdp, expression) {
     awaitPromise: true,
     returnByValue: true
   });
-  if (result.exceptionDetails) throw new Error(result.exceptionDetails.text || 'WebView2 evaluation failed');
+  if (result.exceptionDetails) {
+    throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'WebView2 evaluation failed');
+  }
   return result.result.value;
 }
 
@@ -287,7 +289,13 @@ try {
       TMP: local,
       AEGOS_NATIVE_PERF_DATA_ROOT: roaming,
       WEBVIEW2_USER_DATA_FOLDER: webviewData,
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-allow-origins=*`
+      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: [
+        `--remote-debugging-port=${port}`,
+        '--remote-allow-origins=*',
+        '--disable-background-timer-throttling',
+        '--disable-renderer-backgrounding',
+        '--disable-backgrounding-occluded-windows'
+      ].join(' ')
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -327,7 +335,74 @@ try {
     await evaluateWhenStable(cdp, 'window.__AEGOS_NATIVE_PERF_SUPPRESS_AUTO_SPEED__ = true');
   }
   const storage = measurementStorageEvidence();
-  const nativeWindowVisible = await evaluateWhenStable(cdp, `window.__TAURI__?.window?.getCurrentWindow?.().isVisible?.()`);
+  if (!allowVisible) {
+    const positioned = await evaluateWhenStable(cdp, `(async () => {
+      try {
+        const current = window.__TAURI__?.window?.getCurrentWindow?.();
+        const Position = window.__TAURI__?.window?.PhysicalPosition;
+        if (!current || !Position) throw new Error('Tauri window positioning API unavailable');
+        await current.setPosition(new Position(-32000, -32000));
+        await current.show();
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, error: String(error?.stack || error?.message || error) };
+      }
+    })()`);
+    if (!positioned?.ok) throw new Error(`Native measurement window positioning failed: ${positioned?.error || 'unknown error'}`);
+  }
+  const nativeWindowState = await evaluateWhenStable(cdp, `(async () => {
+    const current = window.__TAURI__?.window?.getCurrentWindow?.();
+    const outer = await current?.outerPosition?.();
+    return {
+      visible: await current?.isVisible?.(),
+      screenX: Number(outer?.x ?? window.screenX),
+      screenY: Number(outer?.y ?? window.screenY)
+    };
+  })()`);
+
+  const coldNavigation = await evaluateWhenStable(cdp, `(async () => {
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve(performance.now())));
+    const nextInputTask = () => new Promise((resolve) => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => {
+        channel.port1.close();
+        channel.port2.close();
+        resolve(performance.now());
+      };
+      channel.port2.postMessage(0);
+    });
+    const samples = [];
+    // A visible user cannot click before WebView2 has produced the shell's
+    // stable compositor frames. A just-shown offscreen window can acknowledge
+    // a single rAF before its first presented frame, which would attribute
+    // shell activation to the following page navigation.
+    const actionableShellFrames = [await nextFrame(), await nextFrame(), await nextFrame()];
+    await nextInputTask();
+    for (const page of ['nodes', 'connections', 'home']) {
+      const startedAt = performance.now();
+      window.setPage?.(page);
+      const returnedAt = performance.now();
+      const firstFrameAt = await nextFrame();
+      await wait(80);
+      const settledAt = await nextFrame();
+      const longTaskMaxMs = Math.max(0, ...(window.__aegosPerformanceSnapshot?.().longTasks || [])
+        .filter((entry) => Number(entry.at || 0) >= startedAt && Number(entry.at || 0) <= settledAt)
+        .map((entry) => Number(entry.duration || 0)));
+      samples.push({
+        targetPage: page,
+        synchronousMs: Math.max(0, returnedAt - startedAt),
+        firstFrameMs: Math.max(0, firstFrameAt - startedAt),
+        settledMs: Math.max(0, settledAt - startedAt),
+        longTaskMaxMs,
+        active: document.querySelector('.nav button.active')?.dataset.page || '',
+        nodeRows: document.querySelectorAll('#nodeRows .row[data-node]').length,
+        connectionRows: document.querySelectorAll('#connectionRows .simple-row').length,
+        connectionLoading: document.querySelector('#connectionRows')?.textContent.includes('\u6b63\u5728\u52a0\u8f7d') || false
+      });
+    }
+    return { actionableShellFrames, samples };
+  })()`);
 
   const startup = await evaluateWhenStable(cdp, `(async () => {
     const startedAt = performance.now();
@@ -361,7 +436,7 @@ try {
     };
     const before = window.__aegosPerformanceSnapshot();
     const startedAt = performance.now();
-    const pages = ['nodes', 'routing', 'settings', 'home'];
+    const pages = ['nodes', 'connections', 'routing', 'settings', 'home'];
     const directNavigation = [];
     for (const page of pages) {
       const button = document.querySelector('[data-page="' + page + '"]');
@@ -678,11 +753,14 @@ try {
   const report = {
     ok: false,
     version: pkg.version,
-    fixture: 'native-webview2-isolated-profile',
+    fixture: 'native-webview2-isolated-offscreen-profile',
     automaticSpeedMode,
-    hiddenWindow: {
-      requested: !allowVisible,
-      visible: nativeWindowVisible === true
+    measurementWindow: {
+      requestedOffscreen: !allowVisible,
+      visible: nativeWindowState?.visible === true,
+      screenX: Number(nativeWindowState?.screenX || 0),
+      screenY: Number(nativeWindowState?.screenY || 0),
+      offscreen: Number(nativeWindowState?.screenX || 0) <= -10000
     },
     storage,
     generatedAt: new Date().toISOString(),
@@ -712,6 +790,8 @@ try {
     startup: {
       settled: Boolean(startup.settled),
       waitedMs: Number(startup.waitedMs || 0),
+      coldNavigation: coldNavigation?.samples || [],
+      actionableShellFrames: coldNavigation?.actionableShellFrames || [],
       statusMs: Number((startup.snapshot?.recentInvokes || []).find((item) => item.command === 'app_status')?.duration || 0),
       proxyGroupsMs: Number((startup.snapshot?.recentInvokes || []).find((item) => item.command === 'proxy_groups')?.duration || 0),
       pendingInvokes: startup.snapshot?.pendingInvokes || [],
@@ -733,12 +813,20 @@ try {
     failures: []
   };
   if (report.navigation.count < 4) report.failures.push(`native navigation evidence incomplete: ${report.navigation.count} paints`);
-  if (report.hiddenWindow.requested && report.hiddenWindow.visible) report.failures.push('native measurement window became visible');
+  if (report.measurementWindow.requestedOffscreen && !report.measurementWindow.visible) report.failures.push('native offscreen measurement window was not composited as visible');
+  if (report.measurementWindow.requestedOffscreen && !report.measurementWindow.offscreen) report.failures.push(`native measurement window was not kept offscreen: ${report.measurementWindow.screenX},${report.measurementWindow.screenY}`);
   if (!report.startup.settled) report.failures.push(`native startup IPC did not settle within 5s: ${report.startup.pendingInvokes.map((entry) => entry.command).join(', ') || 'unknown'}`);
+  if (report.startup.actionableShellFrames.length !== 3) report.failures.push('native actionable shell frame evidence was incomplete');
   if (report.startup.statusMs > 700) report.failures.push(`native startup status response exceeded 700ms: ${report.startup.statusMs.toFixed(1)}ms`);
   if (report.startup.proxyGroupsMs > 1200) report.failures.push(`native startup node response exceeded 1200ms: ${report.startup.proxyGroupsMs.toFixed(1)}ms`);
+  for (const sample of report.startup.coldNavigation || []) {
+    if (sample.active !== sample.targetPage) report.failures.push(`cold native navigation did not activate ${sample.targetPage}: ${sample.active || 'none'}`);
+    if (sample.synchronousMs > 16) report.failures.push(`cold ${sample.targetPage} navigation synchronous work exceeded 16ms: ${sample.synchronousMs.toFixed(1)}ms`);
+    if (sample.firstFrameMs > 50) report.failures.push(`cold ${sample.targetPage} navigation first frame exceeded 50ms: ${sample.firstFrameMs.toFixed(1)}ms`);
+    if (sample.longTaskMaxMs > 50) report.failures.push(`cold ${sample.targetPage} navigation caused a task over 50ms: ${sample.longTaskMaxMs.toFixed(1)}ms`);
+  }
   if (report.navigation.synchronousP95Ms > 16 || report.navigation.synchronousMaxMs > 50) report.failures.push(`native navigation synchronous work exceeded budget: p95=${report.navigation.synchronousP95Ms.toFixed(1)}ms max=${report.navigation.synchronousMaxMs.toFixed(1)}ms`);
-  if (report.navigation.p95Ms > 50 || report.navigation.maxMs > 100) report.warnings.push(`hidden WebView2 navigation paint sampling exceeded the 50ms target: p95=${report.navigation.p95Ms.toFixed(1)}ms max=${report.navigation.maxMs.toFixed(1)}ms`);
+  if (report.navigation.p95Ms > 50 || report.navigation.maxMs > 100) report.warnings.push(`native WebView2 navigation paint sampling exceeded the 50ms target: p95=${report.navigation.p95Ms.toFixed(1)}ms max=${report.navigation.maxMs.toFixed(1)}ms`);
   if (report.navigation.maxMs > 120) report.failures.push(`native navigation paint exceeded the 120ms hard budget: max=${report.navigation.maxMs.toFixed(1)}ms`);
   if (!report.routing.firstContentMs || report.routing.firstContentMs > 900) report.failures.push(`native routing first content exceeded 900ms: ${report.routing.firstContentMs || 'not-ready'}ms`);
   if (report.nodeRendering.count && report.nodeRendering.maxMs > 50) report.failures.push(`native node render budget exceeded: max=${report.nodeRendering.maxMs.toFixed(1)}ms`);
@@ -748,7 +836,7 @@ try {
   if (!report.interaction.diagnostics.allSwitchesApplied) report.failures.push('native diagnostics/log view switch did not apply');
   if (report.interaction.diagnostics.maxSwitchSynchronousMs > 16) report.failures.push(`native diagnostics/log synchronous switch work exceeded budget: max=${report.interaction.diagnostics.maxSwitchSynchronousMs.toFixed(1)}ms`);
   if (report.interaction.diagnostics.maxSwitchLongTaskMs > 120) report.failures.push(`native diagnostics/log switch caused a long task over 120ms: max=${report.interaction.diagnostics.maxSwitchLongTaskMs.toFixed(1)}ms`);
-  if (report.interaction.diagnostics.maxSwitchFrameMs > 50) report.warnings.push(`hidden WebView2 diagnostics/log paint sampling exceeded the 50ms target: max=${report.interaction.diagnostics.maxSwitchFrameMs.toFixed(1)}ms`);
+  if (report.interaction.diagnostics.maxSwitchFrameMs > 50) report.warnings.push(`native WebView2 diagnostics/log paint sampling exceeded the 50ms target: max=${report.interaction.diagnostics.maxSwitchFrameMs.toFixed(1)}ms`);
   if (report.interaction.diagnostics.maxSwitchFrameMs > 120) report.failures.push(`native diagnostics/log switch paint exceeded the 120ms hard budget: max=${report.interaction.diagnostics.maxSwitchFrameMs.toFixed(1)}ms`);
   if (report.interaction.navigationAway.firstFrameMs > 50) report.failures.push(`native navigation-away budget exceeded: ${report.interaction.navigationAway.firstFrameMs.toFixed(1)}ms`);
   if (!report.jobs.available) report.failures.push('native operation-center job probe was not available');
@@ -788,7 +876,7 @@ try {
   const failure = {
     ok: false,
     version: pkg.version,
-    fixture: 'native-webview2-isolated-profile',
+    fixture: 'native-webview2-isolated-offscreen-profile',
     automaticSpeedMode,
     error: message,
     appExit,

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -22,6 +22,38 @@ const appUrl = pathToFileURL(path.join(root, 'src', 'index.html')).href;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function terminateTestChromeProcesses(dir) {
+  if (process.platform !== 'win32') return;
+  const escapedDir = dir.replaceAll("'", "''");
+  const query = `Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | Where-Object { $_.CommandLine -like '*${escapedDir}*' } | ForEach-Object { $_.ProcessId }`;
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', query], {
+    encoding: 'utf8',
+    windowsHide: true
+  });
+  for (const pid of String(result.stdout || '').match(/\d+/g) || []) {
+    spawnSync('taskkill.exe', ['/PID', pid, '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+  }
+}
+
+async function removeTestUserDataDir(dir) {
+  const deadline = Date.now() + 15000;
+  let absentSince = 0;
+  do {
+    terminateTestChromeProcesses(dir);
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 4, retryDelay: 250 });
+    } catch {}
+    if (!fs.existsSync(dir)) {
+      if (!absentSince) absentSince = Date.now();
+      if (Date.now() - absentSince >= 1000) return true;
+    } else {
+      absentSince = 0;
+    }
+    await delay(200);
+  } while (Date.now() < deadline);
+  return !fs.existsSync(dir);
 }
 
 function httpJson(route, method = 'GET') {
@@ -363,8 +395,13 @@ try {
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) process.exitCode = 2;
 } finally {
-  try { page?.close(); } catch {}
-  chrome.kill();
-  await delay(300);
-  try { fs.rmSync(userDataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 150 }); } catch {}
+  try { await page?.close(); } catch {}
+  try { chrome.kill(); } catch {}
+  if (chrome.pid && process.platform === 'win32') {
+    spawnSync('taskkill.exe', ['/PID', String(chrome.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+  }
+  if (!(await removeTestUserDataDir(userDataDir))) {
+    console.error(`Soak smoke temporary root was not removed: ${userDataDir}`);
+    process.exitCode = 2;
+  }
 }

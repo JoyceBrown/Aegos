@@ -6500,6 +6500,11 @@ button.is-pending,
   contain-intrinsic-size: auto 52px;
 }
 
+#connectionRows .simple-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 40px;
+}
+
 .page[data-page-panel="home"].active {
   grid-template-rows: var(--home-hero-row) var(--home-quick-row) minmax(0, 1fr);
 }

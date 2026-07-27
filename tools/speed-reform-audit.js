@@ -23,7 +23,7 @@ const batch = between(main, 'fn start_proxy_delay_test_for_run', 'fn test_single
 const single = between(main, 'fn test_single_proxy_delay_for_run', 'fn probe_proxy_network')
 const singleWait = between(app, 'async function waitForSingleNodeDelay', 'async function testSingleNode')
 const startupAuto = between(app, 'function scheduleStartupAutoSpeedTest', 'function stopSpeedTestPolling')
-const foregroundPreemption = between(app, 'async function preemptSpeedTestForForegroundJob', 'async function runBackgroundJob')
+const foregroundPreemption = between(app, 'async function preemptSpeedTestForForeground(', 'async function preemptSpeedTestForForegroundJob')
 const backgroundJob = between(app, 'async function runBackgroundJob', 'async function runOptimisticAction')
 const testNodes = between(app, 'async function testNodes', 'async function refreshOutboundIpJob')
 const checks = []
@@ -46,7 +46,7 @@ check(
     foregroundPreemption.includes('shouldResumeStartupTest') &&
     foregroundPreemption.includes('scheduleStartupAutoSpeedTest()') &&
     backgroundJob.includes('await preemptSpeedTestForForegroundJob(kind)') &&
-    interaction.includes('startup did not launch exactly one Aegos-managed first speed test') &&
+    interaction.includes('ready standby core did not launch exactly one Aegos-managed first speed test') &&
     interaction.includes('startup speed test changed the connection or selected proxy') &&
     configPipeline.includes('set_yaml(&mut group, "lazy", YamlValue::Bool(true))') &&
     configPipeline.includes('set_yaml(map, "lazy", YamlValue::Bool(true))'),
@@ -117,11 +117,12 @@ check(
     app.includes('function setSpeedProgressNotice') &&
     app.includes("delta.phase !== 'refining'") &&
     app.includes('setSpeedProgressNotice(`\\u6d4b\\u901f\\u4e2d') &&
-    app.includes('if (isForegroundHot())') &&
-    app.includes('Keep foreground navigation/input ahead of background speed rendering.') &&
-    app.includes('deferVisible: foregroundHot') &&
-    app.includes('Math.min(speedResultChunkSize, 8)') &&
-    app.includes('pendingSpeedResults.size > 160') &&
+    app.includes('const pendingSpeedVisibleChanges = new Map()') &&
+    app.includes('function queueSpeedVisibleChanges') &&
+    app.includes('requestAnimationFrame(flushSpeedVisibleChanges)') &&
+    app.includes('const chunkLimit = speedResultChunkSize') &&
+    !app.includes('deferVisible: foregroundHot') &&
+    !app.includes('pendingSpeedResults.size > 160') &&
     app.includes('pendingSpeedTerminal') &&
     !between(app, 'function applySpeedStatusToNodes', 'function speedOverlayForItem').includes('updateLatestGroupItems(nextItems)'),
   'streamed delays update visible rows without cloning the complete node list'
@@ -189,6 +190,18 @@ check(
     storage.includes('MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH') &&
     storage.includes('file.sync_all()'),
   'repeated Windows writes and profile-switch races must not drop the cache'
+)
+
+check(
+  'manual speed tests paint honest live numeric feedback before the first result',
+  app.includes('function speedElapsedFeedbackText') &&
+    app.includes('function startSpeedFeedbackClock') &&
+    app.includes('setInterval(paintSpeedElapsedFeedback, 80)') &&
+    app.includes('startSpeedFeedbackClock();\n  markAllSpeedTargetsTesting();') &&
+    app.includes('data-speed-pending') &&
+    perf.includes('repeated speed feedback did not advance three times before the first result') &&
+    perf.includes('resultPaintLagMs'),
+  'elapsed waiting time must move immediately without being presented as measured latency'
 )
 
 check(

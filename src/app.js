@@ -92,7 +92,10 @@ const pendingSpeedResults = new Map();
 let pendingSpeedTerminal = null;
 let latestQueuedSpeedProgress = null;
 let speedProgressNoticeAt = 0;
-let speedVisibleUpdateAt = 0;
+let speedVisibleFrame = null;
+let speedFeedbackTimer = null;
+let speedFeedbackStartedAt = 0;
+const pendingSpeedVisibleChanges = new Map();
 const speedResultsByRun = new Map();
 const singleSpeedWaiters = new Map();
 const pendingSingleSpeedRuns = new Set();
@@ -167,6 +170,10 @@ let pageLoadTimer = null;
 let pageLoadToken = 0;
 let pagePaintFrame = null;
 let nodePagePrewarmTimer = null;
+let nodePagePrewarmGeneration = 0;
+let connectionsRefreshQueued = false;
+let connectionsRefreshQueuedToken = null;
+let connectionRenderGeneration = 0;
 let foregroundBusy = 0;
 let backgroundJobBusy = 0;
 let lastBackgroundJobError = '';
@@ -2695,13 +2702,7 @@ function applySpeedStatusToNodes(status = {}, options = {}) {
     changed = true;
   });
   if (recommendedName) latestRecommendedName = recommendedName;
-  if (changed && isNodeSurfaceActive() && !options.deferVisible) {
-    const now = performance.now();
-    if (!speedVisibleUpdateAt || now - speedVisibleUpdateAt >= 300) {
-      updateVisibleNodeDelays(visibleChanges);
-      speedVisibleUpdateAt = now;
-    }
-  }
+  if (changed) queueSpeedVisibleChanges(visibleChanges);
   if (summaryRelevant) {
     renderHomeNodeSummary(summaryRowsFromLatestGroup());
   }
@@ -2980,8 +2981,44 @@ function delayClass(value) {
 function delayText(value) {
   const delay = Number(value);
   if (delay > 0) return `${Math.round(delay)} ms`;
-  if (delay === 0) return '\u6d4b\u901f\u4e2d';
+  if (delay === 0) return speedElapsedFeedbackText();
   return '-';
+}
+
+function speedElapsedFeedbackText(now = performance.now()) {
+  const elapsedMs = speedFeedbackStartedAt > 0 ? Math.max(0, now - speedFeedbackStartedAt) : 0;
+  return `\u7b49\u5f85 ${(elapsedMs / 1000).toFixed(1)}s`;
+}
+
+function paintSpeedElapsedFeedback() {
+  const label = speedElapsedFeedbackText();
+  $all('.node-delay[data-speed-pending="true"]').forEach((cell) => {
+    cell.textContent = label;
+    cell.setAttribute('aria-label', `\u6b63\u5728\u6d4b\u901f\uff0c\u5df2${label}`);
+  });
+  const metric = $('#delayMetric.delay-testing');
+  if (metric) {
+    metric.textContent = label;
+    metric.setAttribute('aria-label', `\u6b63\u5728\u6d4b\u901f\uff0c\u5df2${label}`);
+  }
+}
+
+function startSpeedFeedbackClock() {
+  if (speedFeedbackTimer) clearInterval(speedFeedbackTimer);
+  speedFeedbackStartedAt = performance.now();
+  paintSpeedElapsedFeedback();
+  speedFeedbackTimer = setInterval(paintSpeedElapsedFeedback, 80);
+}
+
+function stopSpeedFeedbackClock() {
+  if (speedFeedbackTimer) clearInterval(speedFeedbackTimer);
+  speedFeedbackTimer = null;
+  speedFeedbackStartedAt = 0;
+  $all('.node-delay[data-speed-pending="true"]').forEach((cell) => {
+    delete cell.dataset.speedPending;
+    cell.removeAttribute('aria-label');
+  });
+  $('#delayMetric')?.removeAttribute('aria-label');
 }
 
 function speedFailureReasonLabel(reason = '') {
@@ -3010,7 +3047,7 @@ function speedFailureReasonLabel(reason = '') {
 function nodeDelayText(row) {
   const delay = Number(row?.[3] ?? -1);
   if (delay > 0) return `${Math.round(delay)} ms`;
-  if (delay === 0) return '\u6d4b\u901f\u4e2d';
+  if (delay === 0) return speedElapsedFeedbackText();
   return '-';
 }
 
@@ -3206,7 +3243,12 @@ function renderNodeRow(row) {
     }),
     icon(`star ${favorite ? 'icon-star-filled' : 'icon-star'}`),
     title,
-    el('span', { className: `node-delay ${delayState}`, textContent: delayText }),
+    el('span', {
+      className: `node-delay ${delayState}`,
+      textContent: delayText,
+      dataset: delayValue === 0 ? { speedPending: 'true' } : undefined,
+      attrs: delayValue === 0 ? { 'aria-label': `\u6b63\u5728\u6d4b\u901f\uff0c\u5df2${delayText}` } : undefined
+    }),
     el('span', { className: note.className, textContent: note.label, attrs: { title: note.title } }),
     actions
   ]);
@@ -3234,7 +3276,12 @@ function renderHomeNodeRow(row) {
     }),
     icon(`star ${favorite ? 'icon-star-filled' : 'icon-star'}`),
     title,
-    el('span', { className: `node-delay ${delayState}`, textContent: delayText }),
+    el('span', {
+      className: `node-delay ${delayState}`,
+      textContent: delayText,
+      dataset: delayValue === 0 ? { speedPending: 'true' } : undefined,
+      attrs: delayValue === 0 ? { 'aria-label': `\u6b63\u5728\u6d4b\u901f\uff0c\u5df2${delayText}` } : undefined
+    }),
     el('span', { className: note.className, textContent: note.label, attrs: { title: note.title } })
   ]);
 }
@@ -3782,6 +3829,8 @@ function renderUiState(state = uiStore.state) {
 
 function setPage(page) {
   const next = pageNames[page] ? page : 'home';
+  cancelNodePagePrewarm();
+  if (next !== 'connections') connectionRenderGeneration += 1;
   lastNavAt = Date.now();
   recordUiPerformance('navigation-request', { targetPage: next });
   renderPageFirstLoadState(next);
@@ -3868,7 +3917,7 @@ function schedulePageLoad(page) {
     const load = () => {
       if (token !== pageLoadToken || uiStore.state.page !== page) return;
       if (foregroundBusy > 0) return;
-      if (page === 'connections' && shouldRefreshPageCache(page)) refreshConnections(token);
+      if (page === 'connections' && (pageCacheState.connections.loading || shouldRefreshPageCache(page))) refreshConnections(token);
       if (page === 'routing' && shouldRefreshPageCache(page)) void loadRoutingPage(token);
       if (page === 'diagnostics' && shouldRefreshPageCache(page)) {
         renderCachedDiagnostics();
@@ -4678,16 +4727,24 @@ function ensureSettingsWorkspace() {
 function scheduleSettingsWorkspaceWarmup() {
   if (settingsWorkspaceReady || settingsWorkspaceWarmScheduled) return;
   settingsWorkspaceWarmScheduled = true;
-  runWhenIdle(() => {
+  const warm = () => {
+    if (settingsWorkspaceReady || uiStore.state.page === 'settings') {
+      settingsWorkspaceWarmScheduled = false;
+      return;
+    }
+    if (isForegroundHot() || foregroundBusy > 0 || backgroundJobBusy > 0 || isSpeedTestActive()) {
+      setTimeout(() => runWhenIdle(warm, 1200), 500);
+      return;
+    }
     settingsWorkspaceWarmScheduled = false;
-    if (settingsWorkspaceReady || foregroundBusy || uiStore.state.page === 'settings') return;
     const startedAt = performance.now();
     ensureSettingsWorkspace();
     ensureTakeoverControls();
     recordUiPerformance('settings-workspace-warmed', {
       duration: Math.round((performance.now() - startedAt) * 10) / 10
     });
-  }, 1200);
+  };
+  runWhenIdle(warm, 1200);
 }
 
 function renderProfiles() {
@@ -5511,7 +5568,15 @@ function updateVisibleNodeDelays(changes = new Map()) {
     const delayCell = row.querySelector('.node-delay');
     if (delayCell) {
       delayCell.className = `node-delay ${delayClass(value)}`;
-      delayCell.textContent = delayText(value);
+      if (value === 0) {
+        delayCell.dataset.speedPending = 'true';
+        delayCell.textContent = speedElapsedFeedbackText();
+        delayCell.setAttribute('aria-label', `\u6b63\u5728\u6d4b\u901f\uff0c\u5df2${delayCell.textContent}`);
+      } else {
+        delete delayCell.dataset.speedPending;
+        delayCell.removeAttribute('aria-label');
+        delayCell.textContent = delayText(value);
+      }
     }
     const noteCell = row.querySelector('.node-note');
     if (noteCell) {
@@ -5521,6 +5586,21 @@ function updateVisibleNodeDelays(changes = new Map()) {
       noteCell.setAttribute('title', note.title);
     }
   });
+}
+
+function flushSpeedVisibleChanges() {
+  if (speedVisibleFrame) cancelAnimationFrame(speedVisibleFrame);
+  speedVisibleFrame = null;
+  if (!pendingSpeedVisibleChanges.size) return;
+  const changes = new Map(pendingSpeedVisibleChanges);
+  pendingSpeedVisibleChanges.clear();
+  if (isNodeSurfaceActive()) updateVisibleNodeDelays(changes);
+}
+
+function queueSpeedVisibleChanges(changes = new Map()) {
+  if (!changes.size || !isNodeSurfaceActive()) return;
+  changes.forEach((value, name) => pendingSpeedVisibleChanges.set(name, value));
+  if (!speedVisibleFrame) speedVisibleFrame = requestAnimationFrame(flushSpeedVisibleChanges);
 }
 
 function applyOptimisticNodeDelay(name, delay, failureReason = '') {
@@ -5758,7 +5838,7 @@ async function refreshNodes(force = false, options = {}) {
     renderCurrentNodeIdentity();
     scheduleRowsRender(latestGroup?.items || [], {
       force,
-      target: options.target || 'all',
+      target: options.target === 'home' && isPageActive('nodes') ? 'all' : (options.target || 'all'),
       delay: options.delay
     });
   } catch (err) {
@@ -5825,57 +5905,73 @@ async function initializeAppData() {
     statusReady,
     nodesReady
   ]);
-  // The node snapshot is the home page's critical path. Only start the
-  // independent rules prefetch after it has settled, then prewarm the hidden
-  // node page after that parser is no longer using CPU.
-  scheduleRoutingSnapshotPrefetch();
+  // Warm the two high-frequency operational pages before low-priority rule
+  // prefetch so the first user navigation does not pay their layout cost.
   scheduleNodePagePrewarm();
+  scheduleRoutingSnapshotPrefetch();
 }
 
 function scheduleNodePagePrewarm() {
-  if (nodePagePrewarmTimer) clearTimeout(nodePagePrewarmTimer);
+  cancelNodePagePrewarm();
+  const generation = nodePagePrewarmGeneration;
   const prewarm = () => {
     nodePagePrewarmTimer = null;
-    if (routingPrefetchPromise) {
-      void routingPrefetchPromise.finally(() => {
-        nodePagePrewarmTimer = setTimeout(prewarm, 650);
-      });
-      return;
-    }
-    if (isForegroundHot() || foregroundBusy > 0 || backgroundJobBusy > 0 || isSpeedTestActive()) {
-      nodePagePrewarmTimer = setTimeout(prewarm, 900);
+    if (generation !== nodePagePrewarmGeneration) return;
+    const recentInput = lastUserInputAt > 0 && Date.now() - lastUserInputAt < 320;
+    if (recentInput || foregroundBusy > 0 || backgroundJobBusy > 0 || isSpeedTestActive()) {
+      nodePagePrewarmTimer = setTimeout(() => runWhenIdle(prewarm, 350), 240);
       return;
     }
     const items = latestGroup?.items?.length ? latestGroup.items : pendingRowItems;
-    if (isPageActive('nodes') || !items?.length) return;
-    const panel = document.querySelector('[data-page-panel="nodes"]');
-    if (!panel) return;
-    panel.classList.add('page-prewarm');
+    const nodePanel = document.querySelector('[data-page-panel="nodes"]');
+    const connectionsPanel = document.querySelector('[data-page-panel="connections"]');
+    if (!nodePanel || !connectionsPanel || !items?.length) return;
+    if (!isPageActive('nodes')) nodePanel.classList.add('page-prewarm');
     requestAnimationFrame(() => {
-      if (isPageActive('nodes')) {
-        panel.classList.remove('page-prewarm');
+      if (generation !== nodePagePrewarmGeneration || isForegroundHot()) {
+        nodePanel.classList.remove('page-prewarm');
         return;
       }
       const startedAt = performance.now();
       renderRows(items, { target: 'nodes' });
+      void nodePanel.offsetHeight;
       recordUiPerformance('node-page-prewarmed', {
         itemCount: items.length,
         renderedCount: document.querySelectorAll('#nodeRows .row[data-node]').length,
         duration: Math.round((performance.now() - startedAt) * 10) / 10
       });
-      requestAnimationFrame(() => panel.classList.remove('page-prewarm'));
+      requestAnimationFrame(() => {
+        if (generation !== nodePagePrewarmGeneration || isForegroundHot()) {
+          nodePanel.classList.remove('page-prewarm');
+          connectionsPanel.classList.remove('page-prewarm');
+          return;
+        }
+        nodePanel.classList.remove('page-prewarm');
+        if (!isPageActive('connections')) connectionsPanel.classList.add('page-prewarm');
+        requestAnimationFrame(() => {
+          if (generation !== nodePagePrewarmGeneration || isForegroundHot()) {
+            connectionsPanel.classList.remove('page-prewarm');
+            return;
+          }
+          const connectionsStartedAt = performance.now();
+          void connectionsPanel.offsetHeight;
+          void $('#connectionRows')?.offsetHeight;
+          recordUiPerformance('connections-page-prewarmed', {
+            duration: Math.round((performance.now() - connectionsStartedAt) * 10) / 10
+          });
+          requestAnimationFrame(() => connectionsPanel.classList.remove('page-prewarm'));
+        });
+      });
     });
   };
-  // Do not make startup parse a profile and lay out an offscreen node table at
-  // the same time. A direct visit still renders immediately; this is only an
-  // optional warm cache for the next surface.
-  if (routingPrefetchPromise) {
-    void routingPrefetchPromise.finally(() => {
-      nodePagePrewarmTimer = setTimeout(prewarm, 650);
-    });
-    return;
-  }
-  nodePagePrewarmTimer = setTimeout(prewarm, 1800);
+  nodePagePrewarmTimer = setTimeout(() => runWhenIdle(prewarm, 350), 80);
+}
+
+function cancelNodePagePrewarm() {
+  nodePagePrewarmGeneration += 1;
+  if (nodePagePrewarmTimer) clearTimeout(nodePagePrewarmTimer);
+  nodePagePrewarmTimer = null;
+  document.querySelectorAll('.page.page-prewarm').forEach((panel) => panel.classList.remove('page-prewarm'));
 }
 
 function markAllSpeedTargetsTesting() {
@@ -5948,13 +6044,16 @@ function stopSpeedTestPolling() {
   speedTestTimer = null;
   speedTestStarting = false;
   speedProgressNoticeAt = 0;
-  speedVisibleUpdateAt = 0;
   activeSpeedRunId = 0;
   activeSpeedProfileId = '';
   activeSpeedAutomatic = false;
   if (speedResultFrame) cancelAnimationFrame(speedResultFrame);
   speedResultFrame = null;
+  if (speedVisibleFrame) cancelAnimationFrame(speedVisibleFrame);
+  speedVisibleFrame = null;
   pendingSpeedResults.clear();
+  pendingSpeedVisibleChanges.clear();
+  stopSpeedFeedbackClock();
   pendingSpeedTerminal = null;
   latestQueuedSpeedProgress = null;
   speedTestButtons.forEach((button) => setButtonBusy(button, false, '', { preserveContent: true }));
@@ -6003,6 +6102,7 @@ function finishSpeedTerminalEvent(payload) {
   const status = payload?.status || {};
   const summaryStatus = { ...status, delays: {}, health: {} };
   const changed = applySpeedStatusToNodes(summaryStatus, { force: true, preserveLatest: true, refreshSummary: true });
+  flushSpeedVisibleChanges();
   refreshVisibleNodesForSpeed(true, changed);
   const message = kind === 'complete'
     ? `\u6d4b\u901f\u7ed3\u679c\u5df2\u66f4\u65b0\uff1a\u53ef\u7528 ${status.ok || 0}/${status.total || 0}`
@@ -6022,18 +6122,6 @@ function scheduleSpeedResultFlush() {
 function flushSpeedResultEvents() {
   if (speedResultFrame) cancelAnimationFrame(speedResultFrame);
   speedResultFrame = null;
-  let foregroundHot = false;
-  if (isForegroundHot()) {
-    // Keep foreground navigation/input ahead of background speed rendering.
-    // Results still enter the overlay immediately so the next page paint can
-    // use them for ordinary subscriptions. Very large bursts stay coalesced
-    // until the foreground quiet window so they cannot monopolize frames.
-    foregroundHot = true;
-    if (pendingSpeedResults.size > 160) {
-      setTimeout(scheduleSpeedResultFlush, 120);
-      return;
-    }
-  }
   if (!pendingSpeedResults.size) {
     if (pendingSpeedTerminal) {
       const terminal = pendingSpeedTerminal;
@@ -6046,7 +6134,7 @@ function flushSpeedResultEvents() {
   const health = {};
   const progress = latestQueuedSpeedProgress;
   const frameStarted = performance.now();
-  const chunkLimit = foregroundHot ? Math.min(speedResultChunkSize, 8) : speedResultChunkSize;
+  const chunkLimit = speedResultChunkSize;
   let processed = 0;
   for (const [name, payload] of pendingSpeedResults) {
     delays[name] = Number(payload.delay ?? -1);
@@ -6071,7 +6159,7 @@ function flushSpeedResultEvents() {
     delays,
     health
   };
-  applySpeedStatusToNodes(delta, { force: true, preserveLatest: true, deferVisible: foregroundHot });
+  applySpeedStatusToNodes(delta, { force: true, preserveLatest: true });
   // Progress updates can arrive in dense bursts. Keep the result stream live,
   // but avoid rebuilding the shell summary for every animation frame.
   const now = performance.now();
@@ -6114,8 +6202,6 @@ function handleSpeedTestEvent(event) {
   }
   if (kind === 'fast-complete') {
     const status = payload.status || {};
-    speedTestButtons.forEach((button) => setButtonBusy(button, false, '', { preserveContent: true }));
-    speedTestButtons.clear();
     setTransientNotice(`\u9996\u8f6e\u7ed3\u679c\u5df2\u8fd4\u56de\uff1a\u53ef\u7528 ${status.ok || 0}/${status.total || 0}`);
     return;
   }
@@ -6221,7 +6307,11 @@ async function pollSpeedTest() {
 }
 
 async function testNodes(button = null, options = {}) {
-  if (isSpeedTestActive()) return;
+  if (isSpeedTestActive()) {
+    paintSpeedElapsedFeedback();
+    if (!options.automatic) setNotice('\u6d4b\u901f\u4ecd\u5728\u8fdb\u884c\uff0c\u7b49\u5f85\u6570\u5b57\u4f1a\u6301\u7eed\u66f4\u65b0\u3002');
+    return null;
+  }
   if (!options.automatic) startupAutoSpeedStarted = true;
   speedTestStarting = true;
   activeSpeedAutomatic = Boolean(options.automatic);
@@ -6233,6 +6323,7 @@ async function testNodes(button = null, options = {}) {
     speedTestButtons.add(button);
     setButtonBusy(button, true, '\u6d4b\u901f\u4e2d...', { preserveContent: true });
   }
+  startSpeedFeedbackClock();
   markAllSpeedTargetsTesting();
   setNotice(options.automatic
     ? '\u542f\u52a8\u9996\u6b21\u6d4b\u901f\u5df2\u5728\u540e\u53f0\u5f00\u59cb\uff0c\u754c\u9762\u53ef\u7ee7\u7eed\u64cd\u4f5c\u3002'
@@ -6255,6 +6346,9 @@ async function testNodes(button = null, options = {}) {
     return status;
   } catch (err) {
     stopSpeedTestPolling();
+    speedResultOverlay = new Map();
+    scheduleRowsRender(latestGroup?.items || [], { force: true, target: activeNodeRenderTarget(), delay: 0 });
+    renderHomeNodeSummary(summaryRowsFromLatestGroup());
     setNotice(options.automatic
       ? `首次测速暂未启动，将自动重试：${err.message || err}`
       : `操作失败：${err.message || err}`);
@@ -6680,6 +6774,7 @@ async function testSingleNode(name, button) {
     setNotice('\u6279\u91cf\u6d4b\u901f\u6b63\u5728\u8fdb\u884c\uff0c\u8be5\u8282\u70b9\u7684\u7ed3\u679c\u4f1a\u81ea\u52a8\u66f4\u65b0\u3002');
     return;
   }
+  startSpeedFeedbackClock();
   applyOptimisticNodeDelay(name, 0);
   try {
     await runLocalButtonAction(button, '\u6d4b\u901f\u4e2d...', async () => {
@@ -6707,6 +6802,7 @@ async function testSingleNode(name, button) {
       }
       const reason = result?.reason || '';
       applyOptimisticNodeDelay(name, Number(result?.delay ?? -1), reason);
+      stopSpeedFeedbackClock();
       queueNodeRefresh(activeNodeRenderTarget(), 0);
       const delay = Number(result?.delay ?? -1);
       if (delay > 0) {
@@ -6718,6 +6814,7 @@ async function testSingleNode(name, button) {
     });
   } catch (err) {
     applyOptimisticNodeDelay(name, -1, 'network');
+    stopSpeedFeedbackClock();
     setNotice(`操作失败：${err.message || err}`);
     void captureNodeDiagnostics(name);
   }
@@ -7232,38 +7329,86 @@ function isCurrentPageTask(token, page) {
 }
 
 async function refreshConnections(token = null) {
-  if (pageCacheState.connections.loading) return;
+  const ownerToken = token ?? pageLoadToken;
+  if (!isCurrentPageTask(ownerToken, 'connections')) return;
+  if (pageCacheState.connections.loading) {
+    if (isCurrentPageTask(ownerToken, 'connections')) {
+      connectionsRefreshQueued = true;
+      connectionsRefreshQueuedToken = ownerToken;
+    }
+    return;
+  }
   pageCacheState.connections.loading = true;
+  const renderGeneration = ++connectionRenderGeneration;
   try {
     const items = await invoke('connections');
-    if (!isCurrentPageTask(token, 'connections')) return;
+    if (!isCurrentPageTask(ownerToken, 'connections')) return;
     const connectionItems = Array.isArray(items) ? items : [];
     activeConnectionCount = connectionItems.length;
-    const rows = connectionItems.map((item) => {
-      const route = Array.isArray(item.route) && item.route.length ? item.route.join(' > ') : '-';
-      const traffic = `${formatRate(item.upload)} / ${formatRate(item.download)}`;
-      const target = item.target || '-';
-      return el('div', { className: 'simple-row' }, [
-        el('span', { textContent: target }),
-        el('span', { textContent: item.rule || '-' }),
-        el('span', { textContent: route }),
-        el('span', { textContent: traffic }),
-        el('span', { className: 'connection-actions' }, [
-          el('button', { dataset: { routingDraftTarget: target }, textContent: '\u8349\u7a3f' }),
-          el('button', { dataset: { closeConnection: item.id }, textContent: '\u5173\u95ed' })
-        ])
-      ]);
-    });
-    replaceChildrenSafe($('#connectionRows'), rows.length ? rows : [connectionEmptyState()]);
+    const rendered = await renderConnectionRows(connectionItems, ownerToken, renderGeneration);
+    if (!rendered) return;
     renderActiveConnectionMetric();
     markPageCache('connections');
   } catch (err) {
-    if (!isCurrentPageTask(token, 'connections')) return;
+    if (!isCurrentPageTask(ownerToken, 'connections')) return;
     replaceChildrenSafe($('#connectionRows'), [emptyState(`\u8fde\u63a5\u7ba1\u7406\u4e0d\u53ef\u7528\uff1a${err.message || err}`)]);
     invalidatePageCache('connections');
   } finally {
     pageCacheState.connections.loading = false;
+    const queued = connectionsRefreshQueued;
+    const queuedToken = connectionsRefreshQueuedToken;
+    connectionsRefreshQueued = false;
+    connectionsRefreshQueuedToken = null;
+    if (queued && isCurrentPageTask(queuedToken, 'connections')) void refreshConnections(queuedToken);
   }
+}
+
+function yieldToMainThread() {
+  // A timer task gives pending pointer input a scheduling boundary even on
+  // WebView2 builds where scheduler.yield() immediately resumes its caller.
+  return sleep(0);
+}
+
+function connectionRow(item = {}) {
+  const route = Array.isArray(item.route) && item.route.length ? item.route.join(' > ') : '-';
+  const traffic = `${formatRate(item.upload)} / ${formatRate(item.download)}`;
+  const target = item.target || '-';
+  return el('div', { className: 'simple-row' }, [
+    el('span', { textContent: target }),
+    el('span', { textContent: item.rule || '-' }),
+    el('span', { textContent: route }),
+    el('span', { textContent: traffic }),
+    el('span', { className: 'connection-actions' }, [
+      el('button', { dataset: { routingDraftTarget: target }, textContent: '\u8349\u7a3f' }),
+      el('button', { dataset: { closeConnection: item.id }, textContent: '\u5173\u95ed' })
+    ])
+  ]);
+}
+
+async function renderConnectionRows(items, token, generation) {
+  const container = $('#connectionRows');
+  if (!container) return false;
+  if (!items.length) {
+    replaceChildrenSafe(container, [connectionEmptyState()]);
+    return true;
+  }
+  replaceChildrenSafe(container, []);
+  const chunkSize = 24;
+  for (let offset = 0; offset < items.length; offset += chunkSize) {
+    if (generation !== connectionRenderGeneration || !isCurrentPageTask(token, 'connections')) {
+      recordUiPerformance('connection-render-cancelled', { renderedCount: offset, itemCount: items.length });
+      return false;
+    }
+    const rows = items.slice(offset, offset + chunkSize).map(connectionRow);
+    container.append(...rows);
+    recordUiPerformance('connection-render-chunk', {
+      renderedCount: Math.min(items.length, offset + rows.length),
+      itemCount: items.length
+    });
+    if (offset + chunkSize < items.length) await yieldToMainThread();
+  }
+  recordUiPerformance('connection-render-complete', { itemCount: items.length });
+  return true;
 }
 
 function routingStrategyTypeLabel(kind = '') {
