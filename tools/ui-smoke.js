@@ -181,6 +181,14 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       const r = el.getBoundingClientRect();
       return r.width > 0 && r.height > 0;
     };
+    const rectsOverlap = (first, second) => Boolean(
+      first
+      && second
+      && first.left < second.right - 1
+      && first.right > second.left + 1
+      && first.top < second.bottom - 1
+      && first.bottom > second.top + 1
+    );
     const waitForSelector = async (selector, timeoutMs = 1200) => {
       const startedAt = performance.now();
       while (performance.now() - startedAt < timeoutMs) {
@@ -324,16 +332,43 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       && nodeToolbarPrimary.bottom <= nodeFilterTabs.top + 1
     );
     document.querySelector('[data-page="connections"]').click();
+    for (let attempt = 0; attempt < 30 && !document.querySelector('#connectionRows [data-connection-explain]'); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const connectionRows = all('#connectionRows .simple-row').filter(visible);
+    const connectionDetailBeforeRequest = document.querySelector('.connection-explain');
+    const connectionDetailVisibleByDefault = Boolean(connectionDetailBeforeRequest && visible(connectionDetailBeforeRequest));
     const connectionActionIssues = connectionRows.flatMap((row, index) => {
       const actionBox = row.querySelector('.connection-actions')?.getBoundingClientRect();
-      const buttons = all('button', row).filter(visible).map((button) => button.getBoundingClientRect());
+      const actionButtons = [...row.querySelectorAll('.connection-actions button')]
+        .filter(visible)
+        .map((button) => button.getBoundingClientRect());
+      const detailButton = row.querySelector('[data-connection-explain]');
+      const detailBox = detailButton && visible(detailButton)
+        ? detailButton.getBoundingClientRect()
+        : null;
       const rowBox = row.getBoundingClientRect();
       const actionEscapes = !actionBox || actionBox.left < rowBox.left - 1 || actionBox.right > rowBox.right + 1;
-      const buttonEscapes = buttons.some((button) => button.left < actionBox.left - 1 || button.right > actionBox.right + 1 || button.width < 50);
-      return actionEscapes || buttonEscapes ? ['connection-' + index] : [];
+      const actionButtonsEscape = !actionBox
+        || actionButtons.length !== 2
+        || actionButtons.some((button) => button.left < actionBox.left - 1 || button.right > actionBox.right + 1 || button.width < 50);
+      const detailEscapes = !detailBox
+        || detailBox.left < rowBox.left - 1
+        || detailBox.right > rowBox.right + 1
+        || detailBox.width < 50;
+      return actionEscapes || actionButtonsEscape || detailEscapes ? ['connection-' + index] : [];
     });
+    document.querySelector('#connectionRows [data-connection-explain]')?.click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const connectionDetailBox = document.querySelector('.connection-explain')?.getBoundingClientRect();
+    const connectionTableBox = document.querySelector('.connection-table')?.getBoundingClientRect();
+    const connectionDetailIssues = !connectionDetailBox || !connectionTableBox
+      || connectionDetailBox.left < connectionTableBox.left - 1
+      || connectionDetailBox.right > connectionTableBox.right + 1
+      || connectionDetailBox.bottom > connectionTableBox.bottom + 1
+      ? ['connection-detail']
+      : [];
     document.querySelector('[data-page="routing"]').click();
     await waitForSelector('#routingDraftListCard');
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -404,6 +439,86 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       && settingsNavBox.right <= settingsContentBox.left + 1
       && Math.abs(settingsNavBox.top - settingsContentBox.top) <= 4
     );
+    document.querySelector('[data-settings-category="security"]')?.click();
+    await waitForSelector('#localBackupList button');
+    document.querySelector('#localBackupList button')?.click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const localBackupConfirmBox = box('#appDialogOverlay:not(.hidden) .app-dialog');
+    const localBackupConfirmIdentity = document.querySelector('#appDialogMessage')?.textContent.includes('2.0 KB')
+      && document.querySelector('#appDialogMessage')?.textContent.includes('4 项内容');
+    document.querySelector('#appDialogCancelBtn')?.click();
+    document.querySelector('[data-settings-category="dns"]')?.click();
+    await refreshIpv6DnsSafety();
+    await refreshDnsPolicy();
+    await waitForSelector('#egressConsistencyCard');
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const dnsGridBox = box('[data-settings-panel="dns"] > .settings-grid');
+    const dnsEvidenceBox = box('#dnsLiveEvidence');
+    const ipv6SafetyBox = box('#ipv6DnsSafetyCard');
+    const egressConsistencyBox = box('#egressConsistencyCard');
+    const dnsControls = ['#dnsPolicyStatus', '#dnsToggle', '#dnsModeSelect', '#saveDnsModeBtn']
+      .map((selector) => ({ selector, rect: box(selector) }))
+      .filter(({ rect }) => rect);
+    const dnsControlBoxes = dnsControls.map(({ rect }) => rect);
+    const dnsLiveCardBoxes = [ipv6SafetyBox, egressConsistencyBox].filter(Boolean);
+    const dnsLiveCardChildBoxes = all('#dnsLiveEvidence > .ipv6-safety-card > article')
+      .filter(visible)
+      .map((element) => element.getBoundingClientRect());
+    const dnsLiveCardOverlap = dnsLiveCardBoxes.some((card, index) => dnsLiveCardBoxes
+      .slice(index + 1)
+      .some((other) => rectsOverlap(card, other)));
+    const dnsLiveCardChildOverlap = dnsLiveCardChildBoxes.some((card, index) => dnsLiveCardChildBoxes
+      .slice(index + 1)
+      .some((other) => rectsOverlap(card, other)));
+    const dnsControlEvidenceOverlap = dnsControlBoxes.some((control) => dnsLiveCardBoxes
+      .some((card) => rectsOverlap(control, card)));
+    const dnsControlEvidencePairs = dnsControls.flatMap(({ selector, rect }) => dnsLiveCardBoxes
+      .map((card, index) => rectsOverlap(rect, card) ? selector + ':card-' + index : null)
+      .filter(Boolean));
+    const dnsLiveEvidenceOwned = document.querySelector('#ipv6DnsSafetyCard')?.parentElement?.id === 'dnsLiveEvidence'
+      && document.querySelector('#egressConsistencyCard')?.parentElement?.id === 'dnsLiveEvidence';
+    const dnsLiveEvidenceOrdered = Boolean(
+      dnsGridBox
+      && dnsEvidenceBox
+      && ipv6SafetyBox
+      && egressConsistencyBox
+      && dnsEvidenceBox.top >= dnsGridBox.bottom - 1
+      && egressConsistencyBox.top >= ipv6SafetyBox.bottom - 1
+    );
+    const settingsCategoryLayoutIssues = [];
+    for (const categoryButton of all('[data-settings-category]')) {
+      const category = categoryButton.dataset.settingsCategory || 'unknown';
+      categoryButton.click();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const activePanel = document.querySelector('[data-settings-panel].active');
+      if (!activePanel) {
+        settingsCategoryLayoutIssues.push(category + ':missing-active-panel');
+        continue;
+      }
+      const panelChildren = [...activePanel.children].filter(visible).map((element) => element.getBoundingClientRect());
+      if (panelChildren.some((child, index) => panelChildren.slice(index + 1).some((other) => rectsOverlap(child, other)))) {
+        settingsCategoryLayoutIssues.push(category + ':panel-children-overlap');
+      }
+      for (const grid of all('.settings-grid', activePanel)) {
+        const gridBox = grid.getBoundingClientRect();
+        const escapedChild = [...grid.children].filter(visible).some((child) => {
+          const childBox = child.getBoundingClientRect();
+          return childBox.top < gridBox.top - 1 || childBox.bottom > gridBox.bottom + 1;
+        });
+        if (escapedChild) settingsCategoryLayoutIssues.push(category + ':grid-child-escape');
+      }
+    }
+    const knownBadGeometryFixture = document.createElement('div');
+    knownBadGeometryFixture.style.cssText = 'position:fixed;left:-10000px;top:-10000px;width:120px;height:80px;';
+    const knownBadFirst = document.createElement('i');
+    knownBadFirst.style.cssText = 'position:absolute;inset:0;display:block';
+    const knownBadSecond = document.createElement('i');
+    knownBadSecond.style.cssText = 'position:absolute;left:40px;top:20px;width:80px;height:50px;display:block';
+    knownBadGeometryFixture.append(knownBadFirst, knownBadSecond);
+    document.body.appendChild(knownBadGeometryFixture);
+    const knownBadChildren = [...knownBadGeometryFixture.children].map((element) => element.getBoundingClientRect());
+    const geometryDetectorRejectsKnownBadFixture = rectsOverlap(knownBadChildren[0], knownBadChildren[1]);
+    knownBadGeometryFixture.remove();
     const primaryStyle = getComputedStyle(document.querySelector('button.primary'));
     const primaryUsesGradient = primaryStyle.backgroundImage !== 'none';
     const primaryRadius = parseFloat(primaryStyle.borderRadius);
@@ -411,6 +526,11 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     document.querySelector('#diagSummary').innerHTML = '<div class="diagnostic-status is-warn"><b>需要关注</b><span>2 项检查 / 1 项异常</span></div><div class="diagnostic-metrics"><span><b>0</b>错误</span><span><b>1</b>警告</span><span><b>1</b>通过</span></div><div class="diagnostic-actions"><small>重启网络核心后重新检查。</small></div>';
     document.querySelector('#diagRows').innerHTML = '<section class="diagnostic-group"><header class="diagnostic-group-head"><div><h3>节点</h3><span>1 项需要处理</span></div><b>2 项</b></header><div class="diagnostic-group-rows"><article class="diagnostic-row severity-warning"><div class="diagnostic-row-copy"><div class="diagnostic-row-title"><b>近期网络异常</b><span class="diagnostic-code">AEG-NOD-099</span></div><p>近期日志中出现了需要关注的节点错误。</p><div class="diagnostic-hint"><b>建议</b><span>重启网络核心后重新检查。</span></div><details class="diagnostic-technical"><summary>查看技术细节</summary><code>[warn] mock warning</code></details></div><div class="diagnostic-row-actions"><span class="diagnostic-result warn">需要关注</span><button class="primary compact diagnostic-repair-btn">重启网络核心</button></div></article><article class="diagnostic-row severity-ok"><div class="diagnostic-row-copy"><div class="diagnostic-row-title"><b>网络核心</b><span class="diagnostic-code">AEG-CON-001</span></div><p>网络核心文件可用。</p></div><div class="diagnostic-row-actions"><span class="diagnostic-result ok">正常</span></div></article></div></section>';
+    const diagnosticReceiptPreview = document.createElement('div');
+    diagnosticReceiptPreview.className = 'diagnostic-repair-receipt is-verified';
+    diagnosticReceiptPreview.setAttribute('role', 'status');
+    diagnosticReceiptPreview.innerHTML = '<b>本次修复复检</b><span>复检已确认恢复正常。</span>';
+    document.querySelector('#diagRows .diagnostic-row-copy')?.append(diagnosticReceiptPreview);
     const diagnosticsBase = collectBase();
     const diagnosticsPanel = document.querySelector('[data-page-panel="diagnostics"]');
     const diagnosticsActive = diagnosticsPanel?.classList.contains('active') || false;
@@ -419,6 +539,15 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
     const diagnosticsRows = box('#diagRows');
     const diagnosticTabs = box('.diagnostic-view-tabs');
     const diagnosticRepair = box('.diagnostic-repair-btn');
+    const diagnosticReceipt = box('.diagnostic-repair-receipt');
+    const diagnosticFirstRow = box('#diagRows .diagnostic-row');
+    const diagnosticReceiptFits = Boolean(
+      diagnosticReceipt
+      && diagnosticFirstRow
+      && diagnosticReceipt.left >= diagnosticFirstRow.left - 1
+      && diagnosticReceipt.right <= diagnosticFirstRow.right + 1
+      && diagnosticReceipt.bottom <= diagnosticFirstRow.bottom + 1
+    );
     const diagnosticView = box('#diagnosticOverviewView');
     const diagnosticsCard = box('[data-page-panel="diagnostics"] .diagnostic-card');
     const unlabeledIconButtons = all('button').filter((button) => {
@@ -440,6 +569,8 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       quickEscapes,
       visibleRows,
       connectionActionIssues,
+      connectionDetailVisibleByDefault,
+      connectionDetailIssues,
       tableOverflowX: tableEl ? tableEl.scrollWidth - tableEl.clientWidth : 0,
       nodeToolbarPrimary,
       nodeFilterTabs,
@@ -510,6 +641,14 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       settingsCategoryCount,
       settingsVisiblePanels,
       settingsWorkspaceAligned,
+      dnsLiveEvidenceOwned,
+      dnsLiveEvidenceOrdered,
+      dnsLiveCardOverlap,
+      dnsLiveCardChildOverlap,
+      dnsControlEvidenceOverlap,
+      dnsControlEvidencePairs,
+      settingsCategoryLayoutIssues,
+      geometryDetectorRejectsKnownBadFixture,
       primaryUsesGradient,
       primaryRadius,
       tunToggleVisible,
@@ -519,8 +658,11 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       diagnosticsRows,
       diagnosticTabs,
       diagnosticRepair,
+      diagnosticReceiptFits,
       diagnosticView,
       diagnosticsCard,
+      localBackupConfirmBox,
+      localBackupConfirmIdentity,
       unlabeledIconButtons,
       missingIconMasks,
       badPanels: [...homeBase.badPanels, ...nodeBase.badPanels, ...routingBase.badPanels, ...profileBase.badPanels, ...settingsBase.badPanels, ...diagnosticsBase.badPanels]
@@ -599,6 +741,10 @@ async function auditViewport(page, width, height, deviceScaleFactor = 1) {
       ['settings-extensions', `
         document.querySelector('[data-page="settings"]').click();
         document.querySelector('[data-settings-category="extensions"]').click();
+      `],
+      ['settings-dns', `
+        document.querySelector('[data-page="settings"]').click();
+        document.querySelector('[data-settings-category="dns"]').click();
       `]
     ]) {
       await evaluate(page, setup);
@@ -661,14 +807,56 @@ try {
         protection: { label: '未开启' },
         settings: { activeProfileId: profile.id, profiles, mixedPort: 7891, controllerPort: 19091, systemProxy: false, tunEnabled: false, startWithSystemProxy: true, dnsHijackEnabled: true, killSwitchEnabled: false, ipv6Enabled: false, allowLan: false, tunStack: 'mixed', logLevel: 'info', configExtensions: { additionalRulesEnabled: false, additionalRules: [], overrideScriptEnabled: false, overrideScript: '', format: 'yaml' }, reliability: { auto: true, profileFailover: true, failureThreshold: 2, maxDelayMs: 800, candidateLimit: 24 } }
       });
+      const localBackups = [{ id: 'ui-backup-1', createdAtMs: 1784555106000, bytes: 2048, itemCount: 4 }];
       const invoke = async (command, args = {}) => {
         if (command === 'app_status') return status();
         if (command === 'proxy_groups' || command === 'preview_profile_groups') return [{ name: 'Proxies', type: 'select', now: items[0].name, items }];
         if (command === 'routing_snapshot') return { mode: 'rule', groups: [{ name: 'Proxies', type: 'select', now: items[0].name, itemCount: items.length, automatic: false }], rules: [{ index: 1, kind: 'DOMAIN-SUFFIX', condition: 'example.com', target: 'Proxies', source: 'config', status: 'readonly', options: [] }], unboundUserRules: [], configRulePage: { profileId: profile.id, offset: 0, limit: 80, total: 1, hasMore: false }, summary: { groupCount: 1, userRuleCount: 0, systemRuleCount: 0, configRuleCount: 1, ruleCount: 1 } };
         if (command === 'routing_rule_page') return { profileId: profile.id, offset: 0, limit: 80, total: 1, hasMore: false, items: [] };
+        if (command === 'connections') return [
+          { id: 'ui-connection-1', target: 'example.com', rule: 'MATCH', route: ['GLOBAL', 'HK Smoke'], upload: 1, download: 2, process: 'browser.exe', network: 'tcp', protocol: 'HTTPS' },
+          { id: 'ui-connection-2', target: 'api.example.com', rule: 'DOMAIN-SUFFIX,example.com', route: ['GLOBAL', 'US Smoke'], upload: 3, download: 4, process: 'worker.exe', network: 'udp', protocol: 'QUIC' }
+        ];
         if (command === 'active_connection_count') return { count: 0 };
+        if (command === 'local_backup_snapshot') return { available: true, connected: false, backups: localBackups };
         if (command === 'environment_readiness') return { summary: { label: '环境可用', level: 'ok' }, checks: [] };
-        if (command === 'ipv6_dns_safety_snapshot') return { mode: 'auto', status: 'ipv4-fallback' };
+        if (command === 'ipv6_dns_safety_snapshot') return {
+          mode: 'disabled',
+          requested: { enabled: false, state: 'disabled' },
+          localCapability: { state: 'available', available: true },
+          nodeCapability: { state: 'supported', tested: true },
+          runtimeConfig: { state: 'disabled', compiledEnabled: false, deployed: true },
+          effective: { state: 'disabled', active: false },
+          canChangeRequested: true,
+          changesConnection: false,
+          localIpv6: { available: true, state: 'available' },
+          currentNodeIpv4: { ok: true, ip: '198.51.100.24' },
+          currentNodeIpv6: { ok: false, ip: null },
+          nodeIpv6Support: 'supported',
+          ipv6Leak: { level: 'none', blockedOrFallback: true, action: 'enable-available' },
+          dnsLeak: { ok: true, detail: 'safe', hijackEnabled: true },
+          plainPrompt: 'Controlled layout fixture.',
+          egressConsistency: {
+            state: 'consistent',
+            label: 'Verified',
+            fixedNode: false,
+            identity: {
+              requested: { node: 'HK Smoke', kind: 'selected' },
+              runtime: { node: 'HK Smoke', kind: 'ordinary', active: true },
+              observed: { ip: '198.51.100.24', freshness: 'current', contextMatches: true }
+            },
+            evidence: {
+              ipv4Matches: true,
+              dnsRouteConsistent: true,
+              tunEnabled: true,
+              dnsProtected: true,
+              ipv6Requested: false,
+              ipv6Effective: 'disabled',
+              ipv6Consistent: true
+            },
+            plainPrompt: 'Controlled egress fixture.'
+          }
+        };
         return true;
       };
       window.__TAURI__ = {
@@ -704,6 +892,8 @@ try {
     if (!report.routingSummaryHidden) failures.push(`${report.width}x${report.height}: low-value routing dashboard remained visible`);
     if (report.routingKindCount !== 4 || !report.routingKindsVertical || report.routingActivePanels !== 1) failures.push(`${report.width}x${report.height}: routing types are not a clear single-panel workflow`);
     if (report.connectionActionIssues.length) failures.push(`${report.width}x${report.height}: connection actions are clipped: ${report.connectionActionIssues.join(', ')}`);
+    if (report.connectionDetailVisibleByDefault) failures.push(`${report.width}x${report.height}: connection detail is visible without a user request`);
+    if (report.connectionDetailIssues.length) failures.push(`${report.width}x${report.height}: connection detail escapes its table: ${report.connectionDetailIssues.join(', ')}`);
     if (!report.routingAssistantHeadMissing || !report.routingToolbarMissing) failures.push(`${report.width}x${report.height}: routing assistant retained duplicate heading or controls`);
     if (!report.profileTableHead || !report.profileTableRow) failures.push(`${report.width}x${report.height}: subscription comparison table is incomplete`);
     if (report.profileTableOverflowX > 1) failures.push(`${report.width}x${report.height}: subscription table horizontal overflow ${report.profileTableOverflowX}px`);
@@ -714,9 +904,17 @@ try {
     if (!report.settingsActive) failures.push(`${report.width}x${report.height}: settings page did not activate`);
     if (!report.settingsSummaryHidden) failures.push(`${report.width}x${report.height}: low-value settings dashboard remained visible`);
     if (report.settingsCategoryCount !== 7 || report.settingsVisiblePanels !== 1 || !report.settingsWorkspaceAligned) failures.push(`${report.width}x${report.height}: settings category hierarchy is incomplete or misaligned`);
+    if (!report.geometryDetectorRejectsKnownBadFixture) failures.push(`${report.width}x${report.height}: geometry detector accepted the known-overlap fixture`);
+    if (!report.dnsLiveEvidenceOwned || !report.dnsLiveEvidenceOrdered || report.dnsLiveCardOverlap || report.dnsLiveCardChildOverlap || report.dnsControlEvidenceOverlap) {
+      failures.push(`${report.width}x${report.height}: DNS live evidence overlaps controls or lacks a stable layout owner`);
+    }
+    if (report.settingsCategoryLayoutIssues.length) failures.push(`${report.width}x${report.height}: settings category layout escape: ${report.settingsCategoryLayoutIssues.join(', ')}`);
     if (report.primaryUsesGradient) failures.push(`${report.width}x${report.height}: primary command uses a decorative gradient`);
     if (report.primaryRadius > 6.1) failures.push(`${report.width}x${report.height}: primary command radius is ${report.primaryRadius}px`);
     if (!report.diagnosticsActive) failures.push(`${report.width}x${report.height}: diagnostics page did not activate`);
+    if (!report.diagnosticReceiptFits) failures.push(`${report.width}x${report.height}: diagnostic repair receipt escapes its row`);
+    if (!report.localBackupConfirmIdentity) failures.push(`${report.width}x${report.height}: local backup confirmation does not identify its selected snapshot`);
+    if (!report.localBackupConfirmBox || report.localBackupConfirmBox.left < -1 || report.localBackupConfirmBox.right > report.width + 1 || report.localBackupConfirmBox.top < -1 || report.localBackupConfirmBox.bottom > report.height + 1) failures.push(`${report.width}x${report.height}: local backup confirmation is clipped or outside the viewport`);
     if (!report.tunToggleVisible) failures.push(`${report.width}x${report.height}: TUN toggle is not visible`);
     if (!report.tunHomeVisible) failures.push(`${report.width}x${report.height}: home TUN toggle is not visible`);
     if (!report.homeTunTextRemoved) failures.push(`${report.width}x${report.height}: removed home TUN state text still renders`);

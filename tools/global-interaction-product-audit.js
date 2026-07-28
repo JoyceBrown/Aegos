@@ -37,8 +37,11 @@ check(
     appJs.includes('let ipv6DnsSafetyBusy = false') &&
     appJs.includes('if (environmentReadinessBusy)') &&
     appJs.includes('environmentReadinessBusy = false') &&
-    appJs.includes('if (ipv6DnsSafetyBusy) return') &&
-    appJs.includes('ipv6DnsSafetyBusy = false'),
+    appJs.includes('if (ipv6DnsSafetyBusy)') &&
+    appJs.includes('ipv6DnsSafetyQueued = true') &&
+    appJs.includes('ipv6DnsSafetyBusy = false') &&
+    appJs.includes('if (ipv6DnsSafetyQueued)') &&
+    appJs.includes('void refreshIpv6DnsSafety()'),
   'settings probe busy guards'
 );
 check(

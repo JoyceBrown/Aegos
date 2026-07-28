@@ -1,27 +1,139 @@
 # Aegos Windows Real-Use Reliability Plan
 
 plan_id: AEGOS-WINDOWS-RELIABILITY
-status: completed
-authority: none
-current_task_id: none
+status: active
+authority: exclusive
+current_task_id: REL-01
 roadmap_reference: docs/roadmap.md
 continuation_policy: validate_then_advance
 completion_policy: all_required_items
 priority_basis: The current-code three-angle review found P1 truth, recovery,
   and responsiveness defects plus bounded P2 robustness and ownership gaps.
   The user explicitly directed their repair before any new capability work.
-delivery_contract: Repair the user-visible high-frequency status vocabulary,
-  layout, and stability model; then build a new source-bound unsigned 3.6.69
-  NSIS installer, verify its exact bytes and the full required host-safe
-  matrix, commit and push the source/evidence, and create a matching GitHub
-  Release. Existing release tags and assets remain immutable historical evidence.
-latest_change_id: CHANGE-035
+delivery_contract: The fresh REL-01 unsigned 3.6.70 NSIS candidate is
+  Aegos_3.6.70_x64-setup.exe, exactly 16,341,772 bytes with SHA-256
+  9C6EBAB99F9C80792E3E2B9D6AB766C55FCAC5092AA19575BB27CB87126EF261.
+  It remains uninstalled and unpublished while final source/gate provenance,
+  the authorized source push, and the matching GitHub Release are completed.
+  No host networking or FlClash state is changed.
+latest_change_id: CHANGE-050
 latest_change_class: task_adjustment
-change_authority_reference: none
+change_authority_reference: user instruction "出安装包和同步github的安装包"
 delegated_execution: none
-on_complete: validate_and_close
+on_complete: wait_for_explicit_authority
 
 ## Objective
+
+Build and publish the exact source-bound `v3.6.70` unsigned x64 NSIS installer
+after the completed BR-01 product change. The release must use a new artifact,
+not the earlier local candidate, and GitHub must receive the matching source,
+tag, release notes, SHA-256, and installer asset.
+
+CHANGE-050 is the user's explicit approval of REL-01. It authorizes only:
+
+1. the final host-safe source matrix, a new local `3.6.70` NSIS build, artifact
+   hash/signature/provenance and installer/release gates;
+2. one commit and push of the accepted source, tests, release evidence, and
+   authority records to `origin/main`; and
+3. creation of the `v3.6.70` GitHub Release with the exact unsigned installer
+   and its SHA-256 disclosure.
+
+REL-01 excludes installation, signing, automatic updates, live takeover,
+FlClash actions, and host proxy, TUN, DNS, firewall, or kill-switch actions.
+
+## Previous Objective
+
+Make a destructive local-backup restore confirmation identify the exact
+selected snapshot before the user authorizes the existing restore job. The
+backup implementation and restore transaction are already bounded, encrypted,
+offline-only, and rollback-capable; this task addresses only the human-error
+gap when multiple snapshots exist.
+
+CHANGE-049 is the user's explicit approval of BR-01. It authorizes only:
+
+1. showing the selected backup's existing snapshot metadata (creation time,
+   size, and a nonzero item count when available) in the existing confirmation;
+2. retaining the existing disconnected-only, cancel-or-confirm flow and the
+   same `restoreLocalBackup` background job; and
+3. focused interaction coverage for identity, cancellation, confirmation, and
+   the existing fixed window/DPI UI matrix.
+
+BR-01 excludes backup-format, DPAPI, archive-validation, rollback, storage,
+core-lock, background-job, network-behavior, installer, Git, publication,
+signing, FlClash, and host proxy, TUN, DNS, firewall, or kill-switch changes.
+
+BR-01 is complete only with the evidence register at
+`docs/work/backup-restore-identity-br01.md`. It preserves selected-backup
+identity, cancellation, the unchanged restore job, fixed window/DPI geometry,
+and affected host-safe gates. No installer, Git, publication, FlClash, or
+host-network action may occur.
+
+REL-01 is complete only with the evidence register at
+`docs/work/release-3.6.70-rel01.md`. It requires final source and gate
+identity, the complete host-safe matrix, a newly built artifact with matching
+hash/provenance, a successful push, and a GitHub release whose uploaded asset
+matches the recorded bytes. It must state the installer is unsigned.
+
+## Previous Objective
+
+Close the visible diagnostic repair loop without changing its existing
+execution model. A user who explicitly runs an available repair must be able
+to return to that diagnostic item and see whether the automatic recheck
+verified recovery, still found the issue, or could not verify the item.
+
+CHANGE-048 is the user's explicit approval of DR-01. It authorizes only:
+
+1. an in-memory, item-scoped repair receipt in the existing Diagnostics page;
+2. the current repair -> refresh status -> re-diagnose path as the sole source
+   for its result; and
+3. focused interaction and fixed window/DPI coverage for default absence,
+   verified/unresolved/unverified outcomes, page availability while work runs,
+   and clearing old receipts on an explicit new diagnostic run.
+
+DR-01 excludes new repair actions, automatic repair, background polling,
+status-center or Home expansion, persisted repair history, raw Controller or
+YAML access, network behavior changes, installer work, Git actions,
+publication, signing, FlClash actions, and host proxy, TUN, DNS, firewall, or
+kill-switch actions.
+
+An operation that deliberately relaunches Aegos as administrator is outside
+the in-session receipt contract because it exits the current process. DR-01
+does not claim that such a relaunch has completed a subsequent recheck.
+
+CHANGE-047 is the user's explicit approval of UX-01. It authorizes only:
+
+1. a compact, on-demand details command beside a connection target;
+2. one inline, currently selected connection explanation at a time, using the
+   existing normalized `connections` snapshot; and
+3. focused interaction and fixed window/DPI coverage proving the details are
+   absent by default, do not issue a new backend request, do not persist across
+   refresh or page navigation, and do not clip the existing connection actions.
+
+UX-01 excludes home-page copy, status-center expansion, new background polling,
+DNS or outlet-IP claims not present in the selected connection snapshot, raw
+Controller or YAML access, network changes, installer work, Git actions,
+publication, signing, FlClash actions, and host proxy, TUN, DNS, firewall, or
+kill-switch actions.
+
+UX-01 is complete only with the evidence register at
+`docs/work/connection-explanation-ux01.md`. It requires the final source and
+plan state to pass the focused interaction and fixed window/DPI checks plus
+the affected performance, soak, responsiveness, security, control-plane,
+architecture, connection-closure, and planning gates. No installer, Git,
+publication, FlClash, or host-network action occurred.
+
+DR-01 is complete only with the evidence register at
+`docs/work/diagnostic-repair-receipts-dr01.md`. It preserves the
+default-absent and item-scoped receipt behavior, the existing repair action
+and its true post-recheck state, affected UI/performance/soak checks, and the
+host-safe architecture, security, control-plane, responsiveness, and planning
+gates. No installer, Git, publication, FlClash, or host-network action may
+occur.
+
+The historical Windows reliability plan below remains completed evidence. It
+does not authorize this feature independently.
+
+## Historical Objective
 
 Make the Windows client dependable in the situations that matter during daily
 use: a command must settle honestly, a failed network change must remain
@@ -127,6 +239,316 @@ authorizes focused code, fixture, visual, interaction, performance, installer,
 commit/push, and one new GitHub Release. It does not authorize live takeover,
 FlClash or host-network changes, signing, automatic updates, a UI framework,
 or unrelated product work.
+
+CHANGE-036 is the user's post-release report that navigating from Rules to
+Connections can leave the native window unresponsive. It reopens WR-06 only to
+reproduce and repair that transition under a deterministic large-routing and
+connection fixture, preserve immediate navigation, and cancel or yield stale
+page work. It does not authorize an installer, release, GitHub publication,
+signing, automatic updates, live takeover, FlClash, or host-network changes.
+
+CHANGE-037 is the user's report that repeated subscription switching can leave
+the DNS settings surface with overlapping live cards and controls until restart.
+It reopens WR-06 only to give every dynamic settings region a stable layout
+owner, reproduce the subscription-refresh transition, and add fixed-window/DPI
+geometry checks across every page. It does not authorize an installer, release,
+GitHub publication, signing, automatic updates, live takeover, FlClash, or
+host-network changes.
+
+CHANGE-038 is the user's explicit instruction to begin the recommended
+delivery-closure work after the shortfall review. It activates WR-07 for one
+local-only `3.6.70` x64 NSIS candidate that binds the completed CHANGE-036 and
+CHANGE-037 repairs to current source. It authorizes version alignment, a
+candidate record, the existing complete host-safe matrix, isolated native
+WebView2 and product-workflow regression, artifact provenance, and installer
+structure checks. It does not authorize installation, Git commits or pushes,
+GitHub Release/upload, signing, automatic updates, controlled live takeover,
+FlClash changes, or any host proxy, TUN, DNS, firewall, or kill-switch action.
+
+CHANGE-039 is the user's explicit instruction to execute the assessed
+low-regression repair strategy. It activates WR-08 for only two existing
+responsiveness paths: stale startup node/connection prewarm must not contend
+with foreground navigation, and speed-test elapsed feedback must update only
+the visible pending rows without reducing its immediate, continuously changing
+numeric response. It authorizes the smallest frontend scheduling/rendering
+change, deterministic known-bad controls, and affected host-safe regression.
+It does not authorize a Rust concurrency rewrite, a new task timeout policy,
+network mutation, installer work, Git commit/push, GitHub publication,
+signing, automatic updates, live takeover, FlClash changes, or host proxy,
+TUN, DNS, firewall, or kill-switch actions.
+
+WR-08 execution order is mandatory:
+
+1. Preserve or create a deterministic bad control for foreground navigation
+   racing startup prewarm, and another for speed feedback with many pending
+   rows. Each must fail before the corresponding product change.
+2. Make the smallest frontend-only change. Navigation remains authoritative;
+   obsolete prewarm work must yield or abandon before layout work. A speed-test
+   click must still paint a numeric elapsed value immediately and continue
+   changing until a real terminal result.
+3. Run the affected bad controls, interaction/UI/performance stress and soak
+   checks, native enabled/suppressed probes, and responsiveness/security/
+   control-plane/architecture gates without lowering existing floors.
+4. Record the exact source/gate identity and outcomes in the current-work
+   checkpoint. Close WR-08 only if both bad controls reject the old behavior
+   and the repaired paths pass; otherwise stop at the failing evidence.
+
+WR-08 is complete. The preserved stress fixture rejected the old behavior with
+three target-panel forced-layout reads and a hidden pending speed row rewritten
+to elapsed text. The frontend repair removed only those synchronous layout
+reads and restricted periodic elapsed writes to the active page. The same
+fixture then passed while retaining 2.6 ms first numeric feedback and three
+elapsed values before the first delayed result. Interaction, fixed-window/DPI,
+stress, soak, isolated native enabled/suppressed, responsiveness, security,
+control-plane, architecture, and planning gates passed. No installer, commit,
+publication, live takeover, FlClash, or host-network action occurred.
+
+CHANGE-040 is the user's explicit instruction to enter R1 from the assessed
+repair route. It activates WR-09 only for truthful handling of a background
+job that remains non-terminal longer than the foreground UI wait: the user
+must retain a visible job identity and current running fact, be able to issue
+the existing cooperative cancellation request where supported, and see the
+real terminal result when it arrives. It authorizes the smallest task-runtime,
+product-status, frontend polling, and deterministic fixture changes required
+for that path. It does not authorize forced process termination, a blanket
+timeout policy, changed network-operation semantics, installer work, Git
+commit/push, GitHub publication, signing, automatic updates, live takeover,
+FlClash changes, or host proxy, TUN, DNS, firewall, or kill-switch actions.
+
+WR-09 execution order is mandatory:
+
+1. Preserve a deterministic job that remains running beyond the foreground
+   wait window. The old path must prove that its initiating button can remain
+   indefinitely busy or lose a useful recovery action.
+2. Add a bounded foreground wait only as an observation boundary: it may
+   release the initiating control to a truthful pending state, but it must not
+   declare the worker failed, remove its Job ID, or start a second operation.
+3. Reuse only cooperative cancellation and terminal-state APIs. A cancellation
+   request is not a terminal cancelled result until the backend reports it.
+4. Run the known-bad and repaired fixtures, Rust task-runtime tests, product
+   interaction/UI/soak, responsiveness/security/control-plane/architecture
+   gates, and planning-context audit. Close only with each terminal path and
+   recovery observation evidenced.
+
+WR-09 is complete. The preserved held-job fixture rejects the old indefinitely
+busy initiating control. The repaired `startCore` and `stopCore` paths hand the
+same non-terminal Job ID to the status center after the bounded observation
+window, prevent duplicate starts, and return the real later success or failure
+to the original connection truth surface. Existing cooperative cancellation
+remains backend-terminal-state driven. The R1 interaction, task-runtime, UI,
+soak, responsiveness, security, control-plane, architecture, and planning
+checks passed. No delivery, FlClash, or host-network action occurred.
+
+CHANGE-041 is the user's explicit instruction to continue R2. It activates
+WR-10 only for display reads that can be delayed by a core write operation:
+Nodes (`proxy_groups`) and Rules (`routing_snapshot`) must return a current
+bounded cache when one exists, or an explicit loading state when no snapshot
+has yet been published. Diagnostics and app status retain their existing
+truthful cache/loading semantics and are regression targets, not a reason to
+replace them. Cached data must be labelled as a prior observation, never as a
+new runtime fact. This authorizes the smallest read-only cache publication,
+frontend loading/cached presentation, and deterministic lock-contention
+fixtures necessary for that behavior. It does not authorize a CoreManager lock
+replacement, a new concurrency framework, changing write-operation semantics,
+global timeouts, network mutation, installer work, Git commit/push, GitHub
+publication, signing, automatic updates, live takeover, FlClash changes, or
+host proxy, TUN, DNS, firewall, or kill-switch actions.
+
+WR-10 execution order is mandatory:
+
+1. Preserve deterministic lock-contention bad fixtures for Nodes, Rules, and
+   Diagnostics. The old path must demonstrate that a display read waits on the
+   core write lock rather than returning an existing snapshot or clear loading
+   state.
+2. Publish read caches only after a successful full snapshot. When a write
+   holds the core lock, return the most recent matching snapshot with explicit
+   observation metadata; with no cache, return a structured loading state.
+   Never fabricate current controller, takeover, selection, or diagnostic
+   facts, and never expose a cache to a mismatched active profile.
+3. Keep every write command, operation coordinator, lock type, cancellation
+   policy, and host-network path unchanged. A returned cached or loading
+   response must not refresh, cancel, retry, or otherwise affect the write.
+4. Run bad and repaired fixtures, targeted Rust tests, product interaction/UI/
+   pressure/soak, native enabled/suppressed probes, responsiveness/security/
+   control-plane/architecture/planning gates. Close only if reads stay bounded,
+   cached facts remain visibly non-current, cold reads are clear loading states,
+   and no write command or host-network state changes.
+
+WR-10 is complete. `proxy_groups` and `routing_snapshot` publish only full
+successful snapshots, scope cache reuse to the matching active profile, and
+mark reused results as non-current. A cold or profile-mismatched read returns
+explicit loading rather than another profile's data. Diagnostics now follows
+the same full-report-or-loading contract while retaining its background-job
+and write semantics. The isolated old-frontend fixture rejected discarded
+node snapshot data; matching-cache, lock-contention, diagnostic-cold-cache,
+product interaction, UI, pressure, soak, native enabled/suppressed, and
+architecture/security/control-plane/planning gates passed. The evidence
+register is `docs/work/windows-reliability-wr10.md`. No delivery, FlClash, or
+host-network action occurred.
+
+CHANGE-042 is the user's explicit instruction to continue R3. It activates
+WR-11 only for the first Nodes/Connections page-entry responsiveness path:
+startup prewarm must remain lower priority than real navigation and must become
+invalid before it can render a hidden surface after a user click. This
+authorizes a smallest frontend scheduling/cancellation repair and deterministic
+bad fixture. It does not authorize a core lock change, network mutation,
+installer work, Git commit/push, GitHub publication, signing, automatic
+updates, live takeover, FlClash changes, or host proxy, TUN, DNS, firewall, or
+kill-switch actions.
+
+CHANGE-043 is the user's explicit instruction to complete R3 and R4. After
+WR-11 closes, it activates WR-12 only for speed-test result presentation:
+rapid measurement events must retain immediate honest feedback while only
+currently visible, still-pending node cells are patched in a coalesced frame.
+The complete result remains available when the user returns to a page, but
+hidden rows and unrelated pages must not receive repeated DOM writes. It does
+not authorize a change to measurement endpoints, speed-test scheduling or
+semantics, connection selection, core locks, network mutation, installer work,
+Git commits or pushes, GitHub publication, signing, automatic updates, live
+takeover, FlClash changes, or host proxy, TUN, DNS, firewall, or kill-switch
+actions.
+
+CHANGE-044 is the user's explicit instruction to continue R5. It activates
+WR-13 only for the Rules page's heavy read-only snapshot path: prove that a
+matching cached snapshot, segmented preparation, and page-token/generation
+cancellation keep a Rules-to-Connections request responsive and prevent an
+obsolete snapshot from writing back after the user leaves Rules. A dedicated
+read-only snapshot service may be extracted only if the existing cache,
+segmentation, and cancellation controls fail the deterministic current maximum
+fixture. It does not authorize a rules-domain or YAML migration, a CoreManager
+lock replacement, changed write-operation semantics, global timeouts, network
+mutation, installer work, Git commit/push, GitHub publication, signing,
+automatic updates, live takeover, FlClash changes, or host proxy, TUN, DNS,
+firewall, or kill-switch actions.
+
+CHANGE-045 is the user's explicit request for an installer after WR-13. It
+activates WR-14 for one current-source, local-only, unsigned `3.6.70` x64 NSIS
+candidate. It is a local-only, unsigned `3.6.70` x64 NSIS candidate.
+The delivery unit includes the existing full host-safe acceptance
+matrix, a fresh default-output build, artifact size/SHA-256/Authenticode
+identity, installer and provenance gates, and a local path for the user. It
+does not authorize installation, Git commits or pushes, GitHub Release/upload, signing,
+automatic updates, live takeover, FlClash changes, or host proxy, TUN, DNS,
+firewall, or kill-switch actions.
+
+CHANGE-046 is the user's explicit instruction to process the complete
+current-code audit. It activates WR-15 only for the following bounded
+maintenance closure:
+
+1. State one canonical routing contract: Aegos-owned user rules may be
+   created, verified, applied, and rolled back through product commands;
+   subscription/Mihomo rules and Aegos protection rules remain visibly
+   read-only. Align product documentation, visible routing copy, and routing
+   gates to that contract without exposing raw runtime YAML or Controller data.
+2. Repair static audit drift only where the existing product behavior is
+   already covered by a preserved behavioral control: test-only `fs::write`
+   fixtures must not be reported as production persistence, IPv6/DNS probe
+   coalescing must be recognized, and the outlet-IP sequence guard must be
+   recognized. Do not weaken any negative fixture, timing limit, page matrix,
+   or security assertion.
+3. Run the full host-safe WR-01 acceptance matrix after the source and gate
+   changes. If it passes, rebuild one fresh local unsigned `3.6.70` NSIS
+   candidate from the default output, write current provenance, and run
+   installer/release/trust/provenance gates. The previous candidate is not
+   claimed current once any input changes.
+
+WR-15 excludes network behavior changes, Mihomo changes, controller access,
+core-lock changes, page/framework rewrites, test-hook migration, installation,
+Git commits or pushes, GitHub uploads/releases, signing, automatic updates,
+live takeover, FlClash actions, and host proxy, TUN, DNS, firewall, or
+kill-switch actions. The large orchestration surfaces are assessed but are not
+an extraction target without a reproduced workflow defect.
+
+WR-15 is complete only with the current acceptance report at
+`.validation/wr01/acceptance.json`, the current provenance manifest, and the
+local artifact stated in `RELEASE_3.6.70.md`. Its expanded matrix retains all
+previous commands and adds routing-product, controlled-routing-boundary,
+connection-closure, global-interaction, and debt audits. No product network
+behavior, installation, publication, Git action, FlClash action, or host
+network action occurred.
+
+WR-11 execution order is mandatory:
+
+1. Preserve a deterministic first-navigation bad fixture in which queued
+   startup prewarm can reach hidden Nodes or Connections work after a user
+   navigation request. It must prove stale work can contend with the requested
+   page rather than merely count timers.
+2. Defer only the startup prewarm work and retain token/generation guards. A
+   page click must invalidate pending prewarm before the next render frame;
+   no layout read, rendering, connection request, or visual class change may
+   occur for the obsolete target after that click.
+3. Do not remove foreground Nodes/Connections loading, reduce the existing
+   800-node/420-navigation or native matrix, or redefine a first-page loading
+   state as a successful prewarm.
+4. Run bad and repaired controls, interaction/UI/pressure/soak, native
+   enabled/suppressed probes, responsiveness/security/control-plane/
+   architecture/planning gates. Close only when initial navigation remains
+   immediately paintable and no stale prewarm work survives a click.
+
+WR-12 execution order is mandatory:
+
+1. Preserve a deterministic 800-node speed-event bad fixture where the old
+   result path scans or rewrites hidden rows after a measurement update. It
+   must reject that behavior while retaining the actual run ID and result.
+2. Preserve immediate manual feedback: the initiating click must show changing
+   elapsed numeric measurement before the first real result, and a terminal
+   result must replace that value without connecting or switching a node.
+3. Coalesce only visible, still-pending row patches to one animation frame.
+   Keep the full result in the existing overlay and render it correctly on a
+   later visible-page return; do not re-render the list or shell for each
+   event.
+4. Run bad and repaired controls, interaction/UI/pressure/soak, native
+   enabled/suppressed probes, responsiveness/security/control-plane/
+   architecture/planning gates. Close only when the unchanged matrix floors
+   pass and no hidden or terminal row receives a redundant speed patch.
+
+WR-13 execution order is mandatory:
+
+1. Preserve a deterministic 80,000-rule snapshot control in which the
+   historical render path does not yield/cancel before writing the Rules DOM
+   after a queued Connections navigation. The control must reject the stale
+   commit, not merely count an outstanding request.
+2. Keep the existing matching-profile read-cache and explicit loading/cached
+   observation contracts unchanged. Segment only read-only preparation, and
+   perform no Rules DOM work until the page token and render generation still
+   belong to Rules after that preparation.
+3. Do not alter rule semantics, YAML parsing, backend locks, write commands,
+   connection loading, navigation budgets, or the existing 800-node/420-
+   navigation, fixed-window/DPI, soak, and native coverage floors.
+4. Run the known-bad and repaired R5 controls, then interaction/UI/pressure/
+   soak, native enabled/suppressed, responsiveness/routing/security/control-
+   plane/architecture/planning gates. Close only when Connections receives the
+   queued input and first frame within the existing bounds and the stale Rules
+   snapshot cannot mutate its hidden DOM.
+
+WR-13 is complete. The controlled historical path bypassed the existing
+request and render guards, then committed the 80,000-rule marker after Rules
+had already yielded to Connections; the R5 known-bad control rejected it.
+The repaired path defers Rules UI initialization until segmented preparation
+has completed and the same token/generation still belongs to Rules. It kept
+the existing matching-profile cache/loading semantics and did not require a
+read-only snapshot-service extraction. The repaired control, product
+interaction, fixed-window/DPI UI, 800-node/420-navigation pressure, 16-cycle
+soak, both isolated native modes, and affected routing/responsiveness/security/
+control-plane/architecture/planning gates passed. No installer, release,
+commit, push, GitHub, FlClash, or host-network action occurred.
+
+WR-07 execution order is mandatory:
+
+1. Align `package.json`, Cargo, Tauri, UI version text, and the local candidate
+   record to `3.6.70`; preserve all existing public 3.6.69 delivery evidence.
+2. Run focused CHANGE-036/037 controls first: large Rules-to-Connections
+   cancellation, repeated direct/remote subscription transitions into DNS, and
+   all fixed window/DPI geometry checks. A failure blocks packaging.
+3. Run the full existing host-safe matrix without lowering its page, viewport,
+   node, navigation, cycle, native-mode, fixture, or known-bad-control floors.
+4. Build exactly one unsigned NSIS artifact from the accepted source, record
+   its path, byte size, SHA-256, toolchain/UTC interval, Git baseline and dirty
+   summary, and reject stale or changed inputs with the provenance and
+   installer negative controls.
+5. Leave the artifact uninstalled for the user's desktop acceptance. Close
+   only after the recorded artifact and all required gates match current source;
+   then wait for explicit user direction rather than publishing it.
 
 ## Baseline And Boundaries
 
@@ -269,7 +691,20 @@ satisfied. Missing evidence is `untested`, not passed.
 | WR-03 | completed | Connection truth, failed recovery, background status availability, and interrupted-takeover evidence remain correct under controlled P1/P2 negative paths. | Closed with host-safe behavioral controls and affected gates; 3.6.67 Release remains historical baseline. |
 | WR-04 | completed | The 3.6.67 UI distinguishes current effective network facts from measurement history without hiding diagnostics or connection management. | Closed with deterministic UI controls and fresh host-safe gates; installer and GitHub delivery remain historical evidence. |
 | WR-05 | completed | A source-bound unsigned 3.6.68 installer and matching GitHub Release preserve the completed WR-03/WR-04 work without mutating v3.6.67 history. | Completed: source/tag `e4dd999f1d97ff079676f109900facceb7dfc572`; remote asset SHA-256 matches the recorded installer. |
-| WR-06 | completed | The primary status surface uses conventional labels, untruncated protection language, and rolling measurement stability. | Completed: source/tag `ea655b417c2cb6e09d6d93f893912ec3afb41895`; remote unsigned asset SHA-256 matches the recorded installer. |
+| WR-06 | completed | The primary status surface uses conventional labels, untruncated protection language, rolling measurement stability, responsive Rules-to-Connections navigation, and stable dynamic settings layouts. | CHANGE-037 closed with controlled multi-subscription geometry coverage, all-category fixed-window/DPI checks, and host-safe source gates; 3.6.69 delivery remains immutable history. |
+| WR-07 | completed | A local-only, source-bound unsigned 3.6.70 installer proves the completed post-release repairs against the full host-safe workflow matrix. | Completed: 229 Rust tests, 13 product journeys, 14 UI configurations, 800-node/420-navigation stress, 16 soak cycles, two native modes, candidate provenance, installer/release structure, and unsigned-trust gates passed; no installation, publication, or host-network action. |
+| WR-08 | completed | Foreground Nodes/Connections navigation no longer incurs synchronous prewarm layout reads, while repeated speed tests retain immediate numeric feedback without scanning hidden pending rows. | CHANGE-039 closed with preserved bad controls, affected host-safe regression, and no delivery or host-network action. |
+| WR-09 | completed | A long-running core connection operation remains visibly running and recoverable rather than trapping its initiating control in indefinite busy state. | CHANGE-040 closed with deterministic stalled-job control, same-JobID status-center recovery, real later success/failure presentation, cooperative-cancellation regression, and affected host-safe gates. |
+| WR-10 | completed | Nodes, Rules, and Diagnostics remain usable during a core write through a matching last successful snapshot or an explicit loading state. | CHANGE-041 closed: deterministic old-path rejection, profile-safe cache truth, cold-loading behavior, and the required host-safe matrix passed. |
+| WR-11 | completed | Startup Nodes/Connections prewarm cannot compete with the first user navigation or render after that navigation invalidates it. | CHANGE-042 closed: deterministic stale-prewarm rejection, physical frame cancellation, unchanged navigation matrix, and affected host-safe gates. |
+| WR-12 | completed | Speed-test events update only visible pending result cells in a coalesced frame while preserving immediate numeric feedback and complete later results. | CHANGE-043 closed: deterministic hidden-row-write rejection, immediate feedback, frame-coalesced updates, and affected host-safe gates. |
+| WR-13 | completed | Rules-page heavy snapshots preserve responsive navigation and cannot render into Connections after a user leaves Rules. | CHANGE-044 closed with an 80,000-rule stale-DOM rejection, repaired cancellation, and unchanged host-safe regression floors; no snapshot-service extraction was needed. |
+| WR-14 | completed | A local unsigned installer is source-bound to the completed R5 code and verified before its path is handed to the user. | CHANGE-045 closed with the fresh default-output NSIS build, full host-safe matrix, artifact identity, installer/provenance gates, and no installation, Git, publication, or host-network action. |
+| WR-15 | completed | The routing contract, product audits, and local candidate evidence agree with the current controlled-rule workflow. | CHANGE-046 closed with preserved behavioral controls, five added acceptance gates, a fresh host-safe source matrix, current provenance, and no delivery or host-network side effect. |
+| UX-01 | completed | Connections can reveal one compact, read-only explanation from the current normalized snapshot without adding default clutter or a backend request. | CHANGE-047 closed with default-hidden, no-request, single-open, refresh/navigation-close, action-geometry, and affected host-safe evidence; no delivery or host-network action occurred. |
+| DR-01 | completed | A user-run diagnostic repair retains a compact, item-scoped recheck receipt so its true result is reviewable without turning diagnostics into an activity dashboard. | CHANGE-048 closed with default-absent, verified/unresolved/unverified, clear-on-new-run, navigation-available, fixed window/DPI, and affected host-safe evidence; no delivery or host-network action occurred. |
+| BR-01 | completed | A destructive local-backup confirmation identifies the exact selected snapshot before it can start the existing restore job. | CHANGE-049 closed with selected-backup identity, cancellation, original-job identity, fixed window/DPI, and affected host-safe evidence; archive, restore, network, delivery, and host behavior remain unchanged. |
+| REL-01 | active | A fresh source-bound unsigned `3.6.70` installer, commit/push, and matching GitHub Release make the completed current work available for acceptance. | CHANGE-050 authorizes only final validation, build, source sync, exact asset upload, and checksum disclosure. |
 
 WR-03 is a host-safe code and isolated-fixture repair task. It is not authority
 to perform controlled live takeover testing, which remains blocked until a

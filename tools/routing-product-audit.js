@@ -142,7 +142,7 @@ check(
   'routing apply result is visible and user rules are backed by snapshot metadata',
   appJs.includes('routingApplyStatus') &&
     appJs.includes('renderRoutingApplyStatus') &&
-  appJs.includes('data.lastApply') &&
+    appJs.includes('snapshot.lastApply') &&
     appJs.includes('summary.userRuleCount') &&
     mainRs.includes('fn read_aegos_user_rule_store') &&
     mainRs.includes('"lastDeployment"') &&

@@ -65,6 +65,8 @@ const directWrites = [
   ...locations(mainRs, /\bfs::write\s*\(/g, 'src-tauri/src/main.rs'),
   ...locations(mainRs, /\bfs::copy\s*\(/g, 'src-tauri/src/main.rs'),
 ];
+const testModuleStart = mainRs.indexOf('#[cfg(test)]\nmod tests {');
+const productionDirectWrites = directWrites.filter((item) => testModuleStart < 0 || item.index < testModuleStart);
 const rawDeletes = locations(mainRs, /\bfs::remove_file\s*\(/g, 'src-tauri/src/main.rs');
 const allowedDeleteLines = new Set();
 for (const name of ['atomic_write_text_confined', 'remove_file_confined']) {
@@ -134,9 +136,9 @@ const checks = [
   },
   {
     name: 'critical writes use atomic path-confined helpers',
-    ok: directWrites.length === 0,
-    count: directWrites.length,
-    items: directWrites,
+    ok: productionDirectWrites.length === 0,
+    count: productionDirectWrites.length,
+    items: productionDirectWrites,
   },
   {
     name: 'file deletion is wrapped and path-confined',

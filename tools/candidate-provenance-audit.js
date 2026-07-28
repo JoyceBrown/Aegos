@@ -10,17 +10,26 @@ const manifestPath = path.join(root, '.validation', 'wr01', 'candidate-provenanc
 const acceptancePath = path.join(root, '.validation', 'wr01', 'acceptance.json');
 const currentVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
 const productRoots = ['src', 'src-tauri/src', 'src-tauri/capabilities', 'src-tauri/icons'];
-const productFiles = ['package.json', 'package-lock.json', 'src-tauri/Cargo.toml', 'src-tauri/Cargo.lock', 'src-tauri/build.rs', 'src-tauri/tauri.conf.json', 'resources/core/mihomo.exe'];
+// Keep this input boundary identical to WR-01 acceptance. A candidate cannot be
+// source-bound if its provenance digest is computed from a different file set.
+const productFiles = ['package.json', 'package-lock.json', 'src-tauri/Cargo.toml', 'src-tauri/Cargo.lock', 'src-tauri/tauri.conf.json', 'resources/core/mihomo.exe'];
 const gateFiles = [
   'AGENTS.md', 'PLANS.md', 'README.md', `RELEASE_${currentVersion}.md`, 'package.json',
   'docs/INDEX.md', 'docs/product.md', 'docs/architecture.md', 'docs/roadmap.md',
   'docs/decisions/windows-reliability-mainline.md', 'docs/work/current.md',
   'docs/work/windows-reliability-wr01.md', 'docs/work/windows-reliability-wr02.md',
+  'docs/work/windows-reliability-wr15.md',
+  'tools/wr01-acceptance.js', 'tools/candidate-provenance-audit.js',
   'src-tauri/tauri.native-perf.conf.json',
-  'tools/candidate-provenance-audit.js',
-  'tools/wr01-acceptance.js', 'tools/planning-context-audit.js',
-  'tools/installer-candidate-audit.js', 'tools/installer-regression-audit.js',
-  'tools/release-audit.js', 'tools/release-trust-audit.js'
+  'tools/wm03-interruption-harness.js', 'tools/planning-context-audit.js', 'tools/interaction-smoke.js',
+  'tools/ui-smoke.js', 'tools/product-journey-smoke.js', 'tools/perf-smoke.js', 'tools/soak-smoke.js',
+  'tools/native-perf-smoke.js', 'tools/backend-audit.js', 'tools/responsiveness-audit.js',
+  'tools/stability-regression-audit.js', 'tools/security-hotfix-audit.js',
+  'tools/ipv6-dns-safety-audit.js', 'tools/outbound-ip-audit.js', 'tools/core-runtime-audit.js',
+  'tools/runtime-regression-gate-audit.js', 'tools/routing-product-audit.js',
+  'tools/routing-readonly-audit.js', 'tools/connection-closure-audit.js',
+  'tools/global-interaction-product-audit.js', 'tools/debt-audit.js', 'tools/control-plane-audit.js',
+  'tools/architecture-freeze-audit.js', 'tools/local-backup-audit.js'
 ];
 const targetTriple = 'x86_64-pc-windows-msvc';
 const configOverlay = 'default';

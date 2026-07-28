@@ -1,6 +1,6 @@
 {
   "ok": true,
-  "version": "3.6.69",
+  "version": "3.6.70",
   "journeys": {
     "startupTruth": true,
     "tunOffConnection": true,
@@ -11,6 +11,7 @@
     "routingRuleLifecycle": true,
     "diagnosticsRepairAndExport": true,
     "settingsAndEnvironment": true,
+    "subscriptionDnsLayout": true,
     "nonBlockingBackgroundWork": true,
     "localBackupRecovery": true,
     "corePowerPendingUsesVerifiedState": true
@@ -26,6 +27,6 @@
   "missingCommands": [],
   "missingJobKinds": [],
   "residualTestRoots": [],
-  "commandCount": 227,
-  "generatedAt": "2026-07-27T17:07:39.405Z"
+  "commandCount": 279,
+  "generatedAt": "2026-07-28T16:10:43.730Z"
 }

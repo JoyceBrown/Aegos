@@ -476,7 +476,9 @@ check(
     mainRs.includes('.proxy_catalog_snapshot(&[AEGOS_OUTBOUND_IP_GROUP])') &&
     mainRs.includes('fn profile_proxy_groups_for_profile_snapshot') &&
     mainRs.includes('fn apply_speed_test_delays_from_state') &&
-    mainRs.includes("async fn proxy_groups(state: State<'_, AppState>)") &&
+    mainRs.includes("async fn proxy_groups(\n    state: State<'_, AppState>,\n    profile_id: Option<String>,\n)") &&
+    mainRs.includes('let core = match state.core.try_lock()') &&
+    mainRs.includes('tauri::async_runtime::spawn_blocking(move ||') &&
     mainRs.includes('assemble_proxy_groups_snapshot(') &&
     mainRs.includes('core.core_controller()') &&
     mainRs.includes('core_runtime::shape_proxy_catalog_model(') &&

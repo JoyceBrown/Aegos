@@ -7,6 +7,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const r1KnownBad = process.argv.includes('--r1-known-bad');
+const r2KnownBad = process.argv.includes('--r2-known-bad');
+const r3KnownBad = process.argv.includes('--r3-known-bad');
+const r3Repaired = process.argv.includes('--r3-repaired');
 const chromeCandidates = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
@@ -135,6 +139,13 @@ try {
   await page.send('Page.addScriptToEvaluateOnNewDocument', {
     source: `
       (() => {
+        window.__AEGOS_TEST_DISABLE_CORE_JOB_OBSERVATION__ = ${r1KnownBad ? 'true' : 'false'};
+        window.__AEGOS_TEST_DISABLE_DISPLAY_SNAPSHOT_FALLBACK__ = false;
+        window.__AEGOS_TEST_FORCE_OLD_DISPLAY_SNAPSHOT_HANDLING__ = ${r2KnownBad ? 'true' : 'false'};
+        window.__aegosR1KnownBad = ${r1KnownBad ? 'true' : 'false'};
+        window.__aegosR2KnownBad = ${r2KnownBad ? 'true' : 'false'};
+        window.__aegosR3KnownBad = ${r3KnownBad ? 'true' : 'false'};
+        window.__aegosR3Repaired = ${r3Repaired ? 'true' : 'false'};
         const calls = [];
         const state = {
           running: false,
@@ -316,24 +327,29 @@ try {
         });
         window.__aegosCalls = calls;
         window.__aegosState = state;
-        const diagnosticsResult = () => ({
+        const diagnosticsResult = () => {
+          const repairOutcome = state.diagnosticRepairOutcome || 'verified';
+          const includeNodeCheck = !state.diagnosticRepairApplied || repairOutcome !== 'unverified';
+          const nodeStillReported = !state.diagnosticRepairApplied || repairOutcome === 'unresolved';
+          return {
           generatedAt: new Date().toISOString(),
           appVersion: '${pkg.version}',
           status: status(),
           summary: {
             total: 2,
-            failed: 1,
+            failed: nodeStillReported ? 1 : 0,
             errors: 0,
-            warnings: 1,
-            nextActions: ['重启网络核心后重新检查。']
+            warnings: nodeStillReported ? 1 : 0,
+            nextActions: nodeStillReported ? ['重启网络核心后重新检查。'] : []
           },
           checks: [
             { name: 'mihomo core', title: '网络核心', code: 'AEG-CON-001', ok: true, detail: '网络核心文件可用。', technicalDetail: 'mock core path', severity: 'ok', category: 'connection', hint: '', repair: { available: false } },
-            { name: 'Recent core logs', title: '近期网络异常', code: 'AEG-NOD-099', ok: false, detail: '近期日志中出现了需要关注的节点错误。', technicalDetail: '[warn] mock warning', severity: 'warning', category: 'node', hint: '重启网络核心后重新检查。', actionable: true, repair: { available: true, kind: 'restart-core', label: '重启网络核心' } }
+            ...(includeNodeCheck ? [{ name: 'Recent core logs', title: '近期网络异常', code: 'AEG-NOD-099', ok: !nodeStillReported, detail: nodeStillReported ? '近期日志中出现了需要关注的节点错误。' : '重新检查未再发现该节点错误。', technicalDetail: '[warn] mock warning', severity: nodeStillReported ? 'warning' : 'ok', category: 'node', hint: nodeStillReported ? '重启网络核心后重新检查。' : '', actionable: nodeStillReported, repair: nodeStillReported ? { available: true, kind: 'restart-core', label: '重启网络核心' } : { available: false } }] : [])
           ],
           evidenceLogs: [{ at: 'now', level: 'warn', category: 'core', line: 'mock warning' }],
           groups: ['connection', 'subscription', 'node', 'dns', 'tun', 'system-proxy', 'firewall']
-        });
+          };
+        };
         window.__TAURI__ = {
           event: {
             listen: async (name, listener) => {
@@ -356,7 +372,15 @@ try {
           if (command === 'stop_core') { state.running = false; state.trafficTakeover = false; state.systemProxy = false; return { ok: true, trafficTakeover: false }; }
           if (command === 'local_backup_snapshot') return { available: true, connected: state.running, backups: structuredClone(localBackups) };
           if (command === 'restart_core') { state.running = true; state.trafficTakeover = true; return { ok: true }; }
-          if (command === 'proxy_groups') return structuredClone(groups);
+          if (command === 'proxy_groups') {
+            const observation = window.__aegosDisplaySnapshotState;
+            if (!observation) return structuredClone(groups);
+            return {
+              groups: observation === 'loading' ? [] : structuredClone(groups),
+              snapshotProfileId: args.profileId || state.activeProfileId,
+              snapshotObservation: { state: observation, profileId: args.profileId || state.activeProfileId }
+            };
+          }
           if (command === 'preview_profile_groups') return structuredClone(groups);
           if (command === 'config_extensions_preview') {
             if (window.__aegosDelayConfigPreview) {
@@ -411,7 +435,12 @@ try {
             const standbyCorePower = args.kind === 'startCore'
               && window.__aegosStandbyNextCorePower === args.kind;
             if (args.kind === 'refreshOutboundIp') result = { ip: '203.0.113.8' };
-            if (args.kind === 'diagnostics') result = diagnosticsResult();
+            if (args.kind === 'diagnostics') {
+              const observation = window.__aegosDisplaySnapshotState || 'current';
+              result = observation === 'loading'
+                ? { checks: [], snapshotObservation: { state: observation } }
+                : { ...diagnosticsResult(), snapshotObservation: { state: observation } };
+            }
             if (args.kind === 'createLocalBackup') {
               const backup = { id: 'backup-' + (localBackups.length + 1), createdAtMs: Date.now(), bytes: 768, itemCount: 3 };
               localBackups = [backup, ...localBackups];
@@ -479,7 +508,7 @@ try {
               state.systemProxy = true;
               result = { ok: true, endpoint: '127.0.0.1:' + state.settings.mixedPort };
             }
-            if (args.kind === 'repairDiagnostic') result = { ok: true, action: args.payload?.action };
+            if (args.kind === 'repairDiagnostic') { state.diagnosticRepairApplied = true; result = { ok: true, action: args.payload?.action }; }
             if (args.kind === 'recoverNetwork') {
               state.running = true;
               state.trafficTakeover = true;
@@ -520,13 +549,17 @@ try {
               && job.state === 'running'
               && window.__aegosHoldCorePower !== job.kind) {
               const starting = job.kind === 'startCore';
-              state.running = starting;
-              state.trafficTakeover = starting;
-              state.systemProxy = starting && !state.tunEnabled;
-              job.state = 'succeeded';
+              const failedAfterObservation = window.__aegosFailHeldCorePower === job.kind;
+              if (!failedAfterObservation) {
+                state.running = starting;
+                state.trafficTakeover = starting;
+                state.systemProxy = starting && !state.tunEnabled;
+              }
+              job.state = failedAfterObservation ? 'failed' : 'succeeded';
               job.progress = 1;
-              job.message = 'done';
-              job.result = { ok: true, trafficTakeover: starting };
+              job.message = failedAfterObservation ? 'mock observed core power failure' : 'done';
+              job.result = failedAfterObservation ? {} : { ok: true, trafficTakeover: starting };
+              job.error = failedAfterObservation ? 'mock observed core power failure' : null;
               jobs.set(args.id, job);
             }
             return job;
@@ -725,12 +758,17 @@ try {
                 { index: 1, kind: 'DOMAIN-SUFFIX', condition: state.activeProfileId + '.example.com', target: 'GLOBAL', status: 'readonly', note: 'profile rule', options: [] },
                 { index: 2, kind: 'DOMAIN', condition: 'api.ipify.org', target: 'Aegos Landing IP', status: 'readonly', note: 'system rule', options: [] }
               ],
-              summary: { groupCount: 2, autoGroupCount: 1, recentRuleHits: 1, ruleCount: 2 }
+              summary: { groupCount: 2, autoGroupCount: 1, recentRuleHits: 1, ruleCount: 2 },
+              snapshotProfileId: args.profileId || state.activeProfileId,
+              snapshotObservation: { state: window.__aegosDisplaySnapshotState || 'current', profileId: args.profileId || state.activeProfileId }
             };
           }
           if (command === 'routing_rule_page') return { profileId: args.profileId, offset: args.offset || 0, limit: args.limit || 80, total: 1, hasMore: false, items: [{ index: 1, kind: 'DOMAIN-SUFFIX', condition: state.activeProfileId + '.example.com', target: 'GLOBAL', status: 'readonly', options: [] }] };
           if (command === 'test_routing_website') return { domain: args.input, matched: true, source: 'subscription', target: 'GLOBAL', kind: 'DOMAIN-SUFFIX', condition: args.input, explanation: 'mock rule match' };
-          if (command === 'connections') return [{ id: '1', target: 'example.com', rule: 'MATCH', route: ['GLOBAL', 'HK 01'], upload: 1, download: 2, process: 'browser.exe', network: 'tcp', protocol: 'HTTPS' }];
+          if (command === 'connections') return [
+            { id: '1', target: 'example.com', rule: 'MATCH', route: ['GLOBAL', 'HK 01'], upload: 1, download: 2, process: 'browser.exe', network: 'tcp', protocol: 'HTTPS' },
+            { id: '2', target: 'api.example.com', rule: 'DOMAIN-SUFFIX,example.com', route: ['GLOBAL', 'US 02'], upload: 3, download: 4, process: 'worker.exe', network: 'udp', protocol: 'QUIC' }
+          ];
           if (command === 'active_connection_count') return { count: state.trafficTakeover ? 2 : 0, checkedAt: Date.now() };
           if (command === 'environment_readiness') {
             await new Promise((resolve) => setTimeout(resolve, 650));
@@ -853,6 +891,7 @@ try {
       routingRuleLifecycle: false,
       diagnosticsRepairAndExport: false,
       settingsAndEnvironment: false,
+      subscriptionDnsLayout: false,
       nonBlockingBackgroundWork: false
     };
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -861,6 +900,28 @@ try {
     window.__aegosState.running = true;
     window.__aegosState.trafficTakeover = false;
     await refreshStatus(true);
+    if (window.__aegosR3KnownBad || window.__aegosR3Repaired) {
+      await refreshNodes(true);
+      const startupPrewarmTraceStart = (window.__aegosPerformanceSnapshot?.().trace || []).length;
+      window.__AEGOS_TEST_DISABLE_NODE_PREWARM_CANCELLATION__ = window.__aegosR3KnownBad === true;
+      scheduleNodePagePrewarmFrame(() => {
+        document.querySelector('[data-page-panel="nodes"]')?.classList.add('page-prewarm');
+        renderRows(latestGroup?.items || [], { target: 'nodes' });
+        recordUiPerformance('node-page-prewarmed', { fixture: 'queued-hidden-frame' });
+      });
+      setPage('connections');
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const startupStalePrewarmTrace = (window.__aegosPerformanceSnapshot?.().trace || [])
+        .slice(startupPrewarmTraceStart)
+        .filter((entry) => entry.kind === 'node-page-prewarmed' || entry.kind === 'connections-page-prewarmed');
+      window.__AEGOS_TEST_DISABLE_NODE_PREWARM_CANCELLATION__ = false;
+      return {
+        r3Fixture: {
+          stalePrewarmAfterNavigation: startupStalePrewarmTrace.length > 0,
+          staleKinds: startupStalePrewarmTrace.map((entry) => entry.kind)
+        }
+      };
+    }
     if (document.querySelector('.ring strong')?.textContent.includes('\u6838\u5fc3\u5f85\u547d') || document.querySelector('.notice')?.textContent.includes('\u6838\u5fc3\u5f85\u547d') || document.querySelector('.notice')?.textContent.includes('\u5c1a\u672a\u63a5\u7ba1')) {
       throw new Error('primary disconnected status exposed internal standby or takeover wording');
     }
@@ -1313,7 +1374,7 @@ try {
     await navDown('[data-page="routing"]');
     await new Promise((resolve) => setTimeout(resolve, 900));
     if (!document.querySelector('#routingGroupRows .routing-row')) throw new Error('routing page did not render strategy rows after quiet load');
-    if (!document.querySelector('#routingReadonlyBadge')?.textContent.includes('预览模式')) throw new Error('routing page did not keep the not-yet-applied preview state visible');
+    if (!document.querySelector('#routingReadonlyBadge')?.textContent.includes('订阅/系统规则只读')) throw new Error('routing page did not keep the scoped read-only boundary visible');
     if (document.querySelector('.routing-draft-toolbar')) throw new Error('routing page kept duplicate draft controls above the builder');
     if (!document.querySelector('#routingDraftListCard')?.classList.contains('hidden')) throw new Error('empty routing draft area consumed page space');
     if (!document.querySelector('#routingSummaryDetail')?.classList.contains('hidden')) throw new Error('routing summary details expanded before the user requested them');
@@ -1554,6 +1615,29 @@ try {
     if (routingCancelIndex < 0 || routingSnapshotIndex < 0 || routingCancelIndex > routingSnapshotIndex) throw new Error('routing load did not preempt the automatic speed test before snapshot loading');
     window.__aegosHoldSpeedTest = false;
     await click('[data-page="connections"]');
+    if (document.querySelector('.connection-explain')) throw new Error('connection explanation was visible before a user request');
+    const callsBeforeConnectionExplain = window.__aegosCalls.length;
+    await click('#connectionRows [data-connection-explain="1"]');
+    const firstConnectionExplain = document.querySelector('.connection-explain');
+    if (!firstConnectionExplain?.textContent.includes('example.com') || !firstConnectionExplain.textContent.includes('HK 01')) {
+      throw new Error('connection explanation did not show the selected normalized snapshot');
+    }
+    if (window.__aegosCalls.length !== callsBeforeConnectionExplain) throw new Error('connection explanation issued a backend request');
+    await click('#connectionRows [data-connection-explain="2"]');
+    const visibleConnectionExplains = document.querySelectorAll('.connection-explain');
+    if (visibleConnectionExplains.length !== 1 || !visibleConnectionExplains[0].textContent.includes('worker.exe')) {
+      throw new Error('connection explanation did not keep exactly one selected connection open');
+    }
+    await click('#refreshConnectionsBtn');
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    if (document.querySelector('.connection-explain')) throw new Error('connection explanation survived a refresh');
+    await click('#connectionRows [data-connection-explain="1"]');
+    if (!document.querySelector('.connection-explain')) throw new Error('connection explanation did not reopen before navigation');
+    await click('[data-page="home"]');
+    if (document.querySelector('.connection-explain')) throw new Error('connection explanation survived navigation');
+    await click('[data-page="connections"]');
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    if (document.querySelector('.connection-explain')) throw new Error('connection explanation appeared after returning to connections');
     const callsBeforeConnectionDraft = window.__aegosCalls.length;
     await click('#connectionRows [data-routing-draft-target]');
     await new Promise((resolve) => setTimeout(resolve, 120));
@@ -1565,7 +1649,19 @@ try {
     for (let attempt = 0; attempt < 30 && (pageCacheState.connections.loading || document.querySelector('#closeAllConnectionsBtn')?.disabled); attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    if (pageCacheState.connections.loading || document.querySelector('#closeAllConnectionsBtn')?.disabled) throw new Error('connection refresh did not make the destructive action available');
+    if (pageCacheState.connections.loading || document.querySelector('#closeAllConnectionsBtn')?.disabled) {
+      throw new Error('connection refresh did not make the destructive action available: page=' + uiStore.state.page
+        + '; token=' + pageLoadToken
+        + '; loading=' + pageCacheState.connections.loading
+        + '; loaded=' + pageCacheState.connections.loaded
+        + '; activeConnections=' + activeConnectionCount
+        + '; buttonDisabled=' + Boolean(document.querySelector('#closeAllConnectionsBtn')?.disabled));
+    }
+    latestStatus = { ...latestStatus, trafficTakeover: false };
+    await refreshActiveConnectionCount(true);
+    if (document.querySelector('#closeAllConnectionsBtn')?.disabled) {
+      throw new Error('fresh visible connection snapshot lost its destructive action to a stale background count');
+    }
     document.querySelector('#closeAllConnectionsBtn').click();
     await new Promise((resolve) => setTimeout(resolve, 20));
     if (document.querySelector('#appDialogOverlay')?.classList.contains('hidden')) throw new Error('close all connections did not require confirmation');
@@ -1644,9 +1740,32 @@ try {
     if (!document.querySelector('#diagRows .diagnostic-hint')) throw new Error('diagnostic actionable hint did not render');
     if (!document.querySelector('#diagRows .diagnostic-code')?.textContent.includes('AEG-')) throw new Error('diagnostic error code did not render');
     if (!document.querySelector('[data-diagnostic-group="node"]')) throw new Error('diagnostic category group did not render');
+    if (document.querySelector('.diagnostic-repair-receipt')) throw new Error('diagnostic repair receipt was visible before a user repair');
     await click('#diagRows [data-diagnostic-repair="restart-core"]');
-    await new Promise((resolve) => setTimeout(resolve, 420));
+    await new Promise((resolve) => setTimeout(resolve, 820));
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'repairDiagnostic')) throw new Error('diagnostic repair did not use the repair background job');
+    if (!document.querySelector('[data-diagnostic-code="AEG-NOD-099"] .diagnostic-repair-receipt.is-verified')) throw new Error('diagnostic repair did not retain its verified recheck receipt');
+    await navDown('[data-page="settings"]');
+    await navDown('[data-page="diagnostics"]');
+    await click('[data-diagnostic-view="overview"]');
+    if (!document.querySelector('[data-diagnostic-code="AEG-NOD-099"] .diagnostic-repair-receipt.is-verified')) throw new Error('diagnostic repair receipt did not survive page navigation');
+    await click('#runDiagBtn');
+    if (document.querySelector('.diagnostic-repair-receipt')) throw new Error('explicit diagnostics run did not clear the old repair receipt');
+    await new Promise((resolve) => setTimeout(resolve, 420));
+    if (document.querySelector('.diagnostic-repair-receipt')) throw new Error('new diagnostics result retained an old repair receipt');
+    const verifyDiagnosticReceiptScenario = async (outcome, expectedClass) => {
+      window.__aegosState.diagnosticRepairApplied = false;
+      window.__aegosState.diagnosticRepairOutcome = outcome;
+      await click('#runDiagBtn');
+      await new Promise((resolve) => setTimeout(resolve, 420));
+      await click('#diagRows [data-diagnostic-repair="restart-core"]');
+      await new Promise((resolve) => setTimeout(resolve, 820));
+      if (!document.querySelector('.diagnostic-repair-receipt.' + expectedClass)) {
+        throw new Error('diagnostic repair did not render the ' + outcome + ' receipt state');
+      }
+    };
+    await verifyDiagnosticReceiptScenario('unresolved', 'is-unresolved');
+    await verifyDiagnosticReceiptScenario('unverified', 'is-unverified');
     await click('[data-diagnostic-view="logs"]');
     const callsBeforeLogFilter = window.__aegosCalls.length;
     await click('[data-log-filter="core"]');
@@ -1699,6 +1818,57 @@ try {
     await click('[data-settings-category="dns"]');
     if (!document.querySelector('#ipv6RequestedState') || !document.querySelector('#ipv6LocalCapabilityState') || !document.querySelector('#ipv6NodeCapabilityState') || !document.querySelector('#ipv6RuntimeConfigState') || !document.querySelector('#ipv6EffectiveState')) throw new Error('IPv6 request/capability/runtime/effective states were not separated');
     if (!document.querySelector('#egressConsistencyCard') || document.querySelector('#egressOverallState')?.textContent !== '普通出口已验证' || !document.querySelector('#egressDnsRouteState')?.textContent.includes('一致')) throw new Error('egress identity/DNS/TUN/IPv6 consistency report did not render');
+    const rectsOverlap = (first, second) => Boolean(
+      first
+      && second
+      && first.left < second.right - 1
+      && first.right > second.left + 1
+      && first.top < second.bottom - 1
+      && first.bottom > second.top + 1
+    );
+    const dnsGeometryIssues = () => {
+      const panel = document.querySelector('[data-settings-panel="dns"]');
+      const grid = panel?.querySelector(':scope > .settings-grid')?.getBoundingClientRect();
+      const evidence = document.querySelector('#dnsLiveEvidence')?.getBoundingClientRect();
+      const ipv6 = document.querySelector('#ipv6DnsSafetyCard');
+      const egress = document.querySelector('#egressConsistencyCard');
+      const cards = [ipv6, egress].filter(Boolean).map((element) => element.getBoundingClientRect());
+      const controls = ['#dnsPolicyStatus', '#dnsToggle', '#dnsModeSelect', '#saveDnsModeBtn']
+        .map((selector) => document.querySelector(selector)?.getBoundingClientRect())
+        .filter(Boolean);
+      const issues = [];
+      if (ipv6?.parentElement?.id !== 'dnsLiveEvidence' || egress?.parentElement?.id !== 'dnsLiveEvidence') issues.push('owner');
+      if (!grid || !evidence || !cards[0] || !cards[1] || evidence.top < grid.bottom - 1 || cards[1].top < cards[0].bottom - 1) issues.push('order');
+      if (controls.some((control) => cards.some((card) => rectsOverlap(control, card)))) issues.push('controls');
+      const childBoxes = [...document.querySelectorAll('#dnsLiveEvidence > .ipv6-safety-card > article')]
+        .filter((element) => {
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        })
+        .map((element) => element.getBoundingClientRect());
+      if (childBoxes.some((box, index) => childBoxes.slice(index + 1).some((other) => rectsOverlap(box, other)))) issues.push('cards');
+      return issues;
+    };
+    const repeatedSubscriptionLayoutResults = [];
+    const repeatedProfileIds = ['direct', 'file-test', 'direct', 'file-test'];
+    const knownProfiles = new Set((latestStatus?.settings?.profiles || []).map((profile) => profile.id));
+    if (repeatedProfileIds.some((profileId) => !knownProfiles.has(profileId))) {
+      throw new Error('subscription layout fixture lost a required surviving profile: ' + JSON.stringify({ repeatedProfileIds, knownProfiles: [...knownProfiles] }));
+    }
+    for (const profileId of repeatedProfileIds) {
+      await navDown('[data-page="home"]');
+      await click('#quickProfileBtn');
+      await click('#profileMenu [data-profile-switch="' + profileId + '"]');
+      await new Promise((resolve) => setTimeout(resolve, 460));
+      await navDown('[data-page="settings"]');
+      await click('[data-settings-category="dns"]');
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      repeatedSubscriptionLayoutResults.push({ profileId, issues: dnsGeometryIssues() });
+    }
+    if (repeatedSubscriptionLayoutResults.some((result) => result.issues.length)) {
+      throw new Error('repeated subscription switching collapsed DNS layout: ' + JSON.stringify(repeatedSubscriptionLayoutResults));
+    }
+    journeys.subscriptionDnsLayout = true;
     renderOutboundIpFromStatus('203.0.113.8', { state: 'stale', detail: 'old identity' });
     if (!document.querySelector('#outboundIpState')?.textContent.includes('历史')) throw new Error('stale outbound observation was displayed as current');
     outboundIpLastStable = '-';
@@ -1752,6 +1922,13 @@ try {
     localRestoreButton.click();
     await new Promise((resolve) => setTimeout(resolve, 30));
     if (document.querySelector('#appDialogOverlay')?.classList.contains('hidden')) throw new Error('local backup restore did not require confirmation');
+    const localRestoreMessage = document.querySelector('#appDialogMessage')?.textContent || '';
+    if (!localRestoreMessage.includes('768 B') || !localRestoreMessage.includes('3 项内容')) throw new Error('local backup restore confirmation did not identify the selected backup');
+    document.querySelector('#appDialogCancelBtn')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    if (window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'restoreLocalBackup')) throw new Error('cancelled local backup confirmation still started a restore job');
+    localRestoreButton.click();
+    await new Promise((resolve) => setTimeout(resolve, 30));
     document.querySelector('#appDialogOkBtn')?.click();
     await new Promise((resolve) => setTimeout(resolve, 420));
     if (!window.__aegosCalls.some((item) => item.command === 'start_job' && item.args.kind === 'restoreLocalBackup')) throw new Error('local backup restore did not use a background job');
@@ -1854,18 +2031,44 @@ try {
     if (pendingStartRing === '\u5df2\u8fde\u63a5') throw new Error('pending core start claimed a verified connection');
     if (!document.querySelector('#connectBtn')?.textContent.includes('\u8fde\u63a5\u4e2d')) throw new Error('pending core start did not expose its pending state');
     if (pendingStartNotice.includes('\u5df2\u63a5\u7ba1')) throw new Error('pending core start claimed traffic takeover');
+    await new Promise((resolve) => setTimeout(resolve, 1320));
+    const observedStartButton = document.querySelector('#connectBtn');
+    if (window.__aegosR1KnownBad) {
+      if (observedStartButton?.dataset.busy !== 'true') throw new Error('R1 known-bad fixture did not preserve the permanently busy initiating button');
+      return {
+        knownBad: {
+          initiatingButtonBusy: true,
+          buttonText: observedStartButton?.textContent || '',
+          jobRows: document.querySelector('#jobRows')?.textContent || ''
+        }
+      };
+    }
+    if (observedStartButton?.dataset.busy === 'true') throw new Error('long-running core start left the initiating button permanently busy');
+    if (observedStartButton?.textContent !== '\u67e5\u770b\u8fde\u63a5\u4efb\u52a1') throw new Error('long-running core start did not expose the status-center recovery action');
+    const startJobCallsBeforeObservedClick = window.__aegosCalls.filter((item) => item.command === 'start_job' && item.args.kind === 'startCore').length;
+    await click('#connectBtn');
+    if (!document.querySelector('#statusCenterOverlay') || document.querySelector('#statusCenterOverlay')?.classList.contains('hidden')) throw new Error('observed core task did not open the status center');
+    const startJobCallsAfterObservedClick = window.__aegosCalls.filter((item) => item.command === 'start_job' && item.args.kind === 'startCore').length;
+    if (startJobCallsAfterObservedClick !== startJobCallsBeforeObservedClick) throw new Error('observed core task started a duplicate core operation');
+    if (!document.querySelector('#jobRows')?.textContent.includes('startCore')) throw new Error('observed core task was missing from the status center');
+    document.querySelector('#closeStatusCenterBtn')?.click();
     window.__aegosHoldCorePower = '';
     await new Promise((resolve) => setTimeout(resolve, 420));
     if (document.querySelector('.ring strong')?.textContent !== '\u5df2\u8fde\u63a5') throw new Error('verified core start did not settle to connected state');
+    if (document.querySelector('#connectBtn')?.textContent !== '\u65ad\u5f00\u8fde\u63a5') throw new Error('observed core start did not restore the terminal connection action');
     window.__aegosHoldCorePower = 'stopCore';
     await click('#connectBtn');
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    const pendingStopRing = document.querySelector('.ring strong')?.textContent || '';
-    const pendingStopNotice = document.querySelector('#protectionNotice')?.textContent || '';
-    if (pendingStopRing !== '\u5df2\u8fde\u63a5') throw new Error('pending core stop claimed a verified disconnect');
-    if (!document.querySelector('#connectBtn')?.textContent.includes('\u65ad\u5f00\u4e2d')) throw new Error('pending core stop did not expose its pending state');
-    if (pendingStopNotice.includes('\u5df2\u65ad\u5f00')) throw new Error('pending core stop claimed disconnect before terminal state');
+    await new Promise((resolve) => setTimeout(resolve, 1320));
+    if (document.querySelector('#connectBtn')?.dataset.busy === 'true') throw new Error('long-running core stop left the initiating button permanently busy');
+    if (document.querySelector('#connectBtn')?.textContent !== '\u67e5\u770b\u8fde\u63a5\u4efb\u52a1') throw new Error('long-running core stop did not retain its status-center recovery action');
+    window.__aegosFailHeldCorePower = 'stopCore';
     window.__aegosHoldCorePower = '';
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    if (document.querySelector('.ring strong')?.textContent !== '\u5df2\u8fde\u63a5') throw new Error('observed core stop failure claimed a verified disconnect');
+    if (document.querySelector('#connectBtn')?.textContent !== '\u65ad\u5f00\u8fde\u63a5') throw new Error('observed core stop failure did not restore the terminal retry action');
+    if (!document.querySelector('#jobRows')?.textContent.includes('mock observed core power failure')) throw new Error('observed core stop failure was not retained in the job center');
+    window.__aegosFailHeldCorePower = '';
+    await click('#connectBtn');
     await new Promise((resolve) => setTimeout(resolve, 420));
     if (document.querySelector('.ring strong')?.textContent !== '\u672a\u8fde\u63a5') throw new Error('verified core stop did not settle to disconnected state');
     window.__aegosStandbyNextCorePower = 'startCore';
@@ -1883,6 +2086,32 @@ try {
     if (!cancelJobButton) throw new Error('background job center did not render cancel action');
     cancelJobButton.click();
     await new Promise((resolve) => setTimeout(resolve, 20));
+    const cancelledJob = await window.__TAURI__.core.invoke('job_status', { id: cancellableJob.id });
+    if (cancelledJob?.state !== 'cancelled') throw new Error('cooperative cancellation was presented as terminal before the backend reported cancelled');
+    await navDown('[data-page="nodes"]');
+    const nodeNameBeforeCachedRead = latestGroup?.name;
+    window.__aegosDisplaySnapshotState = 'cached';
+    await refreshNodes(true);
+    if (window.__aegosR2KnownBad) {
+      return {
+        knownBad: {
+          nodeSnapshotDiscarded: latestGroup?.name !== nodeNameBeforeCachedRead,
+          visibleNode: latestGroup?.name || ''
+        }
+      };
+    }
+    if (latestGroup?.name !== nodeNameBeforeCachedRead || !document.querySelector('#protectionNotice')?.textContent.includes('上次读取')) throw new Error('cached node snapshot was not retained and labelled as non-current');
+    window.__aegosDisplaySnapshotState = 'loading';
+    await refreshNodes(true);
+    if (latestGroup?.name !== nodeNameBeforeCachedRead || !document.querySelector('#protectionNotice')?.textContent.includes('等待当前操作')) throw new Error('cold node snapshot loading state discarded the known display state');
+    await navDown('[data-page="routing"]');
+    window.__aegosDisplaySnapshotState = 'cached';
+    await refreshRoutingSnapshot();
+    if (!document.querySelector('#protectionNotice')?.textContent.includes('上次读取')) throw new Error('cached routing snapshot was not labelled as non-current');
+    window.__aegosDisplaySnapshotState = 'loading';
+    await refreshRoutingSnapshot();
+    if (!document.querySelector('#protectionNotice')?.textContent.includes('等待当前操作')) throw new Error('cold routing snapshot did not expose a clear loading state');
+    window.__aegosDisplaySnapshotState = 'current';
     journeys.nonBlockingBackgroundWork = true;
     const commands = window.__aegosCalls.map((item) => item.command);
     const advancedSettingsCall = window.__aegosCalls.find((item) => item.command === 'start_job' && item.args.kind === 'updateSettings' && item.args.payload?.updates?.mixedPort);
@@ -1907,11 +2136,31 @@ try {
       notice: document.querySelector('#protectionNotice')?.textContent || ''
     };
   })()`);
-  const missingJourneys = Object.entries(report.journeys || {}).filter(([, complete]) => !complete).map(([name]) => name);
-  const forbiddenSideEffects = Object.entries(report.forbiddenSideEffects || {}).filter(([, count]) => Number(count) !== 0).map(([name, count]) => `${name}:${count}`);
-  const ok = report.missing.length === 0 && report.missingJobKinds.length === 0 && missingJourneys.length === 0 && forbiddenSideEffects.length === 0;
-  console.log(JSON.stringify({ ok, missingJourneys, forbiddenSideEffects, testRootName: path.basename(userDataDir), ...report }, null, 2));
-  if (!ok) process.exitCode = 2;
+  if (r3Repaired) {
+    const ok = report.r3Fixture?.stalePrewarmAfterNavigation === false;
+    console.log(JSON.stringify({ ok, testRootName: path.basename(userDataDir), ...report }, null, 2));
+    if (!ok) process.exitCode = 2;
+  } else if (r1KnownBad || r2KnownBad || r3KnownBad) {
+    const rejected = r1KnownBad
+      ? report.knownBad?.initiatingButtonBusy === true
+      : r2KnownBad
+        ? report.knownBad?.nodeSnapshotDiscarded === true
+        : report.r3Fixture?.stalePrewarmAfterNavigation === true;
+    console.log(JSON.stringify({
+      ok: false,
+      expectedFailure: true,
+      rejected,
+      testRootName: path.basename(userDataDir),
+      ...report
+    }, null, 2));
+    process.exitCode = rejected ? 2 : 1;
+  } else {
+    const missingJourneys = Object.entries(report.journeys || {}).filter(([, complete]) => !complete).map(([name]) => name);
+    const forbiddenSideEffects = Object.entries(report.forbiddenSideEffects || {}).filter(([, count]) => Number(count) !== 0).map(([name, count]) => `${name}:${count}`);
+    const ok = report.missing.length === 0 && report.missingJobKinds.length === 0 && forbiddenSideEffects.length === 0;
+    console.log(JSON.stringify({ ok, missingJourneys, forbiddenSideEffects, testRootName: path.basename(userDataDir), ...report }, null, 2));
+    if (!ok) process.exitCode = 2;
+  }
 } finally {
   try { page?.close(); } catch {}
   terminateTestChromeProcesses(userDataDir);

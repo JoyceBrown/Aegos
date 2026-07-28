@@ -15,6 +15,10 @@ const chromeCandidates = [
 const chromePath = chromeCandidates.find((candidate) => fs.existsSync(candidate));
 const headed = process.argv.includes('--headed');
 const stress = process.argv.includes('--stress');
+const r4KnownBad = process.argv.includes('--r4-known-bad');
+const r4Repaired = process.argv.includes('--r4-repaired');
+const r5KnownBad = process.argv.includes('--r5-known-bad');
+const r5Repaired = process.argv.includes('--r5-repaired');
 const configuredNodeCount = Number.parseInt(process.env.AEGOS_PERF_NODE_COUNT || '', 10);
 const nodeCount = Number.isFinite(configuredNodeCount) && configuredNodeCount > 0
   ? configuredNodeCount
@@ -159,13 +163,29 @@ try {
   await page.send('Page.addScriptToEvaluateOnNewDocument', {
     source: `
       (() => {
+        window.__AEGOS_TEST_FORCE_LEGACY_SPEED_FEEDBACK_SCAN__ = ${r4KnownBad ? 'true' : 'false'};
+        window.__AEGOS_TEST_FORCE_LEGACY_ROUTING_RENDER__ = ${r5KnownBad ? 'true' : 'false'};
+        window.__aegosR5KnownBad = ${r5KnownBad ? 'true' : 'false'};
         window.__aegosStartup = {
           startedAt: performance.now(),
           statusReadyAt: null,
           homeNodesReadyAt: null,
           coldRoutingClickAt: null,
-          coldRoutingReadyAt: null
+          coldRoutingReadyAt: null,
+          prewarmLayoutReads: 0
         };
+        const offsetHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+        if (offsetHeightDescriptor?.get) {
+          Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+            configurable: true,
+            get() {
+              if (this.matches?.('[data-page-panel="nodes"], [data-page-panel="connections"], #connectionRows')) {
+                window.__aegosStartup.prewarmLayoutReads += 1;
+              }
+              return offsetHeightDescriptor.get.call(this);
+            }
+          });
+        }
         const captureStartupReadiness = () => {
           if (!window.__aegosStartup.statusReadyAt && document.querySelector('#softwareState.ok')) {
             window.__aegosStartup.statusReadyAt = performance.now();
@@ -244,7 +264,6 @@ try {
         let speedCompleted = 0;
         let speedOk = 0;
         let speedFailed = 0;
-        let connectionCallCount = 0;
         const speedDelays = {};
         const speedHealth = {};
         const eventListeners = new Map();
@@ -275,6 +294,19 @@ try {
             };
           })
         }];
+        const createRoutingRules = (count) => Array.from({ length: count }, (_, index) => ({
+          index: index + 1,
+          raw: 'DOMAIN-SUFFIX,site-' + index + '.example,GLOBAL',
+          kind: 'DOMAIN-SUFFIX',
+          condition: 'site-' + index + '.example',
+          target: 'GLOBAL',
+          source: index < 12 ? 'user' : 'config',
+          enabled: true,
+          status: 'active'
+        }));
+        const standardRoutingRules = createRoutingRules(3000);
+        // Created before measurement so the transition checks rendering work, not fixture construction.
+        const transitionRoutingRules = createRoutingRules(80000);
         const status = () => ({
           product: 'Aegos',
           appVersion: '${pkg.version}',
@@ -418,9 +450,9 @@ try {
           if (command === 'app_status') { await new Promise((resolve) => setTimeout(resolve, 90)); return status(); }
           if (command === 'proxy_groups') { await new Promise((resolve) => setTimeout(resolve, 130)); return groups; }
           if (command === 'connections') {
-            connectionCallCount += 1;
             await new Promise((resolve) => setTimeout(resolve, 120));
-            if (connectionCallCount === 3) {
+            if (window.__aegosBulkConnectionsNext) {
+              window.__aegosBulkConnectionsNext = false;
               return Array.from({ length: 1200 }, (_, index) => ({
                 id: 'bulk-' + index,
                 target: 'bulk-' + index + '.example',
@@ -437,27 +469,34 @@ try {
           }
           if (command === 'routing_snapshot') {
             await new Promise((resolve) => setTimeout(resolve, 120));
+            if (window.__aegosHoldRoutingSnapshot) {
+              window.__aegosRoutingSnapshotHeld = true;
+              await new Promise((resolve) => {
+                window.__aegosReleaseRoutingSnapshot = resolve;
+              });
+              window.__aegosRoutingSnapshotHeld = false;
+            }
+            const rules = window.__aegosUseTransitionRoutingSnapshot
+              ? transitionRoutingRules
+              : standardRoutingRules;
             return {
               readOnly: true,
-              mode: 'rule',
+              mode: window.__aegosUseTransitionRoutingSnapshot ? 'global' : 'rule',
               groups: [
                 { name: 'GLOBAL', type: 'select', now: 'HK 001', itemCount: groups[0].items.length, automatic: false },
                 { name: 'Auto', type: 'url-test', now: 'HK 002', itemCount: 80, automatic: true }
               ],
-              rules: Array.from({ length: 3000 }, (_, index) => ({
-                index: index + 1,
-                raw: 'DOMAIN-SUFFIX,site-' + index + '.example,GLOBAL',
-                kind: 'DOMAIN-SUFFIX',
-                condition: 'site-' + index + '.example',
-                target: 'GLOBAL',
-                source: index < 12 ? 'user' : 'config',
-                enabled: true,
-                status: 'active'
-              })),
+              rules,
               recentRules: [
                 { rule: 'DOMAIN-SUFFIX,example.com', route: 'GLOBAL > HK 001', count: 1, note: 'mock' }
               ],
-              summary: { groupCount: 2, autoGroupCount: 1, recentRuleHits: 1, userRuleCount: 12, ruleCount: 3000 }
+              summary: {
+                groupCount: 2,
+                autoGroupCount: 1,
+                recentRuleHits: 1,
+                userRuleCount: window.__aegosUseTransitionRoutingSnapshot ? rules.length : 12,
+                ruleCount: rules.length
+              }
             };
           }
           if (command === 'routing_rule_page') {
@@ -624,7 +663,8 @@ try {
         const entry = (window.__aegosPerformanceSnapshot?.().trace || [])
           .find((item) => item.kind === 'connections-page-prewarmed');
         return entry ? Math.max(0, Number(entry.at || 0) - startupStartedAt) : null;
-      })()
+      })(),
+      prewarmLayoutReads: Number(window.__aegosStartup.prewarmLayoutReads || 0)
     };
     const connectionsInitialCount = commandCount('connections');
     const connectionsClickAt = performance.now();
@@ -639,6 +679,7 @@ try {
     const connectionsContentMs = connectionsContentReady ? performance.now() - connectionsClickAt : Infinity;
     const connectionsReentryCalls = commandCount('connections') - connectionsInitialCount;
     const connectionExitStartedAt = performance.now();
+    window.__aegosBulkConnectionsNext = true;
     void window.refreshConnections?.();
     const connectionLargeRenderStarted = await waitFor(() => (
       (window.__aegosPerformanceSnapshot?.().trace || []).some((item) => (
@@ -704,6 +745,47 @@ try {
     const routingPageChanged = Boolean(firstAdvancedRule && nextAdvancedRule && firstAdvancedRule !== nextAdvancedRule);
     if (advanced) advanced.open = false;
     await wait(20);
+    window.__aegosHoldRoutingSnapshot = true;
+    window.__aegosUseTransitionRoutingSnapshot = true;
+    window.__aegosRoutingSnapshotHeld = false;
+    window.invalidatePageCache?.('routing');
+    window.setPage?.('routing');
+    const routingTransitionHeld = await waitFor(() => window.__aegosRoutingSnapshotHeld, 800);
+    const routingTransitionInputAt = performance.now();
+    let routingTransitionDispatchAt = null;
+    const switchToConnections = () => {
+      routingTransitionDispatchAt = performance.now();
+      document.querySelector('[data-page="connections"]')?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
+    };
+    if (window.__aegosR5KnownBad) switchToConnections();
+    else window.setTimeout(switchToConnections, 0);
+    window.__aegosReleaseRoutingSnapshot?.();
+    const routingTransitionReachedConnections = await waitFor(() => (
+      document.querySelector('.nav button.active')?.dataset.page === 'connections'
+    ), 800);
+    const routingTransitionFrameAt = await nextFrame();
+    const routingTransitionCancelled = await waitFor(() => (
+      (window.__aegosPerformanceSnapshot?.().trace || []).some((item) => (
+        item.kind === 'routing-render-cancelled'
+        && item.itemCount === 80000
+      ))
+    ), 300);
+    const routingToConnections = {
+      snapshotHeld: routingTransitionHeld,
+      inputDeliveryMs: routingTransitionDispatchAt == null
+        ? Infinity
+        : Math.max(0, routingTransitionDispatchAt - routingTransitionInputAt),
+      firstFrameMs: Math.max(0, routingTransitionFrameAt - routingTransitionInputAt),
+      reachedConnections: routingTransitionReachedConnections,
+      cancelled: routingTransitionCancelled,
+      staleSnapshotCommitted: document.querySelector('#routingRuleHitCount')?.textContent.trim() === '80000',
+      activePage: document.querySelector('.nav button.active')?.dataset.page || ''
+    };
+    window.__aegosHoldRoutingSnapshot = false;
+    window.__aegosUseTransitionRoutingSnapshot = false;
+    // The prior small snapshot remains valid for later navigation checks; this
+    // deliberately invalidated cache exists only to force the cancellation case.
+    window.markPageCache?.('routing');
     phases.push({ name: 'first-pages-ready', at: performance.now() });
     const connectionsBefore = commandCount('connections');
     const routingBefore = commandCount('routing_snapshot');
@@ -731,13 +813,21 @@ try {
     };
     const repeatedSpeedObserver = new MutationObserver(captureRepeatedSpeedPaint);
     repeatedSpeedObserver.observe(document.querySelector('#nodeRows'), { childList: true, subtree: true, characterData: true, attributes: true });
+    const hiddenSpeedFeedbackProbe = document.createElement('span');
+    hiddenSpeedFeedbackProbe.className = 'node-delay';
+    hiddenSpeedFeedbackProbe.dataset.speedPending = 'true';
+    hiddenSpeedFeedbackProbe.textContent = 'hidden-speed-probe';
+    document.querySelector('[data-page-panel="profiles"]')?.append(hiddenSpeedFeedbackProbe);
     document.querySelector('#batchTestBtn')?.click();
     captureRepeatedSpeedPaint();
     await waitFor(() => window.__aegosSpeedEventStats().startedAt >= repeatedSpeedStartedAt, 500);
     const secondSpeedRunId = window.__aegosSpeedEventStats().runId;
+    await wait(120);
+    const hiddenSpeedFeedbackText = hiddenSpeedFeedbackProbe.textContent;
     await waitFor(() => window.__aegosSpeedEventStats().completed, 3000);
     await wait(120);
     repeatedSpeedObserver.disconnect();
+    hiddenSpeedFeedbackProbe.remove();
     const repeatedSpeed = {
       firstRunId: Number(firstSpeedRun.runId || 0),
       secondRunId: Number(secondSpeedRunId || 0),
@@ -747,7 +837,13 @@ try {
       progressiveResultMs: repeatedProgressiveResultAt == null ? null : Math.max(0, repeatedProgressiveResultAt - repeatedSpeedStartedAt),
       resultPaintLagMs: repeatedProgressiveResultAt == null
         ? null
-        : Math.max(0, repeatedProgressiveResultAt - Number(window.__aegosSpeedEventStats().firstResultAt || repeatedProgressiveResultAt))
+        : Math.max(0, repeatedProgressiveResultAt - Number(window.__aegosSpeedEventStats().firstResultAt || repeatedProgressiveResultAt)),
+      hiddenSpeedFeedbackText
+    };
+    const r4Fixture = {
+      hiddenPendingCellWasWritten: hiddenSpeedFeedbackText !== 'hidden-speed-probe',
+      firstFeedbackMs: repeatedFeedbackAt == null ? null : Math.max(0, repeatedFeedbackAt - repeatedSpeedStartedAt),
+      waitingValues: [...repeatedWaitingValues]
     };
     let lastRapidPage = 'home';
     const rapidNavStartedAt = performance.now();
@@ -952,6 +1048,7 @@ try {
         maxBurstMs: Math.max(0, ...speedEventStats.burstDurations)
       },
       repeatedSpeed,
+      r4Fixture,
       startup,
       calls: {
         connectionsBefore,
@@ -985,7 +1082,8 @@ try {
         routingVisibleAdvancedRows,
         routingHasLoadMore,
         routingRowsAfterNextPage,
-        routingPageChanged
+        routingPageChanged,
+        routingToConnections
       },
       finalRapidPage,
       lastRapidPage,
@@ -1040,10 +1138,17 @@ try {
   if (!report.pageLoad.routingContentReady || !hasFiniteMs(report.pageLoad.routingContentMs) || report.pageLoad.routingContentMs > 400) failures.push(`routing first content too slow: ${formatMs(report.pageLoad.routingContentMs)}`);
   if (!hasFiniteMs(report.startup.nodePrewarmMs) || report.startup.nodePrewarmMs > 700) failures.push(`startup node prewarm missed the 700ms readiness budget: ${formatMs(report.startup.nodePrewarmMs)}`);
   if (!hasFiniteMs(report.startup.connectionsPrewarmMs) || report.startup.connectionsPrewarmMs > 700) failures.push(`startup connections prewarm missed the 700ms readiness budget: ${formatMs(report.startup.connectionsPrewarmMs)}`);
+  if (report.startup.prewarmLayoutReads !== 0) failures.push(`startup prewarm forced layout reads: ${report.startup.prewarmLayoutReads}`);
   if (report.pageLoad.routingHiddenRuleRows > 1) failures.push(`collapsed routing details rendered ${report.pageLoad.routingHiddenRuleRows} hidden rule rows`);
   if (!report.pageLoad.advancedReady || !hasFiniteMs(report.pageLoad.advancedOpenMs) || report.pageLoad.advancedOpenMs > 150) failures.push(`routing details expansion too slow: ${formatMs(report.pageLoad.advancedOpenMs)}`);
   if (report.pageLoad.routingVisibleAdvancedRows > 40 || !report.pageLoad.routingHasLoadMore) failures.push(`routing details are not paged: rows=${report.pageLoad.routingVisibleAdvancedRows} loadMore=${report.pageLoad.routingHasLoadMore}`);
   if (report.pageLoad.routingRowsAfterNextPage > 40 || !report.pageLoad.routingPageChanged) failures.push(`routing detail paging did not stay bounded: rows=${report.pageLoad.routingRowsAfterNextPage} changed=${report.pageLoad.routingPageChanged}`);
+  if (!report.pageLoad.routingToConnections.snapshotHeld) failures.push('routing-to-connections negative control did not hold the returned routing snapshot');
+  if (!hasFiniteMs(report.pageLoad.routingToConnections.inputDeliveryMs) || report.pageLoad.routingToConnections.inputDeliveryMs > 32) failures.push(`routing-to-connections input was blocked after snapshot return: ${formatMs(report.pageLoad.routingToConnections.inputDeliveryMs)}`);
+  if (!hasFiniteMs(report.pageLoad.routingToConnections.firstFrameMs) || report.pageLoad.routingToConnections.firstFrameMs > 80) failures.push(`routing-to-connections did not paint promptly: ${formatMs(report.pageLoad.routingToConnections.firstFrameMs)}`);
+  if (!report.pageLoad.routingToConnections.reachedConnections || report.pageLoad.routingToConnections.activePage !== 'connections') failures.push(`routing-to-connections did not settle on Connections: ${JSON.stringify(report.pageLoad.routingToConnections)}`);
+  if (!report.pageLoad.routingToConnections.cancelled) failures.push('stale routing snapshot render was not cancelled after switching to Connections');
+  if (report.pageLoad.routingToConnections.staleSnapshotCommitted) failures.push('stale routing snapshot committed Rules DOM after switching to Connections');
   if (report.calls.speedPollCount !== 0) failures.push(`healthy event stream fell back to full polling: polls=${report.calls.speedPollCount}`);
   if (!report.speedStream.completed || report.speedStream.results !== nodeCount || report.speedStream.emitted !== nodeCount + 2) {
     failures.push(`speed event stream incomplete: emitted=${report.speedStream.emitted} results=${report.speedStream.results} completed=${report.speedStream.completed}`);
@@ -1060,6 +1165,7 @@ try {
   if ((report.repeatedSpeed.waitingValues || []).length < 3) failures.push(`repeated speed feedback did not advance three times before the first result: ${JSON.stringify(report.repeatedSpeed.waitingValues)}`);
   if (report.repeatedSpeed.firstResultEmittedMs < 200) failures.push(`repeated speed negative control did not delay the first real result: ${formatMs(report.repeatedSpeed.firstResultEmittedMs)}`);
   if (!hasFiniteMs(report.repeatedSpeed.resultPaintLagMs) || report.repeatedSpeed.resultPaintLagMs > 50) failures.push(`repeated speed result was not painted within 50ms of its event: ${formatMs(report.repeatedSpeed.resultPaintLagMs)}`);
+  if (report.repeatedSpeed.hiddenSpeedFeedbackText !== 'hidden-speed-probe') failures.push(`speed feedback repainted a hidden pending row: ${JSON.stringify(report.repeatedSpeed.hiddenSpeedFeedbackText)}`);
   if (!report.pageLoad.connectionExit.largeRenderStarted) failures.push('cold Connections exit negative control did not start the 1200-row render');
   if (report.pageLoad.connectionExit.synchronousMs > 12 || report.pageLoad.connectionExit.firstFrameMs > 50) failures.push(`leaving Connections blocked navigation: sync=${formatMs(report.pageLoad.connectionExit.synchronousMs)} frame=${formatMs(report.pageLoad.connectionExit.firstFrameMs)}`);
   if (!report.pageLoad.connectionExit.cancelled || report.pageLoad.connectionExit.rowsAfterExit !== report.pageLoad.connectionExit.rowsAtExit) failures.push(`stale Connections rendering continued after navigation: ${JSON.stringify(report.pageLoad.connectionExit)}`);
@@ -1119,8 +1225,34 @@ try {
       repeatedSpeed: result.repeatedSpeed,
       connectionExit: result.pageLoad.connectionExit
     };
-  console.log(JSON.stringify(terminalReport, null, 2));
-  if (!result.ok) process.exitCode = 2;
+  if (r5KnownBad || r5Repaired) {
+    const staleSnapshotCommitted = result.pageLoad.routingToConnections.staleSnapshotCommitted === true;
+    const ok = r5KnownBad
+      ? staleSnapshotCommitted && !result.pageLoad.routingToConnections.cancelled
+      : result.ok && !staleSnapshotCommitted;
+    console.log(JSON.stringify({
+      ok,
+      expectedFailure: r5KnownBad,
+      rejected: r5KnownBad ? staleSnapshotCommitted : undefined,
+      routingToConnections: result.pageLoad.routingToConnections,
+      failures: result.failures
+    }, null, 2));
+    process.exitCode = ok ? (r5KnownBad ? 2 : 0) : 1;
+  } else if (r4KnownBad || r4Repaired) {
+    const hiddenPendingCellWasWritten = result.r4Fixture?.hiddenPendingCellWasWritten === true;
+    const ok = r4KnownBad ? hiddenPendingCellWasWritten : result.ok && !hiddenPendingCellWasWritten;
+    console.log(JSON.stringify({
+      ok,
+      expectedFailure: r4KnownBad,
+      rejected: r4KnownBad ? hiddenPendingCellWasWritten : undefined,
+      r4Fixture: result.r4Fixture,
+      failures: result.failures
+    }, null, 2));
+    process.exitCode = ok ? (r4KnownBad ? 2 : 0) : 1;
+  } else {
+    console.log(JSON.stringify(terminalReport, null, 2));
+    if (!result.ok) process.exitCode = 2;
+  }
 } finally {
   try { await page?.close(); } catch {}
   try { chrome.kill(); } catch {}

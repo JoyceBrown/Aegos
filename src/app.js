@@ -78,6 +78,7 @@ let nodeSortState = { key: '', direction: 0 };
 let logFilter = 'all';
 let diagnosticView = 'overview';
 let diagnosticCategoryFilter = 'all';
+const diagnosticRepairReceipts = new Map();
 let speedTestTimer = null;
 let speedTestStarting = false;
 let activeSpeedRunId = 0;
@@ -94,7 +95,9 @@ let latestQueuedSpeedProgress = null;
 let speedProgressNoticeAt = 0;
 let speedVisibleFrame = null;
 let speedFeedbackTimer = null;
+let speedFeedbackFrame = null;
 let speedFeedbackStartedAt = 0;
+let lastSpeedFeedbackLabel = '';
 const pendingSpeedVisibleChanges = new Map();
 const speedResultsByRun = new Map();
 const singleSpeedWaiters = new Map();
@@ -112,6 +115,7 @@ let prefetchedRoutingSnapshot = null;
 let routingPrefetchPromise = null;
 let routingPrefetchSeq = 0;
 let routingRequestSeq = 0;
+let routingRenderGeneration = 0;
 let routingPrefetchTimer = null;
 let latestEnvironmentReadiness = null;
 let environmentReadinessBusy = false;
@@ -164,6 +168,12 @@ let outboundIpRequestSeq = 0;
 let outboundIpPendingSeq = 0;
 let outboundIpLastStable = '-';
 let corePowerPendingKind = '';
+let corePowerObservedJobId = '';
+// Only the isolated interaction fixture disables the observation handoff to retain its bad control.
+const foregroundJobObservationWaitMs = window.__AEGOS_TEST_DISABLE_CORE_JOB_OBSERVATION__ === true ? 0 : 1200;
+// The isolated R2 fixture disables this only to retain the pre-repair display-read failure.
+const displaySnapshotFallbackEnabled = window.__AEGOS_TEST_DISABLE_DISPLAY_SNAPSHOT_FALLBACK__ !== true;
+const observedJobTerminalHandlers = new Map();
 let recoveryBusy = false;
 let lastRecoveryAt = 0;
 let pageLoadTimer = null;
@@ -171,9 +181,13 @@ let pageLoadToken = 0;
 let pagePaintFrame = null;
 let nodePagePrewarmTimer = null;
 let nodePagePrewarmGeneration = 0;
+const nodePagePrewarmFrames = new Set();
 let connectionsRefreshQueued = false;
 let connectionsRefreshQueuedToken = null;
 let connectionRenderGeneration = 0;
+let connectionSnapshotObservedAt = 0;
+let expandedConnectionId = '';
+let latestConnectionItems = new Map();
 let foregroundBusy = 0;
 let backgroundJobBusy = 0;
 let lastBackgroundJobError = '';
@@ -301,6 +315,7 @@ function runtimeSummaryLabel(status = {}, settings = {}) {
 function connectionButtonLabel(status = {}, pendingKind = corePowerPendingKind) {
   if (pendingKind === 'startCore') return '\u8fde\u63a5\u4e2d';
   if (pendingKind === 'stopCore') return '\u65ad\u5f00\u4e2d';
+  if (pendingKind === 'observedCore') return '\u67e5\u770b\u8fde\u63a5\u4efb\u52a1';
   return status.trafficTakeover ? '\u65ad\u5f00\u8fde\u63a5' : '\u8fde\u63a5';
 }
 
@@ -669,6 +684,16 @@ function localBackupSize(value) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function localBackupIdentity(backup = {}) {
+  const details = [
+    `${localBackupDate(backup.createdAtMs)} 创建`,
+    localBackupSize(backup.bytes)
+  ];
+  const itemCount = Math.max(0, Number(backup.itemCount || 0));
+  if (itemCount) details.push(`${itemCount} 项内容`);
+  return details.join(' · ');
+}
+
 async function refreshLocalBackupSnapshot(options = {}) {
   if (localBackupSnapshotLoading && !options.force) return;
   localBackupSnapshotLoading = true;
@@ -692,15 +717,17 @@ async function createLocalBackupJob() {
   return result;
 }
 
-async function restoreLocalBackupJob(id) {
+async function restoreLocalBackupJob(id, backup = null) {
   const connected = Boolean(latestStatus?.running);
   if (connected) {
     setNotice('请先断开 Aegos，再恢复本机备份。');
     return null;
   }
+  const selected = backup && String(backup.id || '') === String(id || '') ? backup : null;
+  const backupIdentity = selected ? localBackupIdentity(selected) : '所选本机加密备份';
   const confirmed = await requestAppConfirm({
     title: '恢复本机备份',
-    message: '恢复会替换当前设置、订阅配置和用户分流规则。Aegos 保持断开状态，是否继续？',
+    message: `将恢复 ${backupIdentity}。恢复会替换当前设置、订阅配置和用户分流规则。Aegos 保持断开状态，是否继续？`,
     okText: '恢复',
     danger: true
   });
@@ -776,9 +803,9 @@ function renderLocalBackupUi() {
       attrs: { type: 'button' }
     });
     restore.disabled = connected;
-    restore.addEventListener('click', () => restoreLocalBackupJob(String(backup.id || '')));
+    restore.addEventListener('click', () => restoreLocalBackupJob(String(backup.id || ''), backup));
     return el('div', { className: 'local-backup-item' }, [
-      el('span', { textContent: `${localBackupDate(backup.createdAtMs)} · ${localBackupSize(backup.bytes)}` }),
+      el('span', { textContent: localBackupIdentity(backup) }),
       restore
     ]);
   }));
@@ -3019,30 +3046,57 @@ function speedElapsedFeedbackText(now = performance.now()) {
   return `\u7b49\u5f85 ${(elapsedMs / 1000).toFixed(1)}s`;
 }
 
-function paintSpeedElapsedFeedback() {
+function visiblePendingSpeedCells() {
+  const activePanel = document.querySelector('.page.active');
+  return activePanel
+    ? activePanel.querySelectorAll('.node-delay[data-speed-pending="true"]')
+    : [];
+}
+
+function paintSpeedElapsedFeedback(options = {}) {
   const label = speedElapsedFeedbackText();
-  $all('.node-delay[data-speed-pending="true"]').forEach((cell) => {
+  if (!options.force && label === lastSpeedFeedbackLabel) return;
+  lastSpeedFeedbackLabel = label;
+  const cells = window.__AEGOS_TEST_FORCE_LEGACY_SPEED_FEEDBACK_SCAN__ === true
+    ? document.querySelectorAll('.node-delay[data-speed-pending="true"]')
+    : visiblePendingSpeedCells();
+  cells.forEach((cell) => {
     cell.textContent = label;
     cell.setAttribute('aria-label', `\u6b63\u5728\u6d4b\u901f\uff0c\u5df2${label}`);
   });
-  const metric = $('#delayMetric.delay-testing');
+  const metric = isPageActive('home') ? $('#delayMetric.delay-testing') : null;
   if (metric) {
     metric.textContent = label;
     metric.setAttribute('aria-label', `\u6b63\u5728\u6d4b\u901f\uff0c\u5df2${label}`);
   }
 }
 
+function scheduleSpeedElapsedFeedbackPaint() {
+  if (speedFeedbackFrame) return;
+  speedFeedbackFrame = requestAnimationFrame(() => {
+    speedFeedbackFrame = null;
+    paintSpeedElapsedFeedback();
+  });
+}
+
 function startSpeedFeedbackClock() {
   if (speedFeedbackTimer) clearInterval(speedFeedbackTimer);
+  if (speedFeedbackFrame) cancelAnimationFrame(speedFeedbackFrame);
+  speedFeedbackFrame = null;
   speedFeedbackStartedAt = performance.now();
-  paintSpeedElapsedFeedback();
-  speedFeedbackTimer = setInterval(paintSpeedElapsedFeedback, 80);
+  lastSpeedFeedbackLabel = '';
+  // The initiating click paints first; later 80ms ticks are frame-coalesced.
+  paintSpeedElapsedFeedback({ force: true });
+  speedFeedbackTimer = setInterval(scheduleSpeedElapsedFeedbackPaint, 80);
 }
 
 function stopSpeedFeedbackClock() {
   if (speedFeedbackTimer) clearInterval(speedFeedbackTimer);
   speedFeedbackTimer = null;
+  if (speedFeedbackFrame) cancelAnimationFrame(speedFeedbackFrame);
+  speedFeedbackFrame = null;
   speedFeedbackStartedAt = 0;
+  lastSpeedFeedbackLabel = '';
   $all('.node-delay[data-speed-pending="true"]').forEach((cell) => {
     delete cell.dataset.speedPending;
     cell.removeAttribute('aria-label');
@@ -3573,6 +3627,33 @@ function rememberJob(job, options = {}) {
   const sorted = [...jobRecords.values()].sort((a, b) => b.updatedAt - a.updatedAt);
   sorted.slice(12).forEach((item) => jobRecords.delete(item.id));
   if (options.render !== false) renderJobCenter();
+  if (terminalJobStates.has(normalized.state)) {
+    const handler = observedJobTerminalHandlers.get(normalized.id);
+    if (handler) {
+      observedJobTerminalHandlers.delete(normalized.id);
+      Promise.resolve(handler(normalized)).catch((err) => {
+        setNotice(`\u4efb\u52a1\u72b6\u6001\u540c\u6b65\u5931\u8d25\uff1a${err.message || err}`);
+      });
+    }
+  }
+}
+
+function isObservedRunningJob(value) {
+  return Boolean(value?.__aegosObservedRunningJob === true && value.job?.id);
+}
+
+async function watchObservedJobTerminal(id, pollMs = 350) {
+  while (observedJobTerminalHandlers.has(id)) {
+    await sleep(pollMs);
+    try {
+      const job = await invoke('job_status', { id });
+      rememberJob(job);
+      if (terminalJobStates.has(job?.state)) return;
+    } catch (err) {
+      setNotice(`\u65e0\u6cd5\u8bfb\u53d6\u540e\u53f0\u4efb\u52a1\u72b6\u6001\uff1a${err.message || err}`);
+      return;
+    }
+  }
 }
 
 function jobStateLabel(state = '') {
@@ -3701,10 +3782,19 @@ async function runBackgroundJob(kind, payload = {}, options = {}) {
       locallyPolledJobId = started.id || '';
       if (locallyPolledJobId) locallyPolledJobIds.add(locallyPolledJobId);
     }
+    const observationDeadline = options.observationWaitMs > 0
+      ? Date.now() + Number(options.observationWaitMs)
+      : 0;
     while (job && !['succeeded', 'failed', 'cancelled'].includes(job.state)) {
       await sleep(options.pollMs || 350);
       job = await invoke('job_status', { id: started.id });
       rememberJob(job);
+      if (observationDeadline && !terminalJobStates.has(job?.state) && Date.now() >= observationDeadline) {
+        const observed = normalizeJob(job);
+        if (options.onStillRunning) await options.onStillRunning(observed);
+        setNotice(`${observed.label}\u4ecd\u5728\u540e\u53f0\u5904\u7406\uff0c\u53ef\u5728\u72b6\u6001\u4e2d\u5fc3\u67e5\u770b\u540c\u4e00\u4efb\u52a1\u3002`);
+        return { __aegosObservedRunningJob: true, job: observed };
+      }
       if (options.progressNotice) {
         const message = options.progressNotice(job);
         if (message) setNotice(message);
@@ -3877,6 +3967,8 @@ function setPage(page) {
   const next = pageNames[page] ? page : 'home';
   cancelNodePagePrewarm();
   if (next !== 'connections') connectionRenderGeneration += 1;
+  if (next !== 'connections') clearConnectionExplanation();
+  if (next !== 'routing') routingRenderGeneration += 1;
   lastNavAt = Date.now();
   recordUiPerformance('navigation-request', { targetPage: next });
   renderPageFirstLoadState(next);
@@ -4692,9 +4784,11 @@ function ensureSettingsWorkspace() {
   if (extensionsActions) {
     extensionsPanel.querySelector('.settings-workspace-head')?.appendChild(extensionsActions);
   }
+  const dnsPanel = panel('dns', 'DNS', dnsGrid);
+  dnsPanel.appendChild(el('div', { id: 'dnsLiveEvidence', className: 'settings-live-evidence' }));
   [
     panel('takeover', '\u63a5\u7ba1', takeoverGrid, $('#settingsProxySummary')),
-    panel('dns', 'DNS', dnsGrid),
+    dnsPanel,
     panel('security', '\u5b89\u5168\u4e0e\u517c\u5bb9', securityGrid),
     panel('reliability', '\u81ea\u52a8\u6062\u590d', reliabilityGrid, $('#settingsReliabilitySummary')),
     panel('environment', '\u7cfb\u7edf\u68c0\u67e5', el('div', { className: 'settings-environment-content' }, [environmentList, environmentActions]), $('#environmentSummary')),
@@ -5066,9 +5160,7 @@ async function refreshEnvironmentReadiness(showNotice = false) {
 
 function ensureIpv6DnsSafetyUi() {
   if ($('#ipv6DnsSafetyCard')) return true;
-  const target = document.querySelector('[data-settings-panel="dns"]')
-    || [...document.querySelectorAll('.settings-section')]
-      .find((section) => section.textContent.includes('DNS') || section.textContent.includes('IPv6'));
+  const target = $('#dnsLiveEvidence');
   if (!target) return false;
   const card = el('div', { id: 'ipv6DnsSafetyCard', className: 'ipv6-safety-card' }, [
     el('article', {}, [el('span', { textContent: 'IPv6 \u8bf7\u6c42' }), el('b', { id: 'ipv6RequestedState', textContent: '-' })]),
@@ -5088,7 +5180,7 @@ function ensureIpv6DnsSafetyUi() {
 
 function ensureEgressConsistencyUi() {
   if ($('#egressConsistencyCard')) return true;
-  const target = document.querySelector('[data-settings-panel="dns"]');
+  const target = $('#dnsLiveEvidence');
   if (!target) return false;
   const card = el('div', { id: 'egressConsistencyCard', className: 'ipv6-safety-card egress-consistency-card' }, [
     el('article', { className: 'wide' }, [
@@ -5515,6 +5607,10 @@ function renderStatus(status) {
   migrateLegacyNodePreferences();
   const traffic = status.traffic || {};
   renderTrafficMetrics(traffic);
+  // The connection action also depends on a local observed-job handoff, not
+  // only on the backend snapshot. Keep it current when that handoff settles
+  // even if the effective status is otherwise unchanged.
+  $('#connectBtn').textContent = connectionButtonLabel(status);
   if (!fullRender) {
     if (isPageActive('diagnostics') && diagnosticView === 'logs') renderLogs();
     return;
@@ -5542,7 +5638,6 @@ function renderStatus(status) {
   renderCurrentNodeIdentity();
   const nodeHost = $('#nodeHost');
   if (nodeHost) nodeHost.textContent = status.network?.proxyEndpoint || '-';
-  $('#connectBtn').textContent = connectionButtonLabel(status);
   $('#modeLabel').textContent = modeText;
   setNotice(statusSurfaceNotice(status, settings, protection, availability));
 
@@ -5781,7 +5876,7 @@ async function exportDiagnosticReport() {
 }
 
 function removeConnectionElement(button) {
-  const row = button?.closest('.simple-row');
+  const row = button?.closest('.connection-item') || button?.closest('.simple-row');
   if (row) {
     row.remove();
     activeConnectionCount = Math.max(0, activeConnectionCount - 1);
@@ -5884,6 +5979,13 @@ function renderActiveConnectionMetric() {
 async function refreshActiveConnectionCount(force = false) {
   if (activeConnectionBusy) return;
   if (!latestStatus?.trafficTakeover) {
+    const snapshotIsCurrent = isPageActive('connections')
+      && connectionSnapshotObservedAt > 0
+      && Date.now() - connectionSnapshotObservedAt <= (pageCacheTtlMs.connections || 15000);
+    if (snapshotIsCurrent) {
+      renderActiveConnectionMetric();
+      return;
+    }
     activeConnectionCount = 0;
     renderActiveConnectionMetric();
     return;
@@ -5915,8 +6017,23 @@ async function refreshNodes(force = false, options = {}) {
   const requestProfileSeq = profileStateSeq;
   nodeBusy = true;
   try {
-    const groups = await invoke('proxy_groups');
+    const response = await invoke('proxy_groups', {
+      profileId: latestStatus?.settings?.activeProfileId || latestStatus?.activeProfile?.id || ''
+    });
     if (requestProfileSeq !== profileStateSeq) return;
+    const observation = response?.snapshotObservation || {};
+    if (observation.state === 'loading' && displaySnapshotFallbackEnabled) {
+      setTransientNotice('节点数据正在更新，等待当前操作发布首个快照。');
+      return;
+    }
+    const useLegacyDisplaySnapshotHandling = window.__AEGOS_TEST_FORCE_OLD_DISPLAY_SNAPSHOT_HANDLING__ === true
+      && observation.state === 'cached';
+    const groups = displaySnapshotFallbackEnabled && !useLegacyDisplaySnapshotHandling
+      ? (Array.isArray(response) ? response : (response?.groups || []))
+      : (Array.isArray(response) ? response : []);
+    if (observation.state === 'cached' && displaySnapshotFallbackEnabled) {
+      setTransientNotice('节点正在更新，当前显示上次读取的快照。');
+    }
     setLatestGroups(groups, selectedProxyGroupName);
     selectedNode = latestGroup?.now || '';
     renderCurrentNodeIdentity();
@@ -6011,20 +6128,19 @@ function scheduleNodePagePrewarm() {
     const connectionsPanel = document.querySelector('[data-page-panel="connections"]');
     if (!nodePanel || !connectionsPanel || !items?.length) return;
     if (!isPageActive('nodes')) nodePanel.classList.add('page-prewarm');
-    requestAnimationFrame(() => {
+    scheduleNodePagePrewarmFrame(() => {
       if (generation !== nodePagePrewarmGeneration || isForegroundHot()) {
         nodePanel.classList.remove('page-prewarm');
         return;
       }
       const startedAt = performance.now();
       renderRows(items, { target: 'nodes' });
-      void nodePanel.offsetHeight;
       recordUiPerformance('node-page-prewarmed', {
         itemCount: items.length,
         renderedCount: document.querySelectorAll('#nodeRows .row[data-node]').length,
         duration: Math.round((performance.now() - startedAt) * 10) / 10
       });
-      requestAnimationFrame(() => {
+      scheduleNodePagePrewarmFrame(() => {
         if (generation !== nodePagePrewarmGeneration || isForegroundHot()) {
           nodePanel.classList.remove('page-prewarm');
           connectionsPanel.classList.remove('page-prewarm');
@@ -6032,18 +6148,16 @@ function scheduleNodePagePrewarm() {
         }
         nodePanel.classList.remove('page-prewarm');
         if (!isPageActive('connections')) connectionsPanel.classList.add('page-prewarm');
-        requestAnimationFrame(() => {
+        const connectionsStartedAt = performance.now();
+        scheduleNodePagePrewarmFrame(() => {
           if (generation !== nodePagePrewarmGeneration || isForegroundHot()) {
             connectionsPanel.classList.remove('page-prewarm');
             return;
           }
-          const connectionsStartedAt = performance.now();
-          void connectionsPanel.offsetHeight;
-          void $('#connectionRows')?.offsetHeight;
           recordUiPerformance('connections-page-prewarmed', {
             duration: Math.round((performance.now() - connectionsStartedAt) * 10) / 10
           });
-          requestAnimationFrame(() => connectionsPanel.classList.remove('page-prewarm'));
+          scheduleNodePagePrewarmFrame(() => connectionsPanel.classList.remove('page-prewarm'));
         });
       });
     });
@@ -6051,10 +6165,22 @@ function scheduleNodePagePrewarm() {
   nodePagePrewarmTimer = setTimeout(() => runWhenIdle(prewarm, 350), 80);
 }
 
+function scheduleNodePagePrewarmFrame(callback) {
+  let frame = 0;
+  frame = requestAnimationFrame(() => {
+    nodePagePrewarmFrames.delete(frame);
+    callback();
+  });
+  nodePagePrewarmFrames.add(frame);
+}
+
 function cancelNodePagePrewarm() {
+  if (window.__AEGOS_TEST_DISABLE_NODE_PREWARM_CANCELLATION__ === true) return;
   nodePagePrewarmGeneration += 1;
   if (nodePagePrewarmTimer) clearTimeout(nodePagePrewarmTimer);
   nodePagePrewarmTimer = null;
+  nodePagePrewarmFrames.forEach((frame) => cancelAnimationFrame(frame));
+  nodePagePrewarmFrames.clear();
   document.querySelectorAll('.page.page-prewarm').forEach((panel) => panel.classList.remove('page-prewarm'));
 }
 
@@ -6626,8 +6752,39 @@ async function corePowerJob(kind, options = {}) {
       if (kind === 'startCore' && value?.trafficTakeover) void refreshOutboundIpAfterNodeChange();
     },
     successNotice: options.successNotice,
-    failureNotice: options.failureNotice
+    failureNotice: options.failureNotice,
+    observationWaitMs: foregroundJobObservationWaitMs,
+    onStillRunning: (job) => {
+      corePowerObservedJobId = job.id;
+      observedJobTerminalHandlers.set(job.id, async (terminal) => {
+        if (corePowerObservedJobId !== job.id) return;
+        corePowerObservedJobId = '';
+        corePowerPendingKind = '';
+        if (terminal.state === 'succeeded') {
+          const value = terminal.result;
+          if (kind === 'startCore' && !value?.trafficTakeover) {
+            standbyRemediationNotice = corePowerSuccessNotice(kind, value);
+          } else if (kind === 'startCore' || kind === 'stopCore') {
+            standbyRemediationNotice = '';
+          }
+          await refreshStatus(true);
+          await refreshNodes(true);
+          if (kind === 'startCore' && value?.trafficTakeover) void refreshOutboundIpAfterNodeChange();
+          if (options.successNotice) setNotice(resolveMessage(options.successNotice, value));
+        } else {
+          const reason = aegosIssueMessage(terminal.issue, terminal.error || terminal.message || '\u4efb\u52a1\u672a\u5b8c\u6210');
+          lastBackgroundJobError = reason;
+          lastBackgroundJobIssue = terminal.issue || null;
+          restoreUiState(snapshot);
+          await refreshStatus(true).catch(() => {});
+          if (options.failureNotice) setNotice(resolveMessage(options.failureNotice, new Error(reason)));
+        }
+        if (latestStatus) renderStatus(latestStatus);
+      });
+      void watchObservedJobTerminal(job.id);
+    }
   });
+  if (isObservedRunningJob(result)) return result;
   if (!result) {
     const reason = lastBackgroundJobError || '核心操作失败';
     restoreUiState(snapshot);
@@ -6673,23 +6830,30 @@ async function updateActiveProfile() {
 async function toggleCore() {
   const button = $('#connectBtn');
   if (button?.dataset.busy === 'true') return;
+  if (corePowerObservedJobId) {
+    setNotice('\u8fde\u63a5\u4efb\u52a1\u4ecd\u5728\u540e\u53f0\u5904\u7406\uff0c\u8bf7\u5728\u72b6\u6001\u4e2d\u5fc3\u67e5\u770b\u8be6\u60c5\u3002');
+    openStatusCenter(button);
+    return;
+  }
   const stopping = Boolean(latestStatus?.trafficTakeover);
   corePowerPendingKind = stopping ? 'stopCore' : 'startCore';
   if (button) button.textContent = connectionButtonLabel(latestStatus, corePowerPendingKind);
   setButtonBusy(button, true, '', { preserveContent: true });
   try {
     setNotice(stopping ? '正在断开连接...' : '正在建立连接...');
-    await corePowerJob(stopping ? 'stopCore' : 'startCore', {
+    const result = await corePowerJob(stopping ? 'stopCore' : 'startCore', {
       pendingNotice: stopping ? '正在后台断开连接...' : '正在后台建立连接...',
       successNotice: (result) => corePowerSuccessNotice(stopping ? 'stopCore' : 'startCore', result),
       failureNotice: (err) => `核心操作失败：${err.message || err}`
     });
+    if (isObservedRunningJob(result)) corePowerPendingKind = 'observedCore';
   } catch (err) {
     setNotice(`操作失败：${err.message || err}`);
   } finally {
-    corePowerPendingKind = '';
+    if (!corePowerObservedJobId) corePowerPendingKind = '';
     setButtonBusy(button, false, '', { preserveContent: true });
-    if (latestStatus) renderStatus(latestStatus);
+    if (corePowerObservedJobId && button) button.textContent = connectionButtonLabel(latestStatus, 'observedCore');
+    else if (latestStatus) renderStatus(latestStatus);
     else if (button) button.textContent = connectionButtonLabel({ trafficTakeover: false }, '');
   }
 }
@@ -7430,7 +7594,10 @@ async function refreshConnections(token = null) {
     const items = await invoke('connections');
     if (!isCurrentPageTask(ownerToken, 'connections')) return;
     const connectionItems = Array.isArray(items) ? items : [];
+    clearConnectionExplanation();
+    latestConnectionItems = new Map(connectionItems.map((item) => [String(item?.id || ''), item]));
     activeConnectionCount = connectionItems.length;
+    connectionSnapshotObservedAt = Date.now();
     const rendered = await renderConnectionRows(connectionItems, ownerToken, renderGeneration);
     if (!rendered) return;
     renderActiveConnectionMetric();
@@ -7460,7 +7627,15 @@ function connectionRow(item = {}) {
   const traffic = `${formatRate(item.upload)} / ${formatRate(item.download)}`;
   const target = item.target || '-';
   return el('div', { className: 'simple-row' }, [
-    el('span', { textContent: target }),
+    el('span', { className: 'connection-target-cell' }, [
+      el('span', { className: 'connection-target-label', textContent: target, attrs: { title: target } }),
+      el('button', {
+        className: 'connection-detail-trigger',
+        dataset: { connectionExplain: item.id },
+        textContent: '详情',
+        attrs: { type: 'button', title: '查看连接详情', 'aria-label': '查看连接详情', 'aria-expanded': 'false' }
+      })
+    ]),
     el('span', { textContent: item.rule || '-' }),
     el('span', { textContent: route }),
     el('span', { textContent: traffic }),
@@ -7469,6 +7644,56 @@ function connectionRow(item = {}) {
       el('button', { dataset: { closeConnection: item.id }, textContent: '\u5173\u95ed' })
     ])
   ]);
+}
+
+function connectionExplanationField(label, value) {
+  return el('div', {}, [
+    el('dt', { textContent: label }),
+    el('dd', { textContent: value || '-' })
+  ]);
+}
+
+function connectionExplanation(item = {}) {
+  const route = Array.isArray(item.route) && item.route.length ? item.route.join(' > ') : '-';
+  const transport = [item.protocol, item.network].filter((value) => String(value || '').trim()).join(' / ') || '-';
+  return el('section', {
+    className: 'connection-explain',
+    attrs: { 'aria-label': '连接详情' }
+  }, [
+    el('dl', { className: 'connection-explain-facts' }, [
+      connectionExplanationField('目标', item.target || '-'),
+      connectionExplanationField('命中规则', item.rule || '-'),
+      connectionExplanationField('代理链路', route),
+      connectionExplanationField('应用', item.process || '-'),
+      connectionExplanationField('传输', transport)
+    ])
+  ]);
+}
+
+function clearConnectionExplanation() {
+  expandedConnectionId = '';
+  $all('#connectionRows .connection-explain').forEach((detail) => detail.remove());
+  $all('#connectionRows [data-connection-explain]').forEach((button) => {
+    button.setAttribute('aria-expanded', 'false');
+    button.setAttribute('aria-label', '查看连接详情');
+    button.setAttribute('title', '查看连接详情');
+  });
+}
+
+function toggleConnectionExplanation(button) {
+  const id = String(button?.dataset.connectionExplain || '');
+  const item = latestConnectionItems.get(id);
+  const container = button?.closest('.connection-item');
+  const shouldOpen = Boolean(item && container && expandedConnectionId !== id);
+  clearConnectionExplanation();
+  if (!shouldOpen) return;
+  const detail = connectionExplanation(item);
+  container.append(detail);
+  expandedConnectionId = id;
+  button.setAttribute('aria-expanded', 'true');
+  button.setAttribute('aria-label', '收起连接详情');
+  button.setAttribute('title', '收起连接详情');
+  detail.scrollIntoView({ block: 'nearest' });
 }
 
 async function renderConnectionRows(items, token, generation) {
@@ -7485,7 +7710,10 @@ async function renderConnectionRows(items, token, generation) {
       recordUiPerformance('connection-render-cancelled', { renderedCount: offset, itemCount: items.length });
       return false;
     }
-    const rows = items.slice(offset, offset + chunkSize).map(connectionRow);
+    const rows = items.slice(offset, offset + chunkSize).map((item) => el('article', {
+      className: 'connection-item',
+      dataset: { connectionId: item.id }
+    }, [connectionRow(item)]));
     container.append(...rows);
     recordUiPerformance('connection-render-chunk', {
       renderedCount: Math.min(items.length, offset + rows.length),
@@ -7525,7 +7753,7 @@ function normalizeRoutingStaticText() {
   if (title) title.textContent = '\u89c4\u5219';
   if (subtitle) subtitle.textContent = '\u4e3a\u7f51\u7ad9\u6216\u5e94\u7528\u6307\u5b9a\u7ebf\u8def\u3002';
   const badge = $('#routingReadonlyBadge');
-  if (badge) badge.textContent = '\u9884\u89c8\u6a21\u5f0f';
+  if (badge) badge.textContent = '\u8ba2\u9605/\u7cfb\u7edf\u89c4\u5219\u53ea\u8bfb';
   const refresh = $('#refreshRoutingBtn');
   if (refresh) refresh.textContent = '\u5237\u65b0';
   const summaryLabels = panel.querySelectorAll('.routing-summary article span');
@@ -8029,14 +8257,25 @@ function routingRuleCategory(item = {}) {
   return 'config';
 }
 
-function splitRoutingRules(rawRules = []) {
+async function splitRoutingRules(rawRules = [], token, generation) {
   const rules = Array.isArray(rawRules) ? rawRules : [];
   const partitions = { userRules: [], configRules: [], systemRules: [] };
-  for (const item of rules) {
-    const category = routingRuleCategory(item);
-    if (category === 'user') partitions.userRules.push(item);
-    else if (category === 'system') partitions.systemRules.push(item);
-    else partitions.configRules.push(item);
+  const allowLegacyRoutingRender = window.__AEGOS_TEST_FORCE_LEGACY_ROUTING_RENDER__ === true;
+  const chunkSize = allowLegacyRoutingRender ? Math.max(1, rules.length) : 400;
+  for (let offset = 0; offset < rules.length; offset += chunkSize) {
+    if (!allowLegacyRoutingRender && (generation !== routingRenderGeneration || !isCurrentPageTask(token, 'routing'))) {
+      recordUiPerformance('routing-render-cancelled', { processedCount: offset, itemCount: rules.length });
+      return null;
+    }
+    const end = Math.min(rules.length, offset + chunkSize);
+    for (let index = offset; index < end; index += 1) {
+      const item = rules[index];
+      const category = routingRuleCategory(item);
+      if (category === 'user') partitions.userRules.push(item);
+      else if (category === 'system') partitions.systemRules.push(item);
+      else partitions.configRules.push(item);
+    }
+    if (end < rules.length) await yieldToMainThread();
   }
   return partitions;
 }
@@ -8868,35 +9107,45 @@ async function loadRoutingConfigRulePage(offset = 0) {
   }
 }
 
-function renderRoutingSnapshot(data = {}) {
+async function renderRoutingSnapshot(data = {}, token = pageLoadToken) {
+  const renderGeneration = ++routingRenderGeneration;
+  const snapshot = data || {};
+  const snapshotRules = Array.isArray(snapshot.rules) ? snapshot.rules : [];
+  const allowLegacyRoutingRender = window.__AEGOS_TEST_FORCE_LEGACY_ROUTING_RENDER__ === true;
+  const partitions = await splitRoutingRules(snapshotRules, token, renderGeneration);
+  if (!partitions) return false;
+  if (!allowLegacyRoutingRender && (renderGeneration !== routingRenderGeneration || !isCurrentPageTask(token, 'routing'))) {
+    recordUiPerformance('routing-render-cancelled', { processedCount: snapshotRules.length, itemCount: snapshotRules.length });
+    return false;
+  }
   ensureRoutingAssistantUi();
   routingAdvancedRuleOffset = 0;
   routingConfigRuleRequestSeq += 1;
-  latestRoutingSnapshot = data || {};
-  latestRoutingRulePartitions = splitRoutingRules(Array.isArray(data.rules) ? data.rules : []);
+  latestRoutingSnapshot = snapshot;
+  latestRoutingRulePartitions = partitions;
   routingConfigRulePage = {
-    profileId: data.configRulePage?.profileId || latestStatus?.settings?.activeProfileId || '',
-    offset: Number(data.configRulePage?.offset || 0),
-    limit: Number(data.configRulePage?.limit || routingAdvancedRulePageSize),
-    total: Number(data.configRulePage?.total ?? latestRoutingRulePartitions.configRules.length),
-    items: Array.isArray(data.configRulePage?.items)
-      ? data.configRulePage.items
+    profileId: snapshot.configRulePage?.profileId || latestStatus?.settings?.activeProfileId || '',
+    offset: Number(snapshot.configRulePage?.offset || 0),
+    limit: Number(snapshot.configRulePage?.limit || routingAdvancedRulePageSize),
+    total: Number(snapshot.configRulePage?.total ?? latestRoutingRulePartitions.configRules.length),
+    items: Array.isArray(snapshot.configRulePage?.items)
+      ? snapshot.configRulePage.items
       : latestRoutingRulePartitions.configRules.slice(0, routingAdvancedRulePageSize)
   };
   refreshRoutingTargetOptions();
-  const groups = Array.isArray(data.groups) ? data.groups : [];
+  const groups = Array.isArray(snapshot.groups) ? snapshot.groups : [];
   const { userRules: rules, systemRules } = latestRoutingRulePartitions;
-  const summary = data.summary || {};
-  $('#routingModeState').textContent = modeLabel(data.mode || latestStatus?.mode || 'rule');
+  const summary = snapshot.summary || {};
+  $('#routingModeState').textContent = modeLabel(snapshot.mode || latestStatus?.mode || 'rule');
   $('#routingGroupCount').textContent = String(summary.groupCount ?? groups.length);
   $('#routingRuleHitCount').textContent = String(summary.userRuleCount ?? rules.length);
   $('#routingSystemRuleCount').textContent = String(systemRules.length);
-  if (!routingApplyStatus && data.lastApply) {
+  if (!routingApplyStatus && snapshot.lastApply) {
     routingApplyStatus = {
       state: 'applied',
-      profileName: data.lastApply.profileName || '',
-      appliedCount: data.lastApply.appliedCount || 0,
-      rollbackAvailable: Boolean(data.lastApply.rollbackAvailable),
+      profileName: snapshot.lastApply.profileName || '',
+      appliedCount: snapshot.lastApply.appliedCount || 0,
+      rollbackAvailable: Boolean(snapshot.lastApply.rollbackAvailable),
       detail: '\u68c0\u6d4b\u5230\u6700\u8fd1\u4e00\u6b21 Aegos \u5e94\u7528\u7684\u5206\u6d41\u89c4\u5219\uff0c\u53ef\u5728\u672c\u9875\u64a4\u9500\u3002'
     };
   }
@@ -8912,10 +9161,12 @@ function renderRoutingSnapshot(data = {}) {
     el('span', { textContent: item.automatic ? '\u81ea\u52a8\u9009\u62e9\uff0c\u6d4b\u901f\u4e0d\u4f1a\u624b\u52a8\u5207\u6362' : '\u624b\u52a8\u9009\u62e9' })
   ]));
   replaceChildrenSafe($('#routingGroupRows'), groupRows.length ? groupRows : [emptyState('\u6682\u65e0\u7b56\u7565\u7ec4\u6570\u636e\u3002')]);
-  renderRoutingAdvancedRuleRows(data);
+  renderRoutingAdvancedRuleRows(snapshot);
   setRoutingSummaryDetail(routingSummaryDetail);
   renderRoutingDraftList();
   renderRoutingApplyStatus();
+  recordUiPerformance('routing-render-complete', { itemCount: rules.length });
+  return true;
 }
 
 async function submitRoutingRuleForm() {
@@ -9010,7 +9261,9 @@ async function resolveUnboundRoutingRule(ruleId, action) {
 }
 
 function fetchRoutingSnapshot() {
-  return invoke('routing_snapshot');
+  return invoke('routing_snapshot', {
+    profileId: latestStatus?.settings?.activeProfileId || latestStatus?.activeProfile?.id || ''
+  });
 }
 
 async function prefetchRoutingSnapshot() {
@@ -9041,7 +9294,8 @@ async function loadRoutingPage(token = null) {
   if (prefetchedRoutingSnapshot) {
     const data = prefetchedRoutingSnapshot;
     prefetchedRoutingSnapshot = null;
-    renderRoutingSnapshot(data);
+    const rendered = await renderRoutingSnapshot(data, token);
+    if (!rendered) return;
     markPageCache('routing');
     return;
   }
@@ -9062,6 +9316,9 @@ function scheduleRoutingSnapshotPrefetch(delay = 9000) {
 }
 
 async function refreshRoutingSnapshot(token = null) {
+  const ownerToken = token ?? pageLoadToken;
+  const allowLegacyRoutingRender = window.__AEGOS_TEST_FORCE_LEGACY_ROUTING_RENDER__ === true;
+  if (!isCurrentPageTask(ownerToken, 'routing')) return;
   if (pageCacheState.routing.loading) return;
   const seq = ++routingRequestSeq;
   const profileId = latestStatus?.settings?.activeProfileId || latestStatus?.activeProfile?.id || '';
@@ -9071,18 +9328,29 @@ async function refreshRoutingSnapshot(token = null) {
     const data = await fetchRoutingSnapshot();
     const activeProfileId = latestStatus?.settings?.activeProfileId || latestStatus?.activeProfile?.id || '';
     if (seq !== routingRequestSeq || activeProfileId !== profileId) return;
-    if (!isCurrentPageTask(token, 'routing')) return;
-    renderRoutingSnapshot(data || {});
+    if (!allowLegacyRoutingRender && !isCurrentPageTask(ownerToken, 'routing')) return;
+    const observation = data?.snapshotObservation || {};
+    if (observation.state === 'loading' && displaySnapshotFallbackEnabled) {
+      setTransientNotice('规则数据正在更新，等待当前操作发布首个快照。');
+    } else if (observation.state === 'cached') {
+      setTransientNotice('规则正在更新，当前显示上次读取的快照。');
+    }
+    const snapshot = observation.state === 'loading' && !displaySnapshotFallbackEnabled
+      ? { groups: [], rules: [], ruleError: '规则数据暂时不可用' }
+      : (data || {});
+    const rendered = await renderRoutingSnapshot(snapshot, ownerToken);
+    if (!rendered) return;
     markPageCache('routing');
   } catch (err) {
     const activeProfileId = latestStatus?.settings?.activeProfileId || latestStatus?.activeProfile?.id || '';
     if (seq !== routingRequestSeq || activeProfileId !== profileId) return;
-    if (!isCurrentPageTask(token, 'routing')) return;
-    renderRoutingSnapshot({
+    if (!allowLegacyRoutingRender && !isCurrentPageTask(ownerToken, 'routing')) return;
+    const rendered = await renderRoutingSnapshot({
       groups: [],
       rules: [],
       ruleError: `\u5206\u6d41\u6570\u636e\u6682\u65f6\u4e0d\u53ef\u7528\uff1a${err.message || err}`
-    });
+    }, ownerToken);
+    if (!rendered) return;
     replaceChildrenSafe($('#routingGroupRows'), [emptyState('\u5feb\u7167\u672a\u52a0\u8f7d\uff0c\u4f46\u4f60\u4ecd\u53ef\u4ee5\u5148\u521b\u5efa\u672a\u751f\u6548\u8349\u7a3f\u3002')]);
     markPageCache('routing');
   } finally {
@@ -9186,6 +9454,19 @@ function diagnosticIssueRow(item) {
       el('code', { textContent: item.technicalDetail })
     ])
     : null;
+  const receipt = diagnosticRepairReceipts.get(item.code);
+  const receiptCopy = {
+    verified: '\u590d\u68c0\u5df2\u786e\u8ba4\u6062\u590d\u6b63\u5e38\u3002',
+    unresolved: '\u4fee\u590d\u5df2\u6267\u884c\uff0c\u4f46\u590d\u68c0\u4ecd\u53d1\u73b0\u6b64\u95ee\u9898\u3002',
+    unverified: '\u4fee\u590d\u5df2\u6267\u884c\uff0c\u4f46\u672c\u6b21\u590d\u68c0\u672a\u80fd\u786e\u8ba4\u8be5\u9879\u3002',
+    failed: '\u4fee\u590d\u672a\u5b8c\u6210\uff0c\u672a\u6539\u53d8\u5f53\u524d\u8bca\u65ad\u7ed3\u679c\u3002'
+  };
+  const receiptRow = receipt
+    ? el('div', { className: `diagnostic-repair-receipt is-${receipt.state}`, attrs: { role: 'status' } }, [
+      el('b', { textContent: '\u672c\u6b21\u4fee\u590d\u590d\u68c0' }),
+      el('span', { textContent: receiptCopy[receipt.state] || receiptCopy.unverified })
+    ])
+    : null;
   return el('article', {
     className: `diagnostic-row severity-${item.severity}`,
     dataset: { diagnosticCode: item.code }
@@ -9200,7 +9481,8 @@ function diagnosticIssueRow(item) {
         el('b', { textContent: '建议' }),
         el('span', { textContent: item.hint })
       ]) : null,
-      technical
+      technical,
+      receiptRow
     ]),
     el('div', { className: 'diagnostic-row-actions' }, [
       el('span', {
@@ -9239,15 +9521,31 @@ function renderDiagnosticSummary(data, checks) {
 }
 
 function renderDiagnosticRows(checks) {
+  const receiptOnlyChecks = [...diagnosticRepairReceipts.entries()]
+    .filter(([code, receipt]) => receipt.state === 'unverified' && !checks.some((item) => item.code === code))
+    .map(([code, receipt]) => ({
+      name: receipt.item?.name || 'diagnostic recheck',
+      title: receipt.item?.title || code,
+      code,
+      ok: false,
+      severity: 'warning',
+      category: receipt.item?.category || 'connection',
+      detail: '\u672c\u6b21\u590d\u68c0\u672a\u8fd4\u56de\u8be5\u9879\uff0c\u65e0\u6cd5\u786e\u8ba4\u4fee\u590d\u7ed3\u679c\u3002',
+      technicalDetail: '',
+      hint: '',
+      repair: { available: false },
+      actionable: false
+    }));
+  const displayChecks = [...checks, ...receiptOnlyChecks];
   $all('[data-diagnostic-category]').forEach((button) => {
     const category = button.dataset.diagnosticCategory || 'all';
-    const count = category === 'all' ? checks.length : checks.filter((item) => item.category === category).length;
+    const count = category === 'all' ? displayChecks.length : displayChecks.filter((item) => item.category === category).length;
     button.classList.toggle('active', category === diagnosticCategoryFilter);
     button.textContent = `${category === 'all' ? '全部' : (diagnosticCategoryLabels[category] || category)} ${count}`;
   });
   const filtered = diagnosticCategoryFilter === 'all'
-    ? checks
-    : checks.filter((item) => item.category === diagnosticCategoryFilter);
+    ? displayChecks
+    : displayChecks.filter((item) => item.category === diagnosticCategoryFilter);
   const groups = diagnosticCategoryOrder
     .map((category) => ({
       category,
@@ -9291,6 +9589,10 @@ function renderCachedDiagnostics() {
 
 async function runDiagnostics(showNotice = true, token = null) {
   if (pageCacheState.diagnostics.loading) return;
+  if (showNotice && diagnosticRepairReceipts.size) {
+    diagnosticRepairReceipts.clear();
+    if (isPageActive('diagnostics') && diagnosticView === 'overview') renderCachedDiagnostics();
+  }
   pageCacheState.diagnostics.loading = true;
   try {
     const data = await runBackgroundJob('diagnostics', {}, {
@@ -9299,6 +9601,13 @@ async function runDiagnostics(showNotice = true, token = null) {
       pollMs: 300
     });
     if (!data) throw new Error(lastBackgroundJobError || '诊断任务未完成');
+    const observation = data.snapshotObservation || {};
+    if (observation.state === 'loading') {
+      if (isCurrentPageTask(token, 'diagnostics')) renderCachedDiagnostics();
+      if (showNotice) setNotice('诊断数据正在更新，等待当前操作发布首个快照。');
+      markPageCache('diagnostics');
+      return;
+    }
     latestDiagnostics = data;
     syncActionAvailability();
     if (!isCurrentPageTask(token, 'diagnostics')) {
@@ -9310,7 +9619,11 @@ async function runDiagnostics(showNotice = true, token = null) {
     renderDiagnosticRows(checks);
     const errors = checks.filter((item) => item.severity === 'error').length;
     const warnings = checks.filter((item) => item.severity === 'warning').length;
-    if (showNotice) setNotice(`诊断完成：正常 ${checks.filter((item) => item.ok).length}，错误 ${errors}，警告 ${warnings}`);
+    if (showNotice) {
+      setNotice(observation.state === 'cached'
+        ? '诊断正在更新，当前显示上次读取的快照。'
+        : `诊断完成：正常 ${checks.filter((item) => item.ok).length}，错误 ${errors}，警告 ${warnings}`);
+    }
     markPageCache('diagnostics');
   } catch (err) {
     if (!isCurrentPageTask(token, 'diagnostics')) return;
@@ -9336,13 +9649,20 @@ async function runDiagnosticRepair(button, action, code) {
     await runDetachedButtonAction(button, '正在重启...', () => invoke('relaunch_as_admin'));
     return;
   }
+  const receiptItem = (latestDiagnostics?.checks || [])
+    .map(normalizeDiagnosticCheck)
+    .find((item) => item.code === code);
   runDetachedButtonAction(button, '修复中...', async () => {
     const result = await runBackgroundJob('repairDiagnostic', { action }, {
       pendingNotice: '正在后台修复，其他页面仍可使用...',
       progressNotice: () => '',
       pollMs: 300
     });
-    if (!result) return;
+    if (!result) {
+      diagnosticRepairReceipts.set(code, { state: 'failed', item: receiptItem });
+      renderCachedDiagnostics();
+      return;
+    }
     setNotice('修复步骤已完成，正在重新检查...');
     await refreshStatus(true).catch(() => {});
     await runDiagnostics(false);
@@ -9350,6 +9670,11 @@ async function runDiagnosticRepair(button, action, code) {
       .map(normalizeDiagnosticCheck)
       .filter((item) => item.code === code);
     const verified = matchingChecks.length > 0 && matchingChecks.every((item) => item.ok);
+    diagnosticRepairReceipts.set(code, {
+      state: !matchingChecks.length ? 'unverified' : verified ? 'verified' : 'unresolved',
+      item: receiptItem
+    });
+    renderCachedDiagnostics();
     setNotice(verified ? '修复已验证，当前项目恢复正常' : '修复已执行，但问题仍存在，请按建议继续处理');
   });
 }
@@ -9443,6 +9768,8 @@ $('#closeAllConnectionsBtn').onclick = async (event) => {
   runButtonAction(event.currentTarget, '关闭中...', () => runOptimisticAction({
     apply: () => {
       activeConnectionCount = 0;
+      connectionSnapshotObservedAt = 0;
+      latestConnectionItems.clear();
       replaceChildrenSafe($('#connectionRows'), [connectionEmptyState()]);
       renderActiveConnectionMetric();
     },
@@ -9933,6 +10260,11 @@ document.body.addEventListener('click', async (event) => {
     if (cancelRoutingRuleButton) {
       routingRuleEditRaw = '';
       setRoutingSummaryDetail('user');
+      return;
+    }
+    const connectionExplainButton = event.target.closest('[data-connection-explain]');
+    if (connectionExplainButton) {
+      toggleConnectionExplanation(connectionExplainButton);
       return;
     }
     const closeButton = event.target.closest('[data-close-connection]');

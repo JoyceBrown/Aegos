@@ -680,6 +680,8 @@ struct AppState {
     status_cache: Arc<Mutex<Option<JsonValue>>>,
     diagnostics_cache: Arc<Mutex<Option<JsonValue>>>,
     connections_cache: Arc<Mutex<Option<JsonValue>>>,
+    proxy_groups_cache: Arc<Mutex<Option<JsonValue>>>,
+    routing_cache: Arc<Mutex<Option<JsonValue>>>,
 }
 
 fn lock_state<'a, T>(state: &'a Mutex<T>, label: &str) -> Result<MutexGuard<'a, T>, String> {
@@ -705,6 +707,54 @@ fn now_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn cached_display_snapshot(
+    cache: &Arc<Mutex<Option<JsonValue>>>,
+    expected_profile_id: Option<&str>,
+    label: &str,
+) -> Result<JsonValue, String> {
+    let expected = expected_profile_id.unwrap_or_default();
+    let cached = lock_state(cache, label)?.clone();
+    if let Some(mut snapshot) = cached.filter(|value| {
+        value
+            .get("snapshotProfileId")
+            .and_then(JsonValue::as_str)
+            .unwrap_or_default()
+            == expected
+    }) {
+        if let Some(map) = snapshot.as_object_mut() {
+            map.insert(
+                "snapshotObservation".to_string(),
+                json!({ "state": "cached", "profileId": expected }),
+            );
+        }
+        return Ok(snapshot);
+    }
+    Ok(json!({
+        "snapshotProfileId": expected,
+        "snapshotObservation": { "state": "loading", "profileId": expected }
+    }))
+}
+
+fn cached_diagnostics_display_snapshot(
+    cache: &Arc<Mutex<Option<JsonValue>>>,
+) -> Result<JsonValue, String> {
+    let mut report = lock_state(cache, "diagnostics cache")?
+        .clone()
+        .unwrap_or_else(|| json!({ "checks": [] }));
+    let observation = if report.get("generatedAt").is_some() {
+        "cached"
+    } else {
+        "loading"
+    };
+    if let Some(map) = report.as_object_mut() {
+        map.insert(
+            "snapshotObservation".to_string(),
+            json!({ "state": observation }),
+        );
+    }
+    Ok(report)
 }
 
 fn hex_random(bytes: usize) -> String {
@@ -1751,6 +1801,61 @@ fn query_outbound_ip_family(mixed_port: u16, family: &str) -> Result<String, Str
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn display_cache_returns_only_the_matching_profile_or_explicit_loading() {
+        let cache = Arc::new(Mutex::new(Some(json!({
+            "groups": [{ "name": "GLOBAL" }],
+            "snapshotProfileId": "profile-a",
+            "snapshotObservation": { "state": "current", "profileId": "profile-a" }
+        }))));
+
+        let cached = cached_display_snapshot(&cache, Some("profile-a"), "fixture")
+            .expect("matching snapshot");
+        assert_eq!(cached["snapshotObservation"]["state"], "cached");
+        assert_eq!(cached["groups"][0]["name"], "GLOBAL");
+
+        let loading = cached_display_snapshot(&cache, Some("profile-b"), "fixture")
+            .expect("mismatched snapshot must not leak");
+        assert_eq!(loading["snapshotObservation"]["state"], "loading");
+        assert!(loading.get("groups").is_none());
+    }
+
+    #[test]
+    fn display_cache_lock_contention_has_a_deterministic_nonblocking_fixture() {
+        let core_lock = Mutex::new(());
+        let _writer = core_lock.lock().expect("fixture writer lock");
+        assert!(matches!(
+            core_lock.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ));
+        let cache = Arc::new(Mutex::new(Some(json!({
+            "groups": [{ "name": "GLOBAL" }],
+            "snapshotProfileId": "profile-a"
+        }))));
+        let fallback = cached_display_snapshot(&cache, Some("profile-a"), "fixture")
+            .expect("contention fallback");
+        assert_eq!(fallback["snapshotObservation"]["state"], "cached");
+        assert_eq!(fallback["groups"][0]["name"], "GLOBAL");
+    }
+
+    #[test]
+    fn diagnostics_cache_returns_a_complete_report_or_explicit_loading() {
+        let full_cache = Arc::new(Mutex::new(Some(json!({
+            "generatedAt": "2026-07-28T00:00:00Z",
+            "checks": [{ "code": "AEG-CON-001" }]
+        }))));
+        let cached =
+            cached_diagnostics_display_snapshot(&full_cache).expect("complete diagnostics cache");
+        assert_eq!(cached["snapshotObservation"]["state"], "cached");
+        assert_eq!(cached["checks"][0]["code"], "AEG-CON-001");
+
+        let cold_cache = Arc::new(Mutex::new(None));
+        let loading =
+            cached_diagnostics_display_snapshot(&cold_cache).expect("cold diagnostics state");
+        assert_eq!(loading["snapshotObservation"]["state"], "loading");
+        assert_eq!(loading["checks"], json!([]));
+    }
 
     struct LocalSubscriptionReply {
         body: String,
@@ -4804,13 +4909,26 @@ rules:
         }
         system_takeover::set_component_active(&root, "tun", true)
             .expect("temporary isolated recovery marker");
+        let tun_evidence = network_runtime::windows_tun_evidence()
+            .expect("read-only Aegos TUN evidence before isolated recovery");
+        let host_tun_takeover_active = tun_evidence
+            .get("active_adapter_count")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(0)
+            > 0
+            && tun_evidence
+                .get("route_count")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0)
+                > 0;
         let recovered =
             CoreManager::new_with_paths(root.clone(), root.join("recovery-missing-mihomo.exe"))
                 .expect("safe startup recovery with no managed core process");
         assert!(!recovered.settings.tun_enabled);
-        assert!(
-            !system_takeover::active_takeover_state(&root).any_active(),
-            "startup recovery clears the isolated TUN marker"
+        assert_eq!(
+            system_takeover::active_takeover_state(&root).tun,
+            host_tun_takeover_active,
+            "startup recovery clears an isolated marker only after Aegos-owned TUN evidence confirms no active takeover"
         );
     }
 
@@ -11024,6 +11142,34 @@ fn diagnostics_detached(core: Arc<Mutex<CoreManager>>) -> Result<JsonValue, Stri
     Ok(diagnostics_from_snapshot(take_diagnostics_snapshot(core)?))
 }
 
+fn diagnostics_display_snapshot(
+    core: Arc<Mutex<CoreManager>>,
+    cache: &Arc<Mutex<Option<JsonValue>>>,
+) -> Result<JsonValue, String> {
+    let (mut report, observation) = match core.try_lock() {
+        Ok(core) => (
+            diagnostics_from_snapshot(take_diagnostics_snapshot_from_core(core)?),
+            "current",
+        ),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return cached_diagnostics_display_snapshot(cache)
+        }
+        Err(std::sync::TryLockError::Poisoned(_)) => {
+            return Err("core state lock poisoned".to_string())
+        }
+    };
+    if observation == "current" {
+        *lock_state(cache, "diagnostics cache")? = Some(report.clone());
+    }
+    if let Some(map) = report.as_object_mut() {
+        map.insert(
+            "snapshotObservation".to_string(),
+            json!({ "state": observation }),
+        );
+    }
+    Ok(report)
+}
+
 fn add_profile_url_detached(
     core: Arc<Mutex<CoreManager>>,
     operations: runtime_command::RuntimeOperationCoordinator,
@@ -11898,6 +12044,7 @@ fn start_job(
     let jobs = state.jobs.clone();
     let operations = state.operations.clone();
     let app_data = state.app_data.clone();
+    let diagnostics_cache = state.diagnostics_cache.clone();
     thread::spawn(move || {
         let panic_jobs = jobs.clone();
         let panic_id = id.clone();
@@ -12018,7 +12165,7 @@ fn start_job(
                 }
                 "diagnostics" => {
                     set_job_state(&jobs, &id, "running", 1, 2, "正在检查网络状态");
-                    diagnostics_detached(core.clone())
+                    diagnostics_display_snapshot(core.clone(), &diagnostics_cache)
                 }
                 "repairDiagnostic" => (|| -> Result<JsonValue, String> {
                     let action = payload
@@ -12439,9 +12586,21 @@ fn relaunch_as_admin(app: AppHandle) -> Result<bool, String> {
 }
 
 #[tauri::command]
-async fn proxy_groups(state: State<'_, AppState>) -> Result<JsonValue, String> {
+async fn proxy_groups(
+    state: State<'_, AppState>,
+    profile_id: Option<String>,
+) -> Result<JsonValue, String> {
+    let cache = Arc::clone(&state.proxy_groups_cache);
     let (running, controller, active_profile, selected_map, manual_nodes, speed) = {
-        let core = lock_state(&state.core, "core")?;
+        let core = match state.core.try_lock() {
+            Ok(core) => core,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return cached_display_snapshot(&cache, profile_id.as_deref(), "proxy groups cache")
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err("core state lock poisoned".to_string())
+            }
+        };
         let active_profile = core.active_profile();
         let manual_nodes = active_profile
             .as_ref()
@@ -12457,18 +12616,28 @@ async fn proxy_groups(state: State<'_, AppState>) -> Result<JsonValue, String> {
             speed,
         )
     };
-    tauri::async_runtime::spawn_blocking(move || {
-        Ok(assemble_proxy_groups_snapshot(
+    let snapshot_profile_id = active_profile
+        .as_ref()
+        .map(|profile| profile.id.clone())
+        .unwrap_or_default();
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+        json!({
+            "groups": assemble_proxy_groups_snapshot(
             running,
             controller,
             active_profile,
             selected_map,
             manual_nodes,
             speed,
-        ))
+            ),
+            "snapshotProfileId": snapshot_profile_id,
+            "snapshotObservation": { "state": "current", "profileId": snapshot_profile_id }
+        })
     })
     .await
-    .map_err(|err| format!("Proxy snapshot worker stopped: {err}"))?
+    .map_err(|err| format!("Proxy snapshot worker stopped: {err}"))?;
+    *lock_state(&cache, "proxy groups cache")? = Some(snapshot.clone());
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -14338,12 +14507,24 @@ fn test_routing_website(state: State<AppState>, input: String) -> Result<JsonVal
 }
 
 #[tauri::command]
-fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
+fn routing_snapshot(
+    state: State<AppState>,
+    profile_id: Option<String>,
+) -> Result<JsonValue, String> {
     // This snapshot feeds an interactive page. Keep an observation record so a
     // slow profile or controller can be diagnosed without guessing in the UI.
     let observed_at = Instant::now();
+    let cache = Arc::clone(&state.routing_cache);
     let (running, controller, mode, groups, active_profile, profile_ids, last_apply) = {
-        let core = state.core.lock().unwrap();
+        let core = match state.core.try_lock() {
+            Ok(core) => core,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return cached_display_snapshot(&cache, profile_id.as_deref(), "routing cache")
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err("core state lock poisoned".to_string())
+            }
+        };
         (
             core.process.is_some(),
             core.core_controller(),
@@ -14533,7 +14714,11 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
         .collect::<Vec<_>>();
     let missing_rule_target_count = missing_rule_targets.len();
     let rule_order_issue_count = rule_order_issues.len();
-    Ok(json!({
+    let snapshot_profile_id = active_profile
+        .as_ref()
+        .map(|profile| profile.id.clone())
+        .unwrap_or_default();
+    let snapshot = json!({
         "readOnly": true,
         "mode": mode,
         "groups": group_rows,
@@ -14572,7 +14757,11 @@ fn routing_snapshot(state: State<AppState>) -> Result<JsonValue, String> {
             "ruleOrderIssues": rule_order_issue_count
             ,"unboundUserRuleCount": stored_user_rules.rules.iter().filter(|rule| rule.scope.profile_id().is_some_and(|id| !profile_ids.contains(id))).count()
         }
-    }))
+        ,"snapshotProfileId": snapshot_profile_id,
+        "snapshotObservation": { "state": "current", "profileId": snapshot_profile_id }
+    });
+    *lock_state(&cache, "routing cache")? = Some(snapshot.clone());
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -14695,17 +14884,7 @@ fn delete_manual_node(state: State<AppState>, name: String) -> Result<JsonValue,
 
 #[tauri::command]
 fn diagnostics(state: State<AppState>) -> Result<JsonValue, String> {
-    let report = match state.core.try_lock() {
-        Ok(core) => diagnostics_from_snapshot(take_diagnostics_snapshot_from_core(core)?),
-        Err(std::sync::TryLockError::WouldBlock) => lock_state(&state.diagnostics_cache, "diagnostics cache")?
-            .clone()
-            .ok_or_else(|| "Diagnostics are preparing; retry after the active operation publishes its first snapshot".to_string())?,
-        Err(std::sync::TryLockError::Poisoned(_)) => {
-            return Err("core state lock poisoned".to_string())
-        }
-    };
-    *lock_state(&state.diagnostics_cache, "diagnostics cache")? = Some(report.clone());
-    Ok(report)
+    diagnostics_display_snapshot(state.core.clone(), &state.diagnostics_cache)
 }
 
 #[tauri::command]
@@ -14772,6 +14951,8 @@ fn main() {
                 status_cache: Arc::new(Mutex::new(None)),
                 diagnostics_cache: Arc::new(Mutex::new(None)),
                 connections_cache: Arc::new(Mutex::new(None)),
+                proxy_groups_cache: Arc::new(Mutex::new(None)),
+                routing_cache: Arc::new(Mutex::new(None)),
             });
             thread::spawn(move || {
                 // Integrity metadata is diagnostic information. Read the binary

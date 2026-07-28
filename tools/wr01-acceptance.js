@@ -47,6 +47,11 @@ const requiredCommands = [
   command('outbound-ip-audit', 'npm run audit:outbound-ip', process.execPath, [npmCli, 'run', 'audit:outbound-ip']),
   command('core-runtime-audit', 'npm run audit:core-runtime', process.execPath, [npmCli, 'run', 'audit:core-runtime']),
   command('runtime-regression-audit', 'npm run audit:runtime-regression', process.execPath, [npmCli, 'run', 'audit:runtime-regression']),
+  command('routing-product-audit', 'npm run audit:routing-product', process.execPath, [npmCli, 'run', 'audit:routing-product']),
+  command('routing-readonly-audit', 'npm run audit:routing-readonly', process.execPath, [npmCli, 'run', 'audit:routing-readonly']),
+  command('connection-closure-audit', 'npm run audit:connection-closure', process.execPath, [npmCli, 'run', 'audit:connection-closure']),
+  command('global-interaction-product-audit', 'npm run audit:global-interaction-product', process.execPath, [npmCli, 'run', 'audit:global-interaction-product']),
+  command('debt-audit', 'npm run audit:debt', process.execPath, [npmCli, 'run', 'audit:debt']),
   command('control-plane-audit', 'npm run audit:control-plane', process.execPath, [npmCli, 'run', 'audit:control-plane']),
   command('architecture-audit', 'npm run audit:architecture', process.execPath, [npmCli, 'run', 'audit:architecture']),
   command('planning-context-audit', 'npm run audit:planning-context', process.execPath, [npmCli, 'run', 'audit:planning-context']),
@@ -63,6 +68,7 @@ const gateFiles = [
   'docs/INDEX.md', 'docs/product.md', 'docs/architecture.md', 'docs/roadmap.md',
   'docs/decisions/windows-reliability-mainline.md', 'docs/work/current.md',
   'docs/work/windows-reliability-wr01.md', 'docs/work/windows-reliability-wr02.md',
+  'docs/work/windows-reliability-wr15.md',
   'tools/wr01-acceptance.js', 'tools/candidate-provenance-audit.js',
   'src-tauri/tauri.native-perf.conf.json',
   'tools/wm03-interruption-harness.js', 'tools/planning-context-audit.js', 'tools/interaction-smoke.js',
@@ -70,7 +76,9 @@ const gateFiles = [
   'tools/native-perf-smoke.js', 'tools/backend-audit.js', 'tools/responsiveness-audit.js',
   'tools/stability-regression-audit.js', 'tools/security-hotfix-audit.js',
   'tools/ipv6-dns-safety-audit.js', 'tools/outbound-ip-audit.js', 'tools/core-runtime-audit.js',
-  'tools/runtime-regression-gate-audit.js', 'tools/control-plane-audit.js',
+  'tools/runtime-regression-gate-audit.js', 'tools/routing-product-audit.js',
+  'tools/routing-readonly-audit.js', 'tools/connection-closure-audit.js',
+  'tools/global-interaction-product-audit.js', 'tools/debt-audit.js', 'tools/control-plane-audit.js',
   'tools/architecture-freeze-audit.js', 'tools/local-backup-audit.js'
 ];
 const expectedFindings = ['WR01-001', 'WR01-002', 'WR01-003', 'WR01-004', 'WR01-005', 'WR01-006', 'WR01-007'];

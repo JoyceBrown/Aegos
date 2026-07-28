@@ -53,11 +53,25 @@ diagnostics do not change the active network.
 - Connect, disconnect, system proxy, TUN, kill-switch, and recovery journals.
 - Measurement-only node testing, outlet identity, DNS and IPv6 effective
   state, diagnostics, and redacted export.
+- On-demand connection explanation from the current Aegos-normalized connection
+  snapshot. It is visible only for a user-selected connection and shows only
+  the available target, matched rule, managed route, process, and transport
+  facts; it does not claim per-connection DNS or outlet facts that were not
+  observed.
+- A user-run diagnostic repair that returns to the current Aegos session
+  retains an item-scoped recheck receipt: verified, unresolved, or unavailable.
+  It is not a persisted repair history and does not imply that a new diagnosis
+  has been run.
 - Controlled rules and YAML extensions with line-level errors, intent preview,
   preflight, transactional apply, and rollback.
+- Aegos-owned user rules are structured product state and may be edited only
+  through preflighted product commands. Subscription/Mihomo rules and Aegos
+  protection rules are observable but read-only; neither raw runtime YAML nor
+  Controller data is editable from the UI.
 - Managed Mihomo identity, capability, and configuration admission.
 - DPAPI local backup and disconnected restore of settings, subscription
-  configuration, and user routing rules only.
+  configuration, and user routing rules only. Restore confirmation identifies
+  the selected local snapshot before it can replace current product data.
 
 ## Windows Reliability Definition
 
