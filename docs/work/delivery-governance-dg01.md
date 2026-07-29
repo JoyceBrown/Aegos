@@ -117,6 +117,16 @@ hashes byte-exact. Its fixtures require identical LF/CRLF pin results and still
 reject a one-byte text mutation. This second failure also remains historical
 evidence rather than being overwritten by a later run.
 
+The third pushed workflow run, `30434882044` at repair commit `0188d02`,
+passed Rust formatting/tests, all tracked JavaScript syntax, npm security,
+architecture, control-plane, debt plus its bad fixtures, and planning before
+failing at `audit:licenses`. The root Aegos and retained Mihomo GPL texts still
+used raw checkout bytes and byte counts, so their LF provenance pins rejected
+CRLF checkout material. The follow-up applies the same CR/LF-only text
+canonicalization to these two repository GPL files, checks their canonical
+35,149-byte identity, and adds an integrated CRLF audit control while keeping
+tampered GPL text rejected. The third failed run remains historical evidence.
+
 ## Exact Next Action
 
 Validate the workflow and updated gate inputs locally, commit and push the CI

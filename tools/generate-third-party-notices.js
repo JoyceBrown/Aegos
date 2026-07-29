@@ -14,10 +14,17 @@ function normalize(text) {
   return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\s+$/u, '') + '\n';
 }
 
-export function repositoryTextSha256(value) {
+export function canonicalRepositoryText(value) {
   const text = Buffer.isBuffer(value) ? value.toString('utf8') : String(value);
-  const canonical = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  return crypto.createHash('sha256').update(canonical, 'utf8').digest('hex');
+  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+export function repositoryTextSha256(value) {
+  return crypto.createHash('sha256').update(canonicalRepositoryText(value), 'utf8').digest('hex');
+}
+
+export function repositoryTextBytes(value) {
+  return Buffer.byteLength(canonicalRepositoryText(value), 'utf8');
 }
 
 function runCargoTree() {

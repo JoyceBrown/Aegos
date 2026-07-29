@@ -1,7 +1,7 @@
 {
   "ok": true,
   "version": "3.6.71",
-  "generatedAt": "2026-07-29T08:10:39.495Z",
+  "generatedAt": "2026-07-29T08:26:05.206Z",
   "cycles": 16,
   "commandCount": 262,
   "jobKinds": [
@@ -18,7 +18,7 @@
       "elements": 1571,
       "nodeRows": 48,
       "homeRows": 8,
-      "heap": 2598164,
+      "heap": 2580968,
       "timers": {
         "intervals": 3,
         "timeouts": 2
@@ -29,7 +29,7 @@
       "elements": 1083,
       "nodeRows": 8,
       "homeRows": 8,
-      "heap": 2549073,
+      "heap": 2553313,
       "timers": {
         "intervals": 3,
         "timeouts": 1
@@ -40,7 +40,7 @@
       "elements": 1083,
       "nodeRows": 8,
       "homeRows": 8,
-      "heap": 2585971,
+      "heap": 2319227,
       "timers": {
         "intervals": 3,
         "timeouts": 1
@@ -51,7 +51,7 @@
       "elements": 1083,
       "nodeRows": 8,
       "homeRows": 8,
-      "heap": 2704531,
+      "heap": 2784607,
       "timers": {
         "intervals": 3,
         "timeouts": 1
@@ -62,7 +62,7 @@
       "elements": 1083,
       "nodeRows": 8,
       "homeRows": 8,
-      "heap": 2756343,
+      "heap": 2601027,
       "timers": {
         "intervals": 3,
         "timeouts": 1
@@ -73,7 +73,7 @@
       "elements": 1083,
       "nodeRows": 8,
       "homeRows": 8,
-      "heap": 3169795,
+      "heap": 3015800,
       "timers": {
         "intervals": 3,
         "timeouts": 1
@@ -83,7 +83,7 @@
   "dom": {
     "before": {
       "documents": 58,
-      "nodes": 5158,
+      "nodes": 5150,
       "jsEventListeners": 288
     },
     "after": {

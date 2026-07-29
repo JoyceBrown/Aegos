@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildLicenseOutputs, repositoryTextSha256 } from './generate-third-party-notices.js';
+import { buildLicenseOutputs, repositoryTextBytes, repositoryTextSha256 } from './generate-third-party-notices.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const expectedVersion = '3.6.71';
@@ -37,7 +37,9 @@ function reader(overrides = new Map()) {
     text(rel) { return get(rel).toString('utf8'); },
     json(rel) { return JSON.parse(get(rel).toString('utf8')); },
     hash(rel) { return sha256(get(rel)); },
-    size(rel) { return get(rel).length; }
+    size(rel) { return get(rel).length; },
+    repositoryTextHash(rel) { return repositoryTextSha256(get(rel)); },
+    repositoryTextSize(rel) { return repositoryTextBytes(get(rel)); }
   };
 }
 
@@ -70,7 +72,7 @@ function audit(overrides = new Map(), generated = null) {
   const releaseDoc = `RELEASE_${expectedVersion}.md`;
   const expectedOutputs = generated || buildLicenseOutputs();
 
-  check('root GPL-3.0 text exists and is exact', io.exists('LICENSE') && io.hash('LICENSE') === gplSha256, io.exists('LICENSE') ? io.hash('LICENSE') : 'missing');
+  check('root GPL-3.0 text exists and is exact', io.exists('LICENSE') && io.repositoryTextHash('LICENSE') === gplSha256, io.exists('LICENSE') ? io.repositoryTextHash('LICENSE') : 'missing');
   check('npm package declares GPL-3.0-only and 3.6.71', pkg.license === 'GPL-3.0-only' && pkg.version === expectedVersion, `${pkg.license || 'missing'}/${pkg.version || 'missing'}`);
   check('npm lock root records license and 3.6.71', packageLock.version === expectedVersion && packageLock.packages?.['']?.version === expectedVersion && packageLock.packages?.['']?.license === 'GPL-3.0-only', `${packageLock.version || 'missing'}/${packageLock.packages?.['']?.version || 'missing'}/${packageLock.packages?.['']?.license || 'missing'}`);
   check('Cargo package declares GPL-3.0-only and 3.6.71', packageField(cargoToml, 'license') === 'GPL-3.0-only' && packageField(cargoToml, 'version') === expectedVersion, `${packageField(cargoToml, 'license') || 'missing'}/${packageField(cargoToml, 'version') || 'missing'}`);
@@ -80,7 +82,7 @@ function audit(overrides = new Map(), generated = null) {
   check('Mihomo official archive is fixed', provenance.asset?.name === 'mihomo-windows-amd64-v1-v1.19.28.zip' && provenance.asset?.url === 'https://github.com/MetaCubeX/mihomo/releases/download/v1.19.28/mihomo-windows-amd64-v1-v1.19.28.zip' && provenance.asset?.bytes === 17730829 && provenance.asset?.sha256 === 'e1a47d4eb9b864e242e92ef4d501b052241c7e4eb5a592f2b124959e8efb2312', `${provenance.asset?.bytes || 'missing'}/${provenance.asset?.sha256 || 'missing'}`);
   check('Mihomo executable provenance is fixed and unmodified', provenance.extracted?.repoPath === 'resources/core/mihomo.exe' && provenance.extracted?.bytes === 47942656 && provenance.extracted?.sha256 === coreSha256 && provenance.extracted?.modified === false, `${provenance.extracted?.bytes || 'missing'}/${provenance.extracted?.sha256 || 'missing'}/${provenance.extracted?.modified}`);
   check('managed Mihomo executable matches provenance', io.exists('resources/core/mihomo.exe') && io.size('resources/core/mihomo.exe') === 47942656 && io.hash('resources/core/mihomo.exe') === coreSha256, io.exists('resources/core/mihomo.exe') ? `${io.size('resources/core/mihomo.exe')}/${io.hash('resources/core/mihomo.exe')}` : 'missing');
-  check('Mihomo GPL text matches provenance', provenance.license?.spdx === 'GPL-3.0-only' && provenance.license?.path === 'third_party/mihomo/LICENSE' && provenance.license?.bytes === 35149 && provenance.license?.sha256 === gplSha256 && io.exists('third_party/mihomo/LICENSE') && io.size('third_party/mihomo/LICENSE') === 35149 && io.hash('third_party/mihomo/LICENSE') === gplSha256, `${provenance.license?.spdx || 'missing'}/${provenance.license?.sha256 || 'missing'}`);
+  check('Mihomo GPL text matches provenance', provenance.license?.spdx === 'GPL-3.0-only' && provenance.license?.path === 'third_party/mihomo/LICENSE' && provenance.license?.bytes === 35149 && provenance.license?.sha256 === gplSha256 && io.exists('third_party/mihomo/LICENSE') && io.repositoryTextSize('third_party/mihomo/LICENSE') === 35149 && io.repositoryTextHash('third_party/mihomo/LICENSE') === gplSha256, `${provenance.license?.spdx || 'missing'}/${provenance.license?.sha256 || 'missing'}`);
 
   check('third-party notice is generated and current', io.exists('THIRD_PARTY_NOTICES.md') && normalize(io.text('THIRD_PARTY_NOTICES.md')) === expectedOutputs.notice, io.exists('THIRD_PARTY_NOTICES.md') ? io.hash('THIRD_PARTY_NOTICES.md') : 'missing');
   check('Rust license aggregate is generated and current', io.exists('third_party/rust/THIRD_PARTY_LICENSES.txt') && normalize(io.text('third_party/rust/THIRD_PARTY_LICENSES.txt')) === expectedOutputs.aggregate, io.exists('third_party/rust/THIRD_PARTY_LICENSES.txt') ? io.hash('third_party/rust/THIRD_PARTY_LICENSES.txt') : 'missing');
@@ -138,10 +140,20 @@ function runSelfTest() {
   const upstreamLf = upstreamNotice.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   const upstreamCrlf = upstreamLf.replaceAll('\n', '\r\n');
   const upstreamExpectedSha256 = 'f5c342c49f3ac804f3e8e7bb62a8040a44c50d47bb36902b1abd13f66a1adf8b';
+  const gplLicense = fs.readFileSync(path.join(root, 'LICENSE'), 'utf8');
+  const gplLf = gplLicense.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const gplCrlf = gplLf.replaceAll('\n', '\r\n');
+  const crlfGplAudit = audit(new Map([
+    ['LICENSE', Buffer.from(gplCrlf, 'utf8')],
+    ['third_party/mihomo/LICENSE', Buffer.from(gplCrlf, 'utf8')],
+  ]), generated);
   const pinnedMaterialChecks = [
     { name: 'LF repository license material matches its pin', ok: repositoryTextSha256(upstreamLf) === upstreamExpectedSha256 },
     { name: 'CRLF repository license material matches the same pin', ok: repositoryTextSha256(upstreamCrlf) === upstreamExpectedSha256 },
     { name: 'tampered repository license material is rejected', ok: repositoryTextSha256(`${upstreamLf}tampered`) !== upstreamExpectedSha256 },
+    { name: 'LF GPL text matches its hash and canonical byte count', ok: repositoryTextSha256(gplLf) === gplSha256 && repositoryTextBytes(gplLf) === 35149 },
+    { name: 'CRLF GPL text matches the same hash and canonical byte count', ok: repositoryTextSha256(gplCrlf) === gplSha256 && repositoryTextBytes(gplCrlf) === 35149 },
+    { name: 'CRLF root and Mihomo GPL files pass the integrated audit', ok: crlfGplAudit.ok },
   ];
   const fixtures = [
     { name: 'tampered-root-license', overrides: new Map([['LICENSE', Buffer.from('tampered GPL text\n')]]), expected: 'root GPL-3.0 text exists and is exact' },
