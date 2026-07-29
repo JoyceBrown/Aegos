@@ -1,8 +1,8 @@
 # Aegos Windows Real-Use Reliability Plan
 
 plan_id: AEGOS-WINDOWS-RELIABILITY
-status: active
-authority: exclusive
+status: completed
+authority: none
 current_task_id: DG-01
 roadmap_reference: docs/roadmap.md
 continuation_policy: validate_then_advance
@@ -788,7 +788,7 @@ satisfied. Missing evidence is `untested`, not passed.
 | BR-01 | completed | A destructive local-backup confirmation identifies the exact selected snapshot before it can start the existing restore job. | CHANGE-049 closed with selected-backup identity, cancellation, original-job identity, fixed window/DPI, and affected host-safe evidence; archive, restore, network, delivery, and host behavior remain unchanged. |
 | REL-01 | completed | A fresh source-bound unsigned `3.6.70` installer, commit/push, and matching GitHub Release make the completed current work available for acceptance. | CHANGE-050 closed at source/tag `01fd0151a9b7a79f793ff5b009676c546874fdd1`; the uploaded asset size and server SHA-256 match the local candidate. |
 | LIC-01 | completed | Aegos and its next installer carry complete GPL-3.0-only and third-party license/provenance materials with fail-closed verification. | CHANGE-051 closed with exact source/hash records, deterministic notices, bad-fixture rejection, a complete 32-command matrix, and direct NSIS payload verification. |
-| DG-01 | in_progress | The accepted 3.6.71 source/license closure is durable on GitHub, isolated Windows acceptance capability is known, and a minimal Windows CI lane protects repeatable source checks. | CHANGE-052 authorizes this ordered delivery-readiness unit; release, signing, installation, live takeover, host networking, and FlClash remain excluded. |
+| DG-01 | completed | The accepted 3.6.71 source/license closure is durable on GitHub, isolated Windows acceptance capability is known, and a minimal Windows CI lane protects repeatable source checks. | CHANGE-052 closed with source commit `90a17ea`, CI commits through `8ca51e1`, clean Windows run `30435733854`, preserved failed-run evidence, and no release, signing, installation, live takeover, host-network, or FlClash action. |
 
 WR-03 is a host-safe code and isolated-fixture repair task. It is not authority
 to perform controlled live takeover testing, which remains blocked until a

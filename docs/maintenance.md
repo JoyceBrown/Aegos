@@ -3,7 +3,7 @@
 record_kind: maintenance_register
 execution_authority: none
 snapshot_at: 2026-07-29
-git_baseline: 90a17ea
+git_baseline: 8ca51e1
 release_baseline: v3.6.70
 
 This document answers what still needs maintenance after the v3.6.70 release.
@@ -30,7 +30,7 @@ The main risk has moved from missing behavior to maintainability and delivery
 governance. The control-plane budgets are almost full, the current test system
 has 124 package scripts and 108 JavaScript tools in the live Aegos change set,
 historical release evidence occupies most of the tracked file list, the first
-minimal Windows CI lane is being landed by DG-01, and Authenticode signing
+minimal Windows CI lane is closed by DG-01, and Authenticode signing
 remains a later distribution decision. The previous license-packaging blocker
 is closed by LIC-01.
 
@@ -40,13 +40,13 @@ is closed by LIC-01.
 | --- | --- | --- |
 | Release | Verified | `v3.6.70` points to `01fd0151`; the public asset is 16,341,772 bytes with SHA-256 `9c6ebab9...ef261`; unsigned and not installed. |
 | Release regression | Verified | The final REL-01 record binds 30 host-safe commands, 232 Rust tests, 13 journeys, 14 window/DPI configurations, 800 nodes/420 switches, 16 soak cycles, and both native modes. |
-| Working tree | Active | Commit `90a17ea` landed the post-publication and v3.6.71 license/source set; only the DG-01 CI/evidence change remains. Unrelated provider-panel experiments remain user-owned and excluded. |
+| Working tree | Verified closure baseline | Commit `90a17ea` landed the post-publication and v3.6.71 license/source set; CI repairs through `8ca51e1` are on `origin/main`. The final bounded change is evidence-only. Unrelated provider-panel experiments remain user-owned and excluded. |
 | Control plane | Verified, near limit | `main=11707/11770` production lines and `core_runtime=2866/2900`; audit passes but only 63 and 34 lines of budget remain. |
 | Frontend | Verified, concentrated | `src/app.js` is 464,899 bytes/9,912 lines and `src/styles.css` is 237,774 bytes/8,114 lines. |
 | Backend | Verified, concentrated | `src-tauri/src/main.rs` is 577,008 bytes/14,536 physical lines and `core_runtime.rs` is 158,369 bytes/4,532 physical lines. Production-line budgets use a narrower count than physical lines. |
 | Test tooling | Verified, fragmented | `package.json` exposes 124 scripts; 108 tracked JavaScript files live under `tools/`. |
 | Context density | Verified | 751 tracked files include 358 root `RELEASE_*.md` files and 71 root performance JSON files. They are evidence, but their location makes the root and search results noisy. |
-| CI | Active | DG-01 adds one least-privilege Windows source-check workflow; native UI, soak, packaging, publication, and live takeover remain outside CI. |
+| CI | Verified | DG-01 added one least-privilege Windows source-check workflow. Clean run `30435733854` passed at `8ca51e1`; native UI, soak, packaging, publication, and live takeover remain outside CI. |
 | npm supply chain | Verified | `npm audit --json` reports zero vulnerabilities; the top-level `outdated --json` freshness query reports no update. |
 | Rust graph | Verified | The lockfile resolves successfully. Duplicate transitive major versions exist through Tauri/WebView2 and are not independently actionable without an upstream-aware update. |
 | Managed core | Verified | Bundled Mihomo Meta is `v1.19.28`, 47,942,656 bytes, SHA-256 `c14bda8d...6517`; source and audits pin the same identity. |
@@ -138,10 +138,9 @@ Completion condition:
 
 ### MNT-05 — Add a minimal Windows CI lane
 
-Item state: authorized as the second, independently reviewable source-control
-closure inside CHANGE-052 / DG-01, after MNT-02 and the read-only MNT-03 probe.
+Item state: completed by CHANGE-052 / DG-01.
 
-The pending `.github/workflows/windows-ci.yml` validates
+The committed `.github/workflows/windows-ci.yml` validates
 formatting, Rust tests, JavaScript syntax, npm security, architecture,
 control-plane, debt, planning-context, and negative fixture suites. Native UI,
 soak, installer, and live Windows takeover should remain separate release/lab
@@ -154,6 +153,11 @@ Completion condition:
 - cache policy and timeouts documented;
 - local/full release matrix remains authoritative for native and packaging
   evidence rather than being silently weakened to fit CI.
+
+Verified closure: commits `6bc48e5`, `e7fc324`, `0188d02`, and `8ca51e1`
+retain the initial workflow and each clean-checkout repair. Runs `30432914806`,
+`30433739435`, and `30434882044` remain failed evidence; run `30435733854`
+passed every source step on `windows-2022` without secrets or release actions.
 
 ### MNT-06 — Consolidate the audit command surface
 
@@ -273,12 +277,11 @@ Item state: Verified.
 
 ## Recommended Order
 
-1. Finish the authorized source/license repository closure.
-2. Record whether an isolated Windows recovery lab is already available; do
-   not enable or create one on this host without separate authority.
-3. Add and land the authorized minimal Windows CI lane.
-4. Protect module budgets and consolidate audit/evidence infrastructure.
-5. Migrate historical files and normalize text only through dedicated,
+1. Keep the completed source/license and minimal Windows CI closures intact.
+2. If separately authorized, resolve the isolated Windows lab permission
+   blocker before any real recovery test.
+3. Protect module budgets and consolidate audit/evidence infrastructure.
+4. Migrate historical files and normalize text only through dedicated,
    independently reviewable changes.
 
 No item in this order is automatically authorized by this document.

@@ -1,7 +1,7 @@
 # DG-01 Delivery Governance Evidence
 
 record_kind: evidence_register
-evidence_state: in_progress
+evidence_state: closed
 task_id: DG-01
 change_id: CHANGE-052
 plan_id: AEGOS-WINDOWS-RELIABILITY
@@ -83,7 +83,7 @@ No Cargo or rustc process remained after validation.
 
 ## Windows CI
 
-The pending workflow is `.github/workflows/windows-ci.yml`. It uses
+The committed workflow is `.github/workflows/windows-ci.yml`. It uses
 least-privilege `contents: read`, no secrets, no `pull_request_target`, a
 35-minute job timeout, same-ref concurrency cancellation, pinned action commit
 SHAs, exact Node/Rust toolchains, and only npm's download cache. It does not
@@ -127,10 +127,30 @@ canonicalization to these two repository GPL files, checks their canonical
 35,149-byte identity, and adds an integrated CRLF audit control while keeping
 tampered GPL text rejected. The third failed run remains historical evidence.
 
+The fourth pushed workflow run, `30435733854` at commit `8ca51e1`, completed
+successfully from `2026-07-29T08:29:55Z` through
+`2026-07-29T08:34:01Z`. It passed Rust formatting and all 232 tests, all 110
+tracked JavaScript syntax checks, npm security, architecture, control-plane,
+debt and its negative controls, planning, license generation and all CRLF plus
+tamper controls, subscription fixtures, acceptance fixtures, and candidate
+provenance fixtures on a clean `windows-2022` checkout.
+
+The final pre-closure local source run `wr01-20260729082322-13844` passed all
+32 host-safe commands with product digest
+`484b1923a71da394e9661d9ce07d26e5b1a18b2a926be89d1be4d2931f534316`
+and gate digest
+`2303c8ab3cea0233f331c97f3f60021294024fe913486728fe1c71049e171d87`.
+Candidate provenance, installer regression, installer, release, unsigned trust,
+the standard context validator, all 110 JavaScript syntax checks, and workflow
+policy/secret/private-path checks then exited 0. The candidate remained
+16,399,892 bytes with SHA-256
+`a3215fbdc3f08db76c57ab193cf8ef7b4aabd1236518697785d2788fa52bc887`;
+it was not signed, installed, uploaded, or published.
+
 ## Exact Next Action
 
-Validate the workflow and updated gate inputs locally, commit and push the CI
-change separately, observe its GitHub Actions result, then close DG-01 with an
-evidence-only context update. Do not enable a Windows feature, create or start
-a VM, publish, sign, install, launch Aegos, affect FlClash, or change the host
-network.
+DG-01 is complete and `on_complete: wait` applies. No maintenance, signing,
+publication, installation, isolated-lab setup, or product work is authorized by
+this record. A later isolated-lab probe still requires the minimum Hyper-V
+permission action recorded above and separate authority for any VM creation or
+start.

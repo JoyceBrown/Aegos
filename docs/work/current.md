@@ -9,24 +9,30 @@ latest_change_id: CHANGE-052
 latest_change_class: priority_branch
 updated_at: 2026-07-29
 
-This checkpoint records current facts only. CHANGE-052 and the active exclusive
-`PLANS.md` authorize the ordered DG-01 delivery-readiness unit. The authority
-is limited to the source/license and CI delivery commits, one evidence-only
-closure, and a read-only isolated-Windows capability probe.
+This checkpoint records current facts only. CHANGE-052 / DG-01 is complete,
+`PLANS.md` has no remaining execution authority, and `on_complete: wait`
+applies. No maintenance, signing, publication, installation, isolated-lab
+setup, or product work is authorized by this checkpoint.
 
 The pre-consolidation checkpoint is retained at
 `archive/current-2026-07-28-rel01.md`. Historical decisions belong to their
 individual evidence registers under `docs/work/`, not to this current file.
 
-## Current Decision
+## Completed Decision
 
-CHANGE-052 / DG-01 is active after the user approved the proposed sequence:
+CHANGE-052 / DG-01 completed the user-approved sequence:
 
 1. review, validate, commit, and push only the accepted v3.6.70 closure and
    v3.6.71 source/license/evidence files;
 2. inspect Hyper-V, Windows Sandbox, and existing VM capability read-only; and
-3. add a separate, least-privilege Windows CI commit without weakening the
-   local full release matrix.
+3. land a separate, least-privilege Windows CI lane without weakening the local
+   full release matrix.
+
+The source/license closure is commit `90a17ea`. The CI source lane and its
+Windows line-ending repairs are commits `6bc48e5`, `e7fc324`, `0188d02`, and
+`8ca51e1`. Clean Windows run `30435733854` passed every workflow step; the
+three preceding failed runs remain classified in
+`delivery-governance-dg01.md` rather than being hidden by the success.
 
 The user-owned provider-panel scripts, preview images, temporary directories,
 and research note remain explicitly excluded. Public release, tags, installer
@@ -92,10 +98,9 @@ unchanged. Full evidence is in `release-3.6.70-rel01.md`.
 
 ## Current Worktree
 
-`main`, `HEAD`, and `origin/main` all resolve to
-`90a17ea` after the accepted v3.6.70 closure and v3.6.71 source/license set was
-committed and pushed. The current Aegos worktree changes are only the DG-01
-Windows CI workflow, its gate binding, and current evidence/context updates.
+The validated source/CI baseline `8ca51e1` is on `main` and `origin/main`.
+The only bounded Aegos change after that baseline is this authorized
+evidence-only DG-01 closure; exact Git equality is rechecked after it is pushed.
 
 The local Codex provider-panel scripts, preview images, research note, and
 temporary directories are user-owned and out of scope. They must not be
@@ -126,6 +131,13 @@ The following checks were rerun on 2026-07-29:
 - The source digest was `484b1923...4316`; the gate digest was
   `73feef40...ced6`. Candidate provenance, actual 9/9 payload identity,
   installer/release gates, and unsigned trust all passed before commit.
+- Final CI-repair source run `wr01-20260729082322-13844` passed all 32 commands
+  with the same product digest and gate digest `2303c8ab...1d87`; candidate,
+  installer, release, unsigned trust, context, JavaScript, and workflow-policy
+  checks all passed afterward.
+- GitHub run `30435733854` at `8ca51e1` passed on a clean `windows-2022`
+  checkout, including all 232 Rust tests, 110 tracked JavaScript files, the
+  license CRLF controls, tamper fixtures, and every remaining source-CI step.
 - The standard project-context validator exited 0 with no errors and 28
   retained historical/manual-review prompts.
 - Hyper-V infrastructure is present, but the current identity lacks query
@@ -162,11 +174,10 @@ the full narratives remain archived:
 
 ## Exact Next Action
 
-Validate the minimal Windows CI workflow and its new gate inputs, rerun the
-complete host-safe matrix, commit and push the CI change separately, and
-observe the GitHub Actions result. Then use one evidence-only context commit to
-close DG-01. The isolated Windows recovery lab remains permission-blocked and
-must not be enabled or created within this task.
+DG-01 is complete. Wait for explicit user authority before selecting any
+maintenance, signing, publication, installation, or isolated-lab work. The
+isolated Windows recovery lab remains permission-blocked and must not be
+enabled or created without separate authority.
 
 Do not install, launch, publish, tag, upload, purchase or sign, perform live
 takeover, affect FlClash, or change the host network.
