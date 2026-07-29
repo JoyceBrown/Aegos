@@ -52,6 +52,7 @@ const dr01Evidence = read('docs/work/diagnostic-repair-receipts-dr01.md');
 const br01Evidence = read('docs/work/backup-restore-identity-br01.md');
 const rel01Evidence = read('docs/work/release-3.6.70-rel01.md');
 const lic01Evidence = read('docs/work/license-packaging-lic01.md');
+const dg01Evidence = read('docs/work/delivery-governance-dg01.md');
 
 const wr15Active = value(plan, 'status') === 'active'
   && value(plan, 'authority') === 'exclusive'
@@ -138,9 +139,10 @@ const dg01Contract = value(plan, 'current_task_id') === 'DG-01'
   && value(plan, 'latest_change_id') === 'CHANGE-052'
   && value(plan, 'latest_change_class') === 'priority_branch'
   && plan.includes('Complete DG-01 as one bounded delivery-readiness unit')
-  && plan.includes('two narrowly scoped commits and pushes')
+  && plan.includes('source/license and CI delivery commits plus one')
   && plan.includes('minimal Windows CI lane')
-  && plan.includes('every FlClash action remain excluded');
+  && plan.includes('every FlClash action')
+  && plan.includes('remain excluded');
 const dg01Active = value(plan, 'status') === 'active'
   && value(plan, 'authority') === 'exclusive'
   && dg01Contract;
@@ -440,6 +442,24 @@ check(
     && lic01Evidence.includes('unpublished')
   ),
   value(lic01Evidence, 'status')
+);
+
+check(
+  'DG-01 evidence preserves source closure, lab permission boundary, CI scope, and host exclusions',
+  !dg01FollowOn || (
+    value(dg01Evidence, 'record_kind') === 'evidence_register'
+    && value(dg01Evidence, 'execution_authority') === 'none'
+    && value(dg01Evidence, 'task_id') === 'DG-01'
+    && value(dg01Evidence, 'change_id') === 'CHANGE-052'
+    && ((dg01Active && value(dg01Evidence, 'evidence_state') === 'in_progress')
+      || (dg01Closed && value(dg01Evidence, 'evidence_state') === 'closed'))
+    && dg01Evidence.includes('90a17ea')
+    && dg01Evidence.includes('Hyper-V Administrators')
+    && dg01Evidence.includes('Windows Sandbox')
+    && dg01Evidence.includes('.github/workflows/windows-ci.yml')
+    && dg01Evidence.includes('every FlClash action are excluded')
+  ),
+  value(dg01Evidence, 'evidence_state')
 );
 
 check(

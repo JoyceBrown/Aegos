@@ -69,9 +69,11 @@ const sourceFiles = [
   'src-tauri/tauri.conf.json', 'resources/core/mihomo.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md'
 ];
 const gateFiles = [
+  '.github/workflows/windows-ci.yml',
   'AGENTS.md', 'PLANS.md', 'README.md', `RELEASE_${packageJson.version}.md`, 'package.json',
   'docs/INDEX.md', 'docs/product.md', 'docs/architecture.md', 'docs/roadmap.md',
   'docs/decisions/windows-reliability-mainline.md', 'docs/work/current.md',
+  'docs/work/delivery-governance-dg01.md',
   'docs/work/license-packaging-lic01.md',
   'docs/work/windows-reliability-wr01.md', 'docs/work/windows-reliability-wr02.md',
   'docs/work/windows-reliability-wr15.md',

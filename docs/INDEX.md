@@ -17,6 +17,7 @@ execution authority. Historical files are traceability records only.
 | Published v3.6.70 closure and final evidence | [`work/release-3.6.70-rel01.md`](work/release-3.6.70-rel01.md) |
 | Aegos license, third-party notices, and managed Mihomo provenance | [`../LICENSE`](../LICENSE), [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md), and [`../third_party/mihomo/provenance.json`](../third_party/mihomo/provenance.json) |
 | LIC-01 local packaging and payload evidence | [`work/license-packaging-lic01.md`](work/license-packaging-lic01.md) |
+| DG-01 source closure, isolated-Windows probe, and Windows CI evidence | [`work/delivery-governance-dg01.md`](work/delivery-governance-dg01.md) |
 | Verified maintenance gaps and priority recommendations | [`maintenance.md`](maintenance.md) |
 
 ## Product And Architecture References

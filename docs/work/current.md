@@ -11,8 +11,8 @@ updated_at: 2026-07-29
 
 This checkpoint records current facts only. CHANGE-052 and the active exclusive
 `PLANS.md` authorize the ordered DG-01 delivery-readiness unit. The authority
-is limited to two exact source-control closures, a read-only isolated-Windows
-capability probe, and a minimal Windows CI lane.
+is limited to the source/license and CI delivery commits, one evidence-only
+closure, and a read-only isolated-Windows capability probe.
 
 The pre-consolidation checkpoint is retained at
 `archive/current-2026-07-28-rel01.md`. Historical decisions belong to their
@@ -35,9 +35,16 @@ takeover, host-network mutation, and every FlClash action remain excluded.
 
 Fresh remote checks on 2026-07-29 show `gh auth status` succeeds for
 `JoyceBrown` with repository/workflow scope, no local/global/environment proxy
-is configured, and `git ls-remote origin` resolves `main` to the local baseline
-`01fd0151a9b7a79f793ff5b009676c546874fdd1`. The previous proxy/credential
-blocker is therefore not current.
+is configured, and the exact 45-file source/license commit `90a17ea` was pushed
+to `origin/main`. The previous proxy/credential blocker is therefore not
+current.
+
+The read-only lab probe is complete. Hyper-V is enabled and its management
+service is running, but the current non-elevated identity is not a member of
+the empty Hyper-V Administrators group. `Get-VM`, `Get-VMHost`, and
+`Get-VMSwitch` are permission-blocked, so an existing disposable VM cannot be
+confirmed. Windows Sandbox is disabled and was not enabled. Exact evidence and
+the minimum user action are in `delivery-governance-dg01.md`.
 
 ## Previous Completed Decision
 
@@ -86,33 +93,9 @@ unchanged. Full evidence is in `release-3.6.70-rel01.md`.
 ## Current Worktree
 
 `main`, `HEAD`, and `origin/main` all resolve to
-`01fd0151a9b7a79f793ff5b009676c546874fdd1`.
-
-Eight tracked files contain the uncommitted post-publication closure and final
-matrix refresh:
-
-- `PERFORMANCE_NATIVE_3.6.70.auto-speed-enabled.json`
-- `PERFORMANCE_NATIVE_3.6.70.auto-speed-suppressed.json`
-- `PERFORMANCE_PRESSURE_3.6.70.json`
-- `PERFORMANCE_SOAK_3.6.70.json`
-- `PLANS.md`
-- `PRODUCT_SMOKE_3.6.70.json`
-- `docs/work/current.md`
-- `docs/work/release-3.6.70-rel01.md`
-
-This checkpoint consolidation additionally creates the archived checkpoint,
-the maintenance register, and documentation-index changes. No commit or push
-is authorized by REL-01 because its single source commit/push authorization
-was already consumed.
-
-LIC-01 additionally changes the 3.6.71 manifests/UI version, release record,
-README license disclosure, installer checklist, acceptance/provenance/release
-gates, and creates the root license, NOTICE, Mihomo/Rust third-party materials,
-license/payload audits, 3.6.71 performance reports, and its evidence register.
-Those changes remain uncommitted and unpushed at the opening of DG-01; the full
-current inventory is the live `git status`, not the older eight-file REL-01
-list above. CHANGE-052 now authorizes their exact reviewed source-control
-closure, but does not authorize staging any excluded user-owned file.
+`90a17ea` after the accepted v3.6.70 closure and v3.6.71 source/license set was
+committed and pushed. The current Aegos worktree changes are only the DG-01
+Windows CI workflow, its gate binding, and current evidence/context updates.
 
 The local Codex provider-panel scripts, preview images, research note, and
 temporary directories are user-owned and out of scope. They must not be
@@ -120,7 +103,7 @@ deleted, moved, staged, or treated as Aegos release inputs.
 
 ## Fresh Verification
 
-The following read-only checks were rerun on 2026-07-29 (2026-07-28 UTC):
+The following checks were rerun on 2026-07-29:
 
 - `npm run audit:control-plane`: exit 0; production budgets are
   `main=11707/11770` and `core_runtime=2866/2900`.
@@ -136,9 +119,22 @@ The following read-only checks were rerun on 2026-07-29 (2026-07-28 UTC):
   `c14bda8dc4cc8910ccd2110fe2be083c51a1b66da59141a0b87aff6fe6126517`.
 - The local 3.6.70 installer is still present at the recorded 16,341,772 bytes
   and recorded SHA-256; it was not executed or installed.
+- Final source-closure run `wr01-20260729071254-7808` passed all 32 commands
+  from `2026-07-29T07:12:54.432Z` through
+  `2026-07-29T07:16:24.128Z`, including 232 Rust tests and the unchanged UI,
+  performance, soak, native, architecture, security, and planning floors.
+- The source digest was `484b1923...4316`; the gate digest was
+  `73feef40...ced6`. Candidate provenance, actual 9/9 payload identity,
+  installer/release gates, and unsigned trust all passed before commit.
+- The standard project-context validator exited 0 with no errors and 28
+  retained historical/manual-review prompts.
+- Hyper-V infrastructure is present, but the current identity lacks query
+  permission; Windows Sandbox is disabled. No feature, group, VM, virtual
+  switch, or network state was changed.
 
-No product source, release artifact, host network, FlClash state, or external
-release state was changed by the context audit.
+No release artifact, host network, FlClash state, Windows feature, or VM state
+was changed by DG-01. The pre-existing FlClash PID 6864 and Aegos PID 21440
+kept the same identities across the host-safe source matrix.
 
 The complete 32-command host-safe matrix must pass after the final edit to this
 checkpoint because this file is a candidate gate input. Its final run identity
@@ -166,12 +162,11 @@ the full narratives remain archived:
 
 ## Exact Next Action
 
-Stabilize the CHANGE-052 plan/checkpoint and stale maintenance register, rerun
-the affected license/planning/release checks and the complete 32-command
-host-safe matrix, review the exact staged set, then commit and push only the
-accepted v3.6.70 closure plus v3.6.71 source/license/evidence files. After the
-push, probe isolated-Windows capability read-only and implement the separately
-reviewable minimal Windows CI commit.
+Validate the minimal Windows CI workflow and its new gate inputs, rerun the
+complete host-safe matrix, commit and push the CI change separately, and
+observe the GitHub Actions result. Then use one evidence-only context commit to
+close DG-01. The isolated Windows recovery lab remains permission-blocked and
+must not be enabled or created within this task.
 
 Do not install, launch, publish, tag, upload, purchase or sign, perform live
 takeover, affect FlClash, or change the host network.

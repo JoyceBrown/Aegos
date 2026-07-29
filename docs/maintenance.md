@@ -3,7 +3,7 @@
 record_kind: maintenance_register
 execution_authority: none
 snapshot_at: 2026-07-29
-git_baseline: 01fd0151a9b7a79f793ff5b009676c546874fdd1
+git_baseline: 90a17ea
 release_baseline: v3.6.70
 
 This document answers what still needs maintenance after the v3.6.70 release.
@@ -29,9 +29,10 @@ planning, and npm security audits pass.
 The main risk has moved from missing behavior to maintainability and delivery
 governance. The control-plane budgets are almost full, the current test system
 has 124 package scripts and 108 JavaScript tools in the live Aegos change set,
-historical release evidence occupies most of the tracked file list, CI is
-absent, and Authenticode signing remains a later distribution decision. The
-previous license-packaging blocker is closed by LIC-01.
+historical release evidence occupies most of the tracked file list, the first
+minimal Windows CI lane is being landed by DG-01, and Authenticode signing
+remains a later distribution decision. The previous license-packaging blocker
+is closed by LIC-01.
 
 ## Verified Repository Facts
 
@@ -39,17 +40,17 @@ previous license-packaging blocker is closed by LIC-01.
 | --- | --- | --- |
 | Release | Verified | `v3.6.70` points to `01fd0151`; the public asset is 16,341,772 bytes with SHA-256 `9c6ebab9...ef261`; unsigned and not installed. |
 | Release regression | Verified | The final REL-01 record binds 30 host-safe commands, 232 Rust tests, 13 journeys, 14 window/DPI configurations, 800 nodes/420 switches, 16 soak cycles, and both native modes. |
-| Working tree | Active | CHANGE-052 / DG-01 is reviewing and landing the post-publication closure plus the completed v3.6.71 license/source set. Unrelated provider-panel experiments remain user-owned and excluded. |
+| Working tree | Active | Commit `90a17ea` landed the post-publication and v3.6.71 license/source set; only the DG-01 CI/evidence change remains. Unrelated provider-panel experiments remain user-owned and excluded. |
 | Control plane | Verified, near limit | `main=11707/11770` production lines and `core_runtime=2866/2900`; audit passes but only 63 and 34 lines of budget remain. |
 | Frontend | Verified, concentrated | `src/app.js` is 464,899 bytes/9,912 lines and `src/styles.css` is 237,774 bytes/8,114 lines. |
 | Backend | Verified, concentrated | `src-tauri/src/main.rs` is 577,008 bytes/14,536 physical lines and `core_runtime.rs` is 158,369 bytes/4,532 physical lines. Production-line budgets use a narrower count than physical lines. |
-| Test tooling | Verified, fragmented | `package.json` exposes 120 scripts; 105 tracked JavaScript files live under `tools/`. |
-| Context density | Verified | 730 tracked files include 357 root `RELEASE_*.md` files and 67 root performance JSON files. They are evidence, but their location makes the root and search results noisy. |
-| CI | Open | No tracked `.github/workflows` file exists. Release acceptance is local/manual. |
+| Test tooling | Verified, fragmented | `package.json` exposes 124 scripts; 108 tracked JavaScript files live under `tools/`. |
+| Context density | Verified | 751 tracked files include 358 root `RELEASE_*.md` files and 71 root performance JSON files. They are evidence, but their location makes the root and search results noisy. |
+| CI | Active | DG-01 adds one least-privilege Windows source-check workflow; native UI, soak, packaging, publication, and live takeover remain outside CI. |
 | npm supply chain | Verified | `npm audit --json` reports zero vulnerabilities; the top-level `outdated --json` freshness query reports no update. |
 | Rust graph | Verified | The lockfile resolves successfully. Duplicate transitive major versions exist through Tauri/WebView2 and are not independently actionable without an upstream-aware update. |
 | Managed core | Verified | Bundled Mihomo Meta is `v1.19.28`, 47,942,656 bytes, SHA-256 `c14bda8d...6517`; source and audits pin the same identity. |
-| Local build retention | Open | `target/release/bundle/nsis` contains 33 ignored installers totaling 510.6 MiB, from 3.6.36 through 3.6.70. |
+| Local build retention | Open | `target/release/bundle/nsis` contains 34 ignored installers totaling about 526.2 MiB, from 3.6.36 through 3.6.71. |
 | Durable evidence | Open | `.validation/` is ignored while release documents refer to its acceptance/provenance reports. A clean clone cannot reproduce those local files from Git alone. |
 | Text normalization | Open | No `.editorconfig` or `.gitattributes` exists; Git warns that current evidence files will change LF to CRLF when touched. |
 
@@ -78,16 +79,14 @@ This records a compliance implementation and is not legal advice.
 
 ### MNT-02 — Close the post-publication repository state
 
-Item state: active under CHANGE-052 / DG-01.
+Item state: completed by CHANGE-052 commit `90a17ea`.
 
 Eight pre-existing tracked files contain the final post-publication matrix and
 REL-01 closure. This context consolidation adds three intended repository
 files: `docs/INDEX.md`, this register, and the archived checkpoint. The eleven
-closure/context files should become one evidence-only commit and push so a
-fresh clone does not stop at the pre-publication checkpoint. The previous
-REL-01 commit/push authorization was consumed; CHANGE-052 now authorizes the
-exact reviewed v3.6.70 closure and v3.6.71 source/license set. Unrelated
-untracked files must remain excluded.
+closure/context files and the completed v3.6.71 license/source set were reviewed
+as one 45-file commit and pushed so a fresh clone no longer stops at the
+pre-publication checkpoint. Unrelated untracked files remained excluded.
 
 Completion condition:
 
@@ -99,7 +98,13 @@ Completion condition:
 
 ### MNT-03 — Prove real Windows recovery in an isolated lab
 
-Priority: high for reliability claims; conditional on a dedicated environment.
+Item state: conditional and permission-blocked after the DG-01 read-only probe.
+
+Hyper-V and its management service are enabled, but the current non-elevated
+account is not in Hyper-V Administrators; VM/host/switch inventory queries are
+denied. Windows Sandbox is disabled. The minimum next action is a later
+elevated read-only `Get-VM` probe or Hyper-V Administrators membership plus
+sign-out/sign-in. Creating or starting a VM still requires separate authority.
 
 The host-safe matrix deliberately avoids changing this host's proxy, TUN, DNS,
 firewall, kill-switch, and FlClash. That is correct, but it leaves real
@@ -136,7 +141,7 @@ Completion condition:
 Item state: authorized as the second, independently reviewable source-control
 closure inside CHANGE-052 / DG-01, after MNT-02 and the read-only MNT-03 probe.
 
-There is no tracked CI workflow. A small Windows workflow should validate
+The pending `.github/workflows/windows-ci.yml` validates
 formatting, Rust tests, JavaScript syntax, npm security, architecture,
 control-plane, debt, planning-context, and negative fixture suites. Native UI,
 soak, installer, and live Windows takeover should remain separate release/lab

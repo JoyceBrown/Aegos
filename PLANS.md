@@ -12,12 +12,13 @@ priority_basis: The user approved the proposed delivery-readiness sequence:
   isolated Windows acceptance capability without changing the host, and then
   add a minimal independently reviewable Windows CI lane.
 delivery_contract: DG-01 lands only the accepted Aegos v3.6.70 closure and
-  v3.6.71 GPL/license-packaging source and evidence, verifies and pushes that
-  exact set to origin/main, performs a read-only isolated-Windows capability
-  probe, and adds a minimal least-privilege Windows CI lane without weakening
-  the local 32-command release matrix. Public release, artifact upload,
-  signing or certificate purchase, installation, Aegos launch, host-network
-  mutation, and every FlClash action remain excluded.
+  v3.6.71 GPL/license-packaging source/evidence commit, performs a read-only
+  isolated-Windows capability probe, lands a separate minimal least-privilege
+  Windows CI commit without weakening the local 32-command release matrix,
+  and permits one evidence-only closure after the remote CI result exists.
+  Public release, artifact upload, signing or certificate purchase,
+  installation, Aegos launch, host-network mutation, and every FlClash action
+  remain excluded.
 latest_change_id: CHANGE-052
 latest_change_class: priority_branch
 change_authority_reference: user approval "同意，开始处理"
@@ -39,11 +40,12 @@ Complete DG-01 as one bounded delivery-readiness unit in this order:
    npm security, architecture/control-plane/debt/planning checks, and existing
    negative fixture suites.
 
-CHANGE-052 authorizes the two narrowly scoped commits and pushes required by
-this ordered unit. It does not authorize a GitHub Release, tag, installer
-upload, signing certificate purchase, Authenticode signing, automatic update,
-host installation or launch, live takeover, FlClash action, or host proxy,
-TUN, DNS, firewall, or kill-switch change.
+CHANGE-052 authorizes the source/license and CI delivery commits plus one
+evidence-only closure after GitHub reports the CI result. It does not authorize
+a GitHub Release, tag, installer upload, signing certificate purchase,
+Authenticode signing, automatic update, host installation or launch, live
+takeover, FlClash action, or host proxy, TUN, DNS, firewall, or kill-switch
+change.
 
 DG-01 completes only after both pushed commits are verified on `origin/main`,
 the lab-capability result is recorded as available or precisely blocked, the
