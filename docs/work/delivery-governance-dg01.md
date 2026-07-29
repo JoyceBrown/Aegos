@@ -107,6 +107,16 @@ writes are ignored while production `fs::write`, production `fs::copy`, and a
 missing test boundary still fail closed. The failed run is not reclassified or
 hidden by a retry.
 
+The second pushed workflow run, `30433739435` at repair commit `e7fc324`,
+proved the debt repair and its bad fixtures on the clean runner, then failed at
+`audit:licenses`. Repository-retained upstream fallback license texts were
+hashed as raw checkout bytes, so CRLF materialization changed the pinned digest
+even though the text was unchanged. The repair canonicalizes only CR/LF line
+endings for those two repository text files while keeping Cargo-cache license
+hashes byte-exact. Its fixtures require identical LF/CRLF pin results and still
+reject a one-byte text mutation. This second failure also remains historical
+evidence rather than being overwritten by a later run.
+
 ## Exact Next Action
 
 Validate the workflow and updated gate inputs locally, commit and push the CI

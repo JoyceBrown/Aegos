@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildLicenseOutputs } from './generate-third-party-notices.js';
+import { buildLicenseOutputs, repositoryTextSha256 } from './generate-third-party-notices.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const expectedVersion = '3.6.71';
@@ -134,6 +134,15 @@ function runSelfTest() {
     return JSON.stringify(value, null, 2) + '\n';
   };
   const textOverride = (rel, mutate) => mutate(fs.readFileSync(path.join(root, rel), 'utf8'));
+  const upstreamNotice = fs.readFileSync(path.join(root, 'third_party', 'rust', 'upstream', 'rust-unic-COPYRIGHT.md'), 'utf8');
+  const upstreamLf = upstreamNotice.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const upstreamCrlf = upstreamLf.replaceAll('\n', '\r\n');
+  const upstreamExpectedSha256 = 'f5c342c49f3ac804f3e8e7bb62a8040a44c50d47bb36902b1abd13f66a1adf8b';
+  const pinnedMaterialChecks = [
+    { name: 'LF repository license material matches its pin', ok: repositoryTextSha256(upstreamLf) === upstreamExpectedSha256 },
+    { name: 'CRLF repository license material matches the same pin', ok: repositoryTextSha256(upstreamCrlf) === upstreamExpectedSha256 },
+    { name: 'tampered repository license material is rejected', ok: repositoryTextSha256(`${upstreamLf}tampered`) !== upstreamExpectedSha256 },
+  ];
   const fixtures = [
     { name: 'tampered-root-license', overrides: new Map([['LICENSE', Buffer.from('tampered GPL text\n')]]), expected: 'root GPL-3.0 text exists and is exact' },
     { name: 'cargo-spdx-mismatch', overrides: new Map([['src-tauri/Cargo.toml', textOverride('src-tauri/Cargo.toml', (text) => text.replace('license = "GPL-3.0-only"', 'license = "MIT"'))]]), expected: 'Cargo package declares GPL-3.0-only and 3.6.71' },
@@ -148,7 +157,12 @@ function runSelfTest() {
     const rejected = !result.ok && result.failed.some((item) => item.name === fixture.expected);
     return { name: fixture.name, rejected, expectedFailure: fixture.expected, observedFailures: result.failed.map((item) => item.name) };
   });
-  return { ok: fixtures.every((fixture) => fixture.rejected), baselineFailed: [], fixtures };
+  return {
+    ok: pinnedMaterialChecks.every((check) => check.ok) && fixtures.every((fixture) => fixture.rejected),
+    baselineFailed: [],
+    pinnedMaterialChecks,
+    fixtures,
+  };
 }
 
 try {

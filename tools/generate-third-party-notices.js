@@ -14,6 +14,12 @@ function normalize(text) {
   return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\s+$/u, '') + '\n';
 }
 
+export function repositoryTextSha256(value) {
+  const text = Buffer.isBuffer(value) ? value.toString('utf8') : String(value);
+  const canonical = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  return crypto.createHash('sha256').update(canonical, 'utf8').digest('hex');
+}
+
 function runCargoTree() {
   const result = spawnSync('cargo', [
     'tree',
@@ -89,13 +95,24 @@ function pinnedMaterial(fullPath, label, expectedSha256) {
   return { fullPath, label };
 }
 
+function pinnedRepositoryTextMaterial(fullPath, label, expectedSha256) {
+  if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) {
+    throw new Error(`Pinned fallback license material is missing: ${label}`);
+  }
+  const actual = repositoryTextSha256(fs.readFileSync(fullPath));
+  if (actual !== expectedSha256) {
+    throw new Error(`Pinned fallback license material drifted: ${label} (${actual})`);
+  }
+  return { fullPath, label };
+}
+
 function fallbackMaterials(sourceRoots, key) {
   const registryMaterial = (name, version, file, expectedSha256) => pinnedMaterial(
     path.join(findCrateDirectory(sourceRoots, name, version), file),
     `${name} ${version}/${file}`,
     expectedSha256
   );
-  const repositoryMaterial = (file, expectedSha256) => pinnedMaterial(
+  const repositoryMaterial = (file, expectedSha256) => pinnedRepositoryTextMaterial(
     path.join(root, 'third_party', 'rust', 'upstream', file),
     `third_party/rust/upstream/${file}`,
     expectedSha256
