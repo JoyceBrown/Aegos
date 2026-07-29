@@ -3,26 +3,99 @@
 plan_id: AEGOS-WINDOWS-RELIABILITY
 status: active
 authority: exclusive
-current_task_id: REL-01
+current_task_id: DG-01
 roadmap_reference: docs/roadmap.md
 continuation_policy: validate_then_advance
 completion_policy: all_required_items
-priority_basis: The current-code three-angle review found P1 truth, recovery,
-  and responsiveness defects plus bounded P2 robustness and ownership gaps.
-  The user explicitly directed their repair before any new capability work.
-delivery_contract: The fresh REL-01 unsigned 3.6.70 NSIS candidate is
-  Aegos_3.6.70_x64-setup.exe, exactly 16,341,772 bytes with SHA-256
-  9C6EBAB99F9C80792E3E2B9D6AB766C55FCAC5092AA19575BB27CB87126EF261.
-  It remains uninstalled and unpublished while final source/gate provenance,
-  the authorized source push, and the matching GitHub Release are completed.
-  No host networking or FlClash state is changed.
-latest_change_id: CHANGE-050
-latest_change_class: task_adjustment
-change_authority_reference: user instruction "出安装包和同步github的安装包"
+priority_basis: The user approved the proposed delivery-readiness sequence:
+  first land the completed v3.6.71 source and license closure, then inspect
+  isolated Windows acceptance capability without changing the host, and then
+  add a minimal independently reviewable Windows CI lane.
+delivery_contract: DG-01 lands only the accepted Aegos v3.6.70 closure and
+  v3.6.71 GPL/license-packaging source and evidence, verifies and pushes that
+  exact set to origin/main, performs a read-only isolated-Windows capability
+  probe, and adds a minimal least-privilege Windows CI lane without weakening
+  the local 32-command release matrix. Public release, artifact upload,
+  signing or certificate purchase, installation, Aegos launch, host-network
+  mutation, and every FlClash action remain excluded.
+latest_change_id: CHANGE-052
+latest_change_class: priority_branch
+change_authority_reference: user approval "同意，开始处理"
 delegated_execution: none
-on_complete: wait_for_explicit_authority
+on_complete: wait
 
 ## Objective
+
+Complete DG-01 as one bounded delivery-readiness unit in this order:
+
+1. review, validate, commit, and push only the completed v3.6.70 closure and
+   v3.6.71 source/license/evidence set, excluding all user-owned provider-panel,
+   preview-image, temporary, and research files;
+2. probe Hyper-V, Windows Sandbox, and existing VM capability read-only, without
+   enabling a Windows feature, creating a VM, installing or starting Aegos, or
+   changing any network state; and
+3. add a separate minimal Windows CI commit with pinned actions, least
+   privilege, explicit timeouts/cache policy, Rust tests, JavaScript syntax,
+   npm security, architecture/control-plane/debt/planning checks, and existing
+   negative fixture suites.
+
+CHANGE-052 authorizes the two narrowly scoped commits and pushes required by
+this ordered unit. It does not authorize a GitHub Release, tag, installer
+upload, signing certificate purchase, Authenticode signing, automatic update,
+host installation or launch, live takeover, FlClash action, or host proxy,
+TUN, DNS, firewall, or kill-switch change.
+
+DG-01 completes only after both pushed commits are verified on `origin/main`,
+the lab-capability result is recorded as available or precisely blocked, the
+minimal CI workflow passes local syntax/context checks, and no unrelated file,
+residual process, or host-network side effect is present.
+
+## Deferred work
+
+Reason deferred: CHANGE-052 prioritizes source/license durability, a read-only
+lab-capability decision, and repeatable CI before any remaining maintenance or
+distribution work.
+
+Impact: MNT-04 and MNT-06 through MNT-10 remain non-executable recommendations;
+certificate purchase, signing, public v3.6.71 release, installation, and real
+Windows takeover acceptance are not performed by DG-01.
+
+Resume condition: after DG-01 is complete, wait for explicit user authority to
+select any deferred maintenance, signing, publication, or isolated-lab setup.
+
+## Previous Objective
+
+Complete LIC-01 as one release-governance unit before any later public release:
+
+1. license Aegos itself as `GPL-3.0-only` in root, npm, Cargo, README, and
+   release metadata using the unmodified official GPL version 3 text;
+2. record and ship the exact managed Mihomo provenance: upstream tag
+   `v1.19.28`, commit `cbd11db1e13a75d8e680e0fe7742c95be4cba2be`,
+   official `mihomo-windows-amd64-v1-v1.19.28.zip`, archive SHA-256
+   `e1a47d4eb9b864e242e92ef4d501b052241c7e4eb5a592f2b124959e8efb2312`,
+   and extracted executable SHA-256
+   `c14bda8dc4cc8910ccd2110fe2be083c51a1b66da59141a0b87aff6fe6126517`;
+3. generate a deterministic third-party notice and dependency inventory,
+   include the Aegos, Mihomo, notice, provenance, and Fluent license files in
+   Tauri resources, and prove they enter the actual NSIS payload;
+4. add a fail-closed license audit and known-bad fixtures without reducing any
+   existing acceptance command, assertion, matrix, or failure path; and
+5. allocate `3.6.71`, run the complete host-safe matrix, build a new local
+   unsigned candidate from final product inputs, inspect its payload, and bind
+   its hash to fresh provenance and an LIC-01 evidence register.
+
+CHANGE-051 authorizes only the files, version allocation, local build, and
+host-safe verification needed for this unit. It excludes installation,
+publication, Git commit/push, signing, automatic updates, live takeover,
+FlClash actions, and host proxy, TUN, DNS, firewall, or kill-switch changes.
+
+LIC-01 is complete only when `docs/work/license-packaging-lic01.md` is closed,
+the actual NSIS payload contains every required license resource, all
+known-bad license fixtures fail, all existing matrix floors remain intact, and
+the new 3.6.71 candidate is unsigned, uninstalled, unpublished, and
+source-bound.
+
+## Previous Objective
 
 Build and publish the exact source-bound `v3.6.70` unsigned x64 NSIS installer
 after the completed BR-01 product change. The release must use a new artifact,
@@ -73,6 +146,13 @@ REL-01 is complete only with the evidence register at
 identity, the complete host-safe matrix, a newly built artifact with matching
 hash/provenance, a successful push, and a GitHub release whose uploaded asset
 matches the recorded bytes. It must state the installer is unsigned.
+
+REL-01 is complete. Commit
+`01fd0151a9b7a79f793ff5b009676c546874fdd1` is on `origin/main` and is the
+`v3.6.70` tag target. The public GitHub Release contains the one exact
+16,341,772-byte unsigned installer, and GitHub reports the recorded SHA-256.
+The closed evidence register records the final matrix, provenance, publication,
+download-boundary evidence, residue check, and unchanged host boundary.
 
 ## Previous Objective
 
@@ -704,7 +784,9 @@ satisfied. Missing evidence is `untested`, not passed.
 | UX-01 | completed | Connections can reveal one compact, read-only explanation from the current normalized snapshot without adding default clutter or a backend request. | CHANGE-047 closed with default-hidden, no-request, single-open, refresh/navigation-close, action-geometry, and affected host-safe evidence; no delivery or host-network action occurred. |
 | DR-01 | completed | A user-run diagnostic repair retains a compact, item-scoped recheck receipt so its true result is reviewable without turning diagnostics into an activity dashboard. | CHANGE-048 closed with default-absent, verified/unresolved/unverified, clear-on-new-run, navigation-available, fixed window/DPI, and affected host-safe evidence; no delivery or host-network action occurred. |
 | BR-01 | completed | A destructive local-backup confirmation identifies the exact selected snapshot before it can start the existing restore job. | CHANGE-049 closed with selected-backup identity, cancellation, original-job identity, fixed window/DPI, and affected host-safe evidence; archive, restore, network, delivery, and host behavior remain unchanged. |
-| REL-01 | active | A fresh source-bound unsigned `3.6.70` installer, commit/push, and matching GitHub Release make the completed current work available for acceptance. | CHANGE-050 authorizes only final validation, build, source sync, exact asset upload, and checksum disclosure. |
+| REL-01 | completed | A fresh source-bound unsigned `3.6.70` installer, commit/push, and matching GitHub Release make the completed current work available for acceptance. | CHANGE-050 closed at source/tag `01fd0151a9b7a79f793ff5b009676c546874fdd1`; the uploaded asset size and server SHA-256 match the local candidate. |
+| LIC-01 | completed | Aegos and its next installer carry complete GPL-3.0-only and third-party license/provenance materials with fail-closed verification. | CHANGE-051 closed with exact source/hash records, deterministic notices, bad-fixture rejection, a complete 32-command matrix, and direct NSIS payload verification. |
+| DG-01 | in_progress | The accepted 3.6.71 source/license closure is durable on GitHub, isolated Windows acceptance capability is known, and a minimal Windows CI lane protects repeatable source checks. | CHANGE-052 authorizes this ordered delivery-readiness unit; release, signing, installation, live takeover, host networking, and FlClash remain excluded. |
 
 WR-03 is a host-safe code and isolated-fixture repair task. It is not authority
 to perform controlled live takeover testing, which remains blocked until a

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,12 +40,15 @@ const sourceOnlyRelease = releaseNotes.includes('Source-only');
 const coreRuntimeAudit = readText('tools/core-runtime-audit.js');
 const appJs = readText('src/app.js');
 const interactionSmoke = readText('tools/interaction-smoke.js');
+const licenseAudit = spawnSync(process.execPath, ['tools/license-compliance-audit.js'], { cwd: root, encoding: 'utf8', windowsHide: true });
+const licenseFixtures = spawnSync(process.execPath, ['tools/license-compliance-audit.js', '--self-test'], { cwd: root, encoding: 'utf8', windowsHide: true });
 
 check('package name is aegos', pkg.name === 'aegos', pkg.name);
 check('package/Tauri/Cargo versions match', pkg.version === tauri.version && pkg.version === cargoVersion, `${pkg.version}/${tauri.version}/${cargoVersion}`);
 check('product name is Aegos', tauri.productName === 'Aegos', tauri.productName);
 check('identifier does not collide with Aegis', tauri.identifier === 'com.codex.aegos', tauri.identifier);
 check('Tauri shell configured', Boolean(pkg.devDependencies?.['@tauri-apps/cli']), '@tauri-apps/cli');
+check('license audit and known-bad fixtures pass', licenseAudit.status === 0 && licenseFixtures.status === 0, `audit:licenses=${licenseAudit.status} audit:licenses-fixtures=${licenseFixtures.status}`);
 check('transparent window disabled for performance', tauri.app?.windows?.[0]?.transparent === false, `transparent=${tauri.app?.windows?.[0]?.transparent}`);
 check('WebView2 missing runtime is handled by installer', tauri.bundle?.windows?.webviewInstallMode?.type === 'downloadBootstrapper' && tauri.bundle?.windows?.webviewInstallMode?.silent === false, JSON.stringify(tauri.bundle?.windows?.webviewInstallMode));
 check('mihomo bundled as only core resource', exists('resources/core/mihomo.exe') && !exists('resources/core/sing-box.exe'), 'resources/core');
@@ -62,6 +66,7 @@ check('settings security productization gate exists', exists('tools/settings-sec
 check('diagnostics productization gate exists', exists('tools/diagnostics-product-audit.js') && pkg.scripts?.['audit:diagnostics-product'] === 'node tools/diagnostics-product-audit.js', 'diagnostics productization gate');
 check('stability regression audit script exists', exists('tools/stability-regression-audit.js') && pkg.scripts?.['audit:stability'] === 'node tools/stability-regression-audit.js', 'tools/stability-regression-audit.js');
 check('installer candidate audit script exists', exists('tools/installer-candidate-audit.js') && pkg.scripts?.['audit:installer'] === 'node tools/installer-candidate-audit.js', 'tools/installer-candidate-audit.js');
+check('actual installer payload audit script exists', exists('tools/installer-payload-audit.js') && pkg.scripts?.['audit:installer-payload'] === 'node tools/installer-payload-audit.js' && readText('tools/installer-candidate-audit.js').includes('payload-audit.json'), 'tools/installer-payload-audit.js');
 check('release trust audit script exists', exists('tools/release-trust-audit.js') && exists('tools/verify-authenticode.ps1') && pkg.scripts?.['audit:release-trust'] === 'node tools/release-trust-audit.js', 'tools/release-trust-audit.js');
 check('local encrypted backup audit script exists', exists('tools/local-backup-audit.js') && pkg.scripts?.['audit:local-backup'] === 'node tools/local-backup-audit.js', 'tools/local-backup-audit.js');
 check('active planning context audit script exists', exists('tools/planning-context-audit.js') && pkg.scripts?.['audit:planning-context'] === 'node tools/planning-context-audit.js' && exists('PLANS.md') && exists('docs/roadmap.md') && exists('docs/work/current.md') && exists('docs/decisions/windows-maturity-mainline.md'), 'current Windows mainline context');

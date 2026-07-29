@@ -266,3 +266,19 @@ Aegos 会随应用管理经过批准的 Mihomo 运行资源，但两者职责不
   控制平面，也不会复制其他客户端的 UI 资产。
 
 使用、修改或再分发时，请同时遵守仓库中各第三方组件对应的许可证要求。
+
+## 许可证与随包材料
+
+Aegos 采用 `GPL-3.0-only`；完整正文见根目录 [`LICENSE`](LICENSE)。
+安装包会把以下材料放入应用资源目录的 `licenses/`：
+
+- Aegos 的 GPLv3 正文；
+- [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 与完整 Rust 依赖许可证汇总；
+- Mihomo `v1.19.28` 的 GPLv3 正文、固定来源、版本、官方资产和哈希记录；
+- Microsoft Fluent UI System Icons 固定子集的 MIT 许可证。
+
+Mihomo 的精确机器可读来源记录位于
+[`third_party/mihomo/provenance.json`](third_party/mihomo/provenance.json)，
+对应源码与人工可读说明位于
+[`third_party/mihomo/SOURCE.md`](third_party/mihomo/SOURCE.md)。缺失、篡改或过期的
+许可证/NOTICE 材料会使发布和安装包门禁失败。

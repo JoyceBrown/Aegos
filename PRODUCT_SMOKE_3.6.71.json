@@ -1,6 +1,6 @@
 {
   "ok": true,
-  "version": "3.6.70",
+  "version": "3.6.71",
   "journeys": {
     "startupTruth": true,
     "tunOffConnection": true,
@@ -27,6 +27,6 @@
   "missingCommands": [],
   "missingJobKinds": [],
   "residualTestRoots": [],
-  "commandCount": 280,
-  "generatedAt": "2026-07-28T17:26:01.116Z"
+  "commandCount": 279,
+  "generatedAt": "2026-07-29T07:14:35.577Z"
 }

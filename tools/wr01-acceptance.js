@@ -32,6 +32,8 @@ const requiredCommands = [
   command('app-js-syntax', 'node --check src/app.js', process.execPath, ['--check', 'src/app.js']),
   command('acceptance-js-syntax', 'node --check tools/wr01-acceptance.js', process.execPath, ['--check', 'tools/wr01-acceptance.js']),
   command('provenance-js-syntax', 'node --check tools/candidate-provenance-audit.js', process.execPath, ['--check', 'tools/candidate-provenance-audit.js']),
+  command('license-audit', 'npm run audit:licenses', process.execPath, [npmCli, 'run', 'audit:licenses']),
+  command('license-fixture-audit', 'npm run audit:licenses-fixtures', process.execPath, [npmCli, 'run', 'audit:licenses-fixtures']),
   command('npm-audit', 'npm audit --json', process.execPath, [npmCli, 'audit', '--json']),
   command('interaction-smoke', 'npm run smoke:interactions', process.execPath, [npmCli, 'run', 'smoke:interactions']),
   command('ui-smoke', 'npm run smoke:ui', process.execPath, [npmCli, 'run', 'smoke:ui']),
@@ -58,18 +60,25 @@ const requiredCommands = [
   command('local-backup-audit', 'npm run audit:local-backup', process.execPath, [npmCli, 'run', 'audit:local-backup'])
 ];
 
-const sourceDirectories = ['src', 'src-tauri/src', 'src-tauri/capabilities', 'src-tauri/icons'];
+const sourceDirectories = [
+  'src', 'src-tauri/src', 'src-tauri/capabilities', 'src-tauri/icons',
+  'third_party/mihomo', 'third_party/fluent-ui-system-icons', 'third_party/rust'
+];
 const sourceFiles = [
   'package.json', 'package-lock.json', 'src-tauri/Cargo.toml', 'src-tauri/Cargo.lock',
-  'src-tauri/tauri.conf.json', 'resources/core/mihomo.exe'
+  'src-tauri/tauri.conf.json', 'resources/core/mihomo.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md'
 ];
 const gateFiles = [
   'AGENTS.md', 'PLANS.md', 'README.md', `RELEASE_${packageJson.version}.md`, 'package.json',
   'docs/INDEX.md', 'docs/product.md', 'docs/architecture.md', 'docs/roadmap.md',
   'docs/decisions/windows-reliability-mainline.md', 'docs/work/current.md',
+  'docs/work/license-packaging-lic01.md',
   'docs/work/windows-reliability-wr01.md', 'docs/work/windows-reliability-wr02.md',
   'docs/work/windows-reliability-wr15.md',
   'tools/wr01-acceptance.js', 'tools/candidate-provenance-audit.js',
+  'tools/generate-third-party-notices.js', 'tools/license-compliance-audit.js',
+  'tools/installer-payload-audit.js', 'tools/release-audit.js',
+  'tools/installer-candidate-audit.js', 'tools/installer-regression-audit.js',
   'src-tauri/tauri.native-perf.conf.json',
   'tools/wm03-interruption-harness.js', 'tools/planning-context-audit.js', 'tools/interaction-smoke.js',
   'tools/ui-smoke.js', 'tools/product-journey-smoke.js', 'tools/perf-smoke.js', 'tools/soak-smoke.js',

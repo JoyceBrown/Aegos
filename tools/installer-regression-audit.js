@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -9,6 +10,7 @@ const installerAudit = fs.readFileSync(path.join(root, 'tools', 'installer-candi
 const releaseAudit = fs.readFileSync(path.join(root, 'tools', 'release-audit.js'), 'utf8');
 const tauri = JSON.parse(fs.readFileSync(path.join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'));
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const licenseAudit = spawnSync(process.execPath, ['tools/license-compliance-audit.js'], { cwd: root, encoding: 'utf8', windowsHide: true });
 
 const pass = [];
 const fail = [];
@@ -30,6 +32,7 @@ function semverAtLeast(version, baseline) {
 }
 
 check('installer regression checklist exists', Boolean(checklist), checklistPath);
+check('license audit passes before installer regression acceptance', licenseAudit.status === 0, `audit:licenses=${licenseAudit.status}`);
 check(
   'checklist requires isolated execution and verified recovery evidence',
   ['isolated VM or dedicated test account', 'sanitized baseline', 'verify the saved baseline has been restored', 'Never package changed source as another'].every((text) => checklist.includes(text)),
@@ -57,7 +60,7 @@ check(
 );
 check(
   'checklist includes current automated gates',
-  ['audit:speed-target', 'audit:flclash', 'audit:provider-healthcheck', 'audit:installer', 'audit:release', 'smoke:interactions'].every((text) => checklist.includes(text)),
+  ['audit:speed-target', 'audit:flclash', 'audit:provider-healthcheck', 'audit:licenses', 'audit:installer', 'audit:release', 'smoke:interactions'].every((text) => checklist.includes(text)),
   'automated gates'
 );
 check(

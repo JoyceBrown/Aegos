@@ -1,10 +1,12 @@
 [package]
 name = "aegos"
-version = "3.6.70"
+version = "3.6.71"
 description = "Aegos lightweight desktop shell"
-authors = ["Codex"]
+authors = ["Aegos contributors"]
 edition = "2021"
 rust-version = "1.77"
+license = "GPL-3.0-only"
+repository = "https://github.com/JoyceBrown/Aegos"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

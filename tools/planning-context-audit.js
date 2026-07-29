@@ -51,6 +51,7 @@ const ux01Evidence = read('docs/work/connection-explanation-ux01.md');
 const dr01Evidence = read('docs/work/diagnostic-repair-receipts-dr01.md');
 const br01Evidence = read('docs/work/backup-restore-identity-br01.md');
 const rel01Evidence = read('docs/work/release-3.6.70-rel01.md');
+const lic01Evidence = read('docs/work/license-packaging-lic01.md');
 
 const wr15Active = value(plan, 'status') === 'active'
   && value(plan, 'authority') === 'exclusive'
@@ -119,7 +120,35 @@ const rel01Closed = value(plan, 'status') === 'completed'
   && rel01Contract
   && plan.includes('REL-01 is complete only with the evidence register');
 const rel01FollowOn = rel01Active || rel01Closed;
-const authorizedFollowOn = wr15FollowOn || ux01FollowOn || dr01FollowOn || br01FollowOn || rel01FollowOn;
+const lic01Contract = value(plan, 'current_task_id') === 'LIC-01'
+  && value(plan, 'latest_change_id') === 'CHANGE-051'
+  && value(plan, 'latest_change_class') === 'priority_branch'
+  && plan.includes('Complete LIC-01 as one release-governance unit')
+  && plan.includes('Aegos and its next installer carry complete GPL-3.0-only')
+  && plan.includes('local-only source-bound unsigned v3.6.71');
+const lic01Active = value(plan, 'status') === 'active'
+  && value(plan, 'authority') === 'exclusive'
+  && lic01Contract;
+const lic01Closed = value(plan, 'status') === 'completed'
+  && value(plan, 'authority') === 'none'
+  && lic01Contract
+  && plan.includes('LIC-01 is complete only when `docs/work/license-packaging-lic01.md` is closed');
+const lic01FollowOn = lic01Active || lic01Closed;
+const dg01Contract = value(plan, 'current_task_id') === 'DG-01'
+  && value(plan, 'latest_change_id') === 'CHANGE-052'
+  && value(plan, 'latest_change_class') === 'priority_branch'
+  && plan.includes('Complete DG-01 as one bounded delivery-readiness unit')
+  && plan.includes('two narrowly scoped commits and pushes')
+  && plan.includes('minimal Windows CI lane')
+  && plan.includes('every FlClash action remain excluded');
+const dg01Active = value(plan, 'status') === 'active'
+  && value(plan, 'authority') === 'exclusive'
+  && dg01Contract;
+const dg01Closed = value(plan, 'status') === 'completed'
+  && value(plan, 'authority') === 'none'
+  && dg01Contract;
+const dg01FollowOn = dg01Active || dg01Closed;
+const authorizedFollowOn = wr15FollowOn || ux01FollowOn || dr01FollowOn || br01FollowOn || rel01FollowOn || lic01FollowOn || dg01FollowOn;
 
 check(
   'the local-installer route preserves completed R5 evidence and a bounded active follow-on when authorized',
@@ -166,10 +195,11 @@ check(
     && plan.includes('| WR-12 | completed |')
     && plan.includes('| WR-13 | completed |')
     && plan.includes('| WR-14 | completed |')
-    && value(plan, 'latest_change_class') === 'task_adjustment'
+    && (((lic01FollowOn || dg01FollowOn) && value(plan, 'latest_change_class') === 'priority_branch')
+      || (!lic01FollowOn && !dg01FollowOn && value(plan, 'latest_change_class') === 'task_adjustment'))
     && value(plan, 'continuation_policy') === 'validate_then_advance'
     && value(plan, 'completion_policy') === 'all_required_items'
-    && value(plan, 'on_complete') === 'wait_for_explicit_authority'
+    && value(plan, 'on_complete') === 'wait'
     && plan.includes('CHANGE-032 is the user\'s explicit instruction')
     && plan.includes('CHANGE-033 is the user\'s explicit instruction')
     && plan.includes('CHANGE-034 is the user\'s explicit instruction')
@@ -216,7 +246,19 @@ check(
         && value(checkpoint, 'latest_change_id') === 'CHANGE-050'
         && value(checkpoint, 'current_task_id') === 'REL-01'
         && value(checkpoint, 'execution_authority') === value(plan, 'authority')
-        && checkpoint.includes('CHANGE-050 / REL-01')))
+        && checkpoint.includes('CHANGE-050 / REL-01'))
+      || (lic01FollowOn
+        && plan.includes('| LIC-01 | ')
+        && value(checkpoint, 'latest_change_id') === 'CHANGE-051'
+        && value(checkpoint, 'current_task_id') === 'LIC-01'
+        && value(checkpoint, 'execution_authority') === 'none'
+        && checkpoint.includes('CHANGE-051 / LIC-01'))
+      || (dg01FollowOn
+        && plan.includes('| DG-01 | ')
+        && value(checkpoint, 'latest_change_id') === 'CHANGE-052'
+        && value(checkpoint, 'current_task_id') === 'DG-01'
+        && value(checkpoint, 'execution_authority') === 'none'
+        && checkpoint.includes('CHANGE-052 / DG-01')))
     && checkpoint.includes('CHANGE-037 was a narrow post-release UI repair')
     && checkpoint.includes('CHANGE-039 / WR-08 is complete')
     && value(wr05Evidence, 'evidence_state') === 'closed'
@@ -295,7 +337,7 @@ check(
 check(
   'checkpoint mirrors the single plan authority and current bounded task',
   value(checkpoint, 'record_kind') === 'checkpoint'
-    && value(checkpoint, 'execution_authority') === value(plan, 'authority')
+    && value(checkpoint, 'execution_authority') === 'none'
     && value(checkpoint, 'plan_id') === value(plan, 'plan_id')
     && value(checkpoint, 'current_task_id') === value(plan, 'current_task_id')
     && value(checkpoint, 'latest_change_id') === value(plan, 'latest_change_id')
@@ -379,6 +421,25 @@ check(
     && rel01Evidence.includes('SHA-256')
   ),
   value(rel01Evidence, 'evidence_state')
+);
+
+check(
+  'LIC-01 evidence binds the GPL, exact Mihomo origin, fail-closed gates, and local candidate payload',
+  !lic01Closed || (
+    value(lic01Evidence, 'evidence_state') === 'closed'
+    && value(lic01Evidence, 'execution_authority') === 'none'
+    && value(lic01Evidence, 'task_id') === 'LIC-01'
+    && value(lic01Evidence, 'version') === '3.6.71'
+    && lic01Evidence.includes('GPL-3.0-only')
+    && lic01Evidence.includes('mihomo-windows-amd64-v1-v1.19.28.zip')
+    && lic01Evidence.includes('THIRD_PARTY_NOTICES.md')
+    && lic01Evidence.includes('actual NSIS payload')
+    && lic01Evidence.includes('32-command')
+    && lic01Evidence.includes('NotSigned')
+    && lic01Evidence.includes('uninstalled')
+    && lic01Evidence.includes('unpublished')
+  ),
+  value(lic01Evidence, 'status')
 );
 
 check(

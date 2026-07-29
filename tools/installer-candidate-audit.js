@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +34,9 @@ const installerHash = installerExists ? sha256(installer) : '';
 const installerSize = installerExists ? fs.statSync(path.join(root, installer)).size : 0;
 const mainRs = read('src-tauri/src/main.rs');
 const releaseAudit = read('tools/release-audit.js');
+const licenseAudit = spawnSync(process.execPath, ['tools/license-compliance-audit.js'], { cwd: root, encoding: 'utf8', windowsHide: true });
+const payloadReportPath = '.validation/lic01/payload-audit.json';
+const payloadReport = exists(payloadReportPath) ? readJson(payloadReportPath) : {};
 
 const results = [];
 function check(name, ok, detail = '') {
@@ -40,6 +44,8 @@ function check(name, ok, detail = '') {
 }
 
 check('installer audit is exposed as package script', pkg.scripts?.['audit:installer'] === 'node tools/installer-candidate-audit.js', 'npm run audit:installer');
+check('license audit passes before installer acceptance', licenseAudit.status === 0, `audit:licenses=${licenseAudit.status}`);
+check('actual NSIS payload audit is current and complete', payloadReport.schema === 'aegos.installer-payload-audit/v1' && payloadReport.ok === true && payloadReport.productVersion === pkg.version && payloadReport.installer?.path === installer && payloadReport.installer?.bytes === installerSize && payloadReport.installer?.sha256 === installerHash && payloadReport.extractionCleaned === true && Array.isArray(payloadReport.matches) && payloadReport.matches.length === 9 && payloadReport.matches.every((item) => item.ok === true), payloadReportPath);
 check('package/Tauri/Cargo versions match', pkg.version === tauri.version && pkg.version === cargoVersion, `${pkg.version}/${tauri.version}/${cargoVersion}`);
 check('release note exists for installer candidate', exists(releaseDoc), releaseDoc);
 check('release note is not marked source-only', !releaseNotes.includes('Source-only') && !releaseNotes.includes('source-only'), releaseDoc);

@@ -1,22 +1,34 @@
 # Aegos Documentation Index
 
-This page assigns one authoritative owner to each current topic. Historical
-files remain traceability records and cannot create new execution authority.
+This page routes each current topic to one canonical owner. It does not create
+execution authority. Historical files are traceability records only.
+
+## Current Authority And Facts
 
 | Topic | Canonical owner |
 | --- | --- |
-| Project overview, setup, and current direction | README.md |
-| Product outcome, Windows scope, and non-goals | product.md |
-| Module ownership and system boundaries | architecture.md |
-| Long-term Windows real-use reliability direction and non-executable conditional outcomes | roadmap.md |
-| Latest executable-plan record and completed WR-06 delivery facts | PLANS.md |
-| Current evidence, dirty-worktree state, and next action | work/current.md; closed WR-01/WR-02 evidence: work/windows-reliability-wr01.md and work/windows-reliability-wr02.md; completed Windows Maturity evidence: work/windows-maturity-wm01.md through work/windows-maturity-wm05.md |
-| Windows real-use reliability decision, assessment, competitor comparison, and route rationale | decisions/windows-reliability-mainline.md |
-| Current local capability delivery facts | RELEASE_3.6.69.md |
-| Control-plane baseline and acceptance | CONTROL_PLANE_BASELINE.md and CONTROL_PLANE_ACCEPTANCE.md |
-| Aegos/Mihomo boundary | CONTROL_PLANE_BOUNDARY_3.6.49.md |
-| Mihomo controller API boundary | core-api-contract.md; its future endpoint rows are safety criteria, not tasks |
-| UI tokens and interaction rules | ui/AEGOS_UI_SPEC.md and ui/DESIGN_TOKENS.md |
+| Project overview, setup, commands, and current limitations | [`../README.md`](../README.md) |
+| Product outcome, Windows scope, and non-goals | [`product.md`](product.md) |
+| Module ownership and system boundaries | [`architecture.md`](architecture.md) |
+| Long-term Windows real-use reliability direction and conditional outcomes | [`roadmap.md`](roadmap.md) |
+| Executable plan, when marked active/exclusive; completed REL-01 contract otherwise | [`../PLANS.md`](../PLANS.md) |
+| Current task, dirty-worktree facts, verification, and exact next action | [`work/current.md`](work/current.md) |
+| Current local candidate source record | [`../RELEASE_3.6.71.md`](../RELEASE_3.6.71.md) |
+| Published v3.6.70 closure and final evidence | [`work/release-3.6.70-rel01.md`](work/release-3.6.70-rel01.md) |
+| Aegos license, third-party notices, and managed Mihomo provenance | [`../LICENSE`](../LICENSE), [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md), and [`../third_party/mihomo/provenance.json`](../third_party/mihomo/provenance.json) |
+| LIC-01 local packaging and payload evidence | [`work/license-packaging-lic01.md`](work/license-packaging-lic01.md) |
+| Verified maintenance gaps and priority recommendations | [`maintenance.md`](maintenance.md) |
+
+## Product And Architecture References
+
+| Topic | Canonical owner |
+| --- | --- |
+| Windows reliability route decision and rationale | [`decisions/windows-reliability-mainline.md`](decisions/windows-reliability-mainline.md) |
+| Control-plane baseline and acceptance | [`../CONTROL_PLANE_BASELINE.md`](../CONTROL_PLANE_BASELINE.md) and [`../CONTROL_PLANE_ACCEPTANCE.md`](../CONTROL_PLANE_ACCEPTANCE.md) |
+| Aegos/Mihomo boundary | [`../CONTROL_PLANE_BOUNDARY_3.6.49.md`](../CONTROL_PLANE_BOUNDARY_3.6.49.md) |
+| Mihomo Controller API boundary | [`../core-api-contract.md`](../core-api-contract.md); future endpoint rows are safety criteria, not tasks |
+| UI tokens and interaction rules | [`ui/AEGOS_UI_SPEC.md`](ui/AEGOS_UI_SPEC.md) and [`ui/DESIGN_TOKENS.md`](ui/DESIGN_TOKENS.md) |
+| Closed task evidence | Individual registers under [`work/`](work/); the pre-consolidation checkpoint is under [`work/archive/`](work/archive/) |
 
 ## Historical Planning Archive
 
@@ -44,5 +56,5 @@ roadmap decision and an explicit plan migration.
 | research/opensource-absorption-roadmap.md, research/opensource-reference.md, and research/opensource-absorption-standard.md | Reference-only research maps and evaluation standard |
 
 Release notes are versioned delivery evidence, not plans. Performance JSON,
-fixtures, screenshots, and research are evidence or reference material, not
-task sources.
+fixtures, screenshots, archived checkpoints, and research are evidence or
+reference material, not task sources.

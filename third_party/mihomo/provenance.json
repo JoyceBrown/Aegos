@@ -1,0 +1,28 @@
+{
+  "schema": "aegos.third-party-provenance/v1",
+  "component": "mihomo",
+  "version": "v1.19.28",
+  "tagCommit": "cbd11db1e13a75d8e680e0fe7742c95be4cba2be",
+  "releaseUrl": "https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.28",
+  "sourceUrl": "https://github.com/MetaCubeX/mihomo/tree/cbd11db1e13a75d8e680e0fe7742c95be4cba2be",
+  "asset": {
+    "name": "mihomo-windows-amd64-v1-v1.19.28.zip",
+    "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.28/mihomo-windows-amd64-v1-v1.19.28.zip",
+    "bytes": 17730829,
+    "sha256": "e1a47d4eb9b864e242e92ef4d501b052241c7e4eb5a592f2b124959e8efb2312"
+  },
+  "extracted": {
+    "repoPath": "resources/core/mihomo.exe",
+    "bytes": 47942656,
+    "sha256": "c14bda8dc4cc8910ccd2110fe2be083c51a1b66da59141a0b87aff6fe6126517",
+    "versionOutput": "Mihomo Meta v1.19.28 windows amd64 with go1.26.5 Wed Jul  8 00:26:36 UTC 2026; Use tags: with_gvisor",
+    "modified": false
+  },
+  "license": {
+    "spdx": "GPL-3.0-only",
+    "path": "third_party/mihomo/LICENSE",
+    "sourceUrl": "https://raw.githubusercontent.com/MetaCubeX/mihomo/cbd11db1e13a75d8e680e0fe7742c95be4cba2be/LICENSE",
+    "bytes": 35149,
+    "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+  }
+}

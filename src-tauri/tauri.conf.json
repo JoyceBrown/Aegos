@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Aegos",
-  "version": "3.6.70",
+  "version": "3.6.71",
   "identifier": "com.codex.aegos",
   "build": {
     "frontendDist": "../src"
@@ -29,8 +29,18 @@
     "active": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
+    "license": "GPL-3.0-only",
+    "licenseFile": "../LICENSE",
     "resources": {
-      "../resources/core/mihomo.exe": "core/mihomo.exe"
+      "../resources/core/mihomo.exe": "core/mihomo.exe",
+      "../LICENSE": "licenses/AEGOS-GPL-3.0.txt",
+      "../THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
+      "../third_party/mihomo/LICENSE": "licenses/MIHOMO-GPL-3.0.txt",
+      "../third_party/mihomo/SOURCE.md": "licenses/MIHOMO-SOURCE.md",
+      "../third_party/mihomo/provenance.json": "licenses/MIHOMO-PROVENANCE.json",
+      "../third_party/fluent-ui-system-icons/LICENSE": "licenses/FLUENT-UI-SYSTEM-ICONS-MIT.txt",
+      "../third_party/rust/THIRD_PARTY_LICENSES.txt": "licenses/RUST-THIRD-PARTY-LICENSES.txt",
+      "../third_party/rust/LICENSE_EXCEPTIONS.md": "licenses/RUST-LICENSE-EXCEPTIONS.md"
     },
     "windows": {
       "webviewInstallMode": {

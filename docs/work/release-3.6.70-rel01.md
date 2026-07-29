@@ -1,13 +1,14 @@
 # REL-01 Release Evidence Register
 
 record_kind: evidence_register
-execution_authority: exclusive
+execution_authority: none
 plan_id: AEGOS-WINDOWS-RELIABILITY
 task_id: REL-01
 change_id: CHANGE-050
-evidence_state: in_progress
+evidence_state: closed
 opened_at: 2026-07-28T11:49:45Z
-updated_at: 2026-07-28T16:15:07Z
+updated_at: 2026-07-28T16:36:37Z
+closed_at: 2026-07-28T16:36:37Z
 base_git_head: 941d1f6fc591a0c89709948a42e4e6a6cbcf5564
 candidate_version: 3.6.70
 host_boundary: Host-safe fixtures, isolated native probes, local build output,
@@ -62,12 +63,6 @@ changes.
 - The candidate is not installed and has not changed FlClash or host
   networking.
 
-## Pending Closure
-
-- Commit and push the accepted in-scope set to `origin/main`.
-- Publish `v3.6.70` with this exact installer and SHA-256, then verify the
-  public tag, target commit, asset byte count, and downloaded digest.
-
 ## Final Local Acceptance
 
 - Final run `wr01-20260728160831-15884` ran from
@@ -93,3 +88,51 @@ changes.
 - The only matching live process after the matrix was the pre-existing
   `FlClash.exe` PID 13184. No Aegos, Node, Cargo, or Rust test process
   remained; FlClash was not stopped, restarted, reconfigured, or taken over.
+
+## Post-Publication Closure Acceptance
+
+- After publication facts changed the authoritative plan and checkpoint to
+  `completed` / `none`, run `wr01-20260728163308-16404` rebound the complete
+  matrix to those final gate inputs from `2026-07-28T16:33:08.715Z` through
+  `2026-07-28T16:36:36.971Z`.
+- All 30 commands again exited 0 with the same source digest
+  `e4ac7cd3dccb35b58367c7b1b137b380e14e2d5d1270bf311f2ac547400383fd`,
+  final gate digest
+  `ccb832a603962e72f9f2fa381e5cde35a7c5b9e3db014349f46a1d6947ce7719`,
+  and immutable matrix digest
+  `ce18496398c2bb4205bcdfd90cc5cbbbdb94acc994f62b1a48a332d9c6c6aab9`.
+  The acceptance report SHA-256 is
+  `61e445db7a2b42fd4e6159d6dc598eb57f7e08ed42d76536d533c2c023504030`.
+- Candidate provenance was refreshed to that run while preserving the exact
+  build ID, product digest, artifact size, artifact SHA-256, target, and
+  unsigned status.
+
+## Publication Closure
+
+- Source commit:
+  `01fd0151a9b7a79f793ff5b009676c546874fdd1`; it was pushed once from
+  baseline `941d1f6fc591a0c89709948a42e4e6a6cbcf5564` to `origin/main`.
+- Public GitHub Release:
+  `https://github.com/JoyceBrown/Aegos/releases/tag/v3.6.70`, published at
+  `2026-07-28T16:19:54Z`; it is not a draft or prerelease.
+- The `v3.6.70` tag and `origin/main` both resolve to the source commit above.
+- GitHub asset ID `492922132` is `Aegos_3.6.70_x64-setup.exe`, state
+  `uploaded`, exactly `16,341,772` bytes, with server digest
+  `sha256:9c6ebab99f9c80792e3e2b9d6ab766c55fcac5092aa19575bb27cb87126ef261`.
+  These values equal the locally built candidate and release note.
+- The asset is explicitly unsigned. It was not installed, and no automatic
+  update channel was added.
+
+## Independent Download Boundary
+
+- A `gh release download` attempt reached the asset endpoint but stalled for
+  five minutes and left a zero-byte temporary file; the exact spawned `gh`
+  process and verified temporary directory were removed.
+- A public `curl` attempt failed with connection reset after 20 seconds. A
+  final authenticated asset-API download was stopped at its explicit
+  90-second deadline. Both verified temporary roots were removed.
+- Therefore this register relies on GitHub's server-computed asset SHA-256 and
+  byte count plus the matching local artifact; it does not claim a separate
+  downloaded-file hash. No `gh`, Git, Aegos, Node, Cargo, or Rust process and
+  no REL-01 temporary root remained afterward. FlClash PID 13184 stayed
+  running and unchanged.

@@ -121,6 +121,7 @@ Required:
 - `npm run audit:opensource`
 - `npm run audit:flclash`
 - `npm run audit:provider-healthcheck`
+- `npm run audit:licenses`
 - `npm run audit:debt`
 - `npm run smoke:ui`
 - `npm run smoke:interactions`

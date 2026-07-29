@@ -1,397 +1,177 @@
 # Current Work Checkpoint
 
 record_kind: checkpoint
-execution_authority: exclusive
+execution_authority: none
 active_plan: ../../PLANS.md
 plan_id: AEGOS-WINDOWS-RELIABILITY
-current_task_id: REL-01
-latest_change_id: CHANGE-050
-latest_change_class: task_adjustment
-updated_at: 2026-07-28
+current_task_id: DG-01
+latest_change_id: CHANGE-052
+latest_change_class: priority_branch
+updated_at: 2026-07-29
 
-This checkpoint records facts. It cannot create a task; `PLANS.md` may
-authorize work only while marked active and exclusive.
+This checkpoint records current facts only. CHANGE-052 and the active exclusive
+`PLANS.md` authorize the ordered DG-01 delivery-readiness unit. The authority
+is limited to two exact source-control closures, a read-only isolated-Windows
+capability probe, and a minimal Windows CI lane.
+
+The pre-consolidation checkpoint is retained at
+`archive/current-2026-07-28-rel01.md`. Historical decisions belong to their
+individual evidence registers under `docs/work/`, not to this current file.
 
 ## Current Decision
 
-CHANGE-050 / REL-01 is active under the user's explicit request to build an
-installer and synchronize it with GitHub. The Connections regression now
-preserves a newer visible connection snapshot when a delayed status refresh
-still reports no takeover; the deterministic interaction fixture rejects the
-old disabled close action. The complete 30-command host-safe matrix then
-passed before `npm run build` produced the fresh unsigned local
-`Aegos_3.6.70_x64-setup.exe`: 16,341,772 bytes, SHA-256
-`9c6ebab99f9c80792e3e2b9d6ab766c55fcac5092aa19575bb27cb87126ef261`,
-Authenticode `NotSigned`. The artifact is not installed or published.
+CHANGE-052 / DG-01 is active after the user approved the proposed sequence:
 
-REL-01 permits one accepted source/evidence commit and push to `origin/main`,
-followed by one `v3.6.70` GitHub Release with the exact installer asset and
-SHA-256. It excludes installation, signing, automatic updates, live takeover,
-FlClash, and host proxy, TUN, DNS, firewall, or kill-switch changes. The
-release note and provenance still need to be rebound to the new artifact, then
-the complete matrix and delivery gates must run against those final inputs
-before any Git or GitHub write.
+1. review, validate, commit, and push only the accepted v3.6.70 closure and
+   v3.6.71 source/license/evidence files;
+2. inspect Hyper-V, Windows Sandbox, and existing VM capability read-only; and
+3. add a separate, least-privilege Windows CI commit without weakening the
+   local full release matrix.
 
-## Previous Completed Decision
+The user-owned provider-panel scripts, preview images, temporary directories,
+and research note remain explicitly excluded. Public release, tags, installer
+upload, certificate purchase, signing, installation, Aegos launch, live
+takeover, host-network mutation, and every FlClash action remain excluded.
 
-CHANGE-049 / BR-01 is complete under the user's instruction to independently
-continue with the next justified improvement. Source review confirmed that the
-existing local-backup restore is already DPAPI-bound, disconnected-only,
-validated, and rollback-capable. The bounded user-safety defect was that a
-destructive confirmation did not identify which listed backup would be
-restored. BR-01 adds only the selected snapshot's available creation time,
-size, and nonzero item count to the existing confirmation. Cancellation still
-starts no job; confirmation still starts only the original `restoreLocalBackup`
-job. Interaction, 14 fixed window/DPI, pressure, soak, backup, responsiveness,
-security, control-plane, architecture, connection-closure, and planning gates
-passed. Evidence: `docs/work/backup-restore-identity-br01.md`. No installer,
-Git, publication, FlClash, or host-network action occurred.
+Fresh remote checks on 2026-07-29 show `gh auth status` succeeds for
+`JoyceBrown` with repository/workflow scope, no local/global/environment proxy
+is configured, and `git ls-remote origin` resolves `main` to the local baseline
+`01fd0151a9b7a79f793ff5b009676c546874fdd1`. The previous proxy/credential
+blocker is therefore not current.
 
 ## Previous Completed Decision
 
-CHANGE-048 / DR-01 is complete under the user's explicit approval. It added only
-an in-session, item-scoped receipt after a user runs an existing diagnostic
-repair and the current recheck settles. It must distinguish verified recovery,
-an unresolved issue, and an unavailable recheck; it is absent by default and
-clears when the user explicitly starts a new diagnostic run. It excludes new
-repair actions, automatic repair, polling, persisted history, Home or
-status-center expansion, raw Controller/YAML access, network behavior,
-installer work, Git, publication, signing, FlClash, and host proxy, TUN, DNS,
-firewall, or kill-switch actions. The receipt applies only to repair actions
-that return to the same Aegos process; an administrator relaunch cannot
-truthfully retain an in-session recheck. Focused interaction, fixed-window/DPI
-geometry, performance, soak, and affected host-safe gates passed. Evidence:
-`docs/work/diagnostic-repair-receipts-dr01.md`. The exact next action is to
-wait for explicit authority.
+CHANGE-051 / LIC-01 is complete under the user's explicit selection of GPL-3.0
+for Aegos and direction for Codex to complete all license and installer
+materials. The task allocated local candidate version 3.6.71 because the
+published v3.6.70 source, tag, and asset are immutable.
+
+LIC-01 includes the Aegos GPL-3.0-only license, exact Mihomo provenance and
+license, deterministic third-party notices, Tauri/NSIS resources, fail-closed
+license gates and negative fixtures, a complete host-safe matrix, and a new
+local unsigned source-bound installer. It excludes installation, publication,
+Git commit/push, signing, live takeover, FlClash, and host-network changes.
+
+Fresh source verification identified the exact managed-core origin:
+
+- release/tag: Mihomo `v1.19.28`, commit
+  `cbd11db1e13a75d8e680e0fe7742c95be4cba2be`;
+- official asset: `mihomo-windows-amd64-v1-v1.19.28.zip`, 17,730,829 bytes,
+  SHA-256
+  `e1a47d4eb9b864e242e92ef4d501b052241c7e4eb5a592f2b124959e8efb2312`;
+- extracted official executable: 47,942,656 bytes, SHA-256
+  `c14bda8dc4cc8910ccd2110fe2be083c51a1b66da59141a0b87aff6fe6126517`,
+  exactly matching `resources/core/mihomo.exe`.
 
 ## Previous Completed Decision
 
-CHANGE-047 / UX-01 is complete under the user's explicit approval. It added only
-an on-demand, read-only explanation for one selected connection, built from
-the already-normalized connection snapshot. The initial surface stays compact:
-details are hidden by default, are mutually exclusive, do not call a backend
-command or start polling, and close on refresh or page navigation. The batch
-excludes Home and status-center expansion, per-connection DNS or outlet-IP
-claims, raw Controller/YAML access, network changes, installer work, Git,
-publication, signing, FlClash actions, and host proxy, TUN, DNS, firewall, or
-kill-switch actions. Focused interaction, fixed window/DPI geometry, and
-affected host-safe regression gates passed. Evidence:
-`docs/work/connection-explanation-ux01.md`. No prior delivery fact is changed;
-the exact next action is to wait for explicit authority.
+CHANGE-050 / REL-01 is complete. Commit
+`01fd0151a9b7a79f793ff5b009676c546874fdd1` is on `origin/main`, is the
+`v3.6.70` tag target, and owns the public non-draft, non-prerelease release:
 
-## Previous Completed Decision
+`https://github.com/JoyceBrown/Aegos/releases/tag/v3.6.70`
 
-CHANGE-046 / WR-15 is complete. It established one explicit boundary: Aegos
-user rules remain editable only through structured preflighted background
-commands, while subscription/Mihomo rules and Aegos protection rules are
-visibly read-only. It repaired static-audit drift without changing business
-behavior, and expanded the host-safe acceptance matrix with routing-product,
-controlled-routing-boundary, connection-closure, global-interaction, and debt
-gates. The current acceptance report and candidate provenance are authoritative
-for exact run identity and input digests. The fresh local unsigned candidate is
-`src-tauri/target/release/bundle/nsis/Aegos_3.6.70_x64-setup.exe`, 16,339,868
-bytes, SHA-256 `0c71d5176f195a00fd7de79ce7bd8aa3e33ffc084db269eed2e496488b848e5c`,
-and `NotSigned`. It was not installed, published, committed, pushed, or used to
-change FlClash or the host network. The exact next action is to wait for
-explicit user authority.
+The one published `Aegos_3.6.70_x64-setup.exe` asset is 16,341,772 bytes.
+GitHub reported state `uploaded` and server digest
+`sha256:9c6ebab99f9c80792e3e2b9d6ab766c55fcac5092aa19575bb27cb87126ef261`,
+matching the local candidate. Authenticode is `NotSigned`; the installer was
+not installed.
 
-## Previous Completed Decision
+The final source-bound 30-command host-safe matrix, provenance, installer,
+release, trust, and known-bad fixture gates passed. A separate binary download
+through this host reset or stalled, so no independent downloaded-file hash is
+claimed. No Aegos or test process/root remained and FlClash PID 13184 was
+unchanged. Full evidence is in `release-3.6.70-rel01.md`.
 
-CHANGE-045 / WR-14 is complete. The fresh default-output local unsigned 3.6.70
-NSIS candidate is `src-tauri/target/release/bundle/nsis/Aegos_3.6.70_x64-setup.exe`:
-16,345,110 bytes, SHA-256
-`d68c431ebac8c1ba2649810845b7110e536706d784b951a6e16ea9820c0319b0`, and
-`Get-AuthenticodeSignature` returned `NotSigned`. The source matrix run
-`wr01-20260728080142-17376` completed all 25 required commands: 232 Rust
-tests, 13 product journeys, 14 fixed window/DPI configurations, 800 nodes/420
-navigations, 16 soak cycles, and both native modes. Delivery remains local
-only: no installation, publication, Git action, FlClash, or host-network change
-occurred. Evidence: `docs/work/windows-reliability-wr14.md`.
+## Current Worktree
 
-The exact next action is to wait for explicit authority.
+`main`, `HEAD`, and `origin/main` all resolve to
+`01fd0151a9b7a79f793ff5b009676c546874fdd1`.
 
-CHANGE-044 / WR-13 is complete. R5 restricted work to the Rules heavy
-read-only snapshot path and retained the existing matching-profile cache and
-explicit cached/loading observation semantics. A deterministic historical
-control proved that bypassing the request/render guards can commit an
-80,000-rule marker after navigation has already moved to Connections. The
-repair moves Rules UI initialization until after segmented preparation and the
-token/generation ownership check; the repaired control preserved Connections,
-recorded cancellation, and did not write the stale marker. Evidence:
-`docs/work/windows-reliability-wr13.md`. No rules/YAML migration, CoreManager
-lock change, write semantic change, delivery action, FlClash, or host-network
-action occurred.
+Eight tracked files contain the uncommitted post-publication closure and final
+matrix refresh:
 
-CHANGE-043 / WR-12 is complete. R4 now paints the initiating measurement value
-immediately, then coalesces 80ms feedback ticks to one animation frame and
-skips a repeated text value. Only the active page's pending node cells are
-patched; the result overlay still retains completed values for a later visit.
-The controlled historical global scan rewrites a hidden probe and is rejected;
-the repaired path preserves it. No measurement semantics, core locks, network
-behavior, writes, delivery, FlClash, or host networking changed. Evidence:
-`docs/work/windows-reliability-wr12.md`.
+- `PERFORMANCE_NATIVE_3.6.70.auto-speed-enabled.json`
+- `PERFORMANCE_NATIVE_3.6.70.auto-speed-suppressed.json`
+- `PERFORMANCE_PRESSURE_3.6.70.json`
+- `PERFORMANCE_SOAK_3.6.70.json`
+- `PLANS.md`
+- `PRODUCT_SMOKE_3.6.70.json`
+- `docs/work/current.md`
+- `docs/work/release-3.6.70-rel01.md`
 
-CHANGE-042 / WR-11 is complete. The first Nodes/Connections prewarm queue now
-owns every scheduled animation frame and synchronously cancels those frames on
-a navigation request. The deterministic known-bad branch still performs a
-hidden Nodes render after a Connections click; the repaired branch records no
-stale render. During the required complete product journey, a pre-existing
-observed-stop failure also exposed a true UI state bug: an unchanged runtime
-snapshot short-circuited the derived connection button. The repair updates that
-derived button before the unchanged-snapshot return, so a terminal failure
-restores the real retry action without changing backend semantics. Evidence:
-`docs/work/windows-reliability-wr11.md`.
+This checkpoint consolidation additionally creates the archived checkpoint,
+the maintenance register, and documentation-index changes. No commit or push
+is authorized by REL-01 because its single source commit/push authorization
+was already consumed.
 
-CHANGE-041 / WR-10 is complete. R2 repairs presentation reads delayed by a
-core write: Nodes and Rules return only an explicitly labelled,
-profile-matching last successful snapshot or an explicit loading state.
-Diagnostics now returns a complete cached report or explicit loading without
-changing its background-job behavior. No write command, lock framework,
-timeout policy, delivery operation, live takeover, FlClash, or host-network
-state changed. Evidence: `docs/work/windows-reliability-wr10.md`.
+LIC-01 additionally changes the 3.6.71 manifests/UI version, release record,
+README license disclosure, installer checklist, acceptance/provenance/release
+gates, and creates the root license, NOTICE, Mihomo/Rust third-party materials,
+license/payload audits, 3.6.71 performance reports, and its evidence register.
+Those changes remain uncommitted and unpushed at the opening of DG-01; the full
+current inventory is the live `git status`, not the older eight-file REL-01
+list above. CHANGE-052 now authorizes their exact reviewed source-control
+closure, but does not authorize staging any excluded user-owned file.
 
-CHANGE-040 / WR-09 is complete. R1 repaired the truthful foreground behavior
-of a long-running `startCore` or `stopCore` job: after 1200 ms the initiating
-control becomes `查看连接任务`, the same Job ID remains visible in the status
-center, duplicate starts are prevented, and the later backend success or
-failure restores the real connection action. Existing cancellation remains
-cooperative and backend-terminal-state driven. The evidence register is
-`docs/work/windows-reliability-wr09.md`. Forced termination, blanket timeouts,
-network semantic changes, delivery work, live takeover, FlClash, and
-host-network changes remain excluded.
+The local Codex provider-panel scripts, preview images, research note, and
+temporary directories are user-owned and out of scope. They must not be
+deleted, moved, staged, or treated as Aegos release inputs.
 
-CHANGE-039 / WR-08 is complete. The user authorized two low-regression frontend
-repairs: stale startup prewarm and periodic speed-feedback rendering. The
-preserved stress bad control rejected the old behavior with three target-panel
-forced-layout reads and a hidden pending row rewritten to `等待 0.1s`. The
-repair removes only those layout reads and limits periodic elapsed writes to
-the active page. The same fixture passed with `0` target-layout reads, the
-hidden probe unchanged, first numeric feedback at `2.6 ms`, `0.0/0.1/0.2 s`
-before the delayed first result, and result paint lag `30.3 ms`. The evidence
-register is `docs/work/windows-reliability-wr08.md`.
+## Fresh Verification
 
-The affected host-safe checks passed: syntax, product interaction, all fixed
-window/DPI UI checks, 800-node/420-navigation pressure, 16-cycle soak,
-isolated native WebView2 automatic-speed enabled and suppressed, and
-responsiveness/security/control-plane/architecture/planning audits. No Rust
-concurrency policy, installer, commit, publication, live takeover, FlClash,
-or host-network state changed.
+The following read-only checks were rerun on 2026-07-29 (2026-07-28 UTC):
 
-CHANGE-029 closed the reopened WR-02 after user acceptance rejected the 3.6.66
-result. Manual speed tests now show honest, continuously changing elapsed
-feedback before the first real result, and navigation away from Connections
-preempts startup prewarm and obsolete connection-row construction.
+- `npm run audit:control-plane`: exit 0; production budgets are
+  `main=11707/11770` and `core_runtime=2866/2900`.
+- `npm run audit:architecture`: exit 0.
+- `npm run audit:debt`: exit 0 with every counted debt class at zero.
+- `npm run audit:planning-context`: exit 0 after this consolidation.
+- `npm audit --json`: exit 0 with zero vulnerabilities.
+- The top-level npm freshness query (`outdated --json`) exited 0 with no update
+  reported.
+- `resources/core/mihomo.exe -v`: exit 0, Mihomo Meta `v1.19.28`,
+  Windows amd64, Go 1.26.5.
+- The managed core is 47,942,656 bytes with SHA-256
+  `c14bda8dc4cc8910ccd2110fe2be083c51a1b66da59141a0b87aff6fe6126517`.
+- The local 3.6.70 installer is still present at the recorded 16,341,772 bytes
+  and recorded SHA-256; it was not executed or installed.
 
-CHANGE-030 is the user's explicit instruction to synchronize the accepted
-3.6.67 source, regression coverage, authority records, and redacted evidence
-to the configured GitHub `origin/main`. It authorizes one commit and push only;
-it does not authorize a GitHub Release, installer upload, signing, automatic
-updates, new product work, live Windows takeover, or changes to FlClash.
+No product source, release artifact, host network, FlClash state, or external
+release state was changed by the context audit.
 
-CHANGE-031 created the public `v3.6.67` GitHub Release and uploaded the exact
-accepted unsigned NSIS installer. Its source and artifact are now historical
-delivery evidence.
+The complete 32-command host-safe matrix must pass after the final edit to this
+checkpoint because this file is a candidate gate input. Its final run identity
+belongs to `.validation/wr01/acceptance.json` and the maintenance register; it
+is deliberately not copied into this self-referential gate input.
 
-CHANGE-032 is the user's explicit instruction to repair the current-code
-three-angle review findings under WR-03. The allowed scope is truthful
-connection presentation, failed-recovery rollback, background status and
-diagnostic availability, unreadable active-takeover evidence, rejected-profile
-speed-state preservation, and focused lock/dead-code cleanup. Release,
-installer, GitHub publication, signing, automatic updates, live takeover, and
-changes to FlClash remain excluded.
+One interrupted attempt is retained rather than hidden: an outer tool timeout
+terminated the coordinator for
+`wr01-20260728171734-15120` after two recorded commands. Its orphaned
+`cargo test` completed 232/232, but the attempt is invalid because the
+coordinator could not record the remaining commands. No residual test process
+or network side effect remained.
 
-WR-03 is complete. Its six current-code P1/P2 findings have isolated
-behavioral controls and fresh affected-gate evidence in
-`docs/work/windows-reliability-wr03.md`. No installer, GitHub publication,
-live takeover, or FlClash change was performed.
+## Historical Invariants
 
-CHANGE-033 is complete. WR-04 repaired the 3.6.67 UI review findings for
-state-truth presentation, unavailable-takeover guidance, persistent-metric
-freshness, explicit kill-switch state, node-action discoverability,
-navigation/profile accessibility, and redacted UI fixtures. The closed
-evidence is recorded in `docs/work/windows-reliability-wr04.md`.
+These compact invariants preserve existing fail-closed planning coverage while
+the full narratives remain archived:
 
-CHANGE-034 is the user's explicit authorization for WR-05: build a fresh
-source-bound unsigned `3.6.68` NSIS installer, commit and push the accepted
-source/evidence, then create a new GitHub Release with the exact installer
-SHA-256. `v3.6.67` remains immutable history. Signing, automatic updates,
-live takeover, FlClash, and host-network changes remain excluded.
-
-WR-05 is complete. `v3.6.68` targets source commit
-`e4dd999f1d97ff079676f109900facceb7dfc572`; the published GitHub Release
-contains `Aegos_3.6.68_x64-setup.exe` (16,335,672 bytes, SHA-256
-`839804d895d4c5af77568e2e876407a6b29f17bf33fdd9e771165ea387b7ade4`).
-The installer is explicitly unsigned. The v3.6.67 tag and asset remain
-unchanged historical evidence.
-
-WR-06 delivered `v3.6.69`, which targets source commit
-`ea655b417c2cb6e09d6d93f893912ec3afb41895`; the published GitHub Release at
-`https://github.com/JoyceBrown/Aegos/releases/tag/v3.6.69` contains
-`Aegos_3.6.69_x64-setup.exe` (16,345,798 bytes, SHA-256
-`a85a8335ce67c6fa30fe8cca9eeeb89aa9198dd9fa76086b5a84d8cf3789a4cd`).
-The installer is unsigned. GitHub asset metadata and a separately downloaded
-copy both match the recorded hash. Earlier release tags and assets remain
-immutable historical evidence.
-
-CHANGE-036 was a narrow WR-06 post-release repair. The user reported
-that a Rules-to-Connections transition can leave the native window
-unresponsive. The permitted work is a deterministic controlled reproduction,
-page-work cancellation or yielding repair, and focused interaction/performance
-regression. No installer, release, GitHub publication, live takeover, FlClash,
-or host-network action is authorized.
-
-CHANGE-036 is complete. `src/app.js` now partitions a routing snapshot in
-400-rule batches, yields between batches, and invalidates in-flight rendering
-with both the current page token and a routing render generation when the user
-leaves Rules. The controlled 80,000-rule fixture retained the old failure as
-evidence (`55.6 ms` delayed input and no cancellation), then passed the repair
-at `4.9 ms` input delivery and `4.6 ms` first frame with stale rendering
-cancelled. No installer, release, GitHub publication, live takeover, FlClash,
-or host-network change was performed.
-
-CHANGE-037 was a narrow post-release UI repair. The user reproduced a
-DNS settings layout collapse after repeated subscription switching; restarting
-the application rebuilt the DOM and hid the symptom. The repair gives dynamic
-DNS/IPv6/egress content one dedicated layout owner and forces settings-panel
-implicit rows to size to their contents before the panel scrolls. It retains a
-deterministic multi-switch bad control and audits every page plus all seven
-settings categories for geometry overlap at the fixed window/DPI matrix. No installer,
-release, GitHub publication, live takeover, FlClash, or host-network action is
-authorized or performed.
-
-CHANGE-038 completed one local-only, unsigned, uninstalled `3.6.70` NSIS
-candidate. Its historical delivery evidence does not authorize new packaging,
-publication, GitHub upload, installation, feature breadth, or live Windows
-takeover. FlClash and the host network must not be changed.
-
-## Verified Evidence
-
-- Baseline: clean `main`/`origin/main` at `28e539b`, version `3.6.65`.
-- Current completed delivery version: `3.6.69`; its source-bound unsigned
-  installer and GitHub Release are recorded in
-  `docs/work/windows-reliability-wr06.md`. 3.6.68 remains immutable historical
-  delivery evidence. The rejected 3.6.66 installer is also historical evidence.
-- The v2 acceptance runner executes 25 distinct commands and binds each to
-  current source/gate inputs, timestamps, Windows/toolchain identity, the
-  host-safe boundary, and a hashed local log.
-- The current matrix covers 224 Rust tests, 12 product journeys, seven pages
-  over 14 window/DPI configurations, 800 nodes/420 navigations, 16 soak
-  cycles, and both native WebView2 automatic-speed modes.
-- The hidden native probe can coexist with the user's installed Aegos because
-  only the `native-measurement` feature omits the product single-instance
-  plugin. The product build remains single-instance.
-- Acceptance and provenance negative fixtures reject stale or changed input,
-  missing/tampered logs, declared zero exits, duplicate/missing commands,
-  matrix reduction, missing identity, open P1, changed Mihomo, and tampered
-  acceptance/artifact bytes.
-- Known-bad speed evidence retained run ID `1` on the attempted second click
-  and painted no progressive value before terminal because the completed
-  backend run still had a throttled foreground UI queue.
-- The repaired 800-node negative control advances run IDs `1 -> 2`, paints
-  honest elapsed feedback in `4.9 ms`, advances through `0.0/0.1/0.2 s`
-  while the first real result is deliberately held for `269.3 ms`, and paints
-  that result `31.3 ms` after its event.
-- The 1200-row Connections negative control leaves synchronously in `0.2 ms`,
-  paints Home in `5.4 ms`, cancels obsolete rendering after 24 rows, and does
-  not append hidden rows after navigation.
-- The connection leave/return regression now queues a replacement request
-  instead of losing both the obsolete first result and the return visit.
-- Browser harness cleanup is fail-closed for performance, UI, and soak runs:
-  it terminates only Chrome processes bound to the run's exact temporary
-  profile, retries deletion for 15 seconds, observes the root absent for one
-  second, and fails the test if residue remains. Focused reruns left zero new
-  roots; 244 historical smoke profiles (5,788,681,663 bytes) were removed
-  with zero failures while the user's Aegos/Mihomo instance remained running.
-- Native enabled/suppressed comparisons pass the new actionable-startup gate:
-  the final focused samples painted Nodes in `14.5/1.1 ms` and Connections in
-  `33.4/22.2 ms`, synchronous work stayed below `1 ms`, and no
-  activation task exceeded `50 ms`.
-- CHANGE-036 focused gates: `node --check src/app.js`, `node --check
-  tools/perf-smoke.js`, `npm run smoke:perf:stress`, `npm run
-  smoke:interactions`, `npm run smoke:ui`, `npm run smoke:soak`, `npm run
-  audit:responsiveness`, `npm run audit:routing-navigation`, `npm run
-  audit:routing-acceptance`, `npm run audit:security`, `npm run
-  audit:control-plane`, and `npm run audit:architecture` all exited `0`.
-  Fresh evidence timestamps are 2026-07-27T16:50:52Z (800-node stress),
-  16:41:36Z (product journey), 16:43:23Z (16-cycle soak), and
-  16:47:10Z (isolated native WebView2, automatic speed suppressed). The native
-  probe measured eight navigation paints at `33.3 ms` maximum, `0.5 ms`
-  maximum synchronous work, `49 ms` routing first content, and an isolated
-  `800`-node/`802`-rule fixture. The user-owned Aegos, FlClash, and host
-  network were not changed.
-- CHANGE-037 retained the observed user screenshot as the pre-fix P1 evidence.
-  The first geometry run then exposed the deterministic short-window failure:
-  at `920x640` and `980x640`, `#dnsModeSelect` and `#saveDnsModeBtn` escaped
-  their collapsed DNS grid and intersected the IPv6 safety card. The repair
-  makes panel rows `max-content`, so content remains inside the scrolling
-  settings panel rather than painting over the next row. The final `npm run
-  smoke:ui` covered all 14 existing fixed window/DPI combinations and seven
-  settings categories; its DOM bad fixture was rejected and no control/card,
-  grid-child, or panel-child collision remained. `npm run smoke:interactions`
-  completed four alternating `direct`/remote subscription switches, entering
-  DNS after each one with no owner, order, control, or card collision. The
-  final host-safe gates all exited `0`: syntax checks; Rust format and
-  `cargo test` (`229 passed`); `npm audit --json` (zero vulnerabilities);
-  UI, interaction, 800-node pressure, 16-cycle soak, native isolated
-  WebView2 automatic-speed enabled/suppressed probes; backend, responsiveness,
-  stability, security, IPv6/DNS, outbound-IP, core-runtime, runtime-regression,
-  control-plane, architecture, routing, local-backup, and planning audits.
-  Native probes used their temporary offscreen data root and reported no
-  failures; the user-owned Aegos, FlClash, and host network were not changed.
-- CHANGE-040 / WR-09: the isolated held-job bad control keeps `startCore`
-  non-terminal beyond 1320 ms and rejects the old permanently busy initiating
-  button. The repaired product journey proves the same Job ID becomes a
-  status-center recovery action without a duplicate `start_job`, later success
-  becomes `已连接`, and later observed stop failure restores the connected
-  state and retry action. Targeted Rust task-runtime tests passed all three
-  cancellation/panic terminal paths; interaction, all 14 UI configurations,
-  16-cycle soak, responsiveness, security, control-plane, architecture, and
-  planning audits all exited 0. The evidence register is
-  `docs/work/windows-reliability-wr09.md`; no delivery, FlClash, or host-network
-  action occurred.
-
-## Failed Attempts Retained
-
-- Two preserved REL-01 pre-fix acceptance runs,
-  `wr01-20260728105811-18644` and `wr01-20260728113902-3188`, exited nonzero
-  because the deterministic Connections journey found that a delayed
-  no-takeover status refresh disabled the close action after a newer visible
-  connection snapshot. The repair gives the current connection snapshot
-  explicit observation ownership; the same journey and the subsequent full
-  30-command matrix passed without weakening the assertion.
-- Direct `npm.cmd` spawning under Node 24 failed with `EINVAL`; the runner now
-  invokes the current `npm-cli.js` through `node.exe` with a fixed argument
-  array and no shell.
-- The first native probe exited on the user's product single-instance lock;
-  the test-only feature was isolated instead of stopping the user application.
-- The first release skeleton omitted the four runtime/recovery command names;
-  the runtime-regression gate rejected it and the record was corrected.
-- A final-matrix native run caught a `60.9 ms` first Nodes frame even though
-  synchronous work was `0.7 ms`. Its trace proved settings workspace warmup
-  overlapped the navigation, so that low-priority work now defers after recent
-  input/navigation and retries later.
-- Suppressed-speed native samples then exposed hidden-WebView2 frame
-  throttling at `54.2-55.7 ms` with no long task. The isolated harness now
-  measures a visible-compositor window fixed offscreen, unfocused, and absent
-  from the taskbar; the `50 ms` product gate was not widened.
-- During CHANGE-030 synchronization validation, the just-shown offscreen
-  window acknowledged a single `requestAnimationFrame` before a physically
-  actionable presented frame. The next simulated Nodes input measured
-  `56.3 ms` despite `0.7 ms` synchronous work and no activation-window long
-  task. The native probe now requires three compositor frames before modelling
-  physical input; it retains all pages, fixed window/DPI configurations,
-  startup overlap, and the `50 ms` navigation limit. The focused enabled-mode
-  repair sample then measured Nodes at `26.8 ms` and Connections at `33.7 ms`.
-- The first 3.6.65 installer retained a `v3.6.63` sidebar fallback label; the
-  release gate rejected it. The label was corrected and the installer was
-  rebuilt from an empty `candidate-3.6.65-final` target before acceptance.
+- CHANGE-037 was a narrow post-release UI repair that retained the fixed
+  window/DPI matrix and did not broaden product scope.
+- CHANGE-039 / WR-08 is complete; its responsiveness evidence and delivery
+  exclusions remain owned by `windows-reliability-wr08.md`.
+- CHANGE-029 closed the reopened WR-02 after its deterministic regressions and
+  complete acceptance matrix passed.
 
 ## Exact Next Action
 
-Bind the release note and candidate provenance to the exact new artifact, then
-rerun the complete 30-command host-safe acceptance matrix and installer,
-release, unsigned-trust, and provenance gates against the settled inputs. If
-they pass, commit and push only the accepted Aegos source/evidence set and
-publish the exact unsigned asset as `v3.6.70`. Do not include the unrelated
-Codex provider-panel experiments, preview images, research note, or temporary
-directories; do not install the artifact or change FlClash or host networking.
+Stabilize the CHANGE-052 plan/checkpoint and stale maintenance register, rerun
+the affected license/planning/release checks and the complete 32-command
+host-safe matrix, review the exact staged set, then commit and push only the
+accepted v3.6.70 closure plus v3.6.71 source/license/evidence files. After the
+push, probe isolated-Windows capability read-only and implement the separately
+reviewable minimal Windows CI commit.
+
+Do not install, launch, publish, tag, upload, purchase or sign, perform live
+takeover, affect FlClash, or change the host network.

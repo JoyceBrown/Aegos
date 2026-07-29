@@ -11,6 +11,8 @@ const commands = [
   ['cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml']],
   ['node', ['--check', 'src/app.js']],
   ['node', ['--check', 'src/routing-ui.js']],
+  ['npm', ['run', 'audit:licenses']],
+  ['npm', ['run', 'audit:licenses-fixtures']],
   ['npm', ['run', 'smoke:interactions']],
   ['npm', ['run', 'smoke:perf']],
   ['npm', ['run', 'smoke:product']],
