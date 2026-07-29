@@ -29,6 +29,36 @@ function locations(text, pattern, rel) {
   }));
 }
 
+function productionDirectWritesOf(text, rel = 'src-tauri/src/main.rs') {
+  const directWrites = [
+    ...locations(text, /\bfs::write\s*\(/g, rel),
+    ...locations(text, /\bfs::copy\s*\(/g, rel),
+  ];
+  const testModule = /^[ \t]*#\[cfg\(test\)\][ \t]*\r?\n[ \t]*mod[ \t]+tests[ \t]*\{/m.exec(text);
+  const testModuleStart = testModule?.index ?? -1;
+  return directWrites.filter((item) => testModuleStart < 0 || item.index < testModuleStart);
+}
+
+function runSelfTest() {
+  const testOnlyLf = 'fn product_path() {}\n#[cfg(test)]\nmod tests {\n  fn fixture() { fs::write("fixture", "value"); }\n}\n';
+  const testOnlyCrlf = testOnlyLf.replaceAll('\n', '\r\n');
+  const badWrite = 'fn product_path() { fs::write("product", "value"); }\n#[cfg(test)]\nmod tests {}\n';
+  const badCopy = 'fn product_path() { fs::copy("source", "product"); }\n#[cfg(test)]\nmod tests {}\n';
+  const noTestModule = 'fn product_path() { fs::write("product", "value"); }\n';
+  const tests = [
+    { name: 'LF test fixtures are excluded', ok: productionDirectWritesOf(testOnlyLf).length === 0 },
+    { name: 'CRLF test fixtures are excluded', ok: productionDirectWritesOf(testOnlyCrlf).length === 0 },
+    { name: 'production fs::write remains rejected', ok: productionDirectWritesOf(badWrite).length === 1 },
+    { name: 'production fs::copy remains rejected', ok: productionDirectWritesOf(badCopy).length === 1 },
+    { name: 'missing test boundary fails closed', ok: productionDirectWritesOf(noTestModule).length === 1 },
+  ];
+  const result = { ok: tests.every((test) => test.ok), tests, generatedAt: new Date().toISOString() };
+  console.log(JSON.stringify(result, null, 2));
+  process.exit(result.ok ? 0 : 2);
+}
+
+if (process.argv.includes('--self-test')) runSelfTest();
+
 const pkg = readJson('package.json');
 const appJs = read('src/app.js');
 const mainRs = read('src-tauri/src/main.rs');
@@ -61,12 +91,7 @@ const forbiddenFrontendInvokes = locations(
 
 const deadCode = locations(mainRs, /#\[allow\(dead_code\)\]/g, 'src-tauri/src/main.rs');
 const legacyProfilePaths = locations(mainRs, /\b(patch_profile_file_legacy|download_profile_source\(|add_profile_url\(&mut self|update_profile\(&mut self|write_runtime_profile_copy)\b/g, 'src-tauri/src/main.rs');
-const directWrites = [
-  ...locations(mainRs, /\bfs::write\s*\(/g, 'src-tauri/src/main.rs'),
-  ...locations(mainRs, /\bfs::copy\s*\(/g, 'src-tauri/src/main.rs'),
-];
-const testModuleStart = mainRs.indexOf('#[cfg(test)]\nmod tests {');
-const productionDirectWrites = directWrites.filter((item) => testModuleStart < 0 || item.index < testModuleStart);
+const productionDirectWrites = productionDirectWritesOf(mainRs);
 const rawDeletes = locations(mainRs, /\bfs::remove_file\s*\(/g, 'src-tauri/src/main.rs');
 const allowedDeleteLines = new Set();
 for (const name of ['atomic_write_text_confined', 'remove_file_confined']) {

@@ -96,6 +96,17 @@ existing license/subscription/acceptance/provenance negative fixtures. Native
 UI, soak, packaging, publication, and live Windows takeover remain separate
 local/release/lab lanes.
 
+The first pushed workflow run, `30432914806` at commit `6bc48e5`, is retained
+as failed evidence. Rust formatting/tests, all tracked JavaScript syntax, npm
+security, architecture, and control-plane checks passed, but `audit:debt`
+failed on the clean Windows checkout because its test-module boundary matched
+only LF while checkout materialized CRLF. That made two test-only `fs::write`
+fixtures look like production writes. The repair makes the boundary explicitly
+LF/CRLF tolerant and adds deterministic controls proving that LF and CRLF test
+writes are ignored while production `fs::write`, production `fs::copy`, and a
+missing test boundary still fail closed. The failed run is not reclassified or
+hidden by a retry.
+
 ## Exact Next Action
 
 Validate the workflow and updated gate inputs locally, commit and push the CI

@@ -76,6 +76,9 @@ jobs:
       - name: Audit debt floors
         run: npm run audit:debt
 
+      - name: Reject weakened debt fixtures
+        run: node tools/debt-audit.js --self-test
+
       - name: Audit planning context
         run: npm run audit:planning-context
 
